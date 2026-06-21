@@ -1031,6 +1031,7 @@ Monte Carlo replaces interval-overlap or rank-gap heuristics when its distributi
   "recommended_action_id": "a1",
   "requires_confirmation": true,
   "decision_reason": "Patch action has positive RAU after evidence, but confidence upgraded from low so confirmation is required.",
+  "risk_report": {},
   "actions": [],
   "thresholds_used": {},
   "evidence_delta": {},
@@ -1065,6 +1066,78 @@ Every metric is an object:
   "confidence": 0.70,
   "evidence": ["Directly addresses the failing login-validation task."],
   "method": "MCDA value function with normalized criterion weights"
+}
+```
+
+### 9.2 Risk Report
+
+Every PEBRA assessment should include a `risk_report` view object. It is derived from canonical scores and gates at render time; it should not be manually maintained as a separate source of truth.
+
+The report has one headline risk number:
+
+```text
+if monte_carlo_gate_available:
+  headline_risk_type = probability
+  headline_risk_percent = 100 * P(utility < 0)
+else:
+  headline_risk_type = risk_budget_indicator
+  headline_risk_percent = 100 * expected_loss / effective_expected_loss_threshold
+```
+
+`expected_loss` is shown as the raw score behind the budget. Do not render raw `expected_loss` as the headline percent because it can exceed 1.0. If the budget percent exceeds 100%, that is meaningful: the action is over the configured risk budget and should trigger the relevant Section 8 gate.
+
+The denominator must be the effective threshold used by the gate, not always the global threshold. For example, C3 code uses `c3_max_expected_loss_without_human` when it is tighter than `max_expected_loss_without_human`.
+
+RAU remains a signed decision score, not a risk percent. The risk report may show an RAU band from `.pebra.yml`:
+
+```text
+RAU < reject_below              -> negative
+reject_below to borderline_below -> borderline
+borderline_below to strong_at    -> proceedable
+>= strong_at                     -> strong
+```
+
+The `why` field should be generated from existing evidence:
+
+- Top adverse-event drivers ranked by `p_event_j * disutility_j`.
+- The effective threshold and gate that applied.
+- RAU waterfall: benefit, loss, review cost, uncertainty penalty.
+- Criticality stage and provenance.
+- Weakest edit-confidence factor.
+
+Example shape:
+
+```json
+{
+  "risk_type": "risk_budget_indicator",
+  "headline_risk_percent": 50,
+  "expected_loss": {
+    "value": 0.10,
+    "source_type": "derived",
+    "provider": "pebra"
+  },
+  "risk_budget_used_percent": 50,
+  "budget_threshold_used": {
+    "key": "c3_max_expected_loss_without_human",
+    "value": 0.20,
+    "reason": "Auth code is C3 and the C3 threshold is tighter than the global threshold."
+  },
+  "p_utility_negative": null,
+  "rau": {
+    "value": 0.31,
+    "band": "proceedable",
+    "source_type": "derived"
+  },
+  "confidence_percent": 83,
+  "confidence_band": "high",
+  "decision": "proceed",
+  "requires_confirmation": true,
+  "why": [
+    "Risk budget 50% used: expected_loss 0.10 divided by C3 threshold 0.20.",
+    "RAU 0.31 is positive after the uncertainty penalty and is in the proceedable band.",
+    "Confidence is 83% after repo evidence gathering.",
+    "Auth code is C3, so confirmation is required."
+  ]
 }
 ```
 
@@ -1142,6 +1215,63 @@ Because confidence upgraded from low to high, the response uses `recommended_dec
   "recommended_action_id": "a1",
   "requires_confirmation": true,
   "decision_reason": "Repo-local evidence reduced uncertainty; targeted patch has positive RAU.",
+  "risk_report": {
+    "risk_type": "risk_budget_indicator",
+    "headline_risk_percent": 50,
+    "expected_loss": {
+      "value": 0.10,
+      "source_type": "derived",
+      "provider": "pebra"
+    },
+    "risk_budget_used_percent": 50,
+    "budget_threshold_used": {
+      "key": "c3_max_expected_loss_without_human",
+      "value": 0.20,
+      "reason": "Auth code is C3 and the C3 threshold is tighter than the global threshold."
+    },
+    "p_utility_negative": null,
+    "rau": {
+      "value": 0.31,
+      "band": "proceedable",
+      "source_type": "derived"
+    },
+    "confidence_percent": 83,
+    "confidence_band": "high",
+    "decision": "proceed",
+    "requires_confirmation": true,
+    "top_risk_drivers": [
+      {
+        "event": "test_regression",
+        "expected_loss": 0.04,
+        "share_of_loss_percent": 40,
+        "why": "Prior regression risk remains until the targeted auth test is run."
+      },
+      {
+        "event": "security_sensitive_change",
+        "expected_loss": 0.04,
+        "share_of_loss_percent": 40,
+        "why": "The change touches auth behavior, mapped to C3 criticality by project policy."
+      },
+      {
+        "event": "public_api_break",
+        "expected_loss": 0.02,
+        "share_of_loss_percent": 20,
+        "why": "Call-site search found limited usage, so API break contribution is lower."
+      }
+    ],
+    "protective_factors": [
+      "Small targeted patch",
+      "Targeted auth test exists",
+      "No dependency, schema, migration, or external-state change detected",
+      "Rollback is straightforward"
+    ],
+    "why": [
+      "Risk budget 50% used: expected_loss 0.10 divided by C3 threshold 0.20.",
+      "RAU 0.31 is positive after the uncertainty penalty and is in the proceedable band.",
+      "Confidence is 83% after repo evidence gathering.",
+      "Auth code is C3, so confirmation is required."
+    ]
+  },
   "actions": [
     {
       "id": "info_1",
@@ -1327,11 +1457,18 @@ Because confidence upgraded from low to high, the response uses `recommended_dec
   ],
   "thresholds_used": {
     "max_expected_loss_without_human": 0.45,
+    "c3_max_expected_loss_without_human": 0.20,
+    "effective_expected_loss_threshold": 0.20,
     "max_p_negative_utility": 0.10,
     "max_utility_sd_without_human": 0.20,
     "decision_instability_threshold": 0.10,
     "high_edit_confidence": 0.75,
-    "low_edit_confidence": 0.50
+    "low_edit_confidence": 0.50,
+    "rau_bands": {
+      "reject_below": 0.00,
+      "borderline_below": 0.15,
+      "strong_at": 0.40
+    }
   }
 }
 ```
@@ -1436,6 +1573,11 @@ thresholds:
     - targeted_checks_pass
     - residual_blast_radius_low
     - no_policy_violation
+
+rau_bands:
+  reject_below: 0.00
+  borderline_below: 0.15
+  strong_at: 0.40
 
 edit_confidence_weights:
   p_success: 1/6
