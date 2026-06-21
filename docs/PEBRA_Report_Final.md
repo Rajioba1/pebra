@@ -48,7 +48,7 @@ candidate action
 -> proceed, inspect, test, ask, or reject
 ```
 
-When confidence falls, the agent should not guess harder. It should gather better evidence, reduce edit scope, or ask for help.
+When confidence falls, the agent should not guess harder. It should gather better evidence via online searches or local repo references if available, reduce edit scope, or ask for help.
 
 ---
 
@@ -80,7 +80,7 @@ Use separate fields instead:
 
 ```json
 {
-  "decision": "proceed",
+  "recommended_decision": "proceed",
   "requires_confirmation": true,
   "action_status": "pending"
 }
@@ -127,7 +127,7 @@ Use `source_type` for semantic provenance:
 Use `provider` for the concrete source:
 
 ```text
-radon | sem | bandit | ast_import_graph | .pebra.yml | outcome_store | model | user
+radon | sem | bandit | ast_import_graph | .pebra.yml | outcome_store | model | user | criticality_token_prior
 ```
 
 Example:
@@ -148,10 +148,34 @@ Default confidence bands are configurable:
 | Band | Default Range | Meaning |
 |---|---:|---|
 | `low` | `< 0.50` | Do not edit yet; gather evidence or ask |
-| `medium` | `0.50 to < 0.75` | Tighten scope, inspect/test, then re-score |
+| `medium` | `0.50 to < 0.75` | Tighten scope, inspect/test or write new tests, then re-score |
 | `high` | `>= 0.75` | Edit may proceed if gates pass |
 
-### 2.6 Score Levels
+### 2.6 Calibration Status
+
+Probability scores should declare calibration status. This applies to `p_success` and `p_event_j`.
+
+| `calibration_status` | Meaning |
+|---|---|
+| `fitted_calibrated` | Calibrated against outcome history |
+| `estimated_uncalibrated` | Estimated from features or model output before enough outcomes exist |
+| `prior_uncalibrated` | Transparent startup prior by action/repo/event class |
+
+### 2.7 Criticality Stages
+
+Criticality is reported as an ordinal C-stage and resolved to a cardinal value only when math requires it.
+
+| Stage | Cardinal Value | Meaning |
+|---|---:|---|
+| `C0` | 0.10 | Negligible consequence |
+| `C1` | 0.30 | Low consequence |
+| `C2` | 0.50 | Moderate consequence |
+| `C3` | 0.80 | High consequence |
+| `C4` | 1.00 | Catastrophic or irreversible consequence |
+
+Raw stages must never be multiplied directly. Use the mapped cardinal value only as a disutility floor or threshold modifier.
+
+### 2.8 Score Levels
 
 Level 1 scores are raw evidence or direct estimates:
 
@@ -400,7 +424,104 @@ For v1, use measured impact scores from providers such as `sem`, import graph ad
 
 ### 5.4 Criticality
 
-Criticality comes from project policy or structured elicitation.
+Criticality estimates consequence if the touched code fails. It is not the same as usage count.
+
+PEBRA should split criticality into three axes:
+
+```text
+security_criticality_stage = C0-C4
+correctness_safety_criticality_stage = C0-C4
+business_criticality_stage = C0-C4
+
+criticality_stage =
+  max(
+    security_criticality_stage,
+    correctness_safety_criticality_stage,
+    business_criticality_stage
+  )
+
+criticality_value = STAGE_MAP[criticality_stage]
+```
+
+Each sub-axis must be scored on the same C0-C4 scale before the outer `max()` is applied.
+
+Security criticality is the adversarial side: auth bypass, privilege escalation, injection, exfiltration, unsafe crypto, exposed secrets, and similar attack-enabling behavior.
+
+Correctness/safety criticality is the non-adversarial side: wrong payment amount, tax/currency error, data corruption, idempotency break, failed reconciliation, irreversible migration, or destructive data operation.
+
+Business criticality is the project-specific value side: checkout may matter more than settings, payments may matter more than marketing pages, and medical/safety workflows may require special gates.
+
+### 5.4.1 Criticality Staging Scale
+
+PEBRA should use a local software consequence scale:
+
+| Stage | Cardinal Value | Meaning | Examples | Gate Pressure |
+|---|---:|---|---|---|
+| `C0` | 0.10 | Negligible consequence | docs, comments, formatting | no extra pressure |
+| `C1` | 0.30 | Local annoyance, easy rollback | UI copy, styling, low-stakes display | normal gates |
+| `C2` | 0.50 | Feature degradation | search, reports, dashboard display | prefer targeted tests |
+| `C3` | 0.80 | Business, security, or user-impacting failure | auth, admin, billing, PII, external state writes | tighter thresholds and confirmation |
+| `C4` | 1.00 | Catastrophic or irreversible consequence | money movement, data deletion, secret leak, destructive migration, safety control | human gate by default |
+
+This table is descriptive. Section 8 owns the actual decision gates. This is a software analogue of medical staging: observable criteria map to a consequence class, and outcome history later calibrates the mapping. Unlike medicine, software has no universal "death" outcome; catastrophic consequence must be declared per project.
+
+### 5.4.2 Capability-Based Criticality Detection
+
+PEBRA should not rely on scary words alone. Tokens and paths are weak priors. Capabilities are stronger evidence.
+
+| Capability | Evidence | Suggested Axis |
+|---|---|---|
+| Payment movement | Stripe/PayPal/payment SDK imports, charge/refund APIs | correctness + business |
+| Authentication/session | login, password, session, token, OAuth/JWT code | security |
+| Authorization/admin | role checks, permission logic, admin routes | security + business |
+| Data deletion | SQL `DELETE`, destructive ORM calls, file deletion | correctness/safety |
+| PII/secrets | email/address/credential storage, secret access | security + business |
+| Crypto/security boundary | encryption, signing, hashing, TLS config | security |
+| External state write | DB writes, queues, webhooks, third-party APIs | correctness/safety |
+| Migration/schema | migration files, DDL, irreversible transforms | correctness/safety |
+| Dependency supply chain | package/lockfile change, semver major, advisories | security + correctness |
+
+Token/path matches may nominate criticality:
+
+```text
+payment, refund, charge, admin, password, token, secret, delete, migration
+```
+
+But token matches must be stored as weak evidence:
+
+```json
+{
+  "source_type": "estimated",
+  "provider": "criticality_token_prior",
+  "confidence": 0.35
+}
+```
+
+They must not directly assign final criticality without capability evidence or policy confirmation.
+
+### 5.4.3 Security Taxonomy Mapping
+
+Security frameworks provide citable vocabulary for the adversarial axis:
+
+- OWASP Risk Rating: likelihood, technical impact, and business impact.
+- CVSS: base, threat, environmental, and supplemental metrics.
+- CISA SSVC: decision-oriented prioritization with exploitation, technical impact, automatable, mission prevalence, and public-wellbeing considerations.
+- MITRE CWE/CAPEC/ATT&CK: weakness, attack-pattern, and adversary-behavior vocabulary.
+- STRIDE: spoofing, tampering, repudiation, information disclosure, denial of service, elevation of privilege.
+
+PEBRA may map detected capabilities to those categories, but security taxonomies do not cover all criticality. Payment correctness, tax logic, reconciliation, and data integrity bugs can be catastrophic without being attacks.
+
+### 5.4.4 Project Override and Outcome Calibration
+
+Project policy remains the final value layer:
+
+```yaml
+criticality:
+  "src/payments/**": C4
+  "src/auth/**": C3
+  "src/migrations/**": C4
+  "src/docs/**": C0
+```
 
 For actions touching multiple files:
 
@@ -410,15 +531,45 @@ criticality(action) = max(criticality(file) for file in expected_files)
 
 Use max aggregation because a single critical file can dominate risk.
 
+Over time, PEBRA can calibrate criticality against incidents and regressions. Prefer odds-ratio or logistic calibration before survival/Cox models because most projects have limited incident counts:
+
+```text
+severe_incident ~ capability_flags + path_criticality + edit_type + blast_radius
+```
+
+This can later produce evidence such as these illustrative, non-computed examples:
+
+```text
+payment_change: 3.5x higher odds of severe incident
+migration_change: 4.2x higher odds
+auth_change: 2.8x higher odds
+```
+
+Survival/hazard-ratio modeling belongs in v2 research unless PEBRA has enough time-to-incident data and the assumptions are checked.
+
 ### 5.5 Adverse Event Model
 
 Expected loss uses adverse-event probabilities and disutilities:
 
 ```text
 p_event_j = event_model_j(features)
-disutility_j = MCDA_disutility_j
+d_prior = STAGE_MAP[criticality_stage]
+disutility_j = max(elicited_disutility_j, d_prior)
 
 expected_loss(a) = sum_j p_event_j(a) * disutility_j
+```
+
+The criticality stage supplies a disutility floor, not a multiplier. `p_event_j` remains the likelihood channel and should be driven by codebase evidence such as usage counts, blast radius, tests, changed APIs, and structural signals. The raw C-stage is never multiplied.
+
+Each event loss component should preserve criticality provenance:
+
+```json
+{
+  "criticality_stage": "C4",
+  "criticality_value": 1.0,
+  "disutility_method": "max(elicited_disutility, criticality_floor)",
+  "floor_applied": true
+}
 ```
 
 Cold-start event probabilities use transparent priors:
@@ -641,12 +792,24 @@ distribution_source = configured
 
 This is not appropriate for `p_success` or `p_event_j` unless those ranges come from fitted outcome history or explicit calibrated evidence.
 
+Criticality stages can configure disutility uncertainty for Monte Carlo:
+
+```text
+if criticality_stage == C3:
+  disutility_j_sample ~ triangular(0.65, 0.80, 0.92)
+
+if criticality_stage == C4:
+  disutility_j_sample ~ triangular(0.85, 1.00, 1.00)
+```
+
+Samples use mapped cardinal disutility values, not raw ordinal stages.
+
 Configured correlations may be supplied offline through structured expert influence mapping:
 
 ```text
 blast_radius -> p_success: negative influence
 blast_radius -> review_cost: positive influence
-criticality -> disutility: positive influence
+criticality_stage -> disutility_floor: positive influence
 correlation_source = configured
 ```
 
@@ -680,15 +843,15 @@ Default weights are equal:
 
 ```yaml
 edit_confidence_weights:
-  p_success: 0.1667
-  evidence_quality: 0.1667
-  testability: 0.1667
-  reversibility: 0.1667
-  source_reliability: 0.1667
-  scope_control: 0.1667
+  p_success: 1/6
+  evidence_quality: 1/6
+  testability: 1/6
+  reversibility: 1/6
+  source_reliability: 1/6
+  scope_control: 1/6
 ```
 
-The implementation may override these through `.pebra.yml` if provenance is stored.
+The implementation should parse fractional weights or normalize configured numeric weights so `sum_i w_i = 1`. The implementation may override these through `.pebra.yml` if provenance is stored.
 
 ---
 
@@ -725,6 +888,13 @@ confidence_upgrade_allowed only if:
   remaining risks are stated
 ```
 
+If the only new evidence is retrieval from docs, GitHub, or web search, cap the upgraded confidence:
+
+```text
+if confidence_upgrade_source == retrieval_only:
+  edit_confidence = min(edit_confidence, thresholds.max_retrieval_only_confidence)
+```
+
 ### 8.2 Hard Gates
 
 Gate names must map directly to `.pebra.yml`.
@@ -733,7 +903,21 @@ Gate names must map directly to `.pebra.yml`.
 if action violates policy:
     reject
 
-if expected_loss > thresholds.max_expected_loss_without_human:
+if criticality_stage == C4
+and thresholds.c4_always_ask_human:
+    requires_confirmation = thresholds.c4_requires_confirmation
+    ask_human
+
+if criticality_stage == C3:
+    max_expected_loss_limit = min(
+      thresholds.max_expected_loss_without_human,
+      thresholds.c3_max_expected_loss_without_human
+    )
+    requires_confirmation = thresholds.c3_requires_confirmation
+else:
+    max_expected_loss_limit = thresholds.max_expected_loss_without_human
+
+if expected_loss > max_expected_loss_limit:
     ask_human or reject
 
 if monte_carlo_gate_available
@@ -759,6 +943,18 @@ and no evidence_delta exists:
 if low_confidence_upgraded
 and thresholds.require_user_confirmation_for_low_confidence_upgrade:
     proceed only with requires_confirmation = true
+```
+
+Criticality affects gates only through this section. Section 5 may describe gate pressure, but Section 8 is the sole decision authority.
+
+Double-count guard:
+
+```text
+criticality_stage -> disutility floor and threshold modifiers
+count/blast_radius/usage -> p_event
+
+Do not feed criticality_stage directly into p_event.
+Do not multiply raw C-stage values.
 ```
 
 ### 8.3 Information Actions
@@ -831,7 +1027,7 @@ Monte Carlo replaces interval-overlap or rank-gap heuristics when its distributi
 {
   "schema_version": "0.1",
   "task": "Fix failing login validation",
-  "decision": "proceed",
+  "recommended_decision": "proceed",
   "recommended_action_id": "a1",
   "requires_confirmation": true,
   "decision_reason": "Patch action has positive RAU after evidence, but confidence upgraded from low so confirmation is required.",
@@ -841,6 +1037,22 @@ Monte Carlo replaces interval-overlap or rank-gap heuristics when its distributi
   "provenance": {}
 }
 ```
+
+Each action object should include its own per-action verdict:
+
+```json
+{
+  "id": "a1",
+  "label": "Patch validate_login only",
+  "action_type": "edit",
+  "action_status": "pending",
+  "decision": "proceed",
+  "scores": {},
+  "edit_control": {}
+}
+```
+
+`recommended_decision` is the top-level decision for the selected action. Per-action `decision` records how each candidate was classified during comparison.
 
 Every metric is an object:
 
@@ -918,7 +1130,7 @@ edit_confidence =
   ≈ 0.83
 ```
 
-Because confidence upgraded from low to high, the response uses `decision: "proceed"` and `requires_confirmation: true`.
+Because confidence upgraded from low to high, the response uses `recommended_decision: "proceed"` and `requires_confirmation: true`.
 
 ### 10.3 Canonical Response Example
 
@@ -926,7 +1138,7 @@ Because confidence upgraded from low to high, the response uses `decision: "proc
 {
   "schema_version": "0.1",
   "task": "Fix failing login validation",
-  "decision": "proceed",
+  "recommended_decision": "proceed",
   "recommended_action_id": "a1",
   "requires_confirmation": true,
   "decision_reason": "Repo-local evidence reduced uncertainty; targeted patch has positive RAU.",
@@ -1000,6 +1212,15 @@ Because confidence upgraded from low to high, the response uses `decision: "proc
           "confidence": 0.62,
           "evidence": ["Localized action with targeted test plan and no dependency change."]
         },
+        "criticality": {
+          "criticality_stage": "C3",
+          "criticality_value": 0.80,
+          "level": "level_1",
+          "source_type": "configured",
+          "provider": ".pebra.yml",
+          "confidence": 0.95,
+          "evidence": [".pebra.yml maps src/auth/** to C3."]
+        },
         "expected_loss": {
           "value": 0.10,
           "level": "level_2",
@@ -1032,7 +1253,11 @@ Because confidence upgraded from low to high, the response uses `decision: "proc
               "expected_loss": 0.04,
               "probability_source_type": "configured",
               "probability_provider": ".pebra.yml",
-              "disutility_source_type": "elicited"
+              "disutility_source_type": "elicited",
+              "criticality_stage": "C3",
+              "criticality_value": 0.80,
+              "disutility_method": "max(elicited_disutility, criticality_floor)",
+              "floor_applied": false
             }
           ]
         },
@@ -1185,15 +1410,19 @@ The in-flight assessment object passed between modules should contain:
 risk_tolerance: 0.55
 
 criticality:
-  "src/auth/**": 1.0
-  "src/payments/**": 1.0
-  "src/migrations/**": 0.95
-  "src/ui/**": 0.45
-  "tests/**": 0.20
-  "docs/**": 0.10
+  "src/auth/**": C3
+  "src/payments/**": C4
+  "src/migrations/**": C4
+  "src/ui/**": C2
+  "tests/**": C1
+  "docs/**": C0
 
 thresholds:
   max_expected_loss_without_human: 0.45
+  c3_max_expected_loss_without_human: 0.20
+  c3_requires_confirmation: true
+  c4_always_ask_human: true
+  c4_requires_confirmation: true
   max_p_negative_utility: 0.10
   max_utility_sd_without_human: 0.20
   decision_instability_threshold: 0.10
@@ -1209,12 +1438,20 @@ thresholds:
     - no_policy_violation
 
 edit_confidence_weights:
-  p_success: 0.1667
-  evidence_quality: 0.1667
-  testability: 0.1667
-  reversibility: 0.1667
-  source_reliability: 0.1667
-  scope_control: 0.1667
+  p_success: 1/6
+  evidence_quality: 1/6
+  testability: 1/6
+  reversibility: 1/6
+  source_reliability: 1/6
+  scope_control: 1/6
+
+monte_carlo:
+  disutility_triangular_by_stage:
+    C0: [0.05, 0.10, 0.20]
+    C1: [0.20, 0.30, 0.45]
+    C2: [0.35, 0.50, 0.70]
+    C3: [0.65, 0.80, 0.92]
+    C4: [0.85, 1.00, 1.00]
 
 preferred_blast_radius_tool: sem
 
@@ -1366,9 +1603,83 @@ For each task:
 
 ---
 
-## 16. Licensing and Tool Notes
+## 16. Related Work and Positioning
 
-### 16.1 Candidate Runtime Tools
+PEBRA should claim integration novelty, not primitive novelty.
+
+Expected utility, calibration, abstention, blast-radius analysis, criticality tagging, risk-adaptive escalation, and post-generation code assurance already exist in separate fields. PEBRA's contribution is the integration point: a pre-edit decision controller for coding agents that combines repo-grounded blast radius, criticality/stakes, calibrated confidence, expected loss, and RAU into a five-way action decision before the agent edits.
+
+### 16.1 Positioning Claim
+
+PEBRA is not another blast-radius graph or post-hoc code scanner. It is a pre-edit decision controller that integrates repo-grounded blast radius, criticality/stakes, and calibrated confidence into an expected-loss/RAU score, then emits one of five decisions:
+
+```text
+proceed | inspect_first | test_first | ask_human | reject
+```
+
+The defensible distinctions are:
+
+| Distinction | PEBRA Position |
+|---|---|
+| Timing | Pre-edit, before the agent changes code |
+| Action space | Five-way decision, not only proceed/reject |
+| Evidence model | Repo-grounded blast radius plus criticality/stakes |
+| Decision math | Expected loss, RAU, confidence gates, and optional Monte Carlo gates |
+| Auditability | Provenance on scores, distributions, and evidence actions |
+
+### 16.2 GitHub and Platform Neighbors
+
+Blast-radius and code graph tools are useful evidence providers for PEBRA, but they should not be described as equivalent systems.
+
+| Neighbor | What It Covers | Distinction From PEBRA |
+|---|---|---|
+| `code-impact-mcp` | MCP-style code impact / blast-radius gate such as pass, warn, or block | Single-axis impact gate; no benefit, criticality, RAU, confidence state machine, or five-way action enum |
+| `Ctxo` | Repo context, dependency information, and safe-edit style guardrails | Primarily context and edit-safety support; not an expected-loss decision controller |
+| `codeindex`, `Glyphtrail`, code graph MCPs | Dependency graph, call graph, structural impact analysis | Evidence providers; they estimate spread, not full action utility |
+| `sdl-mcp` | Symbol/context governance and access-control style constraints for agents reading code | Related governance idea, but not a change-safety or blast-radius decision system |
+| GitHub Copilot Coding Agent validation | Post-generation security and quality validation before finishing a PR | Post-edit validation loop, not pre-edit action selection |
+| SonarQube AI Code Assurance, Semgrep, CodeScene | Code quality, security findings, hotspots, critical components, and review prioritization | Scanner/triage systems; useful signals, but not a pre-edit controller |
+
+Unverified repositories or tools should not be listed as evidence providers.
+
+### 16.3 Academic Near-Neighbors
+
+Two recent papers should be cited and distinguished directly because they are close to PEBRA's decision layer.
+
+| Work | Overlap | Difference |
+|---|---|---|
+| MICE for CATs | Calibrated confidence for tool-using agents; MBR threshold `execute iff p_hat > tau` | Binary execute/abstain setting with coarse utilities; PEBRA generalizes this to multi-action pre-edit decisions and conditions loss on repo evidence, action type, blast radius, and criticality |
+| Calibrate-Then-Act | Cost-uncertainty tradeoff; explicit priors; coding task where agents choose whether to test before acting | CTA induces exploration behavior through priors and prompts/RL; PEBRA makes inspect/test/ask decisions through deterministic repo-grounded gates and auditable score provenance |
+| Abstain and Validate: A Dual-LLM Policy for Reducing Noise in Agentic Program Repair | Agentic program repair; confidence-style abstention and patch validation | Binary attempt/skip and accept/reject policies; no repo-grounded blast radius, criticality, RAU, inspect/test/ask options, or pre-edit multi-action comparison |
+| Uncertainty-Aware, Risk-Adaptive TBAC | Resource criticality plus uncertainty escalation for autonomous agents | Access-control / tool-authorization setting; not code-edit action choice, and no software blast-radius or expected-loss model |
+
+PEBRA should confront these works rather than hide them. They support the thesis that risk-aware autonomy needs uncertainty gates, while leaving room for PEBRA's software-specific integration.
+
+MICE is the closest formal parent for PEBRA's calibrated decision threshold. Its key limitation for this project is that coarse global utilities produce crude decisions; PEBRA's criticality model addresses that gap by conditioning severity on the specific code action and affected region.
+
+CTA supports PEBRA's evidence-before-action framing: when uncertainty is material, the agent should compare the cost of more information against the cost of acting now. PEBRA operationalizes that idea with `inspect_first` and `test_first` decisions before code edits.
+
+### 16.4 Novelty Boundary
+
+PEBRA should not say:
+
+```text
+No one has used risk, confidence, or abstention for agents.
+```
+
+PEBRA may say:
+
+```text
+Prior work gates one axis, one moment, or one binary choice.
+PEBRA integrates repo-grounded spread, criticality, calibrated confidence,
+expected-loss/RAU scoring, and a five-way pre-edit action enum.
+```
+
+---
+
+## 17. Licensing and Tool Notes
+
+### 17.1 Candidate Runtime Tools
 
 | Tool | Use | License / Constraint |
 |---|---|---|
@@ -1386,7 +1697,7 @@ For each task:
 | scikit-criteria | MCDA framework | BSD-3 |
 | pysensmcda | Ranking sensitivity | MIT |
 
-### 16.2 Copyleft Avoidance
+### 17.2 Copyleft Avoidance
 
 Do not ship GPL, AGPL, or other strong-copyleft packages as PEBRA runtime dependencies unless the project intentionally accepts those obligations.
 
@@ -1398,9 +1709,17 @@ Do not ship GPL, AGPL, or other strong-copyleft packages as PEBRA runtime depend
 - Do not use it as a runtime dependency.
 - Safe use: high-level method awareness, offline validation, and reference reading with clean-room separation.
 
+Reference clones under `references/` are not runtime dependencies:
+
+- `mice_for_cats` is MIT-licensed but currently contains no usable implementation code.
+- `CalibrateThenAct` contains working code but no root license file; treat it as all-rights-reserved/read-only unless the authors add a license.
+- `pyDecision` is GPL-3-or-later and remains reference-only.
+
+Implement PEBRA from public formulas, paper descriptions, and permissive libraries. Do not copy code from GPL, unlicensed, or reference-only repositories.
+
 ---
 
-## 17. V2 / Research Appendix
+## 18. V2 / Research Appendix
 
 These ideas are intentionally out of the v1 runtime path:
 
@@ -1410,6 +1729,8 @@ These ideas are intentionally out of the v1 runtime path:
 - ICER and NMB comparisons beyond v1 expected utility.
 - DEMATEL-style configured covariance mapping.
 - Advanced MCDA validation or long-tail ranking methods.
+- Odds-ratio calibration of criticality from incident history.
+- Survival/hazard-ratio models for time-to-incident only when enough data exists.
 
 Monte Carlo sampling for `P(utility < 0)` and `P(action is best)` is allowed earlier when distribution provenance is fitted or explicitly configured. Full PSA and CEAC remain deferred because they need broader risk-sample definitions and risk-tolerance semantics.
 
@@ -1417,7 +1738,7 @@ Any method parameter that affects a gate must carry provenance. Published defaul
 
 ---
 
-## 18. Methods References
+## 19. Methods References
 
 PEBRA should cite and implement from public method definitions or permissive libraries.
 
@@ -1431,6 +1752,15 @@ PEBRA should cite and implement from public method definitions or permissive lib
 | VIKOR-style acceptable advantage | Rank-gap stability fallback when Monte Carlo is unavailable | Cite original/public method definitions in implementation |
 | DEMATEL | Offline criterion influence/correlation model for Monte Carlo | Cite original/public method definitions in implementation |
 | Fuzzy triangular ranges | Configured uncertainty ranges for judgment inputs | Cite original/public method definitions in implementation |
+| MICE for CATs | Calibrated confidence and MBR execute/abstain threshold for tool agents | https://aclanthology.org/2025.naacl-long.615/ |
+| Calibrate-Then-Act | Cost-aware exploration, explicit priors, and selective testing before action | https://arxiv.org/abs/2602.16699 |
+| Abstain and Validate | Confidence-based abstention and patch validation in agentic program repair | https://arxiv.org/abs/2510.03217 |
+| Risk-Adaptive TBAC | Risk plus uncertainty escalation for autonomous agent access control | https://arxiv.org/abs/2510.11414 |
+| OWASP Risk Rating | Security likelihood, technical impact, and business impact framing | https://owasp.org/www-community/OWASP_Risk_Rating_Methodology |
+| CVSS v4.0 | Vulnerability severity, threat, environmental, and supplemental metrics | https://www.first.org/cvss/v4.0/specification-document |
+| CISA SSVC | Decision-oriented vulnerability prioritization | https://www.cisa.gov/stakeholder-specific-vulnerability-categorization-ssvc |
+| MITRE CWE / CAPEC / ATT&CK | Weakness, attack-pattern, and adversary-behavior vocabulary | https://cwe.mitre.org/ and https://capec.mitre.org/ |
+| Logistic / odds-ratio calibration | Outcome-calibrated criticality and incident-risk multipliers | Use public statistical definitions or permissive libraries |
 | Inverse-variance weighting | Precision-weighted evidence aggregation | https://www.nist.gov/document/combine-1pdf |
 | WGCNA | Weighted graph propagation and soft adjacency over dependency graphs | https://link.springer.com/article/10.1186/1471-2105-9-559 |
 | Probability calibration | Calibrated `p_success` and event probabilities | https://scikit-learn.org/stable/modules/calibration.html |
@@ -1440,4 +1770,3 @@ PEBRA should cite and implement from public method definitions or permissive lib
 | AST Metrics | Architecture, coupling, complexity, maintainability | https://github.com/Halleck45/ast-metrics |
 | Lizard | Multi-language cyclomatic complexity analyzer | https://github.com/terryyin/lizard |
 | McCabe complexity thresholds | Complexity risk bands | https://support.scitools.com/support/solutions/articles/70000582297-understanding-mccabe-cyclomatic-complexity |
-
