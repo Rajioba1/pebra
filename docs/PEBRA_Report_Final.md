@@ -1861,7 +1861,162 @@ Implement PEBRA from public formulas, paper descriptions, and permissive librari
 
 ---
 
-## 18. V2 / Research Appendix
+## 18. Autonomy Governor Framework
+
+PEBRA's strongest product framing is not generic risk assessment. It is a policy-bound autonomy governor for coding agents.
+
+The core claim:
+
+```text
+Autonomous coding agents need external permission logic.
+PEBRA decides when an agent may continue without a human,
+when it must gather more evidence, and when autonomy must stop.
+```
+
+This does not assume agents ignore risk. Modern agents already reason about risk in-context. PEBRA's role is different: make the decision explicit, measurable, consistent, auditable, and project-policy-bound.
+
+### 18.1 Declared Autonomy Envelope
+
+Autonomous action is allowed only inside a declared envelope. The envelope is a containment boundary for cold-start deployments before calibration is mature.
+
+Example envelope:
+
+```yaml
+autonomy:
+  enabled: true
+  allowed_execution_mode: branch_only
+  require_pr_before_merge: true
+  require_tests_for_autonomous_edit: true
+  require_rollback_plan: true
+  max_risk_budget_used_percent: 60
+  min_edit_confidence: high
+  min_rau_band: proceedable
+  disallow_criticality_stage: C4
+  disallow_actions:
+    - dependency_upgrade
+    - schema_migration
+    - destructive_data_operation
+  allowed_decisions_without_human:
+    - proceed
+    - inspect_first
+    - test_first
+```
+
+Branch-only and PR-required controls substitute containment for perfect calibration during v1. If the score is imperfect, the action is still isolated, reversible, reviewable, and logged.
+
+### 18.2 Autonomy Decision Loop
+
+```text
+agent proposes candidate action
+  -> PEBRA gathers repo evidence
+  -> PEBRA computes risk_report, RAU band, confidence band, gates
+  -> PEBRA checks autonomy envelope
+  -> if envelope passes:
+       proceed with execution_controls
+     if evidence is weak:
+       inspect_first or test_first
+     if risk budget is exceeded or C4 is touched:
+       ask_human or reject
+  -> agent commits only to a new branch / PR when autonomous
+  -> outcome is logged for calibration
+```
+
+The decision enum does not change:
+
+```text
+proceed | inspect_first | test_first | ask_human | reject
+```
+
+Autonomy is expressed through execution controls attached to the decision:
+
+```json
+{
+  "recommended_decision": "proceed",
+  "execution_controls": {
+    "autonomy_mode": "contained",
+    "execution_target": "new_branch",
+    "require_tests_before_commit": true,
+    "require_pr_before_merge": true,
+    "direct_merge_allowed": false
+  }
+}
+```
+
+### 18.3 Guarded Autonomy Output
+
+A PEBRA response in autonomous mode should explain not only the decision, but also why human approval may be bypassed.
+
+```json
+{
+  "recommended_decision": "proceed",
+  "requires_confirmation": false,
+  "risk_report": {
+    "headline_risk_percent": 38,
+    "risk_type": "risk_budget_indicator",
+    "rau": { "value": 0.24, "band": "proceedable" },
+    "confidence_percent": 81,
+    "confidence_band": "high",
+    "why": [
+      "Risk budget is below the configured autonomy limit.",
+      "RAU is positive and proceedable.",
+      "Confidence is high after repo evidence gathering.",
+      "No C4 path, migration, dependency upgrade, or destructive data operation was detected."
+    ]
+  },
+  "execution_controls": {
+    "autonomy_mode": "contained",
+    "execution_target": "new_branch",
+    "required_branch_prefix": "pebra/",
+    "require_tests_before_commit": true,
+    "require_pr_before_merge": true,
+    "direct_merge_allowed": false
+  }
+}
+```
+
+If the same action touches `C4` code, exceeds risk budget, lacks tests, or has weak evidence, PEBRA should not silently proceed. It should return `test_first`, `inspect_first`, `ask_human`, or `reject`.
+
+### 18.4 Product Wedge
+
+The MVP should prove one claim:
+
+```text
+Agent + PEBRA contained autonomy causes fewer bad autonomous edits
+than the same agent deciding alone, without unacceptable friction.
+```
+
+The smallest useful experiment:
+
+1. Run the same task set with the base agent alone.
+2. Run it again with PEBRA in contained-autonomy mode.
+3. Allow autonomous work only on new branches.
+4. Require tests and PR before merge.
+5. Compare regressions, broad refactors avoided, useful escalations, time cost, and accepted PRs.
+
+Success is not perfect prediction. Success is better autonomous behavior:
+
+- fewer regressions,
+- fewer broad unnecessary edits,
+- more targeted tests before risky changes,
+- useful escalation on high-stakes code,
+- complete audit trail for why autonomy was allowed or stopped.
+
+### 18.5 Strategic Boundary
+
+PEBRA should assume platform absorption risk. Agent platforms will keep adding native approval modes, hooks, sandboxing, and post-edit validation.
+
+The defensible standalone lane is vendor-neutral governance:
+
+```text
+one policy, one risk report, one audit trail, and one calibration loop
+across Codex, Claude Code, Cursor, Copilot, and custom agents.
+```
+
+The easy-to-copy part is the envelope rule. The harder-to-copy part is earned calibration from outcomes, project-specific criticality, measured blast radius, and cross-agent audit history. PEBRA should invest there before adding heavy research machinery.
+
+---
+
+## 19. V2 / Research Appendix
 
 These ideas are intentionally out of the v1 runtime path:
 
@@ -1880,7 +2035,7 @@ Any method parameter that affects a gate must carry provenance. Published defaul
 
 ---
 
-## 19. Methods References
+## 20. Methods References
 
 PEBRA should cite and implement from public method definitions or permissive libraries.
 
