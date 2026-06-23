@@ -592,12 +592,25 @@ Expected loss uses adverse-event probabilities and disutilities:
 ```text
 p_event_j = event_model_j(features)
 d_prior = STAGE_MAP[criticality_stage]
-disutility_j = max(elicited_disutility_j, d_prior)
+
+# Event-class-aware floor: the criticality floor applies ONLY to
+# consequence-bearing events. Incidental events (test_regression,
+# review_burden) keep their elicited disutility — they are never floored
+# just because the touched path is critical.
+if event_j in CONSEQUENCE_BEARING_EVENTS:
+    disutility_j = max(elicited_disutility_j, d_prior)
+else:
+    disutility_j = elicited_disutility_j
 
 expected_loss(a) = sum_j p_event_j(a) * disutility_j
+
+CONSEQUENCE_BEARING_EVENTS = {
+    public_api_break, security_sensitive_change,
+    external_state_damage, migration_failure, dependency_break
+}
 ```
 
-The criticality stage supplies a disutility floor, not a multiplier. `p_event_j` remains the likelihood channel and should be driven by codebase evidence such as usage counts, blast radius, tests, changed APIs, and structural signals. The raw C-stage is never multiplied.
+The criticality stage supplies a disutility floor, not a multiplier, and that floor applies only to the consequence-bearing events listed above. `p_event_j` remains the likelihood channel and should be driven by codebase evidence such as usage counts, blast radius, tests, changed APIs, and structural signals. The raw C-stage is never multiplied, and incidental events such as `test_regression` are never floored by criticality.
 
 Each event loss component should preserve criticality provenance:
 
@@ -1630,10 +1643,13 @@ thresholds:
   max_retrieval_only_confidence: 0.90
   require_evidence_delta_for_low_confidence_upgrade: true
   require_user_confirmation_for_low_confidence_upgrade: true
-  medium_auto_proceed_requires:
-    - targeted_checks_pass
-    - residual_blast_radius_low
-    - no_policy_violation
+  # medium_auto_proceed_requires: v1.5 reserved. The flags below are not
+  # computed in v1; medium-band auto-proceed is governed by the re-score +
+  # gate sequence instead (see Architecture AD-6).
+  # medium_auto_proceed_requires:
+  #   - targeted_checks_pass
+  #   - residual_blast_radius_low
+  #   - no_policy_violation
 
 rau_bands:
   reject_below: 0.00
