@@ -606,7 +606,10 @@ expected_loss(a) = sum_j p_event_j(a) * disutility_j
 
 CONSEQUENCE_BEARING_EVENTS = {
     public_api_break, security_sensitive_change,
-    external_state_damage, migration_failure, dependency_break
+    external_state_damage, migration_failure, dependency_break,
+    api_contract_break, route_behavior_break,
+    tool_schema_break, response_shape_mismatch,
+    consumer_shape_mismatch
 }
 ```
 
@@ -637,12 +640,19 @@ Default event classes:
 |---|---|---|
 | `test_regression` | blast radius, touched tests, coverage, churn, complexity | MCDA elicitation |
 | `public_api_break` | exported symbol changed, import fan-in, dependency depth, dependent tests | MCDA elicitation |
+| `api_contract_break` | API handler changed, route map changed, consumer count, contract tests | MCDA elicitation |
+| `route_behavior_break` | route handler changed, middleware/auth behavior changed, dependent callers | MCDA elicitation |
+| `tool_schema_break` | MCP/RPC tool schema changed, handler signature changed, agent/tool consumers | MCDA elicitation |
+| `response_shape_mismatch` | response keys changed, serializer changed, consumer property access mismatch | MCDA elicitation |
+| `consumer_shape_mismatch` | consumer expects missing/renamed fields, typed contract mismatch, shape check findings | MCDA elicitation |
 | `migration_failure` | migration flag, schema change, rollback plan, migration history | MCDA elicitation |
 | `dependency_break` | dependency change, lockfile size, semver level, changelog/advisory signals | MCDA elicitation |
 | `external_state_damage` | network use, DB writes, filesystem writes, external API writes | MCDA elicitation |
 | `security_sensitive_change` | critical path, SAST findings, secret/crypto/shell/SQL patterns | MCDA elicitation |
 
 Review burden is not an adverse event by default. It is subtracted separately as `review_cost`. Only model it as an adverse event if there is a separate downstream failure, such as review delay causing missed release risk.
+
+Contract-surface events are consequence-bearing because a small edit can break downstream callers even when local tests pass. They use the same criticality floor as other consequence-bearing events, but their probabilities must be driven by measured contract evidence: exported symbols, API routes, tool schemas, response shapes, consumer property access, and dependent tests. They should not be inferred from labels alone.
 
 ### 5.6 Review Cost
 
@@ -800,6 +810,21 @@ SD(utility) = sqrt(Var(U))
 ```
 
 This default assumes independent inputs unless covariance terms are explicitly added. It can understate or overstate uncertainty when inputs are correlated.
+
+Each input's variance is resolved in this precedence order:
+
+```text
+1. Explicit variance, if supplied with the input (as in the Section 10 worked example).
+2. Derived from the input's confidence:
+       Var(x) = ((1 - confidence_x) / 2) ** 2
+   (confidence 1.0 -> 0.0, 0.5 -> 0.0625, 0.0 -> 0.25)
+3. Cold-start default (prior_uncalibrated) when neither is available:
+       Var(p_success)=0.04, Var(benefit)=0.01,
+       Var(p_event_j)=0.0025, Var(disutility_j)=0.0025,
+       Var(review_cost)=0.01, scenario_variance=0.0003
+```
+
+The Section 10 worked example supplies explicit variances (precedence 1); its variance_breakdown sums to 0.0036, giving SD = sqrt(0.0036) = 0.06. The confidence-derived mapping and cold-start defaults are fallbacks and are not expected to reproduce that exact SD.
 
 ### 7.3 Monte Carlo RAU
 
@@ -971,6 +996,10 @@ else:
 if expected_loss > max_expected_loss_limit:
     ask_human or reject
 
+if risk_adjusted_utility < 0:
+    reject                                    # default (AD-2)
+    # ask_human instead, if thresholds.ask_on_negative_rau is set
+
 if monte_carlo_gate_available
 and P(utility < 0) > thresholds.max_p_negative_utility:
     ask_human or reject
@@ -1078,6 +1107,8 @@ Monte Carlo replaces interval-overlap or rank-gap heuristics when its distributi
 {
   "schema_version": "0.1",
   "task": "Fix failing login validation",
+  "risk_snapshot_id": "R0",
+  "prediction_error_model_id": "E0",
   "recommended_decision": "proceed",
   "recommended_action_id": "a1",
   "requires_confirmation": true,
@@ -1285,6 +1316,8 @@ Because confidence upgraded from low to high, the response uses `recommended_dec
 {
   "schema_version": "0.1",
   "task": "Fix failing login validation",
+  "risk_snapshot_id": "R0",
+  "prediction_error_model_id": "E0",
   "recommended_decision": "proceed",
   "recommended_action_id": "a1",
   "requires_confirmation": true,
@@ -1607,6 +1640,8 @@ The in-flight assessment object passed between modules should contain:
   "evidence": {},
   "scores": {},
   "thresholds": {},
+  "risk_snapshot_id": "R0",
+  "prediction_error_model_id": "E0",
   "gates": {},
   "decision": null,
   "provenance": {}
@@ -1637,6 +1672,7 @@ thresholds:
   max_p_negative_utility: 0.10
   max_utility_sd_without_human: 0.20
   decision_instability_threshold: 0.10
+  ask_on_negative_rau: false           # AD-2: if true, RAU < 0 escalates to ask_human instead of reject
   min_monte_carlo_sample_count: 10000
   high_edit_confidence: 0.75
   low_edit_confidence: 0.50
@@ -1672,6 +1708,25 @@ monte_carlo:
     C3: [0.65, 0.80, 0.92]
     C4: [0.85, 1.00, 1.00]
 
+learning:
+  min_observed_predictions_for_auto_promotion: 100
+  require_holdout_brier_improvement: true
+  require_false_proceed_not_worse: true
+  max_auto_promotion_delta: 0.10
+  auto_promote_measurement_facts: true
+  auto_promote_policy_facts: false
+  fact_decay:
+    enabled: true
+    default_decay_strength: 20
+    min_effective_weight: 0.10
+    use_scope_churn_not_wall_clock: true
+  promotion:
+    require_counterfactual_replay: true
+    min_delta_brier_for_promotion: 0.00
+    min_delta_log_loss_for_promotion: 0.00
+    freeze_on_reconciliation_drift: true
+    max_snapshot_drift_without_review: 0.10
+
 preferred_blast_radius_tool: sem
 
 evidence:
@@ -1697,7 +1752,272 @@ evidence:
     critical_cyclomatic: 50
 ```
 
-Outcome logging is v1 schema-only unless the implementation ships `pebra_record_outcome`. Calibration reports require stored outcomes.
+### 12.1 Outcome Learning and Calibration Contract
+
+PEBRA's learning loop is official product behavior, not only an implementation note.
+
+Each assessment must pin the scoring state it used:
+
+```json
+{
+  "risk_snapshot_id": "R17",
+  "prediction_error_model_id": "E17"
+}
+```
+
+These IDs make decisions replayable. PEBRA must not mutate the active snapshot during an in-flight assessment. A background learning job may create a candidate snapshot for a future assessment, but promotion only advances the active snapshot pointer.
+
+PEBRA learns from observable probability errors, not directly from RAU. The primary calibration targets are:
+
+```text
+p_success
+p_event.<event_class>
+```
+
+For every predicted probability, PEBRA should store:
+
+```text
+prediction_id
+assessment_id
+action_id
+risk_snapshot_id
+prediction_error_model_id
+target
+calibration_bucket
+predicted_probability
+actual_outcome
+outcome_label_status
+calibration_scope
+```
+
+`target` uses canonical names such as `p_success`, `p_event.dependency_break`, `p_event.public_api_break`, or `p_event.response_shape_mismatch`. It never stores human labels.
+
+After an outcome is known:
+
+```text
+residual = actual_outcome - predicted_probability
+brier_error = residual^2
+log_loss = -log(clamp(probability assigned to the actual outcome, epsilon, 1 - epsilon))
+```
+
+Brier score is the primary bounded calibration error. Log loss is a surprise signal for drift and review, not a single-example reweighting rule.
+
+RAU, risk-budget, confidence, and decision errors are diagnostics. They should explain failures and route learning, but they must not be optimized directly because there is no clean observed "true RAU." RAU improves when `p_success` and `p_event_j` become better calibrated.
+
+### 12.2 Selective-Label Guard
+
+Calibration must label what was actually observed:
+
+| Field | Allowed Values | Meaning |
+|---|---|---|
+| `outcome_label_status` | `observed`, `censored`, `counterfactual` | Whether the outcome was actually seen |
+| `calibration_scope` | `proceeded_edits_only`, `shadow`, `canary`, `benchmark` | Which population the calibration claim covers |
+
+PEBRA must not claim full calibration across all actions when outcomes only exist for actions it allowed. Training views for automatic recalibration should include only observed prediction rows, for example:
+
+```text
+WHERE outcome_label_status = "observed"
+AND calibration_scope = "proceeded_edits_only"
+```
+
+Rejected or blocked actions may still store predictions, but they are censored unless a later CI, benchmark, shadow run, or human-reviewed experiment produces an observable outcome.
+
+### 12.3 Two-Tier Learning Rules
+
+PEBRA separates measurement learning from value/policy learning.
+
+Tier 1 may be autonomously recalibrated after gates pass:
+
+- `p_success` priors and calibration.
+- `p_event_j` priors and calibration.
+- source reliability.
+- edge-confidence weights.
+- evidence-quality variance.
+- repo risk memory backed by observed outcomes.
+
+Tier 2 may be suggested autonomously but requires human ratification:
+
+- criticality stage changes such as `src/payments/**: C3 -> C4`.
+- risk thresholds.
+- business-damage or disutility policy.
+- C4 applicability rules.
+- risk tolerance.
+
+Promotion gates for Tier 1:
+
+```text
+auto_promote only if:
+  holdout Brier/log-loss improves or does not regress
+  false-proceed rate does not rise
+  C4 / high-criticality decisions do not weaken
+  change magnitude <= max_auto_promotion_delta
+  selective-label checks pass
+```
+
+If drift, surprise, or shadow/canary divergence worsens, PEBRA freezes auto-promotion and falls back to the previous snapshot.
+
+### 12.4 Applying Learned Risk to the Next Assessment
+
+PEBRA must reapply learned risk through a deterministic read path at the start of the next assessment:
+
+```text
+previous outcomes
+-> prediction_errors
+-> learned_risk_facts
+-> promoted risk_snapshot
+-> next assessment loads active snapshot
+-> apply_snapshot()
+-> adjusted inputs
+-> normal scoring pipeline
+```
+
+The required pure function is:
+
+```text
+apply_snapshot(raw_inputs, active_snapshot, promoted_facts) -> adjusted_inputs
+```
+
+It runs after request validation and evidence collection, but before score normalization, expected loss, RAU, edit confidence, variance propagation, Monte Carlo, and decision gates.
+
+`apply_snapshot` may adjust measurement inputs:
+
+| Learned Fact Type | Next Assessment Effect |
+|---|---|
+| calibrated `p_success` | replaces or adjusts raw `p_success` |
+| calibrated `p_event.*` | replaces or adjusts event probability priors |
+| edge-confidence reliability | adjusts `source_reliability` or `evidence_quality` |
+| repeated scope drift | adds gate pressure toward `inspect_first` or `ask_human` |
+| repo risk memory | adjusts priors by path, symbol, dependency, or action class |
+| ratified criticality bump | adjusts criticality only after human ratification |
+| ratified threshold/policy change | adjusts policy only after human ratification |
+
+Scope matching uses deterministic precedence:
+
+```text
+symbol
+> file/path glob
+> dependency
+> action_type
+> global
+> cold-start default
+```
+
+If two active learned facts have the same specificity, the newest active fact wins. Weighted blending is deferred until PEBRA defines a calibrated blending method.
+
+Guardrails:
+
+```text
+Learning may adjust inputs.
+Learning may not rewrite formulas.
+Learning may not silently lower criticality.
+Learning may not auto-apply value/policy facts without ratification.
+Learning may not mutate an assessment already in progress.
+```
+
+The scoring pipeline remains unchanged after reapplication. Learned facts improve the inputs; they do not replace expected-loss, RAU, confidence, or gate formulas.
+
+### 12.5 Decay-By-Weight, Not Deletion
+
+PEBRA should not delete learned facts merely because they become stale. The audit ledger must remain append-only. Instead, `apply_snapshot` uses an effective recall weight:
+
+```text
+effective_weight = base_weight * exp(-scope_change_count / decay_strength)
+```
+
+Where:
+
+| Term | Meaning |
+|---|---|
+| `base_weight` | The learned fact's original strength after promotion |
+| `scope_change_count` | Commits, edits, or verified changes touching the fact's scope since it was learned |
+| `decay_strength` | How much scoped churn the fact survives before weakening |
+| `effective_weight` | The weight used by `apply_snapshot` on the next assessment |
+
+Decay is scope-driven, not wall-clock-driven. A fact about stable code should not fade simply because time passed. A fact about a rewritten module should fade because its evidence may no longer apply.
+
+High-evidence facts may decay more slowly:
+
+```text
+decay_strength increases with:
+  confirming_outcome_count
+  positive counterfactual replay delta
+  low rolling Brier/log-loss
+```
+
+If a fact's effective weight falls below `learning.fact_decay.min_effective_weight`, PEBRA should stop applying it automatically and append a `risk_fact_decayed` event. The original fact remains queryable for audit. Retiring or deleting value/policy facts remains a human-ratified governance action.
+
+### 12.6 Counterfactual Promotion and Snapshot Reconciliation
+
+Promotion must test whether a learned fact actually improves future decisions.
+
+Before promotion, PEBRA should replay historical assessments twice:
+
+```text
+error_without_fact = replay historical assessments with candidate fact disabled
+error_with_fact    = replay historical assessments with candidate fact enabled
+
+delta_brier    = error_without_fact.brier - error_with_fact.brier
+delta_log_loss = error_without_fact.log_loss - error_with_fact.log_loss
+```
+
+A measurement fact may be promoted only if:
+
+```text
+delta_brier >= learning.promotion.min_delta_brier_for_promotion
+delta_log_loss >= learning.promotion.min_delta_log_loss_for_promotion
+false_proceed_rate does not increase
+C4 / high-criticality decisions do not weaken
+selective-label checks pass
+```
+
+This gate prevents promotion of facts that are large but not useful.
+
+Snapshot reconciliation protects against incremental drift. Periodically, PEBRA should rebuild a candidate snapshot from the raw append-only ledger:
+
+```text
+raw assessments + outcomes + prediction_errors
+-> recompute learned_risk_facts
+-> rebuild candidate risk_snapshot
+-> compare candidate snapshot to active snapshot
+```
+
+If snapshot drift exceeds `learning.promotion.max_snapshot_drift_without_review`, PEBRA freezes auto-promotion and requires review. Reconciliation may roll back to a prior active snapshot by changing the active pointer; it must not mutate historical rows.
+
+Before a candidate learned fact enters a snapshot, PEBRA should run a contradiction gate. If the fact conflicts with a ratified policy or criticality rule, route it to human review instead of silently applying or deleting it.
+
+### 12.7 Learning Loop Evaluation Harness
+
+PEBRA must be able to prove that learning improves decisions. The evaluation harness should replay historical assessments in chronological order:
+
+```text
+for each assessment in time order:
+  score with genesis/no-learning snapshot
+  score with the active learned snapshot available at that time
+  record Brier, log-loss, risk-budget, decision, and guardrail outcomes
+```
+
+Required comparison:
+
+```text
+baseline = genesis snapshot with apply_snapshot disabled
+variant  = learned snapshots with apply_snapshot enabled
+```
+
+Report:
+
+| Metric | Why It Matters |
+|---|---|
+| rolling Brier / log-loss | whether probability calibration improves |
+| calibration slope/intercept | whether PEBRA remains over- or under-confident |
+| false-proceed rate | whether learning weakens safety |
+| C4 / high-criticality weakening count | whether safety-critical behavior regresses |
+| contradiction rate | whether learned facts conflict with ratified policy |
+| staleness distribution | whether facts are decaying or staying useful |
+| rework / repeated-failure reduction | whether PEBRA stops repeating bad actions |
+
+Learning is only valuable if the replay curve improves against the no-learning baseline. If it does not, PEBRA should keep the facts for audit but avoid promoting them into the active snapshot.
+
+Outcome logging is v1 schema-only unless the implementation ships `pebra_record_outcome`. Calibration reports and automatic learning require stored outcomes.
 
 ---
 
@@ -1709,6 +2029,8 @@ v1 should include:
 
 - MCP tool `pebra_compare`.
 - Optional CLI command `pebra assess`.
+- CLI command `pebra verify`.
+- MCP tool `pebra_verify`.
 - Optional convenience wrapper `pebra_assess` for a single action.
 - JSON input/output using `schema_version: "0.1"`.
 - Human-readable table generated from canonical response.
@@ -1717,6 +2039,8 @@ Roadmap:
 
 - `pebra_explain`.
 - `pebra_record_outcome`.
+
+`pebra_verify` closes the autonomy loop after an edit and before commit, PR, or successful outcome logging. It takes a stored `assessment_id`, checks evidence freshness, compares the actual diff against the approved action envelope, detects contract-surface changes, and returns the same five-decision vocabulary. It does not create a sixth decision; failures route through `inspect_first`, `test_first`, `ask_human`, or `reject`.
 
 ### 13.2 v1 Should Include
 
@@ -1748,6 +2072,8 @@ Roadmap:
 - Configured triangular ranges for judgment-input uncertainty.
 - Method sensitivity report for weight/rank stability.
 - Monte Carlo decision gates when validated distributions or calibrated outcome data exist.
+- Automatic measurement learning from `prediction_errors`, with fact decay, counterfactual promotion, and snapshot reconciliation.
+- Learning-loop evaluation report comparing active snapshots against a genesis/no-learning baseline.
 
 ### 13.4 v1 Should Not Include
 
@@ -1758,6 +2084,7 @@ Roadmap:
 - Automatic edits.
 - Claims of universal correctness.
 - Risk labels used as direct model inputs without measured evidence.
+- RL-trained memory policies, embeddings, or LLM-written gate parameters in the core scorer.
 - Broad vendor-specific integrations before the core loop works.
 
 ### 13.5 Success Criteria
@@ -1808,6 +2135,27 @@ For each task:
 | Information-gathering precision | Did `inspect_first` or `test_first` reduce failure? |
 | Review cost reduction | Did PEBRA avoid noisy broad diffs? |
 | Monte Carlo decision value | When enabled, did `P(utility < 0)` or `P(action is best)` improve borderline decisions? |
+
+### 14.4 Learning-Loop Validation
+
+The learning loop must be evaluated as a streaming system, not only as a static model. Replay assessments in chronological order and compare:
+
+```text
+genesis/no-learning baseline
+vs.
+active learned snapshots available at that historical point
+```
+
+The validation report should include:
+
+- rolling Brier and log-loss deltas.
+- false-proceed rate delta.
+- C4 / high-criticality weakening count.
+- contradiction count against ratified policy facts.
+- staleness and decay distribution.
+- repeated-failure or rework reduction.
+
+Promotion is justified only when learned snapshots improve calibration or reduce repeated errors without weakening safety gates. If the learned snapshot does not beat the genesis baseline, PEBRA should keep the facts for audit but not auto-promote them.
 
 ---
 
@@ -2105,10 +2453,14 @@ These ideas are intentionally out of the v1 runtime path:
 - Advanced MCDA validation or long-tail ranking methods.
 - Odds-ratio calibration of criticality from incident history.
 - Survival/hazard-ratio models for time-to-incident only when enough data exists.
+- Top-k learned-fact composition beyond deterministic most-specific matching.
+- Typed scope/action DAG for learned-fact subsumption and provenance edges.
 
 Monte Carlo sampling for `P(utility < 0)` and `P(action is best)` is allowed earlier when distribution provenance is fitted or explicitly configured. Full PSA and CEAC remain deferred because they need broader risk-sample definitions and risk-tolerance semantics.
 
 Any method parameter that affects a gate must carry provenance. Published defaults are still coefficients; they need citation or explicit project policy.
+
+Memory-learning methods stay deterministic in PEBRA. Agent-memory papers may motivate decay, reconciliation, and evaluation, but PEBRA must not adopt RL/GRPO memory policies, embedding retrieval, or LLM-authored scoring changes inside the gate-driving core.
 
 ---
 
@@ -2130,6 +2482,12 @@ PEBRA should cite and implement from public method definitions or permissive lib
 | Calibrate-Then-Act | Cost-aware exploration, explicit priors, and selective testing before action | https://arxiv.org/abs/2602.16699 |
 | Abstain and Validate | Confidence-based abstention and patch validation in agentic program repair | https://arxiv.org/abs/2510.03217 |
 | Risk-Adaptive TBAC | Risk plus uncertainty escalation for autonomous agent access control | https://arxiv.org/abs/2510.11414 |
+| Memory for Autonomous LLM Agents survey | Write-manage-read memory loop, trustworthy reflection, learned forgetting, evaluation gaps | https://arxiv.org/abs/2603.07670 |
+| SAGE | Ebbinghaus-style forgetting and memory optimization for self-evolving agents | https://arxiv.org/abs/2409.00872 |
+| SSGM | Governed memory, temporal grounding, contradiction checks, reconciliation | https://arxiv.org/abs/2603.11768 |
+| Evo-Memory | Streaming test-time learning and memory-evolution evaluation | https://arxiv.org/abs/2511.20857 |
+| Experiential Reflective Learning | Experience-derived heuristics and selective reuse across tasks | https://arxiv.org/abs/2603.24639 |
+| Trainable Graph Memory | Structured memory and strategy reuse; use only as reference, not RL memory policy | https://arxiv.org/abs/2511.07800 |
 | OWASP Risk Rating | Security likelihood, technical impact, and business impact framing | https://owasp.org/www-community/OWASP_Risk_Rating_Methodology |
 | CVSS v4.0 | Vulnerability severity, threat, environmental, and supplemental metrics | https://www.first.org/cvss/v4.0/specification-document |
 | CISA SSVC | Decision-oriented vulnerability prioritization | https://www.cisa.gov/stakeholder-specific-vulnerability-categorization-ssvc |
