@@ -206,6 +206,44 @@ Level 2 scores are derived:
 | `risk_adjusted_utility` | Conservative lower-bound utility |
 | `edit_confidence` | Controller score deciding whether the agent may edit now |
 
+### 2.9 Human-Facing Labels
+
+PEBRA's JSON schema should keep technical field names. Default CLI, MCP summaries, PR comments, and dashboards should use human-facing labels.
+
+| Technical Term | Human Label | Plain Meaning |
+|---|---|---|
+| `recommended_decision` | Decision | What PEBRA recommends the agent should do next |
+| `risk_budget_used_percent` | Risk Level | How close this edit is to the configured safety limit |
+| `expected_loss` | Expected Damage | Estimated harm burden if things go wrong |
+| `risk_adjusted_utility` / `RAU` | Value After Risk | Whether the benefit still clears risk, review effort, and uncertainty |
+| `edit_confidence` | Confidence | How sure PEBRA is that the agent has enough evidence to act |
+| `blast_radius` | Affected Area | How much of the codebase could be impacted |
+| `criticality` / `criticality_stage` | Code Sensitivity | How important or sensitive the touched code is |
+| `p_success` | Chance of Success | Estimated chance the action solves the task |
+| `p_event_j` | Failure Chance | Estimated chance of a specific adverse event |
+| `event_disutilities` / `disutility_j` | Damage Severity | How bad that adverse event would be |
+| `utility_sd` | Uncertainty Cushion | Extra caution subtracted because inputs are uncertain |
+| `review_cost` | Review Effort | Human effort required to review the action safely |
+| `reversibility` | Ease of Rollback | How easy it is to undo the action |
+| `testability` | Test Coverage Fit | How directly the action can be checked |
+| `source_reliability` | Evidence Reliability | How trustworthy the evidence source is |
+| `scope_control` | Change Size Control | How narrow and bounded the edit is |
+
+Default user-facing output should lead with:
+
+```text
+Decision
+Risk Level
+Affected Area
+Code Sensitivity
+Confidence
+Value After Risk
+Why
+Required Guardrails
+```
+
+Technical details such as raw RAU, expected-loss formulas, event probabilities, and provenance remain available in JSON or an explicit math/details view.
+
 ---
 
 ## 3. Inputs
@@ -1139,6 +1177,29 @@ Example shape:
     "Auth code is C3, so confirmation is required."
   ]
 }
+```
+
+Default human-readable rendering:
+
+```text
+PEBRA Decision: Proceed, but confirm first
+
+Risk Level: Moderate
+Affected Area: Low
+Code Sensitivity: High
+Confidence: High
+Value After Risk: Positive
+
+Why:
+- This touches auth-related code, so mistakes have higher impact.
+- The planned edit is small and reversible.
+- Local call-site search found limited usage.
+- A targeted auth test exists.
+
+Required Guardrails:
+- Make the smallest sufficient patch.
+- Run the targeted auth test before finalizing.
+- Commit on a new branch if running autonomously.
 ```
 
 Worked example values must be computed from stated formulas, not manually invented. A future docs check should parse examples and fail if derived values drift.
