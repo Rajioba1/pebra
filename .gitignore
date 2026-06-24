@@ -1,6 +1,7 @@
 .claude/
 references/
 docs/
+DEVELOPMENT.md
 
 .pebra/
 .venv/
