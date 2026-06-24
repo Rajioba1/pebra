@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pebra"
+version = "0.1.0"
+description = "Pre-Edit Benefit-Risk Assessment for coding agents — a deterministic, hexagonal decision controller."
+requires-python = ">=3.11"
+readme = "README.md"
+
+# Runtime deps per Architecture §12. NOTE: core/ uses none of these (stdlib-only, enforced).
+# Phase 0 is runnable stdlib-only; the heavy deps below are consumed by adapters/benchmarks in
+# later phases. For Phase 0, install with `pip install -e . --no-deps`.
+dependencies = [
+    "numpy",
+    "scikit-learn",
+    "cryptography",
+    "mapie",
+    "radon",
+    "bandit",
+    "pyyaml",
+    "fastapi",
+    "starlette",
+    "uvicorn",
+    "jinja2",
+]
+
+[project.scripts]
+pebra = "pebra.cli.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "hypothesis",
+    "syrupy",
+    "jsonschema",
+    "ruff",
+    "mypy",
+    "import-linter",
+    "nox",
+    "build",
+    "twine",
+    "pre-commit",
+]
+
+[project.optional-dependencies]
+bench = ["pandas", "scipy", "matplotlib", "seaborn"]
+bench-szz = ["pydriller"]
+bench-agent = ["swebench"]
+bench-external = ["datasets"]
+ui-e2e = ["playwright"]
+
+[tool.setuptools.packages.find]
+include = ["pebra*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

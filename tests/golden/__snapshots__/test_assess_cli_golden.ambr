@@ -1,0 +1,20 @@
+# serializer version: 1
+# name: test_assess_prints_human_card
+  '''
+  PEBRA Decision: Proceed (confirmation required)
+  
+  Risk Level:        Moderate        (used 50% of the safe limit)
+  Confidence:        High (83%)
+  Value After Risk:  Positive
+  Code Sensitivity:  High - sensitive auth code
+  Expected Damage:   0.10
+  
+  Why:
+    - Risk budget 50% used: expected_loss 0.10 divided by C3 threshold 0.20.
+    - Value After Risk is Positive after the uncertainty penalty.
+    - Confidence is 83% after repo evidence gathering.
+    - Affected Area: small - affects ~1 symbol(s) / few call sites (measured).
+    - C3 code is sensitive context, so confirmation is required.
+  
+  '''
+# ---

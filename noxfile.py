@@ -1,0 +1,34 @@
+"""Nox sessions (Architecture §4.4). `tests`, `lint`, and a `core-only` session that asserts the
+engine imports with zero adapters present."""
+
+from __future__ import annotations
+
+import nox
+
+DEV = ["pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema"]
+
+
+@nox.session
+def tests(session: nox.Session) -> None:
+    session.install("-e", ".", "--no-deps")
+    session.install(*DEV)
+    session.run("pytest", "-q")
+
+
+@nox.session
+def lint(session: nox.Session) -> None:
+    session.install("-e", ".", "--no-deps")
+    session.install("ruff", "import-linter")
+    session.run("ruff", "check", "pebra")
+    session.run("lint-imports")
+
+
+@nox.session(name="core-only")
+def core_only(session: nox.Session) -> None:
+    """Install the base package and assert the engine imports with no adapters present."""
+    session.install("-e", ".", "--no-deps")
+    session.run(
+        "python",
+        "-c",
+        "import pebra.core.decision_engine, pebra.core.assessment_builder; print('core-only OK')",
+    )

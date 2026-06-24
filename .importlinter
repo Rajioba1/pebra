@@ -1,0 +1,79 @@
+[importlinter]
+root_package = pebra
+include_external_packages = True
+
+# --- The one rule (Architecture §2): core/ imports only pure stdlib + core/ ---
+
+[importlinter:contract:core-no-inner-layers]
+name = core never imports inner layers
+type = forbidden
+source_modules =
+    pebra.core
+forbidden_modules =
+    pebra.ports
+    pebra.adapters
+    pebra.app
+    pebra.cli
+    pebra.mcp_server
+    pebra.dashboard
+
+[importlinter:contract:core-no-impure-libs]
+name = core forbidden from impure stdlib + heavy libs (Architecture §12)
+type = forbidden
+source_modules =
+    pebra.core
+forbidden_modules =
+    sqlite3
+    subprocess
+    argparse
+    pandas
+    scipy
+    matplotlib
+    seaborn
+    datasets
+    pydriller
+    swebench
+    fastapi
+    starlette
+    uvicorn
+    jinja2
+    numpy
+    sklearn
+
+# --- Layer discipline ---
+
+[importlinter:contract:app-no-adapters]
+name = app reaches I/O only through ports, never adapters
+type = forbidden
+source_modules =
+    pebra.app
+forbidden_modules =
+    pebra.adapters
+
+[importlinter:contract:adapters-only-core-ports]
+name = adapters import only core + ports (no app/surfaces)
+type = forbidden
+source_modules =
+    pebra.adapters
+forbidden_modules =
+    pebra.app
+    pebra.cli
+    pebra.mcp_server
+    pebra.dashboard
+
+[importlinter:contract:dashboard-no-app]
+name = dashboard is a surface and never imports app (reads via store/api)
+type = forbidden
+source_modules =
+    pebra.dashboard
+forbidden_modules =
+    pebra.app
+
+[importlinter:contract:layers]
+name = layered architecture (surfaces > app > ports > core)
+type = layers
+layers =
+    pebra.cli : pebra.mcp_server
+    pebra.app
+    pebra.ports
+    pebra.core

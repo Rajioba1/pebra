@@ -1,0 +1,149 @@
+"""Architecture §6/§8 — decision_engine: the SOLE gate authority. Pure.
+
+Tests the ordered gate sequence, gate ordering (policy before threshold; sanction never overrides
+policy), and the worked-example proceed path.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+from pebra.core import assessment_builder as ab
+from pebra.core import decision_engine as de
+from pebra.core.constants import Decision, RiskMode
+from tests.unit.test_assessment_builder import _worked_example_input
+
+
+def _assess(**overrides):
+    inp = _worked_example_input()
+    if overrides:
+        inp = replace(inp, **overrides)
+    return ab.build_assessment(inp)
+
+
+def test_worked_example_is_proceed_with_confirmation_sensitive_context() -> None:
+    result = de.decide(_assess())
+    assert result.recommended_decision is Decision.PROCEED
+    assert result.requires_confirmation is True  # C3
+    assert result.risk_mode is RiskMode.SENSITIVE_CONTEXT
+    assert result.scores["rau"] == pytest.approx(0.31)
+
+
+def test_gate3_expected_loss_over_threshold_with_positive_eu_asks_human() -> None:
+    # bump an event probability so expected_loss exceeds the 0.20 C3 threshold but EU stays > 0
+    a = _assess(
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+    )
+    # expected_loss = 0.60 * 0.40 = 0.24 > 0.20 C3 threshold; EU stays > 0
+    result = de.decide(a)
+    assert result.scores["expected_loss"] == pytest.approx(0.24)
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["gate"] == 3 for g in result.gates_fired)
+
+
+def test_gate3_over_threshold_with_negative_eu_rejects() -> None:
+    a = _assess(
+        events=[{"event": "test_regression", "p_event": 0.90, "elicited_disutility": 0.90}],
+        immediate_benefit=0.10,
+    )
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.REJECT
+
+
+def test_gate4_negative_rau_rejects_by_default() -> None:
+    # within loss threshold but RAU < 0 via huge variance
+    a = _assess(
+        variance_breakdown={"scenario_variance": 1.0},  # utility_sd = 1.0 -> RAU = 0.3868 - 1.28 < 0
+    )
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.REJECT
+    assert any(g["gate"] == 4 for g in result.gates_fired)
+
+
+def test_gate2_c4_consequential_asks_human() -> None:
+    from pebra.core import models as m
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        criticality_stage="C4",
+        criticality_value=1.00,
+        thresholds={**inp.thresholds, "c4_always_ask_human": True,
+                    "c4_max_expected_loss_without_human": 0.15},
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True, max_change_kind="CONTRACT",
+            visibility="public_api", consequential_symbol_changed=True,
+        ),
+    )
+    result = de.decide(ab.build_assessment(inp))
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["gate"] == 2 for g in result.gates_fired)
+
+
+def test_gate2_c4_cosmetic_proceeds_with_confirmation_not_ask_human() -> None:
+    # C4 path but verified COSMETIC + non-consequential: gate 2 must NOT fire on file membership
+    # alone; it proceeds (with confirmation), per AD-27 / §6 gate-2 guard.
+    from dataclasses import replace as _replace
+    from pebra.core import models as m
+    inp = _replace(
+        _worked_example_input(),
+        criticality_stage="C4",
+        criticality_value=1.00,
+        thresholds={**_worked_example_input().thresholds, "c4_always_ask_human": True},
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True, changed_symbols=["src/auth.py::doc"],
+            max_change_kind="COSMETIC", visibility="internal",
+            consequential_symbol_changed=False,
+        ),
+    )
+    result = de.decide(ab.build_assessment(inp))
+    assert result.recommended_decision is Decision.PROCEED
+    assert result.requires_confirmation is True
+    assert not any(g["gate"] == 2 for g in result.gates_fired)
+
+
+def test_gate8_low_confidence_routes_to_inspect_first() -> None:
+    a = _assess(
+        edit_confidence_factors={
+            "p_success": 0.2, "evidence_quality": 0.2, "testability": 0.2,
+            "reversibility": 0.2, "source_reliability": 0.2, "scope_control": 0.2,
+        }
+    )
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.INSPECT_FIRST
+
+
+def test_gate1_policy_violation_rejects_before_threshold() -> None:
+    # even with a perfectly safe assessment, a policy violation rejects first
+    result = de.decide(_assess(), policy_violations=["forbidden_path_edit"])
+    assert result.recommended_decision is Decision.REJECT
+    assert result.gates_fired[0]["gate"] == 1
+
+
+def test_sanction_never_overrides_policy_violation_gate1() -> None:
+    sanction = {"valid": True, "pre_edit_authorization_controls_satisfied": True,
+                "converts_gates": [1, 2, 3, 4]}
+    inp = replace(_worked_example_input(), sanction=sanction)
+    result = de.decide(ab.build_assessment(inp), policy_violations=["forbidden_path_edit"])
+    assert result.recommended_decision is Decision.REJECT
+    assert result.risk_mode is not RiskMode.CONTROLLED_HIGH_RISK
+
+
+def test_valid_sanction_converts_gate3_to_controlled_high_risk_proceed() -> None:
+    sanction = {"valid": True, "pre_edit_authorization_controls_satisfied": True,
+                "converts_gates": [2, 3, 4],
+                "high_risk_triggers": [{"trigger_id": "hrt_001", "risk_class": "payment_side_effect"}]}
+    from dataclasses import replace as _replace
+    inp = _replace(
+        _worked_example_input(),
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,  # expected_loss 0.24 > 0.20 -> gate 3 ask_human; EU > 0
+        sanction=sanction,
+    )
+    result = de.decide(ab.build_assessment(inp))
+    assert result.recommended_decision is Decision.PROCEED
+    assert result.risk_mode is RiskMode.CONTROLLED_HIGH_RISK
+    assert result.requires_confirmation is True
+    assert result.high_risk_triggers
