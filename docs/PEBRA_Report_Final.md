@@ -127,7 +127,7 @@ Use `source_type` for semantic provenance:
 Use `provider` for the concrete source:
 
 ```text
-radon | sem | bandit | ast_import_graph | .pebra.yml | outcome_store | model | user | criticality_token_prior
+radon | sem | bandit | ast_import_graph | architecture_map | graphify | codeindex | .pebra.yml | outcome_store | model | user | criticality_token_prior
 ```
 
 Example:
@@ -213,7 +213,7 @@ PEBRA's JSON schema should keep technical field names. Default CLI, MCP summarie
 | Technical Term | Human Label | Plain Meaning |
 |---|---|---|
 | `recommended_decision` | Decision | What PEBRA recommends the agent should do next |
-| `risk_budget_used_percent` | Risk Level | How close this edit is to the configured safety limit |
+| `risk_budget_used` / `risk_budget_used_percent` | Risk Level | How close this edit is to the configured safety limit; canonical score is a ratio, rendered percent is `100 * risk_budget_used` |
 | `expected_loss` | Expected Damage | Estimated harm burden if things go wrong |
 | `risk_adjusted_utility` / `RAU` | Value After Risk | Whether the benefit still clears risk, review effort, and uncertainty |
 | `edit_confidence` | Confidence | How sure PEBRA is that the agent has enough evidence to act |
@@ -234,7 +234,6 @@ Default user-facing output should lead with:
 ```text
 Decision
 Risk Level
-Affected Area
 Code Sensitivity
 Confidence
 Value After Risk
@@ -242,7 +241,7 @@ Why
 Required Guardrails
 ```
 
-Technical details such as raw RAU, expected-loss formulas, event probabilities, and provenance remain available in JSON or an explicit math/details view.
+`Affected Area` is a measured fact, not a verdict bar. It belongs inside `Why` unless a detailed view is requested. Technical details such as raw RAU, expected-loss formulas, event probabilities, and provenance remain available in JSON or an explicit math/details view.
 
 ---
 
@@ -342,6 +341,7 @@ decision query
   -> validate request schema
   -> classify action type
   -> gather allowed evidence
+  -> load architecture map / anchors if available
   -> compute structural signals
   -> estimate p_success and adverse-event probabilities
   -> compute expected utility and RAU
@@ -360,6 +360,10 @@ PEBRA should combine absolute thresholds with repo-relative percentiles.
 | Module import fan-in | Many modules import this module | import graph in-degree |
 | Module import fan-out | This file imports many modules | import graph out-degree |
 | Symbol import fan-in | Many files import a specific function/class | AST import resolution |
+| Architecture anchor / god node | The file or symbol is a stable domain anchor with high repo-relative fan-in or centrality | `ArchitectureKnowledgeProvider` from PEBRA repo scan |
+| Bridge centrality | The node connects multiple domains, so small changes can cross boundaries | cross-directory / cross-package edge proxy |
+| Domain entrypoint | The node hosts a route, page, shell, grid, command, CLI, or public tool surface | architecture map, AST heuristics |
+| Architecture domain ownership | The touched file belongs to a named domain such as spreadsheet/grid, auth, cache, payments, or plotting | coarse directory/package grouping |
 | Dynamic imports | Runtime edges may be hidden | AST/string detection |
 | Circular imports | Initialization/refactor fragility | strongly connected components |
 | Function or module fan-in | More callers means broader breakage | call graph in-degree |
@@ -383,8 +387,8 @@ file_size_risk:
 
 fan_in_risk:
   critical if exported_public_api or fan_in_percentile >= 0.95
-  high     if fan_in >= 10 or fan_in_percentile >= 0.90
-  moderate if fan_in >= 3  or fan_in_percentile >= 0.50
+  high     if fan_in_percentile >= 0.90
+  moderate if fan_in_percentile >= 0.50
   low      otherwise
 
 import_graph_risk:
@@ -400,11 +404,209 @@ cyclomatic_complexity_risk:
   critical 50+
 ```
 
-### 4.3 Evidence Escalation Ladder
+Absolute caller counts may be displayed in explanations, but high-risk escalation should use repo-relative fan-in percentiles, public/exported status, transitive reach to consequence-bearing symbols, or capability/side-effect evidence. A fixed threshold such as "3 callers" is not portable across a small repo and a monorepo.
+
+### 4.3 Architecture Knowledge Layer
+
+PEBRA's SQLite store, freshness checks, and AST/import graph are already sufficient plumbing for codebase knowledge. PEBRA must build its own small derived architecture map from the repository scan, separate from the risk-decision ledger.
+
+Architecture knowledge is **pre-decision evidence**:
+
+```text
+candidate edit
+  -> ArchitectureKnowledgeProvider
+      -> architecture_nodes / edges
+      -> architecture_anchors
+      -> architecture_domains
+      -> graph_freshness
+  -> structural risk signals
+  -> event probabilities and review cost
+  -> decision gates
+```
+
+This layer builds from PEBRA's own repo scan, then may compare configured enrichment artifacts when present:
+
+- PEBRA's own AST/import graph and repo scan.
+- file paths, symbols, directory/package boundaries, and entrypoint heuristics.
+- comparison/enrichment artifacts such as `ARCHITECTURE.md`, `graphify-out/ANCHORS.md`, `graphify-out/graph.json`, or `codeindex`.
+
+External artifacts are never prerequisites. They may validate or enrich PEBRA's map, but the source of record is PEBRA's self-built architecture map.
+
+It should produce:
+
+```text
+ArchitectureEvidence {
+  graph_commit,
+  graph_freshness,
+  matched_anchors[],
+  matched_domains[],
+  architecture_anchor_score,
+  god_node_score,
+  bridge_centrality,
+  domain_entrypoint,
+  domain_criticality_hint,
+  source_files[]
+}
+```
+
+The purpose is not to replace blast radius or criticality. It separates two risk channels:
+
+| Channel | Example | Feeds |
+|---|---|---|
+| Architecture centrality | `SpreadsheetView.tsx` is a high-degree, high-bridge domain anchor | `blast_radius`, `p_event`, review cost, `inspect_first` / `test_first` pressure |
+| Domain criticality | account linking, auth tokens, payments, migrations | disutility floor, tighter thresholds, confirmation / `ask_human` pressure |
+
+This distinction matters because a god node can be risky even if it is not security-sensitive, and a sensitive account-linking path can be risky even if it has low graph degree.
+
+Baseline derivation:
+
+| Derived Field | Default Method |
+|---|---|
+| `architecture_nodes` / `architecture_edges` | built from PEBRA's AST/import graph and repo scan |
+| `god_node_score` | repo-relative percentile of fan-in / direct dependents, plus entrypoint signal |
+| `bridge_centrality` | count or percentile of edges crossing top-level directory, package, or coarse-domain boundaries |
+| `domain_entrypoint` | route/page/shell/grid/command/CLI/MCP/`main`/`run`/`handle_*` heuristics |
+| `architecture_domains` | coarse top-level directory / package grouping |
+| `domain_criticality_hint` | capability/path tokens such as auth, login, payment, billing, session, crypto, token, secret |
+
+The architecture map should be persisted as rebuildable SQLite projections:
+
+```text
+architecture_nodes
+architecture_edges
+architecture_anchors
+architecture_domains
+```
+
+These tables store codebase shape, not PEBRA decisions. They complement:
+
+```text
+assessments / outcomes / prediction_errors / learned_risk_facts / risk_snapshots
+```
+
+Freshness has two roles:
+
+| Freshness Check | Purpose |
+|---|---|
+| assessment freshness | detects that one risk decision used stale evidence |
+| architecture-map freshness | maintains or invalidates the reusable codebase map |
+
+If `graph_commit != HEAD` or touched files overlap known anchors/domains, PEBRA should rebuild its own baseline architecture map. If an external enrichment artifact is stale, PEBRA should mark that artifact stale and continue with the self-built map. Only if PEBRA cannot build the baseline map should architecture evidence become unavailable and lower `evidence_quality`.
+
+PEBRA must not become a graph platform. It owns the small risk-relevant architecture summary; heavy graph generation, visualization, embeddings, or Graphify-style full corpus indexing remain external tools or adapters.
+
+### 4.4 Symbol-Level Change Classification
+
+PEBRA must resolve risk at the edited-symbol level when enough local evidence exists. A sensitive file or god node is not uniformly dangerous: comments, formatting, and safe tests should not trigger controlled high-risk mode just because they live in a C4 path, while a one-character behavioral change inside a payment calculation may be catastrophic.
+
+Symbol-level evidence is the canonical risk-resolution layer, not only a high-risk-mode nuisance filter. The scoring pipeline uses a fixed stack:
+
+```text
+Layer 0 raw evidence
+  files, paths, criticality globs, blast graph, architecture anchors, tests, policy
+Layer 1 symbol/scope resolution
+  changed symbol, change_kind, visibility, fan-in percentile, side effects, fallback reason
+Layer 2 scores
+  p_event, p_success, expected_loss, risk_budget_used, RAU, confidence, review cost
+Layer 3 gates
+  proceed / inspect_first / test_first / ask_human / reject
+Layer 4 risk annotations
+  risk_mode, high_risk_triggers[], trigger_summary, suppression reasons
+Layer 5 controls
+  required checks, controlled-high-risk blueprint, sanction requirements
+```
+
+File-level criticality, blast, and god-node status feed Layer 1 first when symbol evidence exists. They do not directly inflate formulas. Layer 4 annotations are read-only renderings of Layer 0-3 results; they do not re-query evidence and do not create another decision path.
+
+The v1 pipeline should produce:
+
+```text
+SymbolDiffEvidence {
+  parsed_patch_available,
+  changed_symbols[],
+  max_change_kind,
+  consequential_symbol_changed,
+  consequence_reason[],
+  symbol_fan_in_percentile,
+  transitive_reaches_consequence_symbol,
+  directive_comment_changed,
+  fallback_reason
+}
+
+SymbolDiff {
+  symbol_id,
+  file_path,
+  symbol_kind,
+  visibility,
+  change_kind,
+  signature_changed,
+  return_shape_changed,
+  body_changed,
+  control_flow_changed,
+  external_side_effect_changed,
+  db_write_changed,
+  payment_api_changed,
+  migration_changed,
+  callers_count,
+  callers_percentile,
+  edge_confidence
+}
+```
+
+`SymbolDiffEvidence` is raw classified evidence. Final `high_risk_triggers[]` are assembled later by `core/decision_engine.py` / `core/high_risk_controls.py` from symbol evidence, scores, gates, policy, learned facts, and evidence gaps. Adapters must not emit finalized triggers.
+
+Canonical `change_kind` values:
+
+| Change Kind | Meaning |
+|---|---|
+| `COSMETIC` | whitespace, formatting, ordinary comments, ordinary docstrings |
+| `DIRECTIVE` | comments/pragmas that affect behavior, type checking, linting, build, routing, or framework behavior |
+| `TEST_ONLY` | test-only change with no production behavior or risky fixture/data mutation |
+| `BEHAVIORAL` | function/method body logic changed, even if the diff is tiny |
+| `CONTRACT` | signature, return shape, exported/public API, route/tool/schema, response shape, or consumer-visible behavior changed |
+| `SIDE_EFFECT` | payment call, DB write, migration, deletion, external-state write, idempotency/retry/transaction boundary changed |
+| `UNKNOWN` | parser, patch, or fan-in evidence unavailable; fall back conservatively |
+
+High-risk mode should not trigger from file membership alone:
+
+```text
+C4 path alone                  is not sufficient
+payment path alone             is not sufficient
+god-node / architecture anchor is not sufficient
+```
+
+The trigger requires critical context plus a consequential symbol/change:
+
+```text
+critical_context =
+  criticality_stage in {C3,C4}
+  OR god_node_score high
+  OR domain_criticality_hint present
+
+consequential_symbol_change =
+  change_kind in {BEHAVIORAL, CONTRACT, SIDE_EFFECT, DIRECTIVE, UNKNOWN}
+  AND (
+    visibility in {exported, public_api}
+    OR callers_percentile >= thresholds.consequential_symbol_fan_in_percentile
+    OR transitive_reaches_consequence_symbol
+    OR external_side_effect_changed
+    OR db_write_changed
+    OR payment_api_changed
+    OR migration_changed
+  )
+```
+
+Diff size, line count, and number of changed symbols are not safety signals by themselves. A tiny change such as `amount * 100 -> amount * 1000` is `BEHAVIORAL`; a large formatting-only change is `COSMETIC`.
+
+"Dead code" must not be used as a broad cosmetic exemption. Treat a symbol as low consequence only when it is private, not exported, not an entrypoint, has no dynamic-dispatch/reflection evidence, has no external consumers, and has no transitive path to a consequence-bearing symbol. Otherwise use `UNKNOWN` or `BEHAVIORAL`.
+
+`pebra_verify` must rerun the full symbol classifier on the actual diff. A mismatch where the actual diff is more severe than the pre-edit proposed patch is scope drift and must route to reassessment or human review. Contract-surface scanning alone is insufficient because dangerous body changes may preserve the public signature.
+
+### 4.5 Evidence Escalation Ladder
 
 Use repo-local evidence first. Escalate only when local evidence is insufficient.
 
-1. Local repo evidence: code, imports, tests, git history, call graph, dependency graph, project config.
+1. Local repo evidence: code, imports, tests, git history, call graph, dependency graph, architecture map, project config.
 2. Official documentation: framework, language, library, or API docs for the detected version.
 3. GitHub/source evidence: upstream repository, changelog, release notes, issues, examples, advisories.
 4. Web search: only when local, docs, and source evidence are insufficient.
@@ -433,6 +635,145 @@ Where:
 - `v_k(a)` is the action score on criterion `k`.
 - `w_k` comes from the weighting strategy in Section 6.
 - Weights are normalized so `sum_k w_k = 1`.
+
+AD-28 refines this scalar into a provenance-traced `benefit_breakdown`. The scalar `benefit` remains the gate-driving input to RAU, but it must be resolved from explicit value components rather than an opaque optimistic claim.
+
+Canonical benefit components:
+
+| Component | Meaning | Default treatment |
+|---|---|---|
+| `immediate_benefit` / `task_value` | Short-term value of satisfying the requested task | Positive value if the action succeeds |
+| `maintainability_delta` | Long-term code-health change: simpler code, lower coupling, better testability, clearer architecture, or the reverse | Derived from proposed-patch metrics before edit; measured from actual diff after verify |
+| `technical_debt_interest` | Future maintenance drag from shortcuts, duplicated logic, fragile workarounds, or missing tests | Derived/measured future cost from churn, complexity, coupling, testability, and affected scope |
+| `durability` / `recurrence_risk` | Whether the fix is likely to stay fixed rather than require a revert, re-edit, or follow-up regression fix | Used to compute expected rework cost |
+| `information_value` | Value of inspecting, testing, or gathering evidence before committing | Primarily attached to information actions such as `inspect_first` / `test_first` |
+| `strategic_business_value` | Product, customer, deadline, compliance, or organizational value | Elicited/configured; never inferred only from code tokens |
+
+Two-horizon v1 form:
+
+```text
+benefit =
+  immediate_benefit
+  + discounted_long_term_value
+
+discounted_long_term_value =
+  discount_factor * (
+    future_maintenance_savings
+    + information_value
+    + strategic_business_value
+    - technical_debt_interest
+    - expected_rework_cost
+  )
+
+future_maintenance_savings =
+  expected_future_change_exposure(scope) * maintenance_effort_delta_per_change
+
+expected_rework_cost =
+  recurrence_risk * rework_cost_per_recurrence
+```
+
+`rework_cost_per_recurrence` must be scaled to the affected scope's consequence, expected loss, or disutility scale, not to ordinary review cost. A recurrence in a C4 payment path should cost more than one additional review. If no calibrated recurrence-cost estimate exists, use a conservative project-configured prior and mark it `prior_uncalibrated`.
+
+Maintainability is a first-class economic outcome, not an optional fuzzy bonus. For active code, future maintenance exposure is assumed unless the scope is proven dormant. PEBRA estimates exposure from churn, ownership/activity, roadmap/config hints, dependency/API centrality, and architecture reach. It estimates maintenance effort delta from Maintainability Index, complexity, coupling, duplication, testability, analyzability, modularity, public-surface complexity, and symbol/scope evidence.
+
+Pre-edit maintainability deltas are `derived` when computed from a concrete proposed patch AST/diff, `projected` when only a strategy description exists, and `measured` after `pebra_verify` sees the actual diff. Unsupported future-value claims receive no gate-driving credit. Positive maintainability benefit follows confirm-before-credit: a proposed improvement can be shown in the comparison, but it receives gate-driving weight only when backed by concrete patch metrics, configured policy, or verified outcomes. Maintainability degradation, new debt interest, and recurrence/rework cost count immediately when detected.
+
+#### 5.1.1 Benefit Delta Measurement
+
+PEBRA measures benefit deltas by comparing the current repo state to the proposed or actual after-state on the touched scope.
+
+```text
+raw_delta_k = metric_after_k - metric_before_k
+directional_delta_k =
+  raw_delta_k        if higher_is_better(k)
+  -raw_delta_k       if lower_is_better(k)
+
+normalized_delta_k = normalize_to_minus_one_plus_one(directional_delta_k, metric_k)
+
+benefit_delta_k =
+  normalized_delta_k * future_change_exposure(scope)
+
+maintenance_effort_delta_per_change =
+  sum_k weight_k * benefit_delta_k
+```
+
+Pre-edit:
+
+```text
+before = assessed_commit
+after  = proposed_patch / candidate action
+source_type = derived
+```
+
+Post-edit:
+
+```text
+before = assessed_commit
+after  = actual_diff seen by pebra_verify
+source_type = measured
+```
+
+If no concrete patch is available:
+
+```text
+source_type = projected
+gate_driving_credit = 0 unless configured or ratified
+```
+
+Benefit delta dimensions:
+
+| Delta | Direction | Measurement |
+|---|---|---|
+| `complexity_delta` | lower is better | Cyclomatic/cognitive complexity, nesting depth, Halstead, LOC per touched symbol/file |
+| `modularity_delta` | higher is better | Fewer cross-module responsibilities, cleaner layer boundaries, fewer boundary violations |
+| `coupling_delta` | lower is better | Fan-in/fan-out, imports, call-graph edges, cross-package edges |
+| `cohesion_delta` | higher is better | Related code becomes more localized; fewer mixed-responsibility symbols/modules |
+| `testability_delta` | higher is better | Tests added/updated, direct test coverage, fewer hidden dependencies, more pure/deterministic functions |
+| `analyzability_delta` | higher is better | Smaller local reasoning scope, simpler control flow, clearer names, fewer hidden side effects |
+| `modifiability_delta` | higher is better | Future changes require fewer files, call sites, side effects, and contract updates |
+| `duplication_delta` | lower is better | Duplicate blocks, repeated logic, repeated schema/validation rules |
+| `encapsulation_delta` | higher is better | Fewer leaked internals, stronger module boundaries, lower public mutable state |
+| `api_surface_delta` | lower/stable is better | Public signatures, routes, schemas, exported symbols, and tool contracts added/removed/changed |
+| `reusability_delta` | higher is better only when it reduces future change effort | Shared components or helpers without speculative abstraction |
+| `portability_delta` | higher is better | Lower environment/runtime/platform coupling |
+| `observability_delta` | higher is better | Better logging, tracing, metrics, diagnostics, and error messages |
+| `operability_delta` | higher is better | Safer deploy, config, migration, rollback, feature-flag, idempotency, or retry behavior |
+| `recurrence_delta` | lower is better | Revert/re-edit/reopened issue/follow-up regression probability |
+
+Future exposure weights benefit by how often and how widely the touched scope is expected to matter:
+
+```text
+future_change_exposure(scope) =
+  f(recent_churn,
+    ownership_activity,
+    repo/domain activity,
+    roadmap/configured active areas,
+    callers_percentile,
+    public_api_or_exported_symbol,
+    criticality_stage,
+    incident_or_rework_history)
+```
+
+Do not reward "more architecture" by default. New abstractions only score positive when they reduce future change effort through lower coupling, higher cohesion, lower duplication, better testability, stable contracts, or lower recurrence risk. Otherwise they may be negative because they add indirection, review cost, blast radius, or public surface.
+
+Net-benefit style ranking is the primary comparison lens:
+
+```text
+net_benefit_score = benefit - expected_loss - review_cost
+```
+
+`risk_adjusted_utility` remains the decision score because it subtracts the uncertainty cushion. ICER-style pairwise ratios may be shown as diagnostics, but they are not the primary ranking metric because ratios become unstable when incremental benefit is near zero.
+
+Double-counting guard:
+
+- `p_success` is the probability of solving the task; `benefit` is how much success is worth.
+- `criticality` and `disutility_j` are downside if failure occurs; `strategic_business_value` is upside if success occurs.
+- `expected_loss` is downside from adverse events in this edit; `expected_rework_cost` is future cost from recurrence or re-edit after a superficially successful change.
+- `recurrence_avoidance_value` may be reported in an alternative comparison as avoided rework relative to another candidate, but it must not be added on top of the same candidate's `expected_rework_cost`.
+- Coupling/fan-in may feed risk through affected area; only the delta caused by the candidate action may feed maintainability value.
+- `review_cost` is immediate human effort; `technical_debt_interest` is future maintenance drag.
+
+PEBRA ranks alternatives the agent or caller proposes. It may render a qualitative `better_value_alternative` for a single-action `pebra_assess`, but quantified incremental comparison requires multiple candidate actions in `pebra_compare`.
 
 ### 5.2 P(success)
 
@@ -567,7 +908,7 @@ For actions touching multiple files:
 criticality(action) = max(criticality(file) for file in expected_files)
 ```
 
-Use max aggregation because a single critical file can dominate risk.
+Use max aggregation because a single critical file can dominate disutility floors and threshold tightening. This is a conservative file-level fallback/floor, not a high-risk trigger by itself and not a `p_event` input when symbol-level evidence exists. If symbol/scope evidence is available, the file-level C-stage tells PEBRA where to inspect harder and how severe consequence-bearing failures could be; the edited symbol, change kind, fan-in/exportedness, and side-effect flags decide likelihood and controlled-high-risk routing.
 
 Over time, PEBRA can calibrate criticality against incidents and regressions. Prefer odds-ratio or logistic calibration before survival/Cox models because most projects have limited incident counts:
 
@@ -763,6 +1104,7 @@ if elicited_weight_consistency fails:
 ### 7.1 Expected Utility and RAU
 
 ```text
+benefit         = resolve_benefit(benefit_breakdown)
 expected_benefit = p_success * benefit
 expected_loss    = sum_j p_event_j * disutility_j
 
@@ -810,6 +1152,10 @@ SD(utility) = sqrt(Var(U))
 ```
 
 This default assumes independent inputs unless covariance terms are explicitly added. It can understate or overstate uncertainty when inputs are correlated.
+
+`Var(benefit)` includes uncertainty from benefit components. Cold-start or uncalibrated long-term value claims must widen `Var(benefit)` and therefore lower RAU through the uncertainty penalty; they must not inflate RAU without a matching uncertainty cost. Projected components without concrete patch metrics use at least `learning.projected_benefit_variance_floor` and receive zero gate-driving positive credit when `learning.projected_benefit_zero_gate_credit_without_evidence=true`.
+
+Maintainability metrics derived from a concrete proposed patch are not free-text uncertainty; they are deterministic projections from code evidence. Their variance should reflect measurement coverage and missing evidence, not a general assumption that maintainability is unknowable.
 
 Each input's variance is resolved in this precedence order:
 
@@ -975,14 +1321,22 @@ if confidence_upgrade_source == retrieval_only:
 
 Gate names must map directly to `.pebra.yml`.
 
+The first matching risk gate sets a provisional decision. Sanction resolution runs after that provisional decision and may finalize a risk-threshold `ask_human` / `reject` into controlled-high-risk `proceed` only when the sanction is valid and required controls are satisfied.
+
 ```text
 if action violates policy:
     reject
 
 if criticality_stage == C4
-and thresholds.c4_always_ask_human:
+and thresholds.c4_always_ask_human
+and symbol_diff_requires_c4_gate:
     requires_confirmation = thresholds.c4_requires_confirmation
     ask_human
+
+if criticality_stage == C4
+and verified_change_kind in {COSMETIC, TEST_ONLY}
+and not consequential_symbol_changed:
+    do not trigger controlled-high-risk mode from C4 membership alone
 
 if criticality_stage == C3:
     max_expected_loss_limit = min(
@@ -1000,7 +1354,7 @@ if risk_adjusted_utility < 0:
     reject                                    # default (AD-2)
     # ask_human instead, if thresholds.ask_on_negative_rau is set
 
-if monte_carlo_gate_available
+if monte_carlo_gate_available            # v1.5 gate; v1 skips when unavailable
 and P(utility < 0) > thresholds.max_p_negative_utility:
     ask_human or reject
 
@@ -1009,7 +1363,7 @@ and utility_sd > thresholds.max_utility_sd_without_human
 and expected_utility > 0:
     ask_human
 
-if monte_carlo_gate_available
+if monte_carlo_gate_available            # v1.5 gate; v1 uses §8.4 rank/interval fallback
 and decision_instability > thresholds.decision_instability_threshold:
     inspect_first or test_first
 
@@ -1023,15 +1377,34 @@ and no evidence_delta exists:
 if low_confidence_upgraded
 and thresholds.require_user_confirmation_for_low_confidence_upgrade:
     proceed only with requires_confirmation = true
+
+if authorized_sanction exists
+and prior gate result is ask_human or reject
+and rejecting gate in {C4 escalation, expected_loss threshold, RAU default reject, Monte Carlo negative-utility}
+and pre_edit_authorization_controls are satisfied:
+    proceed with risk_mode = controlled_high_risk
+    requires_confirmation = true
+    preserve original scores and high_risk_triggers
+
+else:
+    proceed
 ```
 
 Criticality affects gates only through this section. Section 5 may describe gate pressure, but Section 8 is the sole decision authority.
+
+High-risk routing is never a bare decision. If a high-risk condition causes `test_first`, `ask_human`, `reject`, or `risk_mode=controlled_high_risk`, the response must include `high_risk_triggers[]` and either a mapped control blueprint or a suppression reason. The decision enum remains exactly five values; trigger flags are explanatory and auditable companion evidence.
+
+Sanction resolution is part of the gate sequence, not a post-hoc override. It may override risk-threshold gates only after authorized risk acceptance and verified controls. It must not silently override hard policy violations; policy exceptions require a distinct higher-scrutiny sanction type. If `pebra_verify` later detects stale evidence, scope drift, missing controls, or a more severe actual symbol diff, it invalidates the sanction and routes back through this gate sequence.
+
+`symbol_diff_requires_c4_gate` defaults to true when symbol-diff evidence is unavailable (`UNKNOWN`) and false only when local classification verifies a non-consequential `COSMETIC` or safe `TEST_ONLY` change. This prevents nuisance triggers without letting parser failures suppress safety gates.
+
+Monte Carlo gates are v1.5 behavior unless distributions and correlation provenance are fitted or explicitly configured. In v1, PEBRA reports Monte Carlo examples only as diagnostics and uses the non-MC rank-gap / interval-overlap fallback in §8.4 for borderline action ordering.
 
 Double-count guard:
 
 ```text
 criticality_stage -> disutility floor and threshold modifiers
-count/blast_radius/usage -> p_event
+symbol/scope evidence + count/blast_radius/usage -> p_event
 
 Do not feed criticality_stage directly into p_event.
 Do not multiply raw C-stage values.
@@ -1107,13 +1480,19 @@ Monte Carlo replaces interval-overlap or rank-gap heuristics when its distributi
 {
   "schema_version": "0.1",
   "task": "Fix failing login validation",
+  "repo_id": "repo_local_123",
+  "repo_root": "/abs/path/to/repo",
+  "assessed_commit": "abc123",
   "risk_snapshot_id": "R0",
   "prediction_error_model_id": "E0",
   "recommended_decision": "proceed",
   "recommended_action_id": "a1",
   "requires_confirmation": true,
+  "risk_mode": "normal",
+  "high_risk_triggers": [],
   "decision_reason": "Patch action has positive RAU after evidence, but confidence upgraded from low so confirmation is required.",
   "risk_report": {},
+  "model_guidance_packet": {},
   "actions": [],
   "thresholds_used": {},
   "evidence_delta": {},
@@ -1130,12 +1509,18 @@ Each action object should include its own per-action verdict:
   "action_type": "edit",
   "action_status": "pending",
   "decision": "proceed",
+  "risk_mode": "normal",
+  "high_risk_triggers": [],
   "scores": {},
   "edit_control": {}
 }
 ```
 
 `recommended_decision` is the top-level decision for the selected action. Per-action `decision` records how each candidate was classified during comparison.
+
+`risk_mode` is a companion field, not a sixth decision. Allowed values are `normal`, `sensitive_context`, `elevated_review`, and `controlled_high_risk`. High-risk routes must not be emitted as bare `ask_human` or bare `reject`: when high-risk conditions drive the route, the response must include `high_risk_triggers[]` explaining what fired, what evidence supported it, and which controls would be required to proceed. If `risk_mode=controlled_high_risk`, `high_risk_triggers[]` must be non-empty.
+
+The response should also include `model_guidance_packet`: a deterministic, model-facing rendering of the same decision envelope. It tells the editing model the safe scope, which risky changes would invalidate the assessment, which checks are required, and which risk facts explain the instruction. It does not let the model reinterpret PEBRA's risk score.
 
 Every metric is an object:
 
@@ -1185,7 +1570,9 @@ The `why` field should be generated from existing evidence:
 - The effective threshold and gate that applied.
 - RAU waterfall: benefit, loss, review cost, uncertainty penalty.
 - Criticality stage and provenance.
+- Symbol/scope evidence: changed symbol, change kind, visibility, fan-in percentile, side-effect flags, and fallback reason.
 - Weakest edit-confidence factor.
+- High-risk trigger flags when the route is high-risk, including mapped controls or suppression reasons.
 
 Example shape:
 
@@ -1204,6 +1591,16 @@ Example shape:
     "value": 0.20,
     "reason": "Auth code is C3 and the C3 threshold is tighter than the global threshold."
   },
+  "symbol_scope_evidence": {
+    "scope_basis": "symbol",
+    "changed_symbols": ["src/auth.py::validate_login"],
+    "max_change_kind": "BEHAVIORAL",
+    "visibility": "internal",
+    "symbol_fan_in_percentile": 0.42,
+    "consequential_symbol_changed": false,
+    "consequence_reason": [],
+    "fallback_reason": null
+  },
   "p_utility_negative": null,
   "rau": {
     "value": 0.31,
@@ -1216,12 +1613,14 @@ Example shape:
   "requires_confirmation": true,
   "why": [
     "Risk budget 50% used: expected_loss 0.10 divided by C3 threshold 0.20.",
-    "RAU 0.31 is positive after the uncertainty penalty and is in the proceedable band.",
+    "Value After Risk is Positive after the uncertainty penalty.",
     "Confidence is 83% after repo evidence gathering.",
     "Auth code is C3, so confirmation is required."
   ]
 }
 ```
+
+`scope_basis` is `symbol` when symbol evidence was used, `file_fallback` when parsing or mapping was unavailable, and `unknown_fallback` when PEBRA had to score conservatively with degraded evidence. Ordinary risk cards must use this block so cosmetic/test-only edits in C4, payment, or god-node files are not described with the same risk basis as behavioral or contract changes to consequential symbols.
 
 Default human-readable rendering:
 
@@ -1229,15 +1628,14 @@ Default human-readable rendering:
 PEBRA Decision: Proceed, but confirm first
 
 Risk Level: Moderate
-Affected Area: Low
 Code Sensitivity: High
 Confidence: High
 Value After Risk: Positive
 
 Why:
 - This touches auth-related code, so mistakes have higher impact.
-- The planned edit is small and reversible.
-- Local call-site search found limited usage.
+- Affected Area is low: the planned edit is small, reversible, and has limited local usage.
+- Rollback is simple because the expected change is limited to the target function and test.
 - A targeted auth test exists.
 
 Required Guardrails:
@@ -1247,6 +1645,173 @@ Required Guardrails:
 ```
 
 Worked example values must be computed from stated formulas, not manually invented. A future docs check should parse examples and fail if derived values drift.
+
+### 9.3 High-Risk Trigger Flags
+
+High-risk trigger flags are machine-readable evidence, not decisions. They explain why PEBRA entered `sensitive_context`, `elevated_review`, or `controlled_high_risk`, or why it returned `ask_human` / `reject` for a high-risk condition.
+
+Required trigger shape:
+
+```json
+{
+  "trigger_id": "hrt_001",
+  "risk_class": "payment_side_effect",
+  "trigger_source": "symbol_diff",
+  "severity": "critical",
+  "affected_scope": "src/payments/charge.py::charge_customer",
+  "evidence": [
+    "change_kind=SIDE_EFFECT",
+    "payment_api_changed=true",
+    "criticality_stage=C4"
+  ],
+  "decision_effect": "requires_controlled_high_risk_mode",
+  "control_blueprint_id": "payment_change",
+  "required_controls": [
+    "sandbox_payment_tests",
+    "idempotency_evidence",
+    "reconciliation_baseline"
+  ],
+  "suppressible": false,
+  "suppress_reason": null,
+  "provenance": {
+    "source_type": "derived",
+    "provider": "pebra"
+  }
+}
+```
+
+Allowed `trigger_source` values: `symbol_diff`, `criticality`, `blast_radius`, `policy`, `learned_fact`, `evidence_gap`, `gate`.
+
+Allowed `severity` values: `elevated`, `high`, `critical`.
+
+Trigger rules:
+
+- A trigger may explain `test_first`, `ask_human`, `reject`, or `controlled_high_risk`, but it does not create a sixth decision.
+- A trigger can map to a `control_blueprint_id`; the controls become binding only when copied into the guidance packet's binding fields or sanction requirements.
+- A possible trigger suppressed by verified `COSMETIC` or safe `TEST_ONLY` classification must still be auditable with `suppressible=true` and a `suppress_reason`.
+- Trigger content is dynamic and evidence-derived. It must come from symbol diffs, criticality, blast radius, policy, learned facts, evidence gaps, and gate results, not from hardcoded model-aware syntax or an LLM-authored prompt.
+
+### 9.4 Model Guidance Packet
+
+PEBRA should return a model-facing guidance packet alongside the human card and canonical scores. This packet folds PEBRA's deterministic risk decision back into the editing model, but it must not become a second reasoning system.
+
+The packet is a deterministic rendering of PEBRA outputs:
+
+| Field | Source |
+|---|---|
+| `safe_scope` | approved candidate action envelope |
+| `risky_scope` | project-derived risky changes, each with an action enum |
+| `required_checks_before_commit` | decision, test discovery, criticality, confidence gates |
+| `required_controls` | selected high-risk control blueprint, if any |
+| `high_risk_triggers` | trigger flags from §9.3 |
+| `risk_facts` | risk report metrics and top drivers |
+| `value_facts` | benefit breakdown, maintainability/debt/durability drivers, and top value tradeoffs |
+| `why` | explanation generator and top risk drivers |
+| `suggested_inspection` | `inspect_first` / `test_first` evidence actions |
+| `safer_alternative` | selected lower-risk action or decision-engine recommendation |
+| `better_value_alternative` | selected higher-Value-After-Risk alternative when multiple candidates are available |
+
+Required shape:
+
+```json
+{
+  "guidance_packet_id": "gp_123",
+  "decision": "test_first",
+  "risk_mode": "elevated_review",
+  "binding": {
+    "safe_scope": {
+      "files": ["src/components/data/SpreadsheetView.tsx"],
+      "edit_policy": "targeted_patch_only"
+    },
+    "risky_scope": [
+      {"change": "dependency upgrades", "action": "requires_reassessment"},
+      {"change": "schema changes", "action": "requires_reassessment"},
+      {"change": "public API changes", "action": "requires_reassessment"}
+    ],
+    "required_checks_before_commit": ["npm run test -- src/components/data/__tests__/SpreadsheetView"],
+    "required_controls": []
+  },
+  "advisory": {
+    "high_risk_triggers": [
+      {
+        "trigger_id": "hrt_001",
+        "risk_class": "architecture_anchor_behavioral_change",
+        "severity": "high",
+        "decision_effect": "test_first",
+        "control_blueprint_id": "broad_god_node_behavioral_edit"
+      }
+    ],
+    "risk_facts": {
+      "risk_level": "high",
+      "affected_area": "high: architecture anchor / god node",
+      "confidence": "medium"
+    },
+    "value_facts": {
+      "value_after_risk": "borderline",
+      "top_value_driver": "targeted patch preserves short-term task value while avoiding broad refactor debt",
+      "maintainability_delta": "derived_neutral",
+      "technical_debt_interest": "low",
+      "durability": "uncalibrated"
+    },
+    "why": [
+      "Touched code is an architecture anchor / god node with high affected area.",
+      "If the fix requires dependency, schema, or public API changes, the current assessment must be recomputed."
+    ],
+    "suggested_inspection": ["inspect local call sites", "inspect grid/formula tests"],
+    "safer_alternative": "make a targeted patch instead of refactoring the grid state model",
+    "better_value_alternative": "targeted patch plus focused regression test has better Value After Risk than a broad refactor"
+  },
+  "provenance": {
+    "safe_scope": "candidate_action.expected_files",
+    "risky_scope": "policy_gates + detected_risk_events + architecture map + learned facts",
+    "required_checks_before_commit": "test_discovery + recommended_decision",
+    "required_controls": "high_risk_triggers + control blueprint selector",
+    "high_risk_triggers": "symbol_diff + criticality + gates + learned facts",
+    "risk_facts": "risk_report + evidence discovery",
+    "value_facts": "benefit_breakdown + value_model + candidate comparison",
+    "why": "explanation_generator"
+  }
+}
+```
+
+Binding fields are the pre-edit autonomy envelope. `pebra_verify` must enforce them after the edit by checking actual diff scope, contract-surface changes, dependency/schema/migration changes, required controls, and required checks. Advisory fields guide the editing model but do not create new hard gates.
+
+Trigger flags in the guidance packet are advisory evidence for the model. Required controls are binding. This distinction keeps PEBRA understandable without letting the model decide that a high-risk trigger is optional.
+
+`risky_scope` is assessment-invalidating by default, not banned by default. The risk score was computed under assumptions about scope; touching a `requires_reassessment` item makes the assessment stale and forces a new assessment. Only `action: forbidden` is a hard reject.
+
+Allowed `risky_scope.action` values:
+
+| Action | Meaning | Verify behavior |
+|---|---|---|
+| `requires_reassessment` | The current risk score no longer applies if this change is touched | Route to `inspect_first` / reassessment |
+| `avoid_unless_required` | Allowed only with evidence that the task cannot be solved safely inside `safe_scope` | Route to `ask_human` if touched without necessity evidence |
+| `forbidden` | Project policy prohibits this under the current action | Route to `reject` |
+
+Enforcement map:
+
+| Binding field | Verification input | Failing result |
+|---|---|---|
+| `safe_scope` | actual diff files/symbols vs approved envelope | `inspect_first` / reassessment for reviewable drift; `ask_human` or `reject` for broad or unrelated drift |
+| `risky_scope` | lockfile/schema/migration/API/dependency/security-sensitive diff checks | Apply the entry's action enum |
+| `required_checks_before_commit` | `completed_checks[]` plus check output provenance | `test_first` when checks are missing; `ask_human` when checks failed but the action is still needed |
+
+`pebra_verify` should accept `completed_checks[]` so required checks are evidence-backed instead of assumed.
+
+Guidance is derived, not authored. PEBRA must not ask an LLM to invent these constraints. An output adapter may render them as prompt text for a model, but the content must be reconstructable from the canonical response.
+
+Because guidance changes the model's behavior, outcomes produced under a guidance packet should record:
+
+```text
+guidance_packet_id
+binding_constraints
+advisory_hints
+calibration_scope = guided_edit
+```
+
+Precedence rule: if `guidance_packet_id` is present, `calibration_scope` must be `guided_edit` unless a later implementation explicitly models guidance as a feature and reports separate calibration curves.
+
+Guided outcomes must be analyzed separately from unguided outcomes unless calibration explicitly models the guidance condition.
 
 ---
 
@@ -1316,11 +1881,16 @@ Because confidence upgraded from low to high, the response uses `recommended_dec
 {
   "schema_version": "0.1",
   "task": "Fix failing login validation",
+  "repo_id": "repo_local_example",
+  "repo_root": "/abs/path/to/example-repo",
+  "assessed_commit": "abc123",
   "risk_snapshot_id": "R0",
   "prediction_error_model_id": "E0",
   "recommended_decision": "proceed",
   "recommended_action_id": "a1",
   "requires_confirmation": true,
+  "risk_mode": "sensitive_context",
+  "high_risk_triggers": [],
   "decision_reason": "Repo-local evidence reduced uncertainty; targeted patch has positive RAU.",
   "risk_report": {
     "risk_type": "risk_budget_indicator",
@@ -1335,6 +1905,16 @@ Because confidence upgraded from low to high, the response uses `recommended_dec
       "key": "c3_max_expected_loss_without_human",
       "value": 0.20,
       "reason": "Auth code is C3 and the C3 threshold is tighter than the global threshold."
+    },
+    "symbol_scope_evidence": {
+      "scope_basis": "symbol",
+      "changed_symbols": ["src/auth.py::validate_login"],
+      "max_change_kind": "BEHAVIORAL",
+      "visibility": "internal",
+      "symbol_fan_in_percentile": 0.42,
+      "consequential_symbol_changed": false,
+      "consequence_reason": [],
+      "fallback_reason": null
     },
     "p_utility_negative": null,
     "rau": {
@@ -1374,9 +1954,9 @@ Because confidence upgraded from low to high, the response uses `recommended_dec
     ],
     "why": [
       "Risk budget 50% used: expected_loss 0.10 divided by C3 threshold 0.20.",
-      "RAU 0.31 is positive after the uncertainty penalty and is in the proceedable band.",
+      "Value After Risk is Positive after the uncertainty penalty.",
       "Confidence is 83% after repo evidence gathering.",
-      "Auth code is C3, so confirmation is required."
+      "Auth code is C3, so this is sensitive context and confirmation is required."
     ]
   },
   "actions": [
@@ -1400,6 +1980,8 @@ Because confidence upgraded from low to high, the response uses `recommended_dec
       "label": "Patch validate_login only",
       "action_type": "edit",
       "action_status": "pending",
+      "risk_mode": "sensitive_context",
+      "high_risk_triggers": [],
       "edit_control": {
         "initial_confidence_band": "low",
         "confidence_band": "high",
@@ -1439,6 +2021,43 @@ Because confidence upgraded from low to high, the response uses `recommended_dec
           "confidence": 0.70,
           "evidence": ["Directly addresses the failing login-validation task."],
           "method": "MCDA value function with normalized criterion weights"
+        },
+        "benefit_breakdown": {
+          "immediate_benefit": {
+            "value": 0.82,
+            "source_type": "elicited",
+            "provider": "user",
+            "confidence": 0.70,
+            "evidence": ["Fixing login validation directly resolves the task."]
+          },
+          "maintainability_delta": {
+            "value": 0.00,
+            "source_type": "derived",
+            "provider": "pebra",
+            "confidence": 0.70,
+            "evidence": ["Proposed targeted patch does not change complexity, coupling, public surface, or testability."]
+          },
+          "technical_debt_interest": {
+            "value": 0.01,
+            "source_type": "derived",
+            "provider": "pebra",
+            "confidence": 0.60,
+            "evidence": ["Small localized patch adds no duplicated path and touches an active C3 auth scope."]
+          },
+          "recurrence_risk": {
+            "value": 0.08,
+            "source_type": "prior_uncalibrated",
+            "provider": "pebra",
+            "confidence": 0.45,
+            "evidence": ["No repo-local recurrence history is available yet."]
+          },
+          "expected_rework_cost": {
+            "value": 0.02,
+            "source_type": "derived",
+            "provider": "pebra",
+            "formula": "recurrence_risk * rework_cost_per_recurrence",
+            "evidence": ["Recurrence cost is tied to C3 auth consequence, not ordinary review cost."]
+          }
         },
         "p_success": {
           "value": 0.74,
@@ -1600,33 +2219,42 @@ Here the 5th percentile is negative, which is consistent with `P(utility < 0) = 
 ## 11. Architecture and Modules
 
 ```text
-Agent / CLI
+CLI / MCP / Dashboard surfaces
    |
    v
-PEBRA MCP server
+app/ use-case controllers
+   +-- assess_controller
+   +-- verify_controller
+   +-- record_outcome_controller
+   +-- accept_risk_controller
+   +-- learning_controller
    |
+   +-- call ports for evidence, store, outcomes, sanctions, learning
+   +-- call core engines for deterministic scoring and decisions
+   |
+   v
+core/ pure engines
    +-- Request/schema validator
    +-- Candidate action parser
    +-- Decision query validator
-   +-- Evidence collector
-   |     +-- git diff/status
-   |     +-- structural metrics
-   |     +-- import graph signals
-   |     +-- call/dependency graph signals
-   |     +-- git history/churn
-   |     +-- security static analysis
-   |     +-- test discovery
-   |     +-- repo config
-   |
    +-- Assessment builder
    +-- Score normalizer
    +-- Weight resolver
    +-- Confidence gate
+   +-- Benefit model
+   +-- Score math
    +-- Decision engine
+   +-- Change classifier
+   +-- High-risk control selector
    +-- Explanation generator
-   +-- Outcome logger
-   +-- Calibration store
+
+adapters/ implement ports:
+   git diff/status, structural metrics, import/call/dependency graphs,
+   architecture map, security static analysis, test discovery, repo config,
+   SQLite store, sanction store, outcome logger, calibration/learning store.
 ```
+
+`cli/`, `mcp_server/`, and `dashboard/` are entrypoints, not controllers. `app/` owns orchestration. `core/` owns deterministic business logic and must not import adapters, dashboard code, SQLite, subprocess, or CLI parsing.
 
 ### 11.1 Assessment Object
 
@@ -1648,6 +2276,8 @@ The in-flight assessment object passed between modules should contain:
 }
 ```
 
+Benefit calibration state lives inside the active snapshot's `benefit_model` section; there is no separate `benefit_snapshot_id` in v1.
+
 ---
 
 ## 12. Config Reference
@@ -1662,6 +2292,19 @@ criticality:
   "src/ui/**": C2
   "tests/**": C1
   "docs/**": C0
+
+architecture:
+  enabled: true
+  source_of_record: pebra_repo_scan
+  optional_enrichment_sources:
+    - ARCHITECTURE.md
+    - graphify-out/ANCHORS.md
+    - graphify-out/graph.json
+    - codeindex
+  stale_external_artifact_policy: ignore_and_use_pebra_map
+  baseline_rebuild_policy: rebuild_if_stale
+  god_node_percentile: 0.95
+  bridge_node_percentile: 0.95
 
 thresholds:
   max_expected_loss_without_human: 0.45
@@ -1710,11 +2353,20 @@ monte_carlo:
 
 learning:
   min_observed_predictions_for_auto_promotion: 100
+  min_observed_risk_predictions_for_auto_promotion: 100
+  min_observed_benefit_predictions_for_auto_promotion: 100
+  benefit_status_when_below_min_n: pending_min_n
   require_holdout_brier_improvement: true
   require_false_proceed_not_worse: true
+  max_false_block_rate: 0.25
   max_auto_promotion_delta: 0.10
   auto_promote_measurement_facts: true
   auto_promote_policy_facts: false
+  decouple_risk_and_benefit_promotion: true
+  exclude_benefit_guidance_influenced_rows_by_default: true
+  var_benefit_narrowing_requires_observed_benefit_outcome: true
+  projected_benefit_variance_floor: 0.04
+  projected_benefit_zero_gate_credit_without_evidence: true
   fact_decay:
     enabled: true
     default_decay_strength: 20
@@ -1726,6 +2378,12 @@ learning:
     min_delta_log_loss_for_promotion: 0.00
     freeze_on_reconciliation_drift: true
     max_snapshot_drift_without_review: 0.10
+  reapplication:
+    top_k: 1                         # v1 fallback; v1.5 may raise to 3
+    probability_pooling: hard_replace # hard_replace | weighted_log_pool
+    max_logit_shift: 2.0              # secondary safety clamp, not the primary control
+    semantic_probability_floor: 0.01
+    semantic_probability_ceiling: 0.99
 
 preferred_blast_radius_tool: sem
 
@@ -1736,8 +2394,9 @@ evidence:
     high_percentile: 0.90
     critical_percentile: 0.95
   fan_in:
-    moderate_absolute: 3
-    high_absolute: 10
+    # Absolute caller counts are display-only context. Gate-driving fan-in
+    # must use repo-relative percentiles so small repos and monorepos behave
+    # consistently.
     high_percentile: 0.90
     critical_percentile: 0.95
   imports:
@@ -1782,8 +2441,15 @@ assessment_id
 action_id
 risk_snapshot_id
 prediction_error_model_id
+guidance_packet_id
 target
 calibration_bucket
+scope_basis
+symbol_id
+change_kind
+visibility
+fan_in_percentile_bucket
+affected_scope
 predicted_probability
 actual_outcome
 outcome_label_status
@@ -1792,13 +2458,17 @@ calibration_scope
 
 `target` uses canonical names such as `p_success`, `p_event.dependency_break`, `p_event.public_api_break`, or `p_event.response_shape_mismatch`. It never stores human labels.
 
+The symbol/scope fields preserve the feature bucket that produced the prediction. Without them, learning can blur a cosmetic edit in a god node with a behavioral edit to an exported symbol in the same file. When symbol evidence is unavailable, set `scope_basis=file_fallback` or `unknown_fallback` and record the fallback reason in the assessment payload.
+
 After an outcome is known:
 
 ```text
 residual = actual_outcome - predicted_probability
 brier_error = residual^2
-log_loss = -log(clamp(probability assigned to the actual outcome, epsilon, 1 - epsilon))
+log_loss = -log(clamp(probability assigned to the actual outcome, LOG_LOSS_CLIP_EPS, 1 - LOG_LOSS_CLIP_EPS))
 ```
+
+Use `LOG_LOSS_CLIP_EPS = 1e-15` for every log-loss calculation. This keeps confident-wrong predictions finite and makes golden regression output deterministic.
 
 Brier score is the primary bounded calibration error. Log loss is a surprise signal for drift and review, not a single-example reweighting rule.
 
@@ -1811,16 +2481,23 @@ Calibration must label what was actually observed:
 | Field | Allowed Values | Meaning |
 |---|---|---|
 | `outcome_label_status` | `observed`, `censored`, `counterfactual` | Whether the outcome was actually seen |
-| `calibration_scope` | `proceeded_edits_only`, `shadow`, `canary`, `benchmark` | Which population the calibration claim covers |
+| `calibration_scope` | `proceeded_edits_only`, `guided_edit`, `shadow`, `canary`, `benchmark` | Which population the calibration claim covers |
 
 PEBRA must not claim full calibration across all actions when outcomes only exist for actions it allowed. Training views for automatic recalibration should include only observed prediction rows, for example:
 
 ```text
 WHERE outcome_label_status = "observed"
 AND calibration_scope = "proceeded_edits_only"
+AND guidance_packet_id IS NULL
 ```
 
 Rejected or blocked actions may still store predictions, but they are censored unless a later CI, benchmark, shadow run, or human-reviewed experiment produces an observable outcome.
+
+Guided edits are observed, but not identical to unguided edits: the model received a binding/advisory packet that may reduce mistakes. Store `guidance_packet_id` and use `calibration_scope = "guided_edit"` when the packet materially shaped the edit. Automatic recalibration may combine guided and unguided outcomes only when the model includes guidance as a feature or reports separate calibration curves.
+
+Canary and benchmark rows are valid outcome evidence, but they are not part of the default production calibration view. They should feed separate validation reports unless the fitted model explicitly stratifies by `calibration_scope`.
+
+Guidance compliance rows are valid learning evidence, but they should not be mixed into the default unguided probability-calibration view. They answer a different question: whether PEBRA's guidance helped the model stay inside the approved envelope.
 
 ### 12.3 Two-Tier Learning Rules
 
@@ -1842,6 +2519,9 @@ Tier 2 may be suggested autonomously but requires human ratification:
 - business-damage or disutility policy.
 - C4 applicability rules.
 - risk tolerance.
+- widening `safe_scope` or making it less specific.
+- downgrading `risky_scope.action`, for example `requires_reassessment -> avoid_unless_required`.
+- removing or weakening required checks.
 
 Promotion gates for Tier 1:
 
@@ -1855,6 +2535,65 @@ auto_promote only if:
 ```
 
 If drift, surprise, or shadow/canary divergence worsens, PEBRA freezes auto-promotion and falls back to the previous snapshot.
+
+### 12.3.1 Guidance Learning Signals
+
+The model guidance packet is both an output of learning and a new source of learning evidence.
+
+Read path:
+
+```text
+learned_risk_facts
+-> active risk_snapshot
+-> apply_snapshot()
+-> adjusted risk inputs
+-> model_guidance_packet safe_scope / risky_scope / checks / risk_facts / why
+```
+
+The same learned fact may affect both channels:
+
+```text
+"dependency upgrades fail often in this repo"
+  -> raises p_event.dependency_break
+  -> adds or strengthens a risky_scope entry for dependency changes
+```
+
+Write path:
+
+```text
+model_guidance_packet
+-> agent edit
+-> pebra_verify
+-> guidance compliance labels
+-> guided-learning report / learned_risk_facts candidates
+```
+
+`pebra_verify` should record guidance-compliance labels:
+
+| Field | Meaning |
+|---|---|
+| `guidance_packet_id` | Which packet the model received |
+| `safe_scope_status` | `respected`, `exceeded`, or `unrelated_drift` |
+| `risky_scope_triggered[]` | Which risky-scope entries were touched |
+| `risky_scope_actions_triggered[]` | Which action enums fired |
+| `completed_checks[]` | Required checks completed with status/provenance |
+| `missing_checks[]` | Required checks not completed |
+| `failed_checks[]` | Required checks that failed |
+| `necessity_evidence_present` | Whether an `avoid_unless_required` change had evidence that it was necessary |
+| `verify_decision` | The resulting `proceed`, `inspect_first`, `test_first`, `ask_human`, or `reject` decision |
+
+Examples of learned facts from guidance compliance:
+
+```text
+models exceed safe_scope on broad_refactor requests in this repo
+dependency upgrades touched under auth scope often trigger reassessment
+tests/test_auth.py catches most auth-guided regressions
+public API risky_scope entries usually need ask_human rather than inspect_first
+```
+
+Autonomous measurement learning may adjust probabilities, source reliability, evidence quality, scope-drift priors, and required-check effectiveness. Policy learning must be human-ratified before it changes future guidance. PEBRA must not silently widen `safe_scope`, downgrade `risky_scope.action`, remove checks, or relax forbidden entries.
+
+Guidance policy learning is counterfactual-sensitive. If PEBRA always tells the model to avoid a change, it does not observe whether that change would have been safe. Therefore, guidance-policy changes should rely on AD-18 counterfactual replay, shadow/canary evidence, benchmark rows, or human-reviewed experiments, not raw guided-outcome frequency alone.
 
 ### 12.4 Applying Learned Risk to the Next Assessment
 
@@ -1902,7 +2641,7 @@ symbol
 > cold-start default
 ```
 
-If two active learned facts have the same specificity, the newest active fact wins. Weighted blending is deferred until PEBRA defines a calibrated blending method.
+If two active learned facts have the same specificity, the best-calibrated / highest-evidence fact wins. If still tied, the lowest stable `fact_id` wins. This avoids order-dependent behavior in the append-only fact store.
 
 Guardrails:
 
@@ -1915,6 +2654,8 @@ Learning may not mutate an assessment already in progress.
 ```
 
 The scoring pipeline remains unchanged after reapplication. Learned facts improve the inputs; they do not replace expected-loss, RAU, confidence, or gate formulas.
+
+AD-16 is the v1 default and the k=1 fallback for later composition. With `learning.reapplication.probability_pooling: hard_replace`, the selected fact directly replaces or adjusts the prior according to its method. With `weighted_log_pool`, the selected fact is pooled with the base prior using the AD-20 method.
 
 ### 12.5 Decay-By-Weight, Not Deletion
 
@@ -2017,7 +2758,586 @@ Report:
 
 Learning is only valuable if the replay curve improves against the no-learning baseline. If it does not, PEBRA should keep the facts for audit but avoid promoting them into the active snapshot.
 
-Outcome logging is v1 schema-only unless the implementation ships `pebra_record_outcome`. Calibration reports and automatic learning require stored outcomes.
+The executable harness lives outside the production core:
+
+```text
+benchmarks/flow/
+  corpus/
+    requests/*.json
+    outcomes/*.json
+    expected_decisions/*.json
+  replay.py
+  scorecard.py
+```
+
+It has two modes:
+
+| Mode | Purpose | Labels Needed |
+|---|---|---|
+| Deterministic flow regression | Freeze realistic requests and assert the same decisions/scores are produced from the same snapshot | No |
+| Learning-lift evaluation | Replay labeled outcomes chronologically and compare active learning against genesis/no-learning | Yes |
+
+Deterministic flow regression should run on every commit. It catches accidental changes to math, gates, scope handling, or guidance rendering:
+
+```text
+same request corpus
++ same risk_snapshot
++ same prediction_error_model
+= same scores, decisions, guidance, and guardrail outputs
+```
+
+Learning-lift evaluation should run on labeled corpora:
+
+```text
+run A: genesis/no-learning snapshot, apply_snapshot disabled
+run B: active learning, snapshots advance only when promotion gates pass
+compare scorecards
+```
+
+Minimum scorecard:
+
+| Metric | Gate |
+|---|---|
+| Brier/log-loss delta | active learning improves or does not regress |
+| false-proceed rate | must not increase |
+| C0-C2 false-block / over-escalation rate | report; gate after enough labels |
+| high-criticality decision weakening | must not occur without ratified policy |
+| decision drift | every material flip must cite the learned fact or snapshot that caused it |
+| guidance compliance | report safe-scope drift, risky-scope triggers, and check completion deltas |
+
+The first corpus should be small and curated. Synthetic labels are acceptable for the initial harness if they are explicit and reviewed. Later corpora may include SWE-bench-style tasks, private PR logs, and PEBRA's own outcomes, but proceeded-only outcomes must keep their `observed/censored/counterfactual` labels to avoid selective-label bias.
+
+### 12.8 Top-k Learned Fact Composition
+
+Top-k composition lets PEBRA use several relevant learned facts for the same target instead of only the single most-specific fact.
+
+It is ratified for v1.5 / Phase 6. AD-16 remains the v1 default and the `top_k = 1` fallback.
+
+Composition is partitioned by target:
+
+```text
+p_success facts combine only with p_success facts
+p_event.dependency_break facts combine only with p_event.dependency_break facts
+source_reliability facts combine only with source_reliability facts
+evidence_quality facts combine only with evidence_quality facts
+```
+
+For probability targets (`p_success`, `p_event.<event_class>`), use reliability-weighted logarithmic pooling:
+
+```text
+candidates = {base_prior p0} + top_k matching learned probabilities
+
+raw_weight_i =
+  specificity_factor_i
+  * calibration_quality_i
+  * evidence_count_factor_i
+  * decay_weight_i
+
+normalized_weight_i = raw_weight_i / sum(raw_weight)
+
+logit(p*) = sum_i normalized_weight_i * logit(p_i)
+p* = sigmoid(logit(p*))
+```
+
+This is a weighted expert-opinion pool in odds space. Because the weights sum to 1, correlated warnings cannot stack without bound. A secondary safety clamp may bound `abs(logit(p*) - logit(p0))`, but this clamp is not the primary control.
+
+PEBRA must clamp probability inputs to a semantic certainty range before pooling:
+
+```text
+p_i = clamp(p_i, learning.reapplication.semantic_probability_floor,
+                 learning.reapplication.semantic_probability_ceiling)
+```
+
+The default range `[0.01, 0.99]` is a policy statement that PEBRA should not claim certainty, not a numerical machine-epsilon trick.
+
+For [0,1] reliability targets such as `source_reliability` and `evidence_quality`, use the same normalized weights but pool in linear space:
+
+```text
+x* = sum_i normalized_weight_i * x_i
+x* = clamp(x*, 0, 1)
+```
+
+Top-k candidate selection:
+
+```text
+rank by:
+  specificity
+  calibration_quality
+  evidence_count
+  effective_weight
+  stable fact_id
+
+take top_k per target
+```
+
+Provenance must record each applied fact:
+
+```json
+{
+  "target": "p_event.dependency_break",
+  "pooling_method": "weighted_log_pool",
+  "base_prior": 0.25,
+  "pooled_result": 0.61,
+  "applied_facts": [
+    {
+      "fact_id": "fact_42",
+      "scope": "src/api/billing/**",
+      "specificity_tier": "path_glob",
+      "raw_weight": 0.72,
+      "weight_share": 0.60,
+      "effective_weight": 0.81
+    }
+  ],
+  "safety_clamp_engaged": false
+}
+```
+
+Human-facing explanation should summarize the weighted signals, for example:
+
+```text
+Risk was raised by two learned signals:
+billing-path history (60% weight) and major-dependency upgrade history (40% weight).
+```
+
+v1.5+ upgrade: when enough outcomes exist, PEBRA may replace hand-set weights with logistic-regression stacking for probability targets using `scikit-learn`. This must remain provenance-tagged and gated by enough calibration data.
+
+### 12.9 Typed Scope/Action DAG
+
+The typed scope/action DAG is the ratified v2 / Phase 7 matching model. It complements AD-20:
+
+```text
+AD-21 finds candidate learned facts.
+AD-20 combines them safely.
+```
+
+The DAG represents scopes as typed nodes:
+
+```text
+repo
+path_glob
+symbol
+dependency
+action_type
+event_target
+```
+
+Example:
+
+```text
+repo:pebra
+  -> path_glob:src/api/**
+      -> path_glob:src/api/billing/**
+          -> symbol:calculateInvoice
+  -> dependency:react
+  -> action_type:dependency_upgrade
+```
+
+The DAG is serialized inside immutable snapshot JSON:
+
+```json
+{
+  "metrics_json": {
+    "scope_dag": {
+      "nodes": [],
+      "edges": []
+    }
+  }
+}
+```
+
+`learned_risk_facts.scope_node_id` may point to a DAG node when the DAG is enabled. This is a forward-only additive field; older facts without a `scope_node_id` still match by the AD-16 string/glob rules.
+
+Traversal is deterministic:
+
+```text
+1. Find all scope nodes matching the candidate action.
+2. Reduce to maximal / most-dominant matching nodes per axis.
+3. Collect candidate facts from those nodes and their allowed ancestors.
+4. Pass candidates to AD-20 top-k composition.
+```
+
+Orthogonal axes compose. For example, a single edit may match:
+
+```text
+path_glob:src/api/billing/**
+dependency:react
+action_type:dependency_upgrade
+event_target:p_event.dependency_break
+```
+
+Rejected for the core scorer:
+
+- REINFORCE or GRPO memory policies.
+- learned softmax node weights.
+- embedding-based matching.
+- LLM-authored traversal rules.
+- non-deterministic graph traversal.
+
+The DAG is data, not a model. It improves matching and provenance without changing the expected-loss, RAU, confidence, or gate formulas.
+
+### 12.10 Model Guidance Packet Ratification
+
+AD-23 is ratified here: model guidance is the pre-edit autonomy envelope.
+
+PEBRA may render deterministic guidance for the editing model, but the guidance is derived from PEBRA's own approved action, gates, and evidence. It is not authored by the model and it is not a second decision system. JSON is the canonical audit representation; adapters may render the same facts as an MCP payload, prompt text, PR card, or CLI summary.
+
+Binding fields:
+
+| Binding field | Meaning | Post-edit enforcement |
+|---|---|---|
+| `safe_scope` | Files, symbols, dependencies, or action envelope the model may touch normally | `pebra_verify` compares actual diff scope to this envelope |
+| `risky_scope` | Changes that require reassessment, human review, or rejection depending on their action enum | `pebra_verify` applies each entry's action: `requires_reassessment`, `avoid_unless_required`, or `forbidden` |
+| `required_checks_before_commit` | Checks that must be completed before autonomous commit/PR | `pebra_verify` requires matching entries in `completed_checks[]` with status/provenance |
+
+Advisory fields such as `risk_facts`, `why`, `suggested_inspection`, and `safer_alternative` may guide the model, but they do not create hard gates.
+
+`safe_scope` and `risky_scope` must be project-aware and provenance-traced. Cold-start defaults may include common risky changes such as dependency upgrades, schema/migration edits, public API changes, and broad refactors. Project-specific entries should be derived from `.pebra.yml`, criticality stages, the architecture map, evidence discovery, and promoted learned facts. The model must not invent risky-scope entries.
+
+Guided edits are a separate calibration population. `outcomes` and `prediction_errors` must carry nullable `guidance_packet_id`; if it is present, the row's `calibration_scope` must be `guided_edit` unless a later model explicitly includes guidance as a calibration feature. The default production calibration view must require `guidance_packet_id IS NULL`.
+
+`pebra_verify` should persist guidance compliance labels: `safe_scope_status`, `risky_scope_triggered[]`, `risky_scope_actions_triggered[]`, `completed_checks[]`, `missing_checks[]`, `failed_checks[]`, `necessity_evidence_present`, and `verify_decision`. These labels power §12.3.1 guidance learning.
+
+The packet must be stored and hash-chained so a later reviewer can reconstruct exactly what the model was allowed to do.
+
+Outcome logging is a v1 product requirement, but Phase 0 may ship schema-only until CLI `pebra record-outcome` and MCP `pebra_record_outcome` support land in the MCP + outcomes phase. Calibration reports, dashboard learning panels, and automatic learning require stored outcomes.
+
+### 12.11 Multi-Repository Runtime and Repo-Scoped State
+
+PEBRA should support many local repos on one developer machine without mixing risk history. The authoritative state for a repo is local to that repo:
+
+```text
+<repo>/
+  .pebra.yml                  # committed team policy
+  .pebra/
+    .gitignore                # auto-written; keeps local state out of git
+    pebra.db                  # repo-local decision + learning source of truth
+    config                    # gitignored machine-local repo config
+    dashboard.json            # last dashboard port / pid / URL metadata
+    architecture_cache/       # rebuildable derived artifacts
+    scorecards/               # local project scorecards, not benchmark corpora
+```
+
+Repo resolution:
+
+```text
+current working directory
+-> walk upward for .pebra/
+-> otherwise walk upward for .git/
+-> initialize .pebra/ at the resolved repo root
+```
+
+Every assessment, guidance packet, outcome, prediction error, learned fact, risk snapshot, architecture projection, and dashboard page is scoped to exactly one repo-local store. PEBRA must not place learned risk facts or active snapshots in a machine-global database by default.
+
+A small machine registry is allowed for discovery and dashboard convenience:
+
+```text
+Windows: %APPDATA%\pebra\registry.json
+Linux/macOS: $XDG_STATE_HOME/pebra/registry.json or ~/.local/state/pebra/registry.json
+```
+
+The registry may store known repo roots, display names, git remotes, last dashboard port, last seen time, and repo-local DB paths. It is not a learning store. Deleting the registry must not delete repo risk history.
+
+`repo_id` should be derived from normalized git remote URL plus the resolved repo root. If no remote exists, PEBRA should create a stable local ID in `.pebra/config`. Responses should include `repo_id` and `repo_root` so the user and agent know which project the decision came from.
+
+Worktree rule: if `.git` is a file rather than a directory, PEBRA should treat the checkout as a git worktree. The safe default is to create a `.pebra/` inside that worktree so parallel agents/branches do not share assessments, learning, or active snapshots accidentally. If the user explicitly opts into sharing the parent repo store, PEBRA should warn and label the shared state in CLI, MCP, and dashboard output.
+
+Configuration precedence:
+
+```text
+CLI flags / env vars
+-> .pebra.yml committed team policy
+-> <repo>/.pebra/config machine-local repo config
+-> machine registry / global config
+-> defaults
+```
+
+`.pebra.yml` owns project policy, risk thresholds, and criticality. `.pebra/config` owns local paths, dashboard port preference, and machine-only settings. Policy changes should not be hidden in machine-local config.
+
+Cross-repo learning is out of scope for v1. Future global/org priors may exist only as weak cold-start priors and must never override repo-specific learned facts or human-ratified project policy.
+
+Hash-chain append rule: every append-only decision table write must be serialized. The store adapter must use a write transaction such as:
+
+```sql
+BEGIN IMMEDIATE;
+-- read current tail hash
+-- compute new integrity_hash
+-- insert row
+COMMIT;
+```
+
+The adapter should set a `busy_timeout`. WAL permits concurrent readers, but it does not by itself protect the tail-hash read/compute/insert sequence from two writer processes racing against the same previous hash. CLI, MCP, dashboard verify flows, and background learning jobs must all write through the same store adapter. An optional `.pebra/write.lock` may add an advisory process lock, but the SQLite transaction is the required correctness boundary.
+
+### 12.12 Controlled High-Risk Mode
+
+Some high-risk work is business-mandated: database migrations, payment system upgrades, security fixes, or director-approved production changes. PEBRA must not pretend these actions are safe, but it should support a controlled path for doing them.
+
+Controlled high-risk is a companion mode, not a sixth decision:
+
+```text
+before approval:
+  decision = ask_human
+  risk_mode = controlled_high_risk
+
+after authorized acceptance + mandatory controls:
+  decision = proceed
+  risk_mode = controlled_high_risk
+  requires_confirmation = true
+```
+
+`risk_mode=controlled_high_risk` requires at least one `high_risk_triggers[]` entry. PEBRA must show the user and model which trigger fired and which control blueprint was selected; it must not collapse a mandatory migration, payment upgrade, or director-approved risky action into a bare `reject`.
+
+The score remains honest:
+
+```text
+expected_loss unchanged
+risk_adjusted_utility unchanged
+edit_confidence unchanged
+risk_budget_used unchanged
+```
+
+Risk acceptance adds controls; it never lowers risk. Required controls should be selected from a deterministic blueprint keyed by risk class, change kind, criticality, affected area, evidence quality, and project policy. Examples:
+
+| Risk Class | Required Control Examples |
+|---|---|
+| database migration | backup/restore point, staging dry-run, expand-contract plan, rollback or roll-forward plan, data validation baseline, post-migration verification |
+| payment change | sandbox payment tests, idempotency evidence, webhook tests, reconciliation baseline, duplicate-charge guard, ledger checks |
+| public API / contract | contract tests, consumer-shape checks, versioning/compatibility plan, dependent test run |
+| UI/user journey | headed or CI Playwright E2E for affected journey, visual/wiring checks, rollback plan |
+| broad/god-node behavioral edit | impact preview, targeted tests, smoke tests, code-owner or human approval |
+
+Risk acceptance is created only through an explicit use case, not by the scoring engine:
+
+```text
+CLI: pebra accept-risk --assessment-id ... --action-id ... --rationale ...
+MCP: pebra_accept_risk
+app: app/accept_risk_controller.py
+port: SanctionPort
+store: sanction_events
+```
+
+The controller verifies that the caller is permitted to ratify risk, records `ratified_by` and non-empty `rationale`, binds the sanction to the approved risk profile, and writes a hash-chained `sanction_events` row.
+
+Each selected blueprint records its trigger linkage:
+
+```text
+high_risk_triggers[]
+control_blueprint_id
+pre_edit_authorization_controls[]
+pre_commit_required_controls[]
+suppressed_triggers[]
+```
+
+`pre_edit_authorization_controls` must be satisfied before a risk-threshold `ask_human` / `reject` can become `proceed` with `risk_mode=controlled_high_risk`. `pre_commit_required_controls` are binding guidance and are verified later by `pebra_verify`; missing or failed controls invalidate the sanction before commit or successful outcome logging.
+
+Suppressed triggers are retained for audit when the classifier verifies `COSMETIC` or safe `TEST_ONLY` and therefore avoids nuisance high-risk mode.
+
+Risk acceptance is bound to the risk profile that was approved:
+
+```text
+repo_id
+assessment_id
+action_id
+risk_snapshot_id
+assessed_commit
+guidance_packet_id
+safe_scope_hash
+risky_scope_hash
+required_controls_hash
+control_blueprint_id
+risk_report_hash
+```
+
+Risk acceptance must be stored as an append-only `sanction_events` record, not as a mutable flag on the assessment:
+
+```text
+sanction_id
+assessment_id
+action_id
+repo_id
+risk_snapshot_id
+assessed_commit
+guidance_packet_id
+sanction_type
+sanction_scope
+status
+ratified_by
+rationale
+safe_scope_hash
+risky_scope_hash
+required_controls_hash
+control_blueprint_id
+risk_report_hash
+expires_at
+invalidated_reason
+```
+
+If evidence becomes stale, scope drifts, the actual symbol diff is more severe than the proposed patch, or required controls change, the risk acceptance is invalidated and the action returns to `inspect_first` or `ask_human`.
+
+Default sanction scope is one action. Standing/scoped sanctions are out of the default path and must be narrow: risk class, path glob, short expiry, explicit ratifier, and stronger audit. A sanction may override risk-threshold gates such as C4 escalation, expected-loss threshold, RAU default reject, or Monte Carlo negative-utility gates. It must not silently override a hard project policy violation; policy exceptions require a distinct, higher-scrutiny sanction type.
+
+### 12.13 Symbol-Level Risk Resolution
+
+AD-27 is ratified here: symbol-level risk resolution is PEBRA's canonical risk model. File/path criticality tells PEBRA where to inspect harder and how severe consequence-bearing failures could be, but the edited symbol and semantic change kind decide normal likelihood features, Affected Area, guidance, learning buckets, and whether high-risk mode is warranted.
+
+Symbol-level criticality resolution:
+
+```text
+edited_consequence_symbol_stage =
+  max(stage(symbol) for edited symbols where change_kind in
+      {BEHAVIORAL, CONTRACT, SIDE_EFFECT, DIRECTIVE, UNKNOWN}
+      and symbol is consequential)
+
+path_or_capability_stage = stage matched from .pebra.yml / capability detection
+
+effective_criticality_stage =
+  if edited_consequence_symbol_stage exists:
+    max(edited_consequence_symbol_stage, path_or_capability_stage)
+  elif verified_change_kind in {COSMETIC, safe TEST_ONLY}:
+    sensitive_context_only(path_or_capability_stage)
+  else:
+    conservative_file_fallback(path_or_capability_stage)
+```
+
+In practice, file/path and capability criticality still raise the consequence level for behavioral/contract/side-effect edits to sensitive domains such as payments, auth, migrations, and external state. They do not by themselves make a cosmetic or safe test-only edit a consequential high-risk edit. Parser or fan-in failure uses `UNKNOWN` and falls back conservatively.
+
+PEBRA should classify proposed and actual edits with `SymbolDiffProvider` and `core/change_classifier.py`. Required invariants:
+
+- C4 path alone is not enough to trigger controlled high-risk mode.
+- payment path alone is not enough.
+- god-node / architecture-anchor status alone is not enough.
+- `COSMETIC` and safe `TEST_ONLY` edits do not trigger controlled high-risk mode solely from file membership.
+- `BEHAVIORAL`, `CONTRACT`, `SIDE_EFFECT`, `DIRECTIVE`, or `UNKNOWN` changes to consequential symbols may trigger elevated review or controlled high-risk mode.
+- parser/fan-in failure is conservative: use `UNKNOWN`, not low risk.
+- regular `risk_report`, `p_event`, review cost, and Affected Area must use symbol/scope evidence when available, not only high-risk triggers.
+- finalized `high_risk_triggers[]` are assembled by core from symbol evidence, scores, gates, policy, learned facts, and evidence gaps; adapters emit raw evidence only.
+
+Consequential symbols are identified by exported/public status, repo-relative fan-in percentile, transitive reach to consequence-bearing symbols, side-effect profile, or capability signals such as payment, DB write, migration, deletion, external state, idempotency, retry, or transaction-boundary behavior.
+
+`pebra_verify` must rerun the full classifier on the actual diff and compare it with the pre-edit packet. If the actual change is more severe, the original assessment and any risk acceptance are invalidated:
+
+```text
+pre-edit: COSMETIC
+actual:   BEHAVIORAL on C4 payment symbol
+result:   scope_drift_detected = true, ask_human / reject
+```
+
+This closes the body-change blind spot that contract-surface scanning cannot catch.
+
+### 12.14 Comparative Benefit Model
+
+AD-28 is ratified here: PEBRA optimizes auditable net value under risk constraints, not risk minimization. Risk constrains action; benefit justifies action. Maintainability is a first-class measured economic outcome of living software, not an optional fuzzy bonus. The existing expected-utility and RAU formulas remain canonical. AD-28 changes how the scalar `benefit` is resolved and explained.
+
+Required invariants:
+
+- `benefit_breakdown` is upstream of RAU; it is not a second decision engine.
+- The final scalar `benefit` is still the only benefit input consumed by `expected_benefit = p_success * benefit`.
+- Benefit components must carry provenance, confidence, and variance.
+- Unsupported or strategy-only long-term value claims widen `Var(benefit)` and therefore lower RAU through the uncertainty penalty; code-derived maintainability metrics are deterministic projections with variance tied to evidence coverage.
+- Strategic/business value and value-policy weights are Tier-2 value judgments; PEBRA may suggest them from outcomes but must not auto-promote them without ratification.
+- Recurrence and durability probabilities are Tier-1 measurement targets when outcomes exist, because reverts, re-edits, follow-up regressions, and reopened issues are observable.
+- Recurrence cost must be scaled to the affected scope's expected-loss/disutility scale, not to ordinary review cost.
+- Maintainability deltas are `derived` from a concrete proposed patch AST/diff, `projected` from a strategy without a patch, and `measured` after `pebra_verify` sees the actual diff.
+- Benefit deltas use before/after metric comparison, directional normalization, and future-exposure weighting as defined in §5.1.1.
+- `projected` strategy-only deltas may explain alternatives but receive no gate-driving credit unless configured or ratified.
+- Positive maintainability benefit follows confirm-before-credit: it receives gate-driving weight only when backed by concrete patch metrics, configured policy, or verified outcomes. Negative maintainability deltas, new debt interest, and recurrence/rework costs count immediately when detected.
+- Net-benefit style ranking is the primary alternative-comparison lens. ICER-style pairwise ratios are diagnostic only.
+- PEBRA ranks quantified alternatives only when the request supplies multiple candidate actions. A single-action assessment may render a qualitative `better_value_alternative`, but it must not invent a fully quantified alternative set.
+
+Outcome labels that support future benefit calibration include:
+
+```text
+task_accepted
+issue_reopened
+reverted
+followup_regression
+reedit_required
+review_comments_count
+time_to_merge
+tests_added
+tests_caught_failure
+maintainability_delta_measured
+debt_interest_observed
+```
+
+Benefit learning follows AD-15's two-tier rule:
+
+```text
+measurement: p_recurrence, p_success, p_event.*, source reliability -> autonomous calibration
+value/policy: strategic value, discount rate, maintainability weights, debt tolerance -> human-ratified suggestion
+```
+
+### 12.15 Decoupled Risk and Benefit Learning
+
+AD-29 is ratified here: benefit learning uses the same outcome stream as risk learning, but it must not share a promotion gate with risk learning.
+
+One outcome can create multiple prediction-error rows:
+
+```text
+risk targets:
+  p_success
+  p_event.<event_class>
+  p_recurrence_as_harm
+
+benefit binary targets:
+  immediate_benefit_realized
+  task_accepted
+  recurrence_avoided
+
+benefit continuous targets:
+  maintainability_delta
+  review_cost
+  expected_rework_cost
+  technical_debt_interest
+  net_benefit_score
+```
+
+Required invariants:
+
+- `prediction_errors` must carry `target_type`: `risk_binary`, `benefit_binary`, or `benefit_continuous`.
+- Binary targets populate `predicted_probability`, `actual_outcome`, `residual`, `brier_error`, and `log_loss`; continuous benefit targets populate `predicted_value`, `actual_value`, `residual`, and `squared_error`.
+- `brier_error` and `log_loss` are NULL for `benefit_continuous`; `squared_error` is NULL for `risk_binary` and `benefit_binary`.
+- Risk binary targets use Brier/log-loss and feed the risk calibration view.
+- Benefit binary targets use Brier/log-loss but feed a separate benefit-binary calibration view.
+- Benefit continuous targets use residual/MSE/MAE and feed a separate benefit-continuous calibration view.
+- PEBRA must not average risk Brier/log-loss and benefit continuous errors into one promotion score.
+- Risk promotion gates only on risk calibration and never waits for benefit promotion.
+- Benefit promotion gates only on benefit calibration and may remain `pending_min_n` without blocking risk promotion.
+- Once benefit calibration reaches `min_observed_benefit_predictions`, benefit gates become active and stay visible; a low-volume repo must surface `benefit_status=pending_min_n` rather than silently skipping benefit forever.
+- Benefit promotion never recomputes or invalidates a promoted risk snapshot.
+- A snapshot may store both `risk_model` and `benefit_model` sections, but each section has its own status, activation time, min-N, and promotion metrics.
+
+Variance guard:
+
+```text
+Var(benefit) may narrow only from observed benefit outcomes:
+  measured maintainability_delta
+  observed review_cost
+  observed rework / recurrence
+  verified technical_debt_interest evidence
+```
+
+The following must not narrow `Var(benefit)`:
+
+```text
+cross-fact confidence propagation
+LLM confidence
+unratified strategic value
+generic learned optimism
+```
+
+Because narrowing `Var(benefit)` raises RAU, variance narrowing is economically equivalent to increasing the action's attractiveness and must be governed as carefully as the benefit magnitude.
+
+Benefit-guidance selective-label guard:
+
+```text
+benefit_guidance_influenced = true
+```
+
+must be set when model guidance selected, encouraged, or constrained the action based on benefit claims such as maintainability, debt reduction, durability, or better-value alternative. Default benefit calibration views exclude or stratify these rows. This prevents PEBRA from learning an optimism loop where it recommends the edits it already believes are beneficial and then calibrates only on those proceeded edits.
+
+Off-policy honesty rule:
+
+PEBRA may rank candidate actions prospectively by expected net benefit. It must not claim observed calibration of unchosen alternatives unless an off-policy method with logged propensity or controlled exploration is explicitly implemented. Off-policy benefit evaluation is a benchmark/v2 concern, not a default v1 production claim.
 
 ---
 
@@ -2030,7 +3350,9 @@ v1 should include:
 - MCP tool `pebra_compare`.
 - Optional CLI command `pebra assess`.
 - CLI command `pebra verify`.
+- CLI command `pebra accept-risk`.
 - MCP tool `pebra_verify`.
+- MCP tool `pebra_accept_risk`.
 - Optional convenience wrapper `pebra_assess` for a single action.
 - JSON input/output using `schema_version: "0.1"`.
 - Human-readable table generated from canonical response.
@@ -2038,9 +3360,8 @@ v1 should include:
 Roadmap:
 
 - `pebra_explain`.
-- `pebra_record_outcome`.
 
-`pebra_verify` closes the autonomy loop after an edit and before commit, PR, or successful outcome logging. It takes a stored `assessment_id`, checks evidence freshness, compares the actual diff against the approved action envelope, detects contract-surface changes, and returns the same five-decision vocabulary. It does not create a sixth decision; failures route through `inspect_first`, `test_first`, `ask_human`, or `reject`.
+`pebra_verify` closes the autonomy loop after an edit and before commit, PR, or successful outcome logging. It takes a stored `assessment_id`, a verification `scope`, and optional `completed_checks[]`; checks evidence freshness; compares the actual diff against `safe_scope`, `risky_scope`, and the other binding fields of `model_guidance_packet`; detects contract-surface changes; and returns the same five-decision vocabulary. It does not create a sixth decision; failures route through `inspect_first`, `test_first`, `ask_human`, or `reject`.
 
 ### 13.2 v1 Should Include
 
@@ -2049,6 +3370,8 @@ Roadmap:
 - Tier-1 evidence discovery:
   - LOC and complexity via `radon`.
   - Python AST import graph fan-in/fan-out.
+  - PEBRA-built architecture anchors and domain map from repo scan.
+  - Symbol-level diff classification for proposed and actual edits.
   - Python SAST via `bandit`.
   - Blast radius through `sem` when available.
   - Git diff/status and targeted test discovery.
@@ -2061,6 +3384,11 @@ Roadmap:
 - Edit-confidence scoring.
 - Rank-gap fallback when Monte Carlo is unavailable.
 - Repo-level `.pebra.yml`.
+- Repo-scoped `.pebra/pebra.db` state, `.pebra/.gitignore` initialization, machine-local `.pebra/config`, and a small machine registry for repo discovery/port reuse.
+- Worktree detection and safe default isolation for parallel agent branches.
+- Serialized hash-chain appends using `BEGIN IMMEDIATE` so concurrent CLI/MCP/dashboard-adjacent writes cannot fork the audit log.
+- Symbol-level risk resolution so cosmetic/test-only edits to C4/god-node/payment files do not trigger high-risk mode solely from file membership.
+- Post-edit full symbol reclassification so actual behavioral/contract/side-effect drift cannot evade verify.
 - Outcome logging schema.
 
 ### 13.3 v1.5 Should Add
@@ -2073,7 +3401,10 @@ Roadmap:
 - Method sensitivity report for weight/rank stability.
 - Monte Carlo decision gates when validated distributions or calibrated outcome data exist.
 - Automatic measurement learning from `prediction_errors`, with fact decay, counterfactual promotion, and snapshot reconciliation.
+- Decoupled risk/benefit learning tracks with separate calibration views, min-N gates, and promotion gates.
+- Top-k learned-fact composition with reliability-weighted logarithmic pooling.
 - Learning-loop evaluation report comparing active snapshots against a genesis/no-learning baseline.
+- Architecture-map comparison/enrichment adapters for Graphify/codeindex artifacts when configured.
 
 ### 13.4 v1 Should Not Include
 
@@ -2085,6 +3416,7 @@ Roadmap:
 - Claims of universal correctness.
 - Risk labels used as direct model inputs without measured evidence.
 - RL-trained memory policies, embeddings, or LLM-written gate parameters in the core scorer.
+- Building a new full code graph platform inside PEBRA.
 - Broad vendor-specific integrations before the core loop works.
 
 ### 13.5 Success Criteria
@@ -2093,10 +3425,16 @@ PEBRA v1 is useful if:
 
 - It makes agents choose narrower edits when broad edits have poor expected value.
 - It discovers structural risk from measured repo signals.
+- It detects architecture anchors / god nodes from local architecture maps and explains their impact separately from criticality.
 - It recommends tests/inspection when uncertainty could change the decision.
 - It avoids overconfident action when confidence is low.
 - It produces rationales humans can audit.
 - It integrates through MCP without changing the agent runtime.
+- It works across many local repos on the same machine without sharing learned facts or corrupting repo-specific audit chains.
+- It can serve a local dashboard without assuming the default port is free.
+- It never emits a bare high-risk `ask_human` or `reject`: high-risk routes include `risk_mode`, `high_risk_triggers[]`, mapped control blueprints, and required controls or suppression reasons.
+- It avoids nuisance high-risk triggers and nuisance ordinary risk cards by classifying the edited symbol/change kind, while still escalating one-line behavioral changes to consequential payment, migration, or public API symbols.
+- It records symbol/scope provenance in risk reports and prediction-error buckets so learning distinguishes cosmetic/test-only edits in sensitive files from consequential symbol changes.
 
 ---
 
@@ -2136,37 +3474,164 @@ For each task:
 | Review cost reduction | Did PEBRA avoid noisy broad diffs? |
 | Monte Carlo decision value | When enabled, did `P(utility < 0)` or `P(action is best)` improve borderline decisions? |
 
-### 14.4 Learning-Loop Validation
+### 14.4 Product-Quality Validation
 
-The learning loop must be evaluated as a streaming system, not only as a static model. Replay assessments in chronological order and compare:
+Unit, property, and golden tests prove the plumbing. This layer proves the product: are PEBRA's risk numbers correct, and does PEBRA make agents code better?
+
+AD-19's executable form is the `benchmarks/flow` harness:
 
 ```text
-genesis/no-learning baseline
-vs.
-active learned snapshots available at that historical point
+benchmarks/flow/
+  manifests/*.yml
+  corpus/
+    requests/*.json
+    outcomes/*.json
+    expected_decisions/*.json
+  adapters/
+    structural/
+      codeindex_adapter.py
+      gitnexus_external_adapter.py
+    jit/
+      apachejit_loader.py
+      jit_defects4j_loader.py
+    agent/
+      swebench_runner.py
+  replay.py
+  scorecard.py
 ```
 
-The validation report should include:
+The harness runs the real pipeline through real adapters deterministically: snapshots are pinned, benchmark manifests pin data versions, and regression mode must not depend on wall-clock time or unseeded randomness.
 
-- rolling Brier and log-loss deltas.
-- false-proceed rate delta.
-- C4 / high-criticality weakening count.
-- contradiction count against ratified policy facts.
-- staleness and decay distribution.
-- repeated-failure or rework reduction.
+Validation tracks:
 
-Promotion is justified only when learned snapshots improve calibration or reduce repeated errors without weakening safety gates. If the learned snapshot does not beat the genesis baseline, PEBRA should keep the facts for audit but not auto-promote them.
+| Track | Oracle / Baseline | Question | License / Scope |
+|---|---|---|---|
+| Deterministic flow regression | frozen golden corpus | Do identical requests, snapshots, and models produce byte-identical scores, decisions, guidance, and guardrail outputs? | runs on every commit |
+| Structural agreement | codeindex / radon / bandit; GitNexus as optional external comparator | Does `affected_area` / centrality agree with established impact tools? | GitNexus is external-only, never shipped |
+| Calibration oracle | ApacheJIT / JIT-Defects4J labels plus logistic JIT-DP baseline | Are `p_success` and `p_event.*` calibrated and discriminative? | dataset version pinned |
+| Learning lift | genesis/no-learning snapshot | Does active learning beat cold-start after outcomes accumulate? | chronological replay |
+| Agent efficacy | SWE-bench Verified/Live with-vs-without PEBRA | Do guided agents introduce fewer regressions without losing resolved rate? | long-running benchmark tier |
+| Comparator | TDAD-style graph-impact regression-reduction work when available | How does PEBRA compare to the closest graph-impact agent-safety baseline? | comparator-only |
+
+GitNexus may be used as an external benchmark comparator, like one model benchmarking against another. It is never imported, vendored, shipped, or required by PEBRA.
+
+Reproducibility rule: every scorecard records dataset name, dataset version/split/commit, comparator tool version/commit, PEBRA git commit, `risk_snapshot_id`, `prediction_error_model_id`, and `calibration_scope`. Benchmark numbers are only comparable when both code and data are pinned.
+
+#### 14.4.1 Scorecard Math
+
+For prediction `p_i` in `(0,1)` and observed outcome `y_i` in `{0,1}`:
+
+```text
+residual_i = y_i - p_i
+brier_i = (p_i - y_i)^2
+log_loss_i = -[y_i * ln(p_hat_i) + (1 - y_i) * ln(1 - p_hat_i)]
+p_hat_i = clip(p_i, LOG_LOSS_CLIP_EPS, 1 - LOG_LOSS_CLIP_EPS)
+
+Brier = mean(brier_i)
+LogLoss = mean(log_loss_i)
+signed_bias = mean(y_i - p_i)
+
+ECE = sum_m (|B_m| / N) * |observed_rate(B_m) - predicted_mean(B_m)|
+lift_lower_is_better = M_baseline(genesis) - M_learned(active)
+lift_higher_is_better = M_learned(active) - M_baseline(genesis)
+
+false_proceed_rate = count(proceed and harmful) / count(harmful)
+false_block_rate_c0_c2 = count(held and safe and criticality in {C0,C1,C2}) / count(safe and criticality in {C0,C1,C2})
+```
+
+Brier/log-loss are lower-is-better promotion gates, so positive lift is `baseline - learned`. AUC-PR, AUC-ROC, and Spearman agreement are higher-is-better, so positive lift is `learned - baseline`. ECE is reported and used for reliability diagrams, but not alone as a hard gate because it is bin-sensitive. AUC-PR is the primary discrimination metric for defect/oracle corpora because harmful outcomes are usually imbalanced; AUC-ROC is secondary.
+
+Outcome labels use a consistent convention: `y=1` means harmful / bug-inducing and `y=0` means safe. Dataset adapters must map their oracle into this convention: SZZ/JIT corpora map bug-inducing commits to `y=1`; SWE-bench-style agent runs map failed or regression-introducing patches to `y=1`; live PEBRA outcomes map terminal failed/regression statuses to `y=1`.
+
+`core/learning_eval.py` should contain only pure stdlib metric primitives: Brier, log loss, ECE bin aggregation, false-proceed/false-block arithmetic, decision-rate summaries, and lift arithmetic. `benchmarks/flow/scorecard.py` owns pandas/scipy aggregation, bootstrap confidence intervals, AUC-PR/AUC-ROC, reliability diagrams, plots, and report rendering.
+
+#### 14.4.2 Benchmark Gates
+
+A release or snapshot promotion fails if any condition holds:
+
+| Gate | Failure Condition |
+|---|---|
+| Calibration | learned Brier/log-loss regresses against genesis or prior snapshot beyond the configured confidence interval |
+| Safety | false-proceed rate increases |
+| Over-blocking | C0-C2 false-block rate exceeds `max_false_block_rate` after enough labels |
+| High-criticality safety | any C3/C4 decision weakens from held to proceed without ratified policy |
+| Explainability | material decision flip or risk-band crossing lacks cited `fact_id` / `snapshot_id` |
+| Determinism | regression mode is not byte-identical across repeated runs |
+| Evidence sufficiency | corpus size is below `N_min` |
+
+This is the product-quality test layer. CLI smoke tests prove commands run; the flow harness proves whether PEBRA scores, decides, verifies, and learns better than its baselines.
+
+### 14.5 Risk Observatory Dashboard
+
+PEBRA should include a self-hosted, operator-facing web UI. The dashboard is not a benchmark report and not a SaaS app. It is how operators inspect what PEBRA is doing in the current repo and whether its real recorded outcomes make it more or less trustworthy.
+
+Surface split:
+
+```text
+cli/          one-shot human card
+mcp_server/   agent integration
+dashboard/    self-hosted Risk Observatory
+core/         unchanged; no UI imports
+```
+
+`pebra dashboard` reads SQLite/API/scorecard artifacts and renders existing facts. In v1 it is read-only: it must not recompute risk formulas, promote snapshots, edit project policy, or mutate assessment state.
+
+Multi-repo behavior:
+
+- Default view is the current repo resolved by walking up for `.pebra/` or `.git/`.
+- The machine registry may provide a repo switcher, but every dashboard route must be scoped to one repo, for example `/repos/<repo_id>/...`.
+- Each dashboard page reads that repo's `.pebra/pebra.db`; the registry is not a global learning store.
+- `pebra dashboard --repo <path>` registers or refreshes that repo and opens it.
+- `pebra dashboard --all` may open the registry landing page, but it still reads per-repo stores.
+
+Port behavior:
+
+- Base port is `9473`.
+- Reuse a live port from `<repo>/.pebra/dashboard.json` when it belongs to the current repo.
+- `--port` or `PEBRA_PORT` pins the port and fails fast if unavailable.
+- `--port 0` asks the OS for an ephemeral port.
+- Without an explicit port, try `9473` and then bounded auto-increment.
+- `--instance N` maps to `9473 + N*100` for explicit side-by-side daemons.
+- Host allowlist and printed/opened URLs must use the actually bound port.
+
+Dashboard panels:
+
+| Panel | Shows |
+|---|---|
+| Overview | decision mix, current risk posture, confidence distribution, C3/C4 count |
+| Assessments | latest decisions, risk facts, why text, guidance packet, cited `fact_id` / `snapshot_id` |
+| Risk | risk levels, expected damage trend, top risk drivers |
+| Learning | Brier/log-loss from real recorded outcomes, signed bias, false-proceed / false-block |
+| Guidance | safe-scope drift, risky-scope triggers, required checks completed |
+| Replay | assessment -> guidance -> edit -> verify -> outcome timeline |
+| Architecture | sensitive domains, high-reach files, architecture anchors |
+| Audit | hash-chain status, provenance, snapshots, outcome links |
+
+The dashboard must not display benchmark harness results. ApacheJIT, JIT-Defects4J, SWE-bench, TDAD, and GitNexus comparator reports remain developer/research artifacts under `benchmarks/flow`, CI artifacts, release notes, or docs. The dashboard displays only production/project state derived from PEBRA's assessment store, outcome store, learning snapshots, guidance compliance, architecture map, and audit chain.
+
+Security posture:
+
+- bind to `127.0.0.1` by default.
+- require bearer authentication for API access.
+- reject unapproved `Host` headers to prevent DNS rebinding.
+- self-host all static assets.
+- avoid remote CDNs.
+- use a CSP nonce.
+- require explicit opt-in plus allowed-host configuration for non-loopback binding.
+- display which `repo_id` / `repo_root` the page is reading, especially when the machine registry exposes multiple repos.
+
+Playwright validates the visual layer, not the math. The headed visual E2E suite should open the local dashboard against fixture SQLite/API data, assert cards/tables/charts match fixture values, verify learning charts and reliability diagrams are nonblank, scrub the replay timeline, render guidance compliance, render audit/hash-chain status, fail on console errors, and save screenshots/traces for review. Metric correctness remains covered by core tests and `benchmarks/flow` scorecards.
 
 ---
 
 ## 15. Open Design Questions
 
-1. Should v1 be MCP-first, CLI-first, or both?
-2. Should PEBRA generate candidate actions or only score actions supplied by the agent?
-3. Which blast-radius provider should be the default?
-4. Should risk tolerance be a single number or per-directory policy?
-5. Should outcome logging be local-only by default?
-6. Which first agent should PEBRA target: Codex, Claude Code, Cursor, or any MCP client?
+The following are intentionally left open for product decisions; they do not block Phase 0:
+
+1. Should PEBRA ever generate candidate actions, or should it permanently score only actions supplied by the agent/user?
+2. Which first agent adapter should receive polished UX first: Codex, Claude Code, Cursor, or generic MCP?
+3. How much of the Risk Observatory should ship in the first public release versus after the CLI/MCP loop proves useful?
+4. Should future org/global priors exist only as benchmark/research artifacts, or as weak cold-start priors configurable by teams?
 
 ---
 
@@ -2191,7 +3656,7 @@ The defensible distinctions are:
 | Timing | Pre-edit, before the agent changes code |
 | Action space | Five-way decision, not only proceed/reject |
 | Evidence model | Repo-grounded blast radius plus criticality/stakes |
-| Decision math | Expected loss, RAU, confidence gates, and optional Monte Carlo gates |
+| Decision math | Expected loss, RAU, confidence gates, and Monte Carlo gates when fitted/configured distributions exist |
 | Auditability | Provenance on scores, distributions, and evidence actions |
 
 ### 16.2 GitHub and Platform Neighbors
@@ -2203,6 +3668,7 @@ Blast-radius and code graph tools are useful evidence providers for PEBRA, but t
 | `code-impact-mcp` | MCP-style code impact / blast-radius gate such as pass, warn, or block | Single-axis impact gate; no benefit, criticality, RAU, confidence state machine, or five-way action enum |
 | `Ctxo` | Repo context, dependency information, and safe-edit style guardrails | Primarily context and edit-safety support; not an expected-loss decision controller |
 | `codeindex`, `Glyphtrail`, code graph MCPs | Dependency graph, call graph, structural impact analysis | Evidence providers; they estimate spread, not full action utility |
+| AgentMemory + Graphify / codegraph pairing | Persistent session memory plus architecture/code graph context | Useful model for "remember the repo before editing"; PEBRA builds its own baseline architecture map and may use these tools only as configured enrichment |
 | `sdl-mcp` | Symbol/context governance and access-control style constraints for agents reading code | Related governance idea, but not a change-safety or blast-radius decision system |
 | GitHub Copilot Coding Agent validation | Post-generation security and quality validation before finishing a PR | Post-edit validation loop, not pre-edit action selection |
 | SonarQube AI Code Assurance, Semgrep, CodeScene | Code quality, security findings, hotspots, critical components, and review prioritization | Scanner/triage systems; useful signals, but not a pre-edit controller |
@@ -2264,7 +3730,70 @@ expected-loss/RAU scoring, and a five-way pre-edit action enum.
 | scikit-criteria | MCDA framework | BSD-3 |
 | pysensmcda | Ranking sensitivity | MIT |
 
-### 17.2 Copyleft Avoidance
+### 17.2 Runtime and Development Dependencies
+
+PEBRA separates core import purity from package dependencies:
+
+- `pebra.core` must remain stdlib-only so the decision brain is deterministic and auditable.
+- The PEBRA package may still ship runtime dependencies used by adapters, calibration, Monte Carlo, config parsing, and signing.
+
+Recommended runtime dependencies:
+
+| Dependency | Purpose | License / Constraint |
+|---|---|---|
+| PyYAML | `.pebra.yml` parsing | MIT |
+| radon | Python LOC, complexity, Halstead, Maintainability Index | MIT |
+| Bandit | Python AST security detection | Apache-2.0 |
+| numpy | Monte Carlo and calibration report math | BSD |
+| scikit-learn | Platt/isotonic calibration, logistic stacking | BSD-3 |
+| cryptography | Ed25519 signing for signed audit chains | Apache-2.0 / BSD |
+| MAPIE | Conformal intervals when enabled by calibration path | BSD-3 |
+| FastAPI | local dashboard/API surface for the Risk Observatory | MIT |
+| Starlette | local dashboard/API surface for the Risk Observatory | BSD-3 |
+| uvicorn | local dashboard server | BSD-3 |
+| Jinja2 | dashboard HTML templating | BSD-3 |
+
+External tools consumed by subprocess:
+
+| Tool | Purpose | License / Constraint |
+|---|---|---|
+| sem | Entity-level diff, blame, impact analysis | MIT OR Apache-2.0 |
+| codeindex | Per-file blast-radius scoring / enrichment | Apache-2.0 |
+
+Recommended development dependencies:
+
+| Dependency | Purpose |
+|---|---|
+| pytest | test runner |
+| pytest-cov | coverage reporting |
+| ruff | linting and formatting |
+| mypy | type checking for ports, dataclasses, and pure core |
+| import-linter | enforce the `pebra.core` purity boundary |
+| hypothesis | property tests for math invariants |
+| syrupy | golden snapshots for worked examples and deterministic flow regression |
+| nox | repeatable local/CI test sessions |
+| jsonschema | validate request, outcome, guidance, and benchmark fixture shapes |
+| playwright | headed visual E2E validation for the Risk Observatory dashboard |
+| build | wheel/sdist builds |
+| twine | package check/upload |
+| pre-commit | local checks before commits |
+
+Recommended benchmark dependency groups:
+
+| Group | Dependencies | Purpose |
+|---|---|---|
+| `bench` | pandas, scipy, datasets, matplotlib, seaborn | dataset wrangling, scorecard aggregation, reliability diagrams, plots |
+| `bench-szz` | pydriller | SZZ/git-mining benchmark labels |
+| `bench-agent` | swebench and benchmark agent-runner tooling | SWE-bench-style with-vs-without PEBRA runs |
+| `bench-external` | user-provided external comparators | GitNexus, TDAD implementations, commercial agent runners, or other external baselines |
+
+Purity rule: benchmark and dashboard dependencies are forbidden inside `pebra.core`. `pandas`, `scipy`, `matplotlib`, `seaborn`, `datasets`, `pydriller`, `swebench`, `fastapi`, `starlette`, `uvicorn`, and `jinja2` may not be imported by `pebra.core`. `pebra.core` must not import `ports/`, `app/`, `adapters/`, CLI/MCP, dashboard, SQLite, subprocess, or CLI parsing. `pebra.app` may import `core/` and `ports/`, but not concrete adapters; surfaces compose adapters and pass them into use cases. `pebra.dashboard` may read through store/API/scorecard readers, but `pebra.core` and `pebra.adapters` must not import `pebra.dashboard`. Metric primitives that must stay in core should use stdlib only.
+
+GitNexus may be used as an external benchmark comparator, but it is not a runtime dependency and must never be imported, vendored, shipped, or required by PEBRA.
+
+Playwright is a UI/dev dependency only. It verifies dashboard rendering, interactions, screenshots, traces, and console cleanliness against fixture data. It must not be used to validate metric formulas.
+
+### 17.3 Copyleft Avoidance
 
 Do not ship GPL, AGPL, or other strong-copyleft packages as PEBRA runtime dependencies unless the project intentionally accepts those obligations.
 
@@ -2336,13 +3865,15 @@ agent proposes candidate action
   -> PEBRA gathers repo evidence
   -> PEBRA computes risk_report, RAU band, confidence band, gates
   -> PEBRA checks autonomy envelope
+  -> PEBRA renders deterministic model_guidance_packet
   -> if envelope passes:
-       proceed with execution_controls
+       proceed with execution_controls + binding guidance
      if evidence is weak:
        inspect_first or test_first
      if risk budget is exceeded or C4 is touched:
        ask_human or reject
   -> agent commits only to a new branch / PR when autonomous
+  -> pebra_verify checks final diff against binding guidance
   -> outcome is logged for calibration
 ```
 
@@ -2363,6 +3894,33 @@ Autonomy is expressed through execution controls attached to the decision:
     "require_tests_before_commit": true,
     "require_pr_before_merge": true,
     "direct_merge_allowed": false
+  },
+  "model_guidance_packet": {
+    "binding": {
+      "safe_scope": {
+        "files": ["src/auth.py", "tests/test_auth.py"],
+        "symbols": ["validate_login"],
+        "edit_policy": "targeted_patch_only"
+      },
+      "risky_scope": [
+        {"change": "dependency upgrades", "action": "requires_reassessment"},
+        {"change": "schema changes", "action": "requires_reassessment"}
+      ],
+      "required_checks_before_commit": ["run tests/test_auth.py"]
+    },
+    "advisory": {
+      "risk_facts": {
+        "risk_level": "moderate",
+        "risk_budget_used_percent": 50,
+        "confidence_percent": 83,
+        "code_sensitivity": "C3 auth",
+        "affected_area": "low: targeted function and tests"
+      },
+      "why": [
+        "Auth code is sensitive and confidence depends on targeted tests.",
+        "If the fix requires dependency or schema changes, the current assessment must be recomputed."
+      ]
+    }
   }
 }
 ```
@@ -2383,7 +3941,7 @@ A PEBRA response in autonomous mode should explain not only the decision, but al
     "confidence_band": "high",
     "why": [
       "Risk budget is below the configured autonomy limit.",
-      "RAU is positive and proceedable.",
+      "Value After Risk is Positive.",
       "Confidence is high after repo evidence gathering.",
       "No C4 path, migration, dependency upgrade, or destructive data operation was detected."
     ]
@@ -2395,11 +3953,44 @@ A PEBRA response in autonomous mode should explain not only the decision, but al
     "require_tests_before_commit": true,
     "require_pr_before_merge": true,
     "direct_merge_allowed": false
+  },
+  "model_guidance_packet": {
+    "binding": {
+      "safe_scope": {
+        "files": ["src/auth.py", "tests/test_auth.py"],
+        "symbols": ["validate_login"],
+        "edit_policy": "targeted_patch_only"
+      },
+      "risky_scope": [
+        {"change": "dependency upgrades", "action": "requires_reassessment"},
+        {"change": "schema changes", "action": "requires_reassessment"},
+        {"change": "public API changes", "action": "requires_reassessment"},
+        {"change": "destructive data operation", "action": "forbidden"}
+      ],
+      "required_checks_before_commit": ["run tests/test_auth.py"]
+    },
+    "advisory": {
+      "risk_facts": {
+        "risk_level": "moderate",
+        "risk_budget_used_percent": 38,
+        "confidence_percent": 81,
+        "code_sensitivity": "C3 auth",
+        "affected_area": "low",
+        "value_after_risk": "positive"
+      },
+      "why": [
+        "Risk budget is within the autonomy envelope, but auth code remains sensitive.",
+        "Keep the edit targeted to validate_login."
+      ],
+      "safer_alternative": "keep the edit targeted to validate_login"
+    }
   }
 }
 ```
 
 If the same action touches `C4` code, exceeds risk budget, lacks tests, or has weak evidence, PEBRA should not silently proceed. It should return `test_first`, `inspect_first`, `ask_human`, or `reject`.
+
+The model guidance packet is the pre-edit face of the same autonomy envelope. `pebra_verify` is the post-edit enforcement step. If the final diff violates binding guidance, the outcome must not be recorded as a successful autonomous edit.
 
 ### 18.4 Product Wedge
 
@@ -2448,15 +4039,15 @@ These ideas are intentionally out of the v1 runtime path:
 - EVPI and EVPPI.
 - CEAC curves over risk tolerance.
 - Full PSA over risk tolerance and model structure.
-- ICER and NMB comparisons beyond v1 expected utility.
+- ICER-style pairwise ratios beyond diagnostic display.
+- Markov-style maintainability trajectory models over states such as healthy, degraded, legacy, and unmaintainable.
 - DEMATEL-style configured covariance mapping.
 - Advanced MCDA validation or long-tail ranking methods.
 - Odds-ratio calibration of criticality from incident history.
 - Survival/hazard-ratio models for time-to-incident only when enough data exists.
-- Top-k learned-fact composition beyond deterministic most-specific matching.
-- Typed scope/action DAG for learned-fact subsumption and provenance edges.
+- Typed scope/action DAG implementation for learned-fact subsumption and provenance edges, ratified as AD-21 / Phase 7.
 
-Monte Carlo sampling for `P(utility < 0)` and `P(action is best)` is allowed earlier when distribution provenance is fitted or explicitly configured. Full PSA and CEAC remain deferred because they need broader risk-sample definitions and risk-tolerance semantics.
+NMB-style net-benefit ranking is part of AD-28 and may be used in v1 because it is the same linear family as expected utility and RAU. Monte Carlo sampling for `P(utility < 0)` and `P(action is best)` is allowed earlier when distribution provenance is fitted or explicitly configured. Full PSA and CEAC remain deferred because they need broader risk-sample definitions and risk-tolerance semantics. Markov-style maintainability trajectories are v2 because they need calibrated transition probabilities over time; v1 uses the simpler exposure-times-effort-delta model.
 
 Any method parameter that affects a gate must carry provenance. Published defaults are still coefficients; they need citation or explicit project policy.
 
@@ -2472,6 +4063,11 @@ PEBRA should cite and implement from public method definitions or permissive lib
 |---|---|---|
 | ISPOR MCDA good-practice guidance | Structured criteria, scoring, weight elicitation, sensitivity analysis | https://www.ispor.org/docs/default-source/publications/value-outcomes-spotlight/march-april-2016/valueandoutcomesspotlight_mcda_tfr2-summary.pdf |
 | Net benefit / health economic evaluation | Expected utility and risk-tolerance framing | https://www.treeage.com/help/Content/13-Cost-Effectiveness-Analysis/4-Net-Benefits-Calculations.htm |
+| ISO/IEC 25010 maintainability | Maintainability sub-characteristics: analyzability, modifiability, testability, modularity, reusability | https://iso25000.com/index.php/en/iso-25000-standards/iso-25010 |
+| CISQ Automated Technical Debt | Technical debt principal, interest, and future corrective-maintenance cost framing | https://www.it-cisq.org/standards/technical-debt/ |
+| Technical debt interest risk | Interest impact times probability of future change; prioritizing maintainability work by expected future maintenance drag | https://link.springer.com/article/10.1007/s42979-020-00406-6 |
+| COCOMO-style maintenance estimation | Maintenance effort driven by changed size, maintainability, understanding, complexity, coupling, tests, and familiarity | https://www.iceaaonline.com/wp-content/uploads/2015/06/SW11-Presentation-Minkiewicz-Technical-Debt.pdf |
+| Health-economic Markov models | V2 trajectory model for software decay states such as healthy, degraded, legacy, unmaintainable | https://pmc.ncbi.nlm.nih.gov/articles/PMC7661756/ |
 | ISPOR-SMDM uncertainty guidance | Probabilistic uncertainty, EVPI, CEAC, parameter uncertainty | https://www.ispor.org/docs/default-source/resources/outcomes-research-guidelines-index/model_parameter_estimation_and_uncertainty-6.pdf |
 | AHP / BWM / SMART / swing weighting | Elicited judgment weights and consistency checks | Cite original/public method definitions in implementation |
 | CRITIC / Entropy objective weighting | Fallback objective weights when enough alternatives and variance exist | Cite original/public method definitions in implementation |
@@ -2493,6 +4089,11 @@ PEBRA should cite and implement from public method definitions or permissive lib
 | CISA SSVC | Decision-oriented vulnerability prioritization | https://www.cisa.gov/stakeholder-specific-vulnerability-categorization-ssvc |
 | MITRE CWE / CAPEC / ATT&CK | Weakness, attack-pattern, and adversary-behavior vocabulary | https://cwe.mitre.org/ and https://capec.mitre.org/ |
 | Logistic / odds-ratio calibration | Outcome-calibrated criticality and incident-risk multipliers | Use public statistical definitions or permissive libraries |
+| Logarithmic opinion pool / log-linear pooling | Top-k probability composition for matching learned facts | Cite public method definitions in implementation |
+| Longest-prefix / specificity matching | Deterministic scope precedence for learned facts | Use public routing/CSS specificity definitions as implementation notes |
+| AgentMemory | Session memory, structured facts, hybrid BM25/vector/graph retrieval, and pairing with code graph tools | https://github.com/rohitg00/agentmemory |
+| Graphify / architecture anchors | Example of local architecture anchors, degree, and bridge-degree summaries | Optional enrichment/validation only; PEBRA builds its own baseline map |
+| codeindex | SQLite code structure graph, symbol index, and blast-radius impact | Optional enrichment/validation only; PEBRA builds its own baseline map |
 | Inverse-variance weighting | Precision-weighted evidence aggregation | https://www.nist.gov/document/combine-1pdf |
 | WGCNA | Weighted graph propagation and soft adjacency over dependency graphs | https://link.springer.com/article/10.1186/1471-2105-9-559 |
 | Probability calibration | Calibrated `p_success` and event probabilities | https://scikit-learn.org/stable/modules/calibration.html |
