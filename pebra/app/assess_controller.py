@@ -110,6 +110,7 @@ def _score_action(
     # so a requester cannot self-bypass gate-1 by omitting violations.
     policy_violations = request.evidence.get("policy_violations", [])
     result = decision_engine.decide(assessment, policy_violations=policy_violations)
+    result.assessed_commit = ports.get("assessed_commit")
     explanation = explanation_generator.render(result, inp.thresholds)
     packet = model_guidance.render(result, action, explanation)
     result.model_guidance_packet = packet
@@ -136,6 +137,7 @@ def assess(
     sanction_port: SanctionPort,
     repository_registry: RepositoryRegistryPort,
     store: StorePort,
+    assessed_commit: str | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     repo = repository_registry.resolve(start_path)
@@ -149,6 +151,7 @@ def assess(
                 symbol_diff_provider=symbol_diff_provider,
                 blast_provider=blast_provider,
                 sanction_port=sanction_port,
+                assessed_commit=assessed_commit,
             )
         )
 

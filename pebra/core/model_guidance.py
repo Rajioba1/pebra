@@ -15,10 +15,11 @@ from pebra.core.explanation_generator import Explanation
 from pebra.core.models import AssessmentResult, CandidateAction
 
 # Default risky-scope items: touching any of these invalidates the prior risk score (reassessment).
+# Each carries a `signal` so pebra_verify can map it to an actual-diff signal (Architecture §9).
 _DEFAULT_RISKY_SCOPE = [
-    {"change": "public API changes", "action": "requires_reassessment"},
-    {"change": "dependency upgrades", "action": "requires_reassessment"},
-    {"change": "schema changes", "action": "requires_reassessment"},
+    {"change": "public API changes", "action": "requires_reassessment", "signal": "contract_change"},
+    {"change": "dependency upgrades", "action": "requires_reassessment", "signal": "dependency_changed"},
+    {"change": "schema changes", "action": "requires_reassessment", "signal": "schema_changed"},
 ]
 
 
@@ -53,6 +54,9 @@ def render(
             "risky_scope": list(_DEFAULT_RISKY_SCOPE),
             "required_checks_before_commit": required_checks,
             "required_controls": selection.required_controls,
+            # Phase-1 dry-run trigger from the action flags we have (dependency upgrades). Rename /
+            # broad-refactor detection is enriched later; pebra_verify enforces the preview (§9 rule 5).
+            "requires_dry_run": bool(action.is_dependency_change),
         },
         "advisory": {
             "high_risk_triggers": list(result.high_risk_triggers),

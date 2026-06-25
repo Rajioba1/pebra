@@ -84,6 +84,15 @@ def test_max_change_kind_takes_most_severe_across_rows() -> None:
     assert summary.max_change_kind == "SIDE_EFFECT"
 
 
+def test_identity_replacement_suspected_classifies_as_contract() -> None:
+    assert cc.classify_symbol(_row(identity_replacement_suspected=True)) is ChangeKind.CONTRACT
+
+
+def test_side_effect_dominates_identity_replacement() -> None:
+    row = _row(identity_replacement_suspected=True, payment_api_changed=True)
+    assert cc.classify_symbol(row) is ChangeKind.SIDE_EFFECT
+
+
 def test_no_rows_falls_back_to_unknown() -> None:
     summary = cc.classify_diff([], DEFAULT_THRESHOLDS)
     assert summary.max_change_kind == "UNKNOWN"

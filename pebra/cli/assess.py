@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pebra.adapters import git_adapter
 from pebra.adapters.ast_diff_adapter import AstDiffAdapter
 from pebra.adapters.ast_import_graph import AstImportGraphAdapter
 from pebra.adapters.repository_registry import RepositoryRegistry
@@ -61,6 +62,7 @@ def run(args: Any) -> int:
         sanction_port=SanctionStore(store),
         repository_registry=registry,
         store=store,
+        assessed_commit=git_adapter.head_commit(repo.repo_root),
     )
 
     if args.as_json:

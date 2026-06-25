@@ -7,6 +7,7 @@ from typing import Sequence
 
 from pebra.cli import accept_risk as accept_risk_cmd
 from pebra.cli import assess as assess_cmd
+from pebra.cli import verify as verify_cmd
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -14,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     assess_cmd.register(subparsers)
     accept_risk_cmd.register(subparsers)
+    verify_cmd.register(subparsers)
     return parser
 
 

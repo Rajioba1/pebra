@@ -12,6 +12,7 @@ Implements ``StorePort``.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import sqlite3
@@ -36,12 +37,23 @@ def _canonical(result: AssessmentResult, request_payload: dict[str, Any]) -> str
         "scores": result.scores,
         "repo_id": result.repo_id,
         "repo_root": result.repo_root,
+        "assessed_commit": result.assessed_commit,
         "model_guidance_packet": result.model_guidance_packet,
         "request": request_payload,
     }
     # No default= fallback: content must be natively JSON-serializable so the chain stays
     # semantically reconstructable. A non-serializable leak should raise, not be stringified.
     return json.dumps(content, sort_keys=True)
+
+
+def _guardrail_canonical(row_id: int, recorded_at: str, guardrails: dict[str, Any]) -> str:
+    """Per-field canonical content hashed for the guardrail chain (Architecture §10).
+
+    Covers the identity-bearing fields — assessment_id (FK), recorded_at (timestamp), and the
+    guardrails payload — so tampering with any of them is detectable.
+    """
+    content = {"assessment_id": row_id, "recorded_at": recorded_at, "guardrails": guardrails}
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
 
 
 def _guidance_matches_content(content_json: str, packet_json: str | None) -> bool:
@@ -67,6 +79,9 @@ class SqliteStore:
         self._create_schema()
 
     def _create_schema(self) -> None:
+        # executescript() issues its own COMMIT before and after the script, so with
+        # isolation_level=None there is no separate transaction to manage here (and no manual
+        # commit is needed). All tables use CREATE TABLE IF NOT EXISTS, which is idempotent.
         self._con.executescript(
             """
             CREATE TABLE IF NOT EXISTS assessments (
@@ -86,13 +101,24 @@ class SqliteStore:
             CREATE TABLE IF NOT EXISTS sanction_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 repo_id TEXT NOT NULL,
+                assessment_id TEXT,
                 sanction_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                invalidated_reason TEXT,
                 prev_hash TEXT NOT NULL,
                 row_hash TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS post_assessment_guardrails (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assessment_id INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL,
+                guardrails_json TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                row_hash TEXT NOT NULL,
+                FOREIGN KEY (assessment_id) REFERENCES assessments(id)
+            );
             """
         )
-        self._con.commit()
 
     def _last_assessment_hash(self) -> str:
         row = self._con.execute(
@@ -103,6 +129,12 @@ class SqliteStore:
     def _last_sanction_hash(self) -> str:
         row = self._con.execute(
             "SELECT row_hash FROM sanction_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row[0] if row else GENESIS
+
+    def _last_guardrail_hash(self) -> str:
+        row = self._con.execute(
+            "SELECT row_hash FROM post_assessment_guardrails ORDER BY id DESC LIMIT 1"
         ).fetchone()
         return row[0] if row else GENESIS
 
@@ -132,7 +164,29 @@ class SqliteStore:
         return f"asm_{assessment_id}"
 
     def validate_chain(self) -> bool:
-        return self._validate_assessment_chain() and self._validate_sanction_chain()
+        return (
+            self._validate_assessment_chain()
+            and self._validate_sanction_chain()
+            and self._validate_guardrail_chain()
+        )
+
+    # Architecture §10: guardrail rows use the per-field integrity formula — the hash covers
+    # assessment_id, recorded_at, and the guardrails payload (via _guardrail_canonical), so tampering
+    # with any of those columns is detectable. (Assessment/sanction/guidance chains still hash their
+    # own json blob; reconciling them to per-field is pending.)
+    def _validate_guardrail_chain(self) -> bool:
+        prev_hash = GENESIS
+        for assessment_id, recorded_at, guardrails_json, stored_prev, stored_hash in self._con.execute(
+            "SELECT assessment_id, recorded_at, guardrails_json, prev_hash, row_hash "
+            "FROM post_assessment_guardrails ORDER BY id ASC"
+        ):
+            if stored_prev != prev_hash:
+                return False
+            content_json = _guardrail_canonical(assessment_id, recorded_at, json.loads(guardrails_json))
+            if _row_hash(prev_hash, content_json) != stored_hash:
+                return False
+            prev_hash = stored_hash
+        return True
 
     def _validate_assessment_chain(self) -> bool:
         prev_hash = GENESIS
@@ -168,21 +222,96 @@ class SqliteStore:
         return True
 
     def create_sanction(self, repo_id: str, sanction: dict[str, Any]) -> str:
+        # The integrity hash covers only the immutable sanction content; `status`/`invalidated_reason`
+        # are mutable lifecycle columns (AD-26) and are intentionally NOT hashed, so invalidation
+        # never breaks the chain.
         sanction_json = json.dumps(sanction, sort_keys=True)
+        assessment_id = sanction.get("assessment_id")
         try:
             self._con.execute("BEGIN IMMEDIATE")
             prev_hash = self._last_sanction_hash()
             row_hash = _row_hash(prev_hash, sanction_json)
             cur = self._con.execute(
-                "INSERT INTO sanction_events (repo_id, sanction_json, prev_hash, row_hash) "
-                "VALUES (?, ?, ?, ?)",
-                (repo_id, sanction_json, prev_hash, row_hash),
+                "INSERT INTO sanction_events "
+                "(repo_id, assessment_id, sanction_json, status, invalidated_reason, "
+                " prev_hash, row_hash) VALUES (?, ?, ?, 'active', NULL, ?, ?)",
+                (repo_id, assessment_id, sanction_json, prev_hash, row_hash),
             )
             self._con.commit()
         except Exception:
             self._con.rollback()
             raise
         return f"sx_{cur.lastrowid}"
+
+    def active_sanction_for_assessment(self, assessment_id: str) -> dict[str, Any] | None:
+        row = self._con.execute(
+            "SELECT sanction_json FROM sanction_events "
+            "WHERE assessment_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+            (assessment_id,),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def invalidate_sanctions_for_assessment(self, assessment_id: str, reason: str) -> list[str]:
+        """Invalidate every active sanction bound to an assessment (drift). Returns their ids."""
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            ids = [
+                r[0]
+                for r in self._con.execute(
+                    "SELECT id FROM sanction_events WHERE assessment_id = ? AND status = 'active'",
+                    (assessment_id,),
+                )
+            ]
+            self._con.execute(
+                "UPDATE sanction_events SET status = 'invalidated', invalidated_reason = ? "
+                "WHERE assessment_id = ? AND status = 'active'",
+                (reason, assessment_id),
+            )
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        return [f"sx_{i}" for i in ids]
+
+    @staticmethod
+    def _row_id(assessment_id: str) -> int:
+        parts = assessment_id.split("_", 1)
+        if len(parts) != 2 or not parts[1].isdigit():
+            raise KeyError(f"invalid assessment id format: {assessment_id!r}")
+        return int(parts[1])
+
+    def load_assessment(self, assessment_id: str) -> dict[str, Any]:
+        row = self._con.execute(
+            "SELECT content_json FROM assessments WHERE id = ?", (self._row_id(assessment_id),)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"no assessment {assessment_id!r}")
+        return json.loads(row[0])
+
+    def persist_guardrails(self, assessment_id: str, guardrails: dict[str, Any]) -> str:
+        # Serialize like the chained writes (BEGIN IMMEDIATE) so a guardrails INSERT can't interleave
+        # with an in-flight assessment write and so the FK to assessments is satisfied atomically.
+        row_id = self._row_id(assessment_id)
+        # compact separators match _guardrail_canonical so the stored blob is byte-reconstructable
+        # against the hash basis by an external auditor (§10 reconstructability).
+        guardrails_json = json.dumps(guardrails, sort_keys=True, separators=(",", ":"))
+        recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        content_json = _guardrail_canonical(row_id, recorded_at, guardrails)
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            prev_hash = self._last_guardrail_hash()
+            row_hash = _row_hash(prev_hash, content_json)
+            cur = self._con.execute(
+                "INSERT INTO post_assessment_guardrails "
+                "(assessment_id, recorded_at, guardrails_json, prev_hash, row_hash) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (row_id, recorded_at, guardrails_json, prev_hash, row_hash),
+            )
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        return f"pag_{cur.lastrowid}"
 
     def close(self) -> None:
         self._con.close()

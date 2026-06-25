@@ -40,10 +40,36 @@ def test_risky_scope_items_are_reassessment_by_default() -> None:
     assert actions == {"requires_reassessment"}
 
 
+def test_risky_scope_entries_carry_a_signal_for_verify_matching() -> None:
+    # pebra_verify maps each risky_scope entry to an actual-diff signal; every entry must name one.
+    p = _packet()
+    signals = {item.get("signal") for item in p["binding"]["risky_scope"]}
+    assert signals == {"contract_change", "dependency_changed", "schema_changed"}
+
+
 def test_advisory_why_is_reused_from_explanation() -> None:
     p = _packet()
     assert p["advisory"]["why"]
     assert p["provenance"]["why"] == "explanation_generator"
+
+
+def test_requires_dry_run_false_for_non_dependency_action() -> None:
+    p = _packet()
+    assert p["binding"]["requires_dry_run"] is False
+
+
+def test_requires_dry_run_true_for_dependency_change_action() -> None:
+    from pebra.core import assessment_builder as ab
+    from pebra.core import decision_engine as de
+    from pebra.core import explanation_generator as eg
+    from pebra.core import model_guidance as mg
+    from tests.unit.test_assessment_builder import _worked_example_input
+
+    inp = _worked_example_input()
+    inp.action.is_dependency_change = True
+    result = de.decide(ab.build_assessment(inp))
+    packet = mg.render(result, inp.action, eg.render(result))
+    assert packet["binding"]["requires_dry_run"] is True
 
 
 def test_no_high_risk_triggers_for_worked_example() -> None:

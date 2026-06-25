@@ -97,6 +97,30 @@ class BenefitDeltaEvidence:
 
 
 @dataclass(frozen=True)
+class ActualDiffSummary:
+    """What ChangeVerifier returns about the *actual* post-edit diff (Architecture §9)."""
+
+    current_head: str | None = None
+    changed_files: list[str] = field(default_factory=list)
+    dependency_changed: bool = False
+    schema_changed: bool = False
+    migration_changed: bool = False
+    actual_max_change_kind: str = "UNKNOWN"
+    actual_changed_symbols: list[str] = field(default_factory=list)
+    measured_benefit_deltas: dict[str, float] = field(default_factory=dict)
+    # True iff ≥1 changed file was a Python file we attempted to reclassify. Distinguishes
+    # "couldn't parse code we changed" (escalate) from "no code symbols at all" (don't).
+    reclassification_attempted: bool = False
+
+
+@dataclass(frozen=True)
+class ContractSurfaceFindings:
+    """What ContractSurfaceProvider returns (Architecture §9): detected public-surface changes."""
+
+    changes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class EvidenceBundle:
     """What EvidenceProvider returns (Phase 0): the scored inputs the engine needs.
 
@@ -162,3 +186,4 @@ class AssessmentResult:
     model_guidance_packet: dict[str, Any] | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
     decision_reason: str = ""
+    assessed_commit: str | None = None  # repo HEAD at assess time; verify checks evidence freshness

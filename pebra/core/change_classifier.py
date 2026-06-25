@@ -38,6 +38,11 @@ _CONSEQUENTIAL_KINDS = {
 _DEFAULT_FAN_IN_PERCENTILE = 0.90
 
 
+def severity(kind: ChangeKind) -> int:
+    """Public severity rank for a ChangeKind (higher = more severe). Used by guardrail drift checks."""
+    return _SEVERITY.get(kind, _SEVERITY[ChangeKind.UNKNOWN])
+
+
 @dataclass(frozen=True)
 class ChangeSummary:
     max_change_kind: str
@@ -57,6 +62,10 @@ def classify_symbol(row: dict[str, Any]) -> ChangeKind:
         or row.get("external_side_effect_changed")
     ):
         return ChangeKind.SIDE_EFFECT
+    if row.get("identity_replacement_suspected"):
+        # same name + same signature but the body was wholly replaced (M4): treat as a contract-level
+        # change — the symbol now means something different than the pre-edit packet approved.
+        return ChangeKind.CONTRACT
     if (
         row.get("signature_changed")
         or row.get("return_shape_changed")
