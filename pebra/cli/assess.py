@@ -10,16 +10,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pebra.adapters import git_adapter
-from pebra.adapters.ast_diff_adapter import AstDiffAdapter
-from pebra.adapters.ast_import_graph import AstImportGraphAdapter
-from pebra.adapters.composite_evidence import CompositeEvidenceProvider
-from pebra.adapters.import_graph_cache import GraphProvider
-from pebra.adapters.repository_registry import RepositoryRegistry
-from pebra.adapters.sanction_store import SanctionStore
-from pebra.adapters.store.db import SqliteStore
+from pebra import composition
 from pebra.app import assess_controller
-from pebra.app.assess_controller import AssessmentOutcome
 from pebra.core import candidate_parser
 from pebra.core.constants import Decision
 from pebra.core.explanation_generator import Explanation
@@ -48,48 +40,21 @@ def run(args: Any) -> int:
     request = candidate_parser.parse(raw)
 
     start_path = args.repo_root or "."
-    registry = RepositoryRegistry()
-    repo = registry.resolve(start_path)
-    db_path = args.db or str(Path(repo.repo_root) / ".pebra" / "pebra.db")
-    store = SqliteStore(db_path)
-
-    graph_provider = GraphProvider()  # 5c: build the import graph once, shared by arch + blast
-    outcome = assess_controller.assess(
-        request,
-        thresholds=request.thresholds,
-        start_path=start_path,
-        evidence_provider=CompositeEvidenceProvider(graph_provider=graph_provider),
-        symbol_diff_provider=AstDiffAdapter(request.evidence.get("symbol_diff")),
-        blast_provider=AstImportGraphAdapter(request.evidence.get("blast"), graph_provider=graph_provider),
-        sanction_port=SanctionStore(store),
-        repository_registry=registry,
-        store=store,
-        assessed_commit=git_adapter.head_commit(repo.repo_root),
-    )
-
-    if args.as_json:
-        print(json.dumps(_json_payload(outcome), indent=2, sort_keys=True))
-    else:
-        print(render_card(outcome.recommended_result, outcome.recommended_explanation))
-    store.close()
+    ctx = composition.resolve_repo_and_db(start_path, args.db)
+    try:
+        outcome = assess_controller.assess(
+            request,
+            thresholds=request.thresholds,
+            start_path=start_path,
+            **composition.build_assess_ports(request, ctx),
+        )
+        if args.as_json:
+            print(json.dumps(composition.assess_payload(outcome), indent=2, sort_keys=True))
+        else:
+            print(render_card(outcome.recommended_result, outcome.recommended_explanation))
+    finally:
+        ctx.store.close()  # close even if the controller raises (no leaked SQLite connection)
     return 0
-
-
-def _json_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
-    r = outcome.recommended_result
-    return {
-        "recommended_decision": r.recommended_decision.value,
-        "requires_confirmation": r.requires_confirmation,
-        "risk_mode": r.risk_mode.value,
-        "action_status": r.action_status.value,
-        "repo_id": outcome.repo_id,
-        "assessment_id": outcome.assessment_id,
-        "scores": r.scores,
-        "why": outcome.recommended_explanation.why,
-        "gates_fired": r.gates_fired,
-        "high_risk_triggers": r.high_risk_triggers,
-        "model_guidance_packet": r.model_guidance_packet,
-    }
 
 
 def render_card(result: AssessmentResult, ex: Explanation) -> str:

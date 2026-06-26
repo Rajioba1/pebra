@@ -7,14 +7,9 @@ persists a guardrails row, and renders the verify card (or canonical JSON).
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
-from pebra.adapters.contract_surface import ContractSurfaceScanner
-from pebra.adapters.git_change_verifier import GitChangeVerifier
-from pebra.adapters.repository_registry import RepositoryRegistry
-from pebra.adapters.store.db import SqliteStore
+from pebra import composition
 from pebra.app import verify_controller
 from pebra.app.verify_controller import VerifyOutcome
 from pebra.core.constants import Decision
@@ -64,32 +59,25 @@ def _parse_completed(items: list[str]) -> dict[str, str]:
 
 
 def run(args: Any) -> int:
-    registry = RepositoryRegistry()
-    repo = registry.resolve(args.repo_root or ".")
-    db_path = args.db or str(Path(repo.repo_root) / ".pebra" / "pebra.db")
-    store = SqliteStore(db_path)
-
-    outcome = verify_controller.verify(
-        args.assessment_id,
-        scope=args.scope,
-        completed_checks=_parse_completed(args.completed_check),
-        dry_run_preview_present=args.dry_run_preview,
-        repo_root=repo.repo_root,
-        store=store,
-        change_verifier=GitChangeVerifier(),
-        contract_surface=ContractSurfaceScanner(),
-    )
-
-    if args.as_json:
-        payload = asdict(outcome.result)
-        payload["pre_commit_decision"] = outcome.result.pre_commit_decision.value
-        payload["guardrails_id"] = outcome.guardrails_id
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        print(render_verify_card(outcome))
-    store.close()
-    # non-zero exit when the envelope is violated, so CI / agents can gate on it
-    return 0 if outcome.result.pre_commit_decision is Decision.PROCEED else 2
+    ctx = composition.resolve_repo_and_db(args.repo_root or ".", args.db)
+    try:
+        outcome = verify_controller.verify(
+            args.assessment_id,
+            scope=args.scope,
+            completed_checks=_parse_completed(args.completed_check),
+            dry_run_preview_present=args.dry_run_preview,
+            repo_root=ctx.repo.repo_root,
+            store=ctx.store,
+            **composition.build_verify_ports(),
+        )
+        if args.as_json:
+            print(json.dumps(composition.verify_payload(outcome), indent=2, sort_keys=True))
+        else:
+            print(render_verify_card(outcome))
+        # non-zero exit when the envelope is violated, so CI / agents can gate on it
+        return 0 if outcome.result.pre_commit_decision is Decision.PROCEED else 2
+    finally:
+        ctx.store.close()  # close even if the controller raises (e.g. unknown assessment id)
 
 
 def render_verify_card(outcome: VerifyOutcome) -> str:

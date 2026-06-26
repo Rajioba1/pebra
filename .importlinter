@@ -16,6 +16,7 @@ forbidden_modules =
     pebra.cli
     pebra.mcp_server
     pebra.dashboard
+    pebra.composition
 
 [importlinter:contract:core-no-impure-libs]
 name = core forbidden from impure stdlib + heavy libs (Architecture §12)
@@ -42,6 +43,7 @@ forbidden_modules =
     bandit
     numpy
     sklearn
+    mcp
 
 # --- Layer discipline ---
 
@@ -52,6 +54,7 @@ source_modules =
     pebra.app
 forbidden_modules =
     pebra.adapters
+    pebra.composition
 
 [importlinter:contract:adapters-only-core-ports]
 name = adapters import only core + ports (no app/surfaces)
@@ -63,6 +66,7 @@ forbidden_modules =
     pebra.cli
     pebra.mcp_server
     pebra.dashboard
+    pebra.composition
 
 [importlinter:contract:dashboard-no-app]
 name = dashboard is a surface and never imports app (reads via store/api)

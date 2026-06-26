@@ -27,6 +27,15 @@ def lint(session: nox.Session) -> None:
     session.run("lint-imports")
 
 
+@nox.session(name="mcp-smoke")
+def mcp_smoke(session: nox.Session) -> None:
+    """Install the mcp SDK and exercise the real serve() glue (the default `tests` env stays SDK-free
+    to prove lazy import, so SDK API drift would otherwise slip past the gate)."""
+    session.install("-e", ".", "--no-deps")
+    session.install("pytest", "mcp>=1.0,<2")
+    session.run("pytest", "tests/integration/test_mcp_server_serve.py", "-q")
+
+
 @nox.session(name="core-only")
 def core_only(session: nox.Session) -> None:
     """Install the base package and assert the engine imports with no adapters present."""

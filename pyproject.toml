@@ -24,10 +24,12 @@ dependencies = [
     "starlette",
     "uvicorn",
     "jinja2",
+    "mcp>=1.0,<2",
 ]
 
 [project.scripts]
 pebra = "pebra.cli.main:main"
+pebra-mcp = "pebra.mcp_server.__main__:main"
 
 [dependency-groups]
 dev = [
