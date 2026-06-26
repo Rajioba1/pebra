@@ -60,6 +60,52 @@ def _outcome_canonical(
     return json.dumps(content, sort_keys=True, separators=(",", ":"))
 
 
+def _prediction_canonical(
+    row_id: int,
+    target_type: str,
+    target_name: str,
+    predicted_value: float | None,
+    prediction_scope: str,
+    provenance: dict[str, Any],
+    recorded_at: str,
+) -> str:
+    """Per-field canonical content hashed for the prediction chain (Milestone 4a). Covers the FK,
+    the target identity, the predicted value, scope, provenance and timestamp so tampering with any
+    of them is detectable. ``label_status`` / ``shadow_mode`` are mutable lifecycle columns (a label
+    arrives later via the outcome) and are intentionally NOT hashed, like sanction status."""
+    content = {
+        "assessment_id": row_id,
+        "target_type": target_type,
+        "target_name": target_name,
+        "predicted_value": predicted_value,
+        "prediction_scope": prediction_scope,
+        "provenance": provenance,
+        "recorded_at": recorded_at,
+    }
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
+_PREDICTION_ERROR_FIELDS = (
+    "action_id", "target_type", "target_name", "predicted_probability", "predicted_value",
+    "actual_outcome", "actual_value", "residual", "brier_error", "log_loss", "squared_error",
+    "outcome_label_status", "calibration_scope",
+)
+
+
+def _prediction_error_canonical(row_id: int, row: dict[str, Any], recorded_at: str) -> str:
+    """Per-field canonical for the prediction-error chain (Milestone 4d). Covers the FK, every
+    computed field, the label status/scope, and the timestamp so tampering is detectable."""
+    content = {"assessment_id": row_id, "recorded_at": recorded_at}
+    content.update({f: row.get(f) for f in _PREDICTION_ERROR_FIELDS})
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
+def _risk_snapshot_canonical(repo_id: str, status: str, metrics: dict[str, Any], created_at: str) -> str:
+    """Per-field canonical for the (shadow) risk-snapshot chain (Milestone 4d)."""
+    content = {"repo_id": repo_id, "status": status, "metrics": metrics, "created_at": created_at}
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
 def _guardrail_canonical(row_id: int, recorded_at: str, guardrails: dict[str, Any]) -> str:
     """Per-field canonical content hashed for the guardrail chain (Architecture §10).
 
@@ -143,6 +189,67 @@ class SqliteStore:
             );
             -- one terminal outcome per assessment (AD-4): the lifecycle closes exactly once
             CREATE UNIQUE INDEX IF NOT EXISTS ux_outcomes_assessment ON outcomes(assessment_id);
+            -- Milestone 4a: immutable prediction manifest captured at assess time (WHAT PEBRA
+            -- predicted). label_status/shadow_mode are mutable lifecycle columns (not hashed); a
+            -- label arrives later when an outcome is recorded. Shadow-only in M4.
+            CREATE TABLE IF NOT EXISTS assessment_predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assessment_id INTEGER NOT NULL,
+                repo_id TEXT NOT NULL,
+                action_id TEXT,
+                target_type TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                predicted_value REAL,
+                prediction_scope TEXT NOT NULL DEFAULT 'shadow',
+                label_status TEXT NOT NULL DEFAULT 'pending',
+                shadow_mode INTEGER NOT NULL DEFAULT 1,
+                features_json TEXT NOT NULL DEFAULT '{}',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                recorded_at TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                row_hash TEXT NOT NULL,
+                FOREIGN KEY (assessment_id) REFERENCES assessments(id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_predictions_assessment
+                ON assessment_predictions(assessment_id);
+            -- Milestone 4d: computed calibration errors (predicted vs actual label). Shadow-only;
+            -- never read back into a decision (Hard Rule). Binary targets fill predicted_probability/
+            -- actual_outcome/brier_error/log_loss; continuous fill predicted_value/actual_value/
+            -- squared_error. outcome_label_status is 'observed' (a real label) or 'censored' (none).
+            CREATE TABLE IF NOT EXISTS prediction_errors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assessment_id INTEGER NOT NULL,
+                action_id TEXT,
+                target_type TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                predicted_probability REAL,
+                predicted_value REAL,
+                actual_outcome INTEGER,
+                actual_value REAL,
+                residual REAL,
+                brier_error REAL,
+                log_loss REAL,
+                squared_error REAL,
+                outcome_label_status TEXT NOT NULL,
+                calibration_scope TEXT NOT NULL DEFAULT 'shadow',
+                recorded_at TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                row_hash TEXT NOT NULL,
+                FOREIGN KEY (assessment_id) REFERENCES assessments(id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_prediction_errors_assessment
+                ON prediction_errors(assessment_id);
+            -- Milestone 4d: a shadow snapshot per measurement run (the metrics rollup it computed).
+            -- status stays 'shadow' in M4; promotion to 'active' is Milestone 5.
+            CREATE TABLE IF NOT EXISTS risk_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'shadow',
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                row_hash TEXT NOT NULL
+            );
             """
         )
 
@@ -170,10 +277,20 @@ class SqliteStore:
         ).fetchone()
         return row[0] if row else GENESIS
 
+    def _last_prediction_hash(self) -> str:
+        row = self._con.execute(
+            "SELECT row_hash FROM assessment_predictions ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row[0] if row else GENESIS
+
     def persist_assessment(
-        self, result: AssessmentResult, request_payload: dict[str, Any]
+        self,
+        result: AssessmentResult,
+        request_payload: dict[str, Any],
+        predictions: list[dict[str, Any]] | None = None,
     ) -> str:
         content_json = _canonical(result, request_payload)
+        recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
             self._con.execute("BEGIN IMMEDIATE")
             prev_hash = self._last_assessment_hash()
@@ -189,11 +306,206 @@ class SqliteStore:
                     "INSERT INTO model_guidance_packets (assessment_id, packet_json) VALUES (?, ?)",
                     (assessment_id, json.dumps(result.model_guidance_packet, sort_keys=True)),
                 )
+            # Milestone 4a: capture the prediction manifest atomically with the assessment so the two
+            # can never diverge. Each row extends the prediction hash chain.
+            for pred in predictions or ():
+                self._insert_prediction(assessment_id, result.repo_id, pred, recorded_at)
             self._con.commit()
         except Exception:
             self._con.rollback()
             raise
         return f"asm_{assessment_id}"
+
+    def _insert_prediction(
+        self, assessment_id: int, repo_id: str, pred: dict[str, Any], recorded_at: str
+    ) -> None:
+        """Append one prediction row to the chain. Caller owns the surrounding transaction."""
+        provenance = pred.get("provenance") or {}
+        predicted_value = pred.get("predicted_value")
+        scope = pred.get("prediction_scope", "shadow")
+        content_json = _prediction_canonical(
+            assessment_id, pred["target_type"], pred["target_name"],
+            predicted_value, scope, provenance, recorded_at,
+        )
+        prev_hash = self._last_prediction_hash()
+        row_hash = _row_hash(prev_hash, content_json)
+        self._con.execute(
+            "INSERT INTO assessment_predictions "
+            "(assessment_id, repo_id, action_id, target_type, target_name, predicted_value, "
+            " prediction_scope, label_status, shadow_mode, features_json, provenance_json, "
+            " recorded_at, prev_hash, row_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?, ?)",
+            (
+                assessment_id, repo_id, pred.get("action_id"), pred["target_type"],
+                pred["target_name"], predicted_value, scope,
+                json.dumps(pred.get("features") or {}, sort_keys=True),
+                json.dumps(provenance, sort_keys=True), recorded_at, prev_hash, row_hash,
+            ),
+        )
+
+    def load_predictions(self, assessment_id: str) -> list[dict[str, Any]]:
+        """The captured prediction manifest for an assessment (Milestone 4 join source)."""
+        row_id = self._row_id(assessment_id)
+        return [
+            {
+                "prediction_id": f"ap_{pid}",
+                "action_id": action_id,
+                "target_type": target_type,
+                "target_name": target_name,
+                "predicted_value": predicted_value,
+                "prediction_scope": scope,
+                "label_status": label_status,
+                "shadow_mode": shadow_mode,
+                "provenance": json.loads(provenance_json),
+            }
+            for pid, action_id, target_type, target_name, predicted_value, scope, label_status,
+            shadow_mode, provenance_json in self._con.execute(
+                "SELECT id, action_id, target_type, target_name, predicted_value, prediction_scope, "
+                "label_status, shadow_mode, provenance_json FROM assessment_predictions "
+                "WHERE assessment_id = ? ORDER BY id ASC",
+                (row_id,),
+            )
+        ]
+
+    # --- Milestone 4d: computed prediction errors + shadow snapshots (the learning store writes here)
+
+    def _last_prediction_error_hash(self) -> str:
+        row = self._con.execute(
+            "SELECT row_hash FROM prediction_errors ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row[0] if row else GENESIS
+
+    def _last_risk_snapshot_hash(self) -> str:
+        row = self._con.execute(
+            "SELECT row_hash FROM risk_snapshots ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row[0] if row else GENESIS
+
+    def insert_prediction_error(self, assessment_id: str, row: dict[str, Any]) -> str:
+        """Append one computed prediction-error row (hash-chained). Returns ``pe_{id}``."""
+        row_id = self._row_id(assessment_id)
+        recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        # normalize defaults BEFORE hashing so the canonical matches the stored columns exactly
+        row = {**row, "calibration_scope": row.get("calibration_scope", "shadow")}
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            if self._con.execute("SELECT 1 FROM assessments WHERE id = ?", (row_id,)).fetchone() is None:
+                raise KeyError(f"no assessment {assessment_id!r}")
+            pe_id = self._insert_prediction_error_for_row_id(row_id, row, recorded_at)
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        return pe_id
+
+    def _insert_prediction_error_for_row_id(
+        self, row_id: int, row: dict[str, Any], recorded_at: str
+    ) -> str:
+        """Append one computed prediction-error row. Caller may own an outer transaction."""
+        content_json = _prediction_error_canonical(row_id, row, recorded_at)
+        prev_hash = self._last_prediction_error_hash()
+        row_hash = _row_hash(prev_hash, content_json)
+        cur = self._con.execute(
+            "INSERT INTO prediction_errors "
+            "(assessment_id, action_id, target_type, target_name, predicted_probability, "
+            " predicted_value, actual_outcome, actual_value, residual, brier_error, log_loss, "
+            " squared_error, outcome_label_status, calibration_scope, recorded_at, "
+            " prev_hash, row_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row_id, row.get("action_id"), row["target_type"], row["target_name"],
+                row.get("predicted_probability"), row.get("predicted_value"),
+                row.get("actual_outcome"), row.get("actual_value"), row.get("residual"),
+                row.get("brier_error"), row.get("log_loss"), row.get("squared_error"),
+                row["outcome_label_status"], row.get("calibration_scope", "shadow"),
+                recorded_at, prev_hash, row_hash,
+            ),
+        )
+        return f"pe_{cur.lastrowid}"
+
+    def insert_risk_snapshot(self, repo_id: str, metrics: dict[str, Any], status: str = "shadow") -> str:
+        """Append a (shadow) risk snapshot recording a measurement run's metrics. Returns ``rs_{id}``."""
+        created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            snapshot_id = self._insert_risk_snapshot(repo_id, metrics, status, created_at)
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        return snapshot_id
+
+    def _insert_risk_snapshot(
+        self, repo_id: str, metrics: dict[str, Any], status: str, created_at: str
+    ) -> str:
+        """Append one risk-snapshot row. Caller may own an outer transaction."""
+        metrics_json = json.dumps(metrics, sort_keys=True, separators=(",", ":"))
+        content_json = _risk_snapshot_canonical(repo_id, status, metrics, created_at)
+        prev_hash = self._last_risk_snapshot_hash()
+        row_hash = _row_hash(prev_hash, content_json)
+        cur = self._con.execute(
+            "INSERT INTO risk_snapshots (repo_id, status, metrics_json, created_at, "
+            "prev_hash, row_hash) VALUES (?, ?, ?, ?, ?, ?)",
+            (repo_id, status, metrics_json, created_at, prev_hash, row_hash),
+        )
+        return f"rs_{cur.lastrowid}"
+
+    def insert_learning_measurement(
+        self, assessment_id: str, rows: list[dict[str, Any]],
+        repo_id: str, metrics: dict[str, Any], status: str = "shadow",
+    ) -> tuple[list[str], str]:
+        """Atomically append all prediction-error rows plus the shadow snapshot for one measurement.
+
+        A measurement run is one logical unit. If any row or the snapshot fails, the whole run rolls
+        back so ``prediction_errors_exist`` cannot trap the assessment in a partial measured state.
+        """
+        row_id = self._row_id(assessment_id)
+        recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        normalized = [{**row, "calibration_scope": row.get("calibration_scope", "shadow")} for row in rows]
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            if self._con.execute("SELECT 1 FROM assessments WHERE id = ?", (row_id,)).fetchone() is None:
+                raise KeyError(f"no assessment {assessment_id!r}")
+            error_ids = [
+                self._insert_prediction_error_for_row_id(row_id, row, recorded_at)
+                for row in normalized
+            ]
+            snapshot_id = self._insert_risk_snapshot(repo_id, metrics, status, created_at)
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        return error_ids, snapshot_id
+
+    def prediction_errors_exist(self, assessment_id: str) -> bool:
+        """True iff this assessment already has computed prediction-error rows (idempotency guard:
+        re-measuring would double-count in the scorecard)."""
+        row_id = self._row_id(assessment_id)
+        return self._con.execute(
+            "SELECT 1 FROM prediction_errors WHERE assessment_id = ? LIMIT 1", (row_id,)
+        ).fetchone() is not None
+
+    def load_prediction_errors(self, repo_id: str | None = None) -> list[dict[str, Any]]:
+        """All computed prediction errors (optionally repo-scoped via the assessment join), for the
+        scorecard. Returns plain dicts; aggregation lives in the surface."""
+        sql = (
+            "SELECT pe.target_type, pe.target_name, pe.predicted_probability, pe.predicted_value, "
+            "pe.actual_outcome, pe.actual_value, pe.brier_error, pe.log_loss, pe.squared_error, "
+            "pe.outcome_label_status, pe.calibration_scope, pe.assessment_id "
+            "FROM prediction_errors pe JOIN assessments a ON a.id = pe.assessment_id "
+        )
+        params: tuple = ()
+        if repo_id is not None:
+            sql += "WHERE a.repo_id = ? "
+            params = (repo_id,)
+        sql += "ORDER BY pe.id ASC"
+        cols = (
+            "target_type", "target_name", "predicted_probability", "predicted_value",
+            "actual_outcome", "actual_value", "brier_error", "log_loss", "squared_error",
+            "outcome_label_status", "calibration_scope", "assessment_id",
+        )
+        return [dict(zip(cols, r)) for r in self._con.execute(sql, params)]
 
     def record_outcome(self, assessment_id: str, status: str, detail: dict | None = None) -> None:
         """Append the terminal outcome of an assessed action (AD-4). OutcomePort impl: the assessment
@@ -308,7 +620,10 @@ class SqliteStore:
         """Audit-chain panel: integrity verdict + per-table row counts."""
         counts = {
             table: self._con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in ("assessments", "sanction_events", "post_assessment_guardrails", "outcomes")
+            for table in (
+                "assessments", "sanction_events", "post_assessment_guardrails", "outcomes",
+                "assessment_predictions", "prediction_errors", "risk_snapshots",
+            )
         }
         return {"valid": self.validate_chain(), "counts": counts}
 
@@ -318,7 +633,65 @@ class SqliteStore:
             and self._validate_sanction_chain()
             and self._validate_guardrail_chain()
             and self._validate_outcome_chain()
+            and self._validate_prediction_chain()
+            and self._validate_prediction_error_chain()
+            and self._validate_risk_snapshot_chain()
         )
+
+    def _validate_prediction_error_chain(self) -> bool:
+        prev_hash = GENESIS
+        for row in self._con.execute(
+            "SELECT assessment_id, action_id, target_type, target_name, predicted_probability, "
+            "predicted_value, actual_outcome, actual_value, residual, brier_error, log_loss, "
+            "squared_error, outcome_label_status, calibration_scope, recorded_at, prev_hash, row_hash "
+            "FROM prediction_errors ORDER BY id ASC"
+        ):
+            (assessment_id, *fields, recorded_at, stored_prev, stored_hash) = row
+            if stored_prev != prev_hash:
+                return False
+            content = dict(zip(_PREDICTION_ERROR_FIELDS, fields))
+            content_json = _prediction_error_canonical(assessment_id, content, recorded_at)
+            if _row_hash(prev_hash, content_json) != stored_hash:
+                return False
+            prev_hash = stored_hash
+        return True
+
+    def _validate_risk_snapshot_chain(self) -> bool:
+        prev_hash = GENESIS
+        for repo_id, status, metrics_json, created_at, stored_prev, stored_hash in self._con.execute(
+            "SELECT repo_id, status, metrics_json, created_at, prev_hash, row_hash "
+            "FROM risk_snapshots ORDER BY id ASC"
+        ):
+            if stored_prev != prev_hash:
+                return False
+            content_json = _risk_snapshot_canonical(
+                repo_id, status, json.loads(metrics_json), created_at
+            )
+            if _row_hash(prev_hash, content_json) != stored_hash:
+                return False
+            prev_hash = stored_hash
+        return True
+
+    def _validate_prediction_chain(self) -> bool:
+        prev_hash = GENESIS
+        for (
+            assessment_id, target_type, target_name, predicted_value, scope, provenance_json,
+            recorded_at, stored_prev, stored_hash,
+        ) in self._con.execute(
+            "SELECT assessment_id, target_type, target_name, predicted_value, prediction_scope, "
+            "provenance_json, recorded_at, prev_hash, row_hash "
+            "FROM assessment_predictions ORDER BY id ASC"
+        ):
+            if stored_prev != prev_hash:
+                return False
+            content_json = _prediction_canonical(
+                assessment_id, target_type, target_name, predicted_value, scope,
+                json.loads(provenance_json), recorded_at,
+            )
+            if _row_hash(prev_hash, content_json) != stored_hash:
+                return False
+            prev_hash = stored_hash
+        return True
 
     def _validate_outcome_chain(self) -> bool:
         prev_hash = GENESIS

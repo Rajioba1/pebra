@@ -114,7 +114,12 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "properties": {
                 "assessment_id": {"type": "string"},
                 "status": {"type": "string", "enum": ["completed", "skipped", "rejected"]},
-                "detail": {"type": "object", "description": "Optional JSON describing the actual result."},
+                "detail": {
+                    "type": "object",
+                    "description": "Optional result detail. Recognized learning labels (4b): "
+                    "actual_success (bool), event_outcomes ({event: bool}), benefit_realized (bool), "
+                    "actual_review_cost (number), actual_rework_cost (number). Absent -> censored.",
+                },
                 **_COMMON_PROPS,
             },
             "required": ["assessment_id", "status"],

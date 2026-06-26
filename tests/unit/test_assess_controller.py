@@ -83,8 +83,8 @@ class FakeStore:
     def __init__(self):
         self.persisted = []
 
-    def persist_assessment(self, result, request_payload):
-        self.persisted.append((result, request_payload))
+    def persist_assessment(self, result, request_payload, predictions=None):
+        self.persisted.append((result, request_payload, predictions or []))
         return f"asm_{len(self.persisted)}"
 
     def validate_chain(self):

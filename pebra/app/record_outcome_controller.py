@@ -8,6 +8,7 @@ status, else pending.
 
 from __future__ import annotations
 
+from pebra.core import outcome_labels
 from pebra.core.constants import ActionStatus
 from pebra.ports.outcome_port import OutcomePort
 
@@ -27,4 +28,8 @@ def record_outcome(
         raise ValueError(
             f"outcome status must be terminal {sorted(_TERMINAL_STATUSES)}, got {status!r}"
         )
+    # Milestone 4b: the detail may carry explicit learning labels (actual_success, event_outcomes,
+    # benefit_realized, actual_review_cost, actual_rework_cost). Reject malformed labels before the
+    # immutable write so a bad label never enters the chain. Absent labels are fine (-> censored).
+    outcome_labels.validate_labels(detail)
     outcome_port.record_outcome(assessment_id, status, detail)

@@ -25,7 +25,12 @@ def register(subparsers: Any) -> None:
         "--status", required=True, choices=["completed", "skipped", "rejected"],
         help="Terminal action status to record.",
     )
-    p.add_argument("--detail", default=None, help="Optional JSON describing the actual result.")
+    p.add_argument(
+        "--detail", default=None,
+        help="Optional JSON describing the actual result. Recognized learning labels (Milestone 4b): "
+        'actual_success (bool), event_outcomes ({event: bool}), benefit_realized (bool), '
+        "actual_review_cost (number), actual_rework_cost (number). Absent labels stay censored.",
+    )
     p.add_argument("--repo-root", default=None)
     p.add_argument("--db", default=None)
     p.set_defaults(func=run)

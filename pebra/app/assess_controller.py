@@ -10,7 +10,7 @@ everything it needs arrives inside AssessmentInput.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from pebra.core import (
@@ -18,6 +18,7 @@ from pebra.core import (
     decision_engine,
     explanation_generator,
     model_guidance,
+    prediction_capture,
     request_validator,
 )
 from pebra.core.explanation_generator import Explanation
@@ -35,6 +36,9 @@ class ScoredAction:
     action: CandidateAction
     result: AssessmentResult
     explanation: Explanation
+    # Milestone 4a: the prediction manifest captured at scoring time (WHAT PEBRA predicted), persisted
+    # atomically with the assessment. Shadow-only measurement — it never changes this decision.
+    predictions: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -126,7 +130,23 @@ def _score_action(
     explanation = explanation_generator.render(result, inp.thresholds)
     packet = model_guidance.render(result, action, explanation)
     result.model_guidance_packet = packet
-    return ScoredAction(action=action, result=result, explanation=explanation)
+    # Milestone 4a: capture the prediction manifest from the in-flight evidence (p_success and the
+    # projected deltas are dropped from result.scores, so this is the only faithful record). Pure;
+    # read-only; does not feed back into the decision (Hard Rule).
+    manifest = prediction_capture.build_prediction_manifest(
+        p_success=inp.p_success,
+        events=inp.events,
+        immediate_benefit=inp.immediate_benefit,
+        projected_deltas=inp.benefit_delta_evidence.deltas,
+        projected_benefit=result.scores["benefit"],
+        action_id=action.id,
+    )
+    return ScoredAction(
+        action=action,
+        result=result,
+        explanation=explanation,
+        predictions=[asdict(t) for t in manifest],
+    )
 
 
 def _recommended(scored: list[ScoredAction]) -> ScoredAction:
@@ -169,7 +189,9 @@ def assess(
 
     recommended = _recommended(scored)
     assessment_id = store.persist_assessment(
-        recommended.result, {"task": request.task, "action_id": recommended.action.id}
+        recommended.result,
+        {"task": request.task, "action_id": recommended.action.id},
+        predictions=recommended.predictions,
     )
     return AssessmentOutcome(
         recommended_result=recommended.result,

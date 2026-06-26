@@ -18,10 +18,12 @@ from typing import Any
 from pebra.adapters import git_adapter
 from pebra.adapters.ast_diff_adapter import AstDiffAdapter
 from pebra.adapters.ast_import_graph import AstImportGraphAdapter
+from pebra.adapters.calibration_store import CalibrationStore
 from pebra.adapters.composite_evidence import CompositeEvidenceProvider
 from pebra.adapters.contract_surface import ContractSurfaceScanner
 from pebra.adapters.git_change_verifier import GitChangeVerifier
 from pebra.adapters.import_graph_cache import GraphProvider
+from pebra.adapters.learning_store import LearningStore
 from pebra.adapters.repository_registry import RepositoryRegistry
 from pebra.adapters.sanction_store import SanctionStore
 from pebra.adapters.store.db import SqliteStore
@@ -76,6 +78,16 @@ def build_verify_ports() -> dict[str, Any]:
 def build_sanction_port(ctx: RepoContext) -> SanctionPort:
     """The sanction port for accept-risk, wired over the open store."""
     return SanctionStore(ctx.store)
+
+
+def build_learning_port(ctx: RepoContext) -> LearningStore:
+    """The shadow-measurement write port for ``pebra learn`` (Milestone 4d)."""
+    return LearningStore(ctx.store)
+
+
+def build_calibration_store(ctx: RepoContext) -> CalibrationStore:
+    """The read-only calibration summary port for ``pebra scorecard`` (Milestone 4e)."""
+    return CalibrationStore(ctx.store)
 
 
 # --- canonical surface payloads (shared by CLI --json and MCP tool results) ----

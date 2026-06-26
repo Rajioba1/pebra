@@ -146,7 +146,7 @@ class _FakeRegistry:
 
 
 class _FakeStore:
-    def persist_assessment(self, result, request_payload):
+    def persist_assessment(self, result, request_payload, predictions=None):
         return "asm_1"
 
     def validate_chain(self):
