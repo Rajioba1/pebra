@@ -23,8 +23,13 @@ def _domain(posix_path: str) -> str:
 
 
 class ArchitectureMapAdapter:
-    def __init__(self, criticality_globs: list[CriticalityGlob] | None = None) -> None:
+    def __init__(
+        self,
+        criticality_globs: list[CriticalityGlob] | None = None,
+        graph_provider: object | None = None,
+    ) -> None:
         self._globs = list(criticality_globs or [])
+        self._graph = graph_provider  # optional build-once memo (Slice 5c); else direct get_import_graph
 
     # --- public port method ---
 
@@ -36,7 +41,7 @@ class ArchitectureMapAdapter:
             return ArchitectureEvidence(domain_criticality_hint=self._hint(affected_files))
         # One shared, content-hash-cached import graph (no separate scan). current_head is provenance
         # only — freshness is decided by per-file content hashes, not HEAD.
-        payload, freshness = get_import_graph(root)
+        payload, freshness = self._graph.get(root) if self._graph is not None else get_import_graph(root)
         if freshness is GraphFreshness.UNKNOWN:  # empty repo / nothing to map
             return ArchitectureEvidence(domain_criticality_hint=self._hint(affected_files))
         return self._evidence(payload, affected_files, freshness, current_head)

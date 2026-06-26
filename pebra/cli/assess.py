@@ -13,8 +13,9 @@ from typing import Any
 from pebra.adapters import git_adapter
 from pebra.adapters.ast_diff_adapter import AstDiffAdapter
 from pebra.adapters.ast_import_graph import AstImportGraphAdapter
+from pebra.adapters.composite_evidence import CompositeEvidenceProvider
+from pebra.adapters.import_graph_cache import GraphProvider
 from pebra.adapters.repository_registry import RepositoryRegistry
-from pebra.adapters.request_evidence import RequestEvidenceProvider
 from pebra.adapters.sanction_store import SanctionStore
 from pebra.adapters.store.db import SqliteStore
 from pebra.app import assess_controller
@@ -52,13 +53,14 @@ def run(args: Any) -> int:
     db_path = args.db or str(Path(repo.repo_root) / ".pebra" / "pebra.db")
     store = SqliteStore(db_path)
 
+    graph_provider = GraphProvider()  # 5c: build the import graph once, shared by arch + blast
     outcome = assess_controller.assess(
         request,
         thresholds=request.thresholds,
         start_path=start_path,
-        evidence_provider=RequestEvidenceProvider(),
+        evidence_provider=CompositeEvidenceProvider(graph_provider=graph_provider),
         symbol_diff_provider=AstDiffAdapter(request.evidence.get("symbol_diff")),
-        blast_provider=AstImportGraphAdapter(request.evidence.get("blast")),
+        blast_provider=AstImportGraphAdapter(request.evidence.get("blast"), graph_provider=graph_provider),
         sanction_port=SanctionStore(store),
         repository_registry=registry,
         store=store,

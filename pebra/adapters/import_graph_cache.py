@@ -306,6 +306,23 @@ def get_import_graph(root: Path) -> tuple[dict[str, Any], GraphFreshness]:
     return payload, freshness
 
 
+class GraphProvider:
+    """Build-once memo over ``get_import_graph`` (Slice 5c). One assessment touches the import graph
+    through several adapters (architecture map + blast walker); a single provider instance shared
+    between them loads/hashes/(re)builds the graph ONCE per repo root and hands the same
+    (payload, freshness) to each. Adapter-only — the payload never crosses into core/. Create one per
+    assessment so it never serves a stale graph across runs."""
+
+    def __init__(self) -> None:
+        self._memo: dict[str, tuple[dict[str, Any], GraphFreshness]] = {}
+
+    def get(self, root: Path) -> tuple[dict[str, Any], GraphFreshness]:
+        key = str(root)
+        if key not in self._memo:
+            self._memo[key] = get_import_graph(root)
+        return self._memo[key]
+
+
 def derive_reverse(edges: list[dict[str, Any]]) -> dict[str, list[tuple[str, float]]]:
     """Reverse dependency map (target -> [(importer, edge_confidence)]) for the blast walk."""
     reverse: dict[str, list[tuple[str, float]]] = {}

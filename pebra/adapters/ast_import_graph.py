@@ -25,8 +25,11 @@ _PROVENANCE_LIST_CAP = 25  # bound each guidance list so the model packet stays 
 
 
 class AstImportGraphAdapter:
-    def __init__(self, blast_evidence: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, blast_evidence: dict[str, Any] | None = None, graph_provider: object | None = None
+    ) -> None:
         self._evidence = blast_evidence
+        self._graph = graph_provider  # optional build-once memo (Slice 5c); else direct get_import_graph
 
     def blast(self, action: CandidateAction, repo_root: str) -> BlastEvidence:
         if self._evidence:
@@ -38,7 +41,7 @@ class AstImportGraphAdapter:
 
         # Derive the reverse-dependency graph from the shared, content-hash-cached import graph
         # (built once per assess by the architecture map; warm by the time blast runs).
-        payload, _ = get_import_graph(root)
+        payload, _ = self._graph.get(root) if self._graph is not None else get_import_graph(root)
         fileset = set(payload.get("file_hashes", {}))
         if not fileset:
             return BlastEvidence()
