@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from pebra.core.constants import ActionStatus, Decision, RiskMode
+from pebra.core.constants import ActionStatus, Decision, GraphFreshness, RiskMode
 
 SCHEMA_VERSION = "0.1"
 
@@ -84,8 +84,48 @@ class BlastEvidence:
     transitive_count: int = 0
     depth_buckets: dict[int, int] = field(default_factory=dict)
     edge_confidence_mean: float = 0.0
+    edge_confidence_min: float = 0.0  # AD-12: lowest-confidence edge in the reach
+    low_confidence_edge_count: int = 0  # AD-12: edges below the confidence floor
     entrypoint_signal: bool = False
     import_cycle_detected: bool = False
+    # 3c — graph-incompleteness as evidence. Counts scoped to the changed files unless noted.
+    missing_file_count: int = 0  # expected_files absent from the repo
+    parse_error_count: int = 0  # expected_files present but unparseable
+    unresolved_import_count: int = 0  # internal imports that failed to resolve (real failures)
+    dynamic_import_count: int = 0  # importlib/__import__ in the changed files
+    wildcard_import_count: int = 0  # `from x import *` in the changed files
+    external_import_count: int = 0  # stdlib/third-party imports — tracked, NOT penalized
+    graph_uncertainty_score: float = 0.0  # [0, cap] bounded penalty applied to evidence_quality
+    graph_uncertainty_reason: str = ""  # human-facing explanation of the incompleteness
+    # 3d provenance — WHAT couldn't be resolved (bounded, "file: name"), for model guidance.
+    unresolved_imports: tuple[str, ...] = ()
+    dynamic_imports: tuple[str, ...] = ()
+    wildcard_imports: tuple[str, ...] = ()
+    missing_files: tuple[str, ...] = ()
+    parse_error_files: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ArchitectureEvidence:
+    """Derived codebase map (AD-22) — structural signals, not decision memory (Architecture §5).
+
+    graph_freshness: fresh | rebuilt | stale | unknown. 'rebuilt' = was stale, the adapter
+    successfully repaired the map (trustworthy). 'stale' = unresolved (rebuild failed) — the
+    evidence-validity gate routes that to inspect_first.
+    """
+
+    graph_commit: str | None = None
+    graph_freshness: GraphFreshness = GraphFreshness.UNKNOWN
+    matched_anchors: list[str] = field(default_factory=list)
+    matched_domains: list[str] = field(default_factory=list)
+    architecture_anchor_score: float = 0.0
+    god_node_score: float = 0.0  # 3f: repo-relative fan-in percentile (0 below the in-degree floor)
+    bridge_centrality: float = 0.0
+    domain_entrypoint: bool = False
+    fan_out: int = 0  # 3f: outgoing import count of the edited file(s) — coupling breadth
+    cycle_participation: bool = False  # 3f: an edited file sits in an import cycle (SCC > 1)
+    domain_criticality_hint: str | None = None
+    source_files: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -140,6 +180,7 @@ class EvidenceBundle:
     p_success_variance: float = 0.0
     review_cost_variance: float = 0.0
     benefit_delta_evidence: "BenefitDeltaEvidence" = field(default_factory=lambda: BenefitDeltaEvidence())
+    architecture_evidence: "ArchitectureEvidence" = field(default_factory=lambda: ArchitectureEvidence())
 
 
 @dataclass
@@ -164,6 +205,7 @@ class AssessmentInput:
     benefit_delta_evidence: BenefitDeltaEvidence = field(default_factory=BenefitDeltaEvidence)
     symbol_diff_evidence: SymbolDiffEvidence = field(default_factory=SymbolDiffEvidence)
     blast_evidence: BlastEvidence = field(default_factory=BlastEvidence)
+    architecture_evidence: ArchitectureEvidence = field(default_factory=ArchitectureEvidence)
     active_snapshot: Any | None = None  # no learning in Phase 0 (cold start)
     sanction: Any | None = None  # pre-fetched sanction (engine never calls a port)
 
@@ -182,6 +224,7 @@ class AssessmentResult:
     gates_fired: list[dict[str, Any]] = field(default_factory=list)
     high_risk_triggers: list[dict[str, Any]] = field(default_factory=list)
     symbol_scope_evidence: dict[str, Any] = field(default_factory=dict)
+    graph_evidence: dict[str, Any] = field(default_factory=dict)  # 3c/3d blast graph incompleteness
     explanation: list[str] = field(default_factory=list)
     model_guidance_packet: dict[str, Any] | None = None
     provenance: dict[str, Any] = field(default_factory=dict)

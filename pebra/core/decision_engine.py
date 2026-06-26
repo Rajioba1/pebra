@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from pebra.core.assessment_builder import Assessment
-from pebra.core.constants import ActionStatus, Decision, RiskMode
+from pebra.core.constants import ActionStatus, Decision, GraphFreshness, RiskMode
 from pebra.core.models import AssessmentResult
 
 _SENSITIVE_STAGES = {"C3", "C4"}
@@ -53,6 +53,27 @@ def _risk_mode(decision: Decision, stage: str, *, controlled: bool, elevated: bo
     return RiskMode.NORMAL
 
 
+def _graph_evidence(blast: Any) -> dict[str, Any]:
+    """Surface blast graph incompleteness (3c/3d) for rendering. Empty when the graph is fully
+    resolved, so a clean assessment carries no uncertainty noise (and the worked example is unchanged)."""
+    if blast.graph_uncertainty_score <= 0.0:
+        return {}
+    return {
+        "score": blast.graph_uncertainty_score,
+        "reason": blast.graph_uncertainty_reason,
+        "unresolved_import_count": blast.unresolved_import_count,
+        "dynamic_import_count": blast.dynamic_import_count,
+        "wildcard_import_count": blast.wildcard_import_count,
+        "missing_file_count": blast.missing_file_count,
+        "parse_error_count": blast.parse_error_count,
+        "unresolved_imports": list(blast.unresolved_imports),
+        "dynamic_imports": list(blast.dynamic_imports),
+        "wildcard_imports": list(blast.wildcard_imports),
+        "missing_files": list(blast.missing_files),
+        "parse_error_files": list(blast.parse_error_files),
+    }
+
+
 def decide(
     assessment: Assessment, *, policy_violations: Sequence[str] = ()
 ) -> AssessmentResult:
@@ -60,6 +81,7 @@ def decide(
     t = assessment.input.thresholds
     stage = s["criticality_stage"]
     sse = s["symbol_scope_evidence"]
+    ge = _graph_evidence(assessment.input.blast_evidence)
     flat = _flatten_scores(assessment)
 
     def _result(
@@ -82,6 +104,7 @@ def decide(
             gates_fired=gates_fired,
             high_risk_triggers=high_risk_triggers or [],
             symbol_scope_evidence=sse,
+            graph_evidence=ge,
             provenance={"provider": "pebra", "source_type": "derived"},
             decision_reason=decision_reason,
         )
@@ -146,6 +169,16 @@ def decide(
         provisional, fired_gate = Decision.INSPECT_FIRST, 8
         gates_fired.append({"gate": 8, "name": "low_edit_confidence",
                             "edit_confidence": s["edit_confidence"]})
+    # --- Evidence-validity gate (AD-22): unresolved-stale architecture map ---
+    # Placed last before proceed so it only downgrades a would-be proceed — it never preempts a more
+    # severe gate above. STALE means the map was stale AND the adapter's rebuild failed, so PEBRA
+    # can't trust the blast/criticality evidence those gates relied on. fresh/rebuilt/unknown don't fire.
+    elif (
+        assessment.input.architecture_evidence.graph_freshness is GraphFreshness.STALE
+        and t.get("inspect_on_stale_arch_map", True)
+    ):
+        provisional, fired_gate = Decision.INSPECT_FIRST, 12
+        gates_fired.append({"gate": 12, "name": "stale_architecture_map"})
     # --- Gate 11: proceed ---
     else:
         provisional, fired_gate = Decision.PROCEED, 11
@@ -154,7 +187,16 @@ def decide(
         requires_confirmation = stage in _SENSITIVE_STAGES
         gates_fired.append({"gate": 11, "name": "proceed"})
 
+    # Evidence-validity observability: record a stale architecture map even when a higher gate drove
+    # the decision (so the audit trail shows the evidence was untrustworthy, not just the headline gate).
+    if assessment.input.architecture_evidence.graph_freshness is GraphFreshness.STALE and not any(
+        g.get("gate") == 12 for g in gates_fired
+    ):
+        gates_fired.append({"gate": 12, "name": "stale_architecture_map", "advisory": True})
+
     # --- Gate 10: authorized sanction resolution (AD-26) ---
+    # NOTE: gate 12 (stale arch map) yields INSPECT_FIRST, never ASK_HUMAN/REJECT, so the provisional
+    # guard below already excludes it — a sanction can never convert the evidence-validity gate.
     sanction = assessment.input.sanction
     elevated = provisional in {Decision.INSPECT_FIRST, Decision.TEST_FIRST} and stage in _SENSITIVE_STAGES
     if (

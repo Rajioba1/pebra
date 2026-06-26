@@ -115,6 +115,66 @@ def test_gate8_low_confidence_routes_to_inspect_first() -> None:
     assert result.recommended_decision is Decision.INSPECT_FIRST
 
 
+def test_stale_arch_map_downgrades_proceed_to_inspect_first() -> None:
+    # unresolved-stale architecture evidence: PEBRA can't trust blast/criticality -> slow down.
+    from pebra.core.constants import GraphFreshness
+    from pebra.core.models import ArchitectureEvidence
+    a = _assess(architecture_evidence=ArchitectureEvidence(graph_freshness=GraphFreshness.STALE))
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.INSPECT_FIRST
+    assert any(g["name"] == "stale_architecture_map" for g in result.gates_fired)
+
+
+def test_rebuilt_and_fresh_and_unknown_arch_map_still_proceed() -> None:
+    from pebra.core.constants import GraphFreshness
+    from pebra.core.models import ArchitectureEvidence
+    for state in (GraphFreshness.FRESH, GraphFreshness.REBUILT, GraphFreshness.UNKNOWN):
+        a = _assess(architecture_evidence=ArchitectureEvidence(graph_freshness=state))
+        assert de.decide(a).recommended_decision is Decision.PROCEED
+
+
+def test_stale_arch_map_does_not_preempt_a_more_severe_gate() -> None:
+    # gate 3 (expected_loss over threshold) ask_human must win over the stale-map inspect_first
+    from pebra.core.constants import GraphFreshness
+    from pebra.core.models import ArchitectureEvidence
+    a = _assess(
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        architecture_evidence=ArchitectureEvidence(graph_freshness=GraphFreshness.STALE),
+    )
+    assert de.decide(a).recommended_decision is Decision.ASK_HUMAN
+
+
+def test_stale_arch_map_gate_can_be_disabled_by_threshold() -> None:
+    from dataclasses import replace
+    from pebra.core.constants import GraphFreshness
+    from pebra.core.models import ArchitectureEvidence
+    inp = replace(
+        _worked_example_input(),
+        architecture_evidence=ArchitectureEvidence(graph_freshness=GraphFreshness.STALE),
+        thresholds={**_worked_example_input().thresholds, "inspect_on_stale_arch_map": False},
+    )
+    assert de.decide(ab.build_assessment(inp)).recommended_decision is Decision.PROCEED
+
+
+def test_stale_arch_map_is_recorded_even_when_a_higher_gate_decides() -> None:
+    # evidence-validity observability: if gate 8 (low confidence) drives the decision but the arch map
+    # is also stale, the audit trail must still record the stale-evidence fact.
+    from pebra.core.constants import GraphFreshness
+    from pebra.core.models import ArchitectureEvidence
+    a = _assess(
+        edit_confidence_factors={
+            "p_success": 0.2, "evidence_quality": 0.2, "testability": 0.2,
+            "reversibility": 0.2, "source_reliability": 0.2, "scope_control": 0.2,
+        },
+        architecture_evidence=ArchitectureEvidence(graph_freshness=GraphFreshness.STALE),
+    )
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.INSPECT_FIRST
+    assert any(g["name"] == "low_edit_confidence" for g in result.gates_fired)
+    assert any(g["name"] == "stale_architecture_map" for g in result.gates_fired)
+
+
 def test_gate1_policy_violation_rejects_before_threshold() -> None:
     # even with a perfectly safe assessment, a policy violation rejects first
     result = de.decide(_assess(), policy_violations=["forbidden_path_edit"])

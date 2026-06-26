@@ -37,6 +37,9 @@ forbidden_modules =
     starlette
     uvicorn
     jinja2
+    yaml
+    radon
+    bandit
     numpy
     sklearn
 

@@ -64,6 +64,17 @@ def _build_input(
     blast = blast_provider.blast(action, repo_root)
     sanction = sanction_port.active_sanction(repo_id, action)
 
+    # 3c — graph incompleteness caps evidence_quality: a blast estimate built over unresolved/dynamic/
+    # wildcard imports (or missing expected files) is less trustworthy. The bounded penalty lowers
+    # edit_confidence through the existing geometric mean (and can trip gate 8); a fully resolved
+    # graph (score 0.0) leaves evidence_quality untouched, preserving the worked example.
+    edit_confidence_factors = dict(evidence.edit_confidence_factors)
+    if blast.graph_uncertainty_score > 0.0:
+        supplied_eq = edit_confidence_factors.get("evidence_quality", 1.0)
+        edit_confidence_factors["evidence_quality"] = max(
+            0.0, supplied_eq - blast.graph_uncertainty_score
+        )
+
     effective_thresholds = {**evidence.thresholds, **thresholds}
     return AssessmentInput(
         request=request,
@@ -74,7 +85,7 @@ def _build_input(
         review_cost=evidence.review_cost,
         criticality_stage=evidence.criticality_stage,
         criticality_value=evidence.criticality_value,
-        edit_confidence_factors=evidence.edit_confidence_factors,
+        edit_confidence_factors=edit_confidence_factors,
         thresholds=effective_thresholds,
         repo_id=repo_id,
         repo_root=repo_root,
@@ -84,6 +95,7 @@ def _build_input(
         benefit_delta_evidence=evidence.benefit_delta_evidence,
         symbol_diff_evidence=symbol_diff,
         blast_evidence=blast,
+        architecture_evidence=evidence.architecture_evidence,
         active_snapshot=None,  # no learning in Phase 0
         sanction=sanction,
     )

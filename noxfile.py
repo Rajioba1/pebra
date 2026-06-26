@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import nox
 
-DEV = ["pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema"]
+DEV = ["pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema", "pyyaml", "radon", "bandit"]
 
 
 @nox.session

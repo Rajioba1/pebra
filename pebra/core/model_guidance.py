@@ -42,6 +42,23 @@ def render(
     if decision in {"test_first", "proceed"} and action.expected_files:
         required_checks.append("run targeted tests for the touched scope before commit")
 
+    # 3d — make graph incompleteness visible and actionable to the model (advisory only). When the
+    # graph resolved cleanly, graph_evidence is {} and this adds nothing (worked example unchanged).
+    graph_evidence = result.graph_evidence or {}
+    suggested_inspection: list[str] = []
+    if graph_evidence:
+        suggested_inspection.append(graph_evidence["reason"])
+        for line in (
+            graph_evidence.get("unresolved_imports", [])
+            + graph_evidence.get("dynamic_imports", [])
+            + graph_evidence.get("wildcard_imports", [])
+        ):
+            suggested_inspection.append(f"inspect import surface: {line}")
+        for f in graph_evidence.get("missing_files", []):
+            suggested_inspection.append(f"expected file not found in repo: {f}")
+        for f in graph_evidence.get("parse_error_files", []):
+            suggested_inspection.append(f"could not parse expected file: {f}")
+
     return {
         "guidance_packet_id": f"gp_{action.id}",
         "decision": decision,
@@ -66,7 +83,8 @@ def render(
                 "confidence": explanation.confidence_band,
             },
             "why": list(explanation.why),
-            "suggested_inspection": [],
+            "suggested_inspection": suggested_inspection,
+            "graph_evidence": graph_evidence,
             "safer_alternative": (
                 "make a targeted patch instead of a broad refactor"
                 if decision != "proceed"
@@ -81,5 +99,6 @@ def render(
             "high_risk_triggers": "symbol_diff + criticality + gates",
             "risk_facts": "risk_report + evidence discovery",
             "why": "explanation_generator",
+            "graph_evidence": "blast-radius graph resolution (3c/3d)",
         },
     }

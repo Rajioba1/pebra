@@ -34,6 +34,16 @@ class RiskMode(Enum):
     CONTROLLED_HIGH_RISK = "controlled_high_risk"
 
 
+class GraphFreshness(Enum):
+    """Trust state of the architecture map (AD-22). Decision-bearing: STALE (unresolved after a
+    failed rebuild) routes to inspect_first; FRESH/REBUILT are trustworthy; UNKNOWN = not determined."""
+
+    FRESH = "fresh"
+    REBUILT = "rebuilt"
+    STALE = "stale"
+    UNKNOWN = "unknown"
+
+
 class ChangeKind(Enum):
     COSMETIC = "COSMETIC"
     DIRECTIVE = "DIRECTIVE"
@@ -89,6 +99,31 @@ EDIT_CONFIDENCE_FACTORS: tuple[str, ...] = (
     "scope_control",
 )
 EDIT_CONFIDENCE_WEIGHT: float = 1.0 / len(EDIT_CONFIDENCE_FACTORS)
+
+# --- Graph-incompleteness penalties (Slice 3c) — uncalibrated, bounded defaults. ---
+# Each unresolved/dynamic/wildcard import (and missing expected file) erodes confidence in the blast
+# estimate. Weights are per-count, summed, then capped at GRAPH_UNCERTAINTY_CAP: incompleteness can
+# NUDGE a decision (lowering evidence_quality -> edit_confidence -> gate 8) but never collapse
+# confidence to zero. External/stdlib imports are deliberately absent — they are not incompleteness.
+# The repo_* weights capture dynamic/wildcard imports ELSEWHERE that could hide a dependent of the
+# changed file (the reverse-direction blast risk); they are smaller than the edit-local weights.
+GRAPH_UNCERTAINTY_CAP: float = 0.25
+GRAPH_UNCERTAINTY_WEIGHTS: dict[str, float] = {
+    "missing_file": 0.05,
+    "parse_error_file": 0.08,
+    "unresolved_import": 0.03,
+    "dynamic_import": 0.02,
+    "wildcard_import": 0.01,
+    "repo_dynamic_import": 0.01,
+    "repo_wildcard_import": 0.005,
+}
+
+# --- Architecture structural metrics (Slice 3f) — uncalibrated, repo-relative defaults. ---
+# A file is a god-node "anchor" only if its fan-in (in-degree) meets BOTH a minimum floor AND ranks
+# in the top fan-in percentile repo-wide. The floor prevents tiny-repo over-anchoring (a file imported
+# once in a 3-file repo is not an architectural anchor); the percentile keeps it meaningful at scale.
+ANCHOR_MIN_IN_DEGREE: int = 3
+ANCHOR_FANIN_PERCENTILE: float = 0.90
 
 # --- Cold-start priors (AD-9) — documented uncalibrated defaults used when evidence is absent. ---
 
