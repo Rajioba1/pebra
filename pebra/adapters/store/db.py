@@ -46,6 +46,20 @@ def _canonical(result: AssessmentResult, request_payload: dict[str, Any]) -> str
     return json.dumps(content, sort_keys=True)
 
 
+def _outcome_canonical(
+    row_id: int, terminal_status: str, detail: dict[str, Any], recorded_at: str
+) -> str:
+    """Per-field canonical content hashed for the outcome chain (Phase 3a / AD-4). Covers the FK,
+    terminal status, detail payload, and timestamp so tampering with any of them is detectable."""
+    content = {
+        "assessment_id": row_id,
+        "terminal_status": terminal_status,
+        "detail": detail,
+        "recorded_at": recorded_at,
+    }
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
 def _guardrail_canonical(row_id: int, recorded_at: str, guardrails: dict[str, Any]) -> str:
     """Per-field canonical content hashed for the guardrail chain (Architecture §10).
 
@@ -117,6 +131,18 @@ class SqliteStore:
                 row_hash TEXT NOT NULL,
                 FOREIGN KEY (assessment_id) REFERENCES assessments(id)
             );
+            CREATE TABLE IF NOT EXISTS outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assessment_id INTEGER NOT NULL,
+                terminal_status TEXT NOT NULL,
+                detail_json TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                row_hash TEXT NOT NULL,
+                FOREIGN KEY (assessment_id) REFERENCES assessments(id)
+            );
+            -- one terminal outcome per assessment (AD-4): the lifecycle closes exactly once
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_outcomes_assessment ON outcomes(assessment_id);
             """
         )
 
@@ -135,6 +161,12 @@ class SqliteStore:
     def _last_guardrail_hash(self) -> str:
         row = self._con.execute(
             "SELECT row_hash FROM post_assessment_guardrails ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row[0] if row else GENESIS
+
+    def _last_outcome_hash(self) -> str:
+        row = self._con.execute(
+            "SELECT row_hash FROM outcomes ORDER BY id DESC LIMIT 1"
         ).fetchone()
         return row[0] if row else GENESIS
 
@@ -163,12 +195,148 @@ class SqliteStore:
             raise
         return f"asm_{assessment_id}"
 
+    def record_outcome(self, assessment_id: str, status: str, detail: dict | None = None) -> None:
+        """Append the terminal outcome of an assessed action (AD-4). OutcomePort impl: the assessment
+        row stays immutable; this is the only terminal-status write. Its own append-only hash chain
+        mirrors the guardrail chain. Raises KeyError if the assessment doesn't exist."""
+        row_id = self._row_id(assessment_id)
+        payload = detail or {}
+        detail_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        content_json = _outcome_canonical(row_id, status, payload, recorded_at)
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            # existence check inside the lock so the KeyError guarantee holds under concurrent writes
+            # (and we never surface a raw FK IntegrityError). The outer handler does the single rollback.
+            if self._con.execute("SELECT 1 FROM assessments WHERE id = ?", (row_id,)).fetchone() is None:
+                raise KeyError(f"no assessment {assessment_id!r}")
+            # AD-4: the lifecycle closes exactly once — reject a second (possibly contradictory) outcome.
+            if self._con.execute(
+                "SELECT 1 FROM outcomes WHERE assessment_id = ?", (row_id,)
+            ).fetchone() is not None:
+                raise ValueError(f"assessment {assessment_id!r} already has a terminal outcome")
+            prev_hash = self._last_outcome_hash()
+            row_hash = _row_hash(prev_hash, content_json)
+            self._con.execute(
+                "INSERT INTO outcomes "
+                "(assessment_id, terminal_status, detail_json, recorded_at, prev_hash, row_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (row_id, status, detail_json, recorded_at, prev_hash, row_hash),
+            )
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+
+    def load_outcomes(self, assessment_id: str) -> list[dict[str, Any]]:
+        """Terminal outcomes recorded for an assessment, oldest first (read path for verify/dashboard)."""
+        row_id = self._row_id(assessment_id)
+        return [
+            {"terminal_status": status, "detail": json.loads(detail_json), "recorded_at": recorded_at}
+            for status, detail_json, recorded_at in self._con.execute(
+                "SELECT terminal_status, detail_json, recorded_at FROM outcomes "
+                "WHERE assessment_id = ? ORDER BY id ASC",
+                (row_id,),
+            )
+        ]
+
+    # --- read-only API for the Risk Observatory dashboard (Phase 3b/5c-A). Pure SELECTs; the
+    # dashboard surface calls these directly (it may import adapters, never app/core). ---
+
+    def list_assessments(
+        self, repo_id: str, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Newest-first assessment summaries for a repo (overview + history panels), each with its
+        current terminal status (None = pending) so the panels don't need a detail call per row."""
+        limit = max(0, min(limit, 500))  # a negative LIMIT is unbounded in SQLite — clamp it
+        offset = max(0, offset)
+        rows = self._con.execute(
+            "SELECT a.id, a.decision, a.content_json, o.terminal_status, o.recorded_at "
+            "FROM assessments a LEFT JOIN outcomes o ON o.assessment_id = a.id "
+            "WHERE a.repo_id = ? ORDER BY a.id DESC LIMIT ? OFFSET ?",
+            (repo_id, limit, offset),
+        ).fetchall()
+        summaries: list[dict[str, Any]] = []
+        for row_id, decision, content_json, terminal_status, recorded_at in rows:
+            content = json.loads(content_json)
+            summaries.append(
+                {
+                    "assessment_id": f"asm_{row_id}",
+                    "decision": decision,
+                    "risk_mode": content.get("risk_mode"),
+                    "scores": content.get("scores", {}),
+                    "assessed_commit": content.get("assessed_commit"),
+                    "terminal_status": terminal_status,  # None until an outcome is recorded
+                    "outcome_recorded_at": recorded_at,
+                }
+            )
+        return summaries
+
+    def assessment_detail(self, assessment_id: str) -> dict[str, Any]:
+        """Full detail for one assessment: content + guidance packet + guardrails + outcomes."""
+        row_id = self._row_id(assessment_id)
+        row = self._con.execute(
+            "SELECT content_json FROM assessments WHERE id = ?", (row_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"no assessment {assessment_id!r}")
+        content = json.loads(row[0])
+        packet = self._con.execute(
+            "SELECT packet_json FROM model_guidance_packets WHERE assessment_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (row_id,),
+        ).fetchone()
+        guardrails = [
+            json.loads(g)
+            for (g,) in self._con.execute(
+                "SELECT guardrails_json FROM post_assessment_guardrails "
+                "WHERE assessment_id = ? ORDER BY id ASC",
+                (row_id,),
+            )
+        ]
+        return {
+            "assessment_id": assessment_id,
+            "content": content,
+            "model_guidance_packet": (
+                json.loads(packet[0]) if packet else content.get("model_guidance_packet")
+            ),
+            "guardrails": guardrails,
+            "outcomes": self.load_outcomes(assessment_id),
+        }
+
+    def chain_status(self) -> dict[str, Any]:
+        """Audit-chain panel: integrity verdict + per-table row counts."""
+        counts = {
+            table: self._con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("assessments", "sanction_events", "post_assessment_guardrails", "outcomes")
+        }
+        return {"valid": self.validate_chain(), "counts": counts}
+
     def validate_chain(self) -> bool:
         return (
             self._validate_assessment_chain()
             and self._validate_sanction_chain()
             and self._validate_guardrail_chain()
+            and self._validate_outcome_chain()
         )
+
+    def _validate_outcome_chain(self) -> bool:
+        prev_hash = GENESIS
+        for assessment_id, terminal_status, detail_json, recorded_at, stored_prev, stored_hash in (
+            self._con.execute(
+                "SELECT assessment_id, terminal_status, detail_json, recorded_at, prev_hash, row_hash "
+                "FROM outcomes ORDER BY id ASC"
+            )
+        ):
+            if stored_prev != prev_hash:
+                return False
+            content_json = _outcome_canonical(
+                assessment_id, terminal_status, json.loads(detail_json), recorded_at
+            )
+            if _row_hash(prev_hash, content_json) != stored_hash:
+                return False
+            prev_hash = stored_hash
+        return True
 
     # Architecture §10: guardrail rows use the per-field integrity formula — the hash covers
     # assessment_id, recorded_at, and the guardrails payload (via _guardrail_canonical), so tampering

@@ -1,0 +1,4 @@
+body { font-family: system-ui, -apple-system, sans-serif; margin: 2rem; color: #1a1a1a; }
+h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+.hint { color: #666; font-size: 0.9rem; margin-top: 0; }
+#app { margin-top: 1.5rem; }

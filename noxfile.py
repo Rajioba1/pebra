@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import nox
 
-DEV = ["pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema", "pyyaml", "radon", "bandit"]
+DEV = [
+    "pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema",
+    "pyyaml", "radon", "bandit",
+    "fastapi", "uvicorn", "jinja2", "httpx",  # Risk Observatory dashboard surface + test client
+]
 
 
 @nox.session
