@@ -155,6 +155,36 @@ def test_controller_persists_and_returns_repo_scope() -> None:
     assert len(store.persisted) == 1
 
 
+class _FakeStructuralFeatures:
+    def build_features(self, inp):
+        return {"schema_version": 1, "symbol": {"is_public_api": True}}
+
+
+def test_structural_features_captured_without_changing_scores() -> None:
+    # Hard Rule: structural features are CAPTURE only — attaching a rich payload must not change any
+    # score/decision; and the payload must be persisted on every prediction row.
+    baseline, _ = _run()
+    store = FakeStore()
+    outcome = ac.assess(
+        _request(),
+        thresholds=_THRESHOLDS,
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        structural_feature_provider=_FakeStructuralFeatures(),
+    )
+    assert outcome.recommended_result.scores == baseline.recommended_result.scores
+    assert outcome.recommended_result.recommended_decision is baseline.recommended_result.recommended_decision
+    _, _, predictions = store.persisted[0]
+    assert predictions and all(
+        p["features"] == {"schema_version": 1, "symbol": {"is_public_api": True}} for p in predictions
+    )
+
+
 def test_controller_rejects_invalid_request() -> None:
     from pebra.core.request_validator import RequestValidationError
     bad = m.AssessmentRequest(task="", candidate_actions=[])

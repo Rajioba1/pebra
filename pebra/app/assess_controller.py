@@ -28,6 +28,7 @@ from pebra.ports.evidence_port import EvidenceProvider
 from pebra.ports.repository_registry_port import RepositoryRegistryPort
 from pebra.ports.sanction_port import SanctionPort
 from pebra.ports.store_port import StorePort
+from pebra.ports.structural_feature_port import StructuralFeatureProvider
 from pebra.ports.symbol_diff_port import SymbolDiffProvider
 
 
@@ -121,6 +122,12 @@ def _score_action(
         blast_provider=ports["blast_provider"],
         sanction_port=ports["sanction_port"],
     )
+    # Phase-4 reframe: capture structural features pre-scoring and attach to the IR for CAPTURE only.
+    # assessment_builder/decision_engine ignore inp.structural_features (no score/gate change — Hard
+    # Rule). M5 apply_snapshot will later consume it pre-scoring. None provider -> empty features.
+    sfp = ports.get("structural_feature_provider")
+    if sfp is not None:
+        inp.structural_features = sfp.build_features(inp)
     assessment = assessment_builder.build_assessment(inp)
     policy_violations = inp.policy_violations
     result = decision_engine.decide(assessment, policy_violations=policy_violations)
@@ -138,6 +145,7 @@ def _score_action(
         projected_deltas=inp.benefit_delta_evidence.deltas,
         projected_benefit=result.scores["benefit"],
         action_id=action.id,
+        features=inp.structural_features,
     )
     return ScoredAction(
         action=action,
@@ -168,6 +176,7 @@ def assess(
     repository_registry: RepositoryRegistryPort,
     store: StorePort,
     assessed_commit: str | None = None,
+    structural_feature_provider: StructuralFeatureProvider | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     repo = repository_registry.resolve(start_path)
@@ -182,6 +191,7 @@ def assess(
                 blast_provider=blast_provider,
                 sanction_port=sanction_port,
                 assessed_commit=assessed_commit,
+                structural_feature_provider=structural_feature_provider,
             )
         )
 

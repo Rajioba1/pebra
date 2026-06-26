@@ -210,6 +210,10 @@ class AssessmentInput:
     architecture_evidence: ArchitectureEvidence = field(default_factory=ArchitectureEvidence)
     active_snapshot: Any | None = None  # no learning in Phase 0 (cold start)
     sanction: Any | None = None  # pre-fetched sanction (engine never calls a port)
+    # Phase-4 reframe (M5-prep): structural feature payload attached pre-scoring for CAPTURE only.
+    # assessment_builder/decision_engine MUST ignore it (no score/gate change); persisted with the
+    # prediction manifest and consumed by M5 apply_snapshot. None until enrichment is wired.
+    structural_features: dict[str, Any] | None = None
 
 
 @dataclass

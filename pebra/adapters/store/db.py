@@ -81,6 +81,38 @@ def _outcome_legacy_canonical(
 
 def _prediction_canonical(
     row_id: int,
+    repo_id: str,
+    action_id: str | None,
+    target_type: str,
+    target_name: str,
+    predicted_value: float | None,
+    prediction_scope: str,
+    provenance: dict[str, Any],
+    features: dict[str, Any],
+    recorded_at: str,
+) -> str:
+    """v2 per-field canonical for the prediction chain (Phase-4 reframe). Binds ``repo_id`` and
+    ``action_id`` (predictions are action-scoped now and M5 promotes scoped facts from them), plus the
+    structural ``features`` payload and the ``hash_version`` stamp — so tampering with any of them is
+    detectable. ``label_status`` / ``shadow_mode`` stay mutable lifecycle columns (not hashed)."""
+    content = {
+        "assessment_id": row_id,
+        "repo_id": repo_id,
+        "action_id": action_id,
+        "target_type": target_type,
+        "target_name": target_name,
+        "predicted_value": predicted_value,
+        "prediction_scope": prediction_scope,
+        "provenance": provenance,
+        "features": features,
+        "hash_version": 2,
+        "recorded_at": recorded_at,
+    }
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
+def _prediction_canonical_v1(
+    row_id: int,
     target_type: str,
     target_name: str,
     predicted_value: float | None,
@@ -88,10 +120,8 @@ def _prediction_canonical(
     provenance: dict[str, Any],
     recorded_at: str,
 ) -> str:
-    """Per-field canonical content hashed for the prediction chain (Milestone 4a). Covers the FK,
-    the target identity, the predicted value, scope, provenance and timestamp so tampering with any
-    of them is detectable. ``label_status`` / ``shadow_mode`` are mutable lifecycle columns (a label
-    arrives later via the outcome) and are intentionally NOT hashed, like sanction status."""
+    """Legacy (Milestone 4a) prediction canonical — no features, no hash_version. Used only to
+    validate pre-Phase-4 rows (hash_version=1)."""
     content = {
         "assessment_id": row_id,
         "target_type": target_type,
@@ -261,6 +291,7 @@ class SqliteStore:
                 shadow_mode INTEGER NOT NULL DEFAULT 1,
                 features_json TEXT NOT NULL DEFAULT '{}',
                 provenance_json TEXT NOT NULL DEFAULT '{}',
+                hash_version INTEGER NOT NULL DEFAULT 2,
                 recorded_at TEXT NOT NULL,
                 prev_hash TEXT NOT NULL,
                 row_hash TEXT NOT NULL,
@@ -350,6 +381,8 @@ class SqliteStore:
     def _migrate_schema(self) -> None:
         self._ensure_column("model_guidance_packets", "guidance_packet_id", "TEXT")
         self._ensure_column("outcomes", "guidance_packet_id", "TEXT")
+        # Migration defaults backfill pre-existing rows as v1 legacy chain rows. Every new insert
+        # sets hash_version=2 explicitly before hashing, so the DDL default is not used for new rows.
         self._ensure_column("outcomes", "hash_version", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("prediction_errors", "guidance_packet_id", "TEXT")
         self._ensure_column(
@@ -357,6 +390,12 @@ class SqliteStore:
         )
         self._ensure_column("prediction_errors", "shadow_mode", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("prediction_errors", "hash_version", "INTEGER NOT NULL DEFAULT 1")
+        # Phase-4 reframe: pre-existing prediction rows had no features and used the legacy canonical;
+        # backfill them as hash_version=1. New rows set hash_version=2 explicitly before hashing.
+        # features_json shipped with the table in M4, but ensure it defensively so the v2 INSERT can
+        # never hit a missing-column error on any partially-migrated DB.
+        self._ensure_column("assessment_predictions", "features_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column("assessment_predictions", "hash_version", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("risk_snapshots", "parent_snapshot_id", "TEXT")
         self._ensure_column("risk_snapshots", "created_from_outcome_hash", "TEXT")
         self._ensure_column("risk_snapshots", "promotion_reason", "TEXT")
@@ -533,9 +572,11 @@ class SqliteStore:
         provenance = pred.get("provenance") or {}
         predicted_value = pred.get("predicted_value")
         scope = pred.get("prediction_scope", "shadow")
+        features = pred.get("features") or {}
+        action_id = pred.get("action_id")
         content_json = _prediction_canonical(
-            assessment_id, pred["target_type"], pred["target_name"],
-            predicted_value, scope, provenance, recorded_at,
+            assessment_id, repo_id, action_id, pred["target_type"], pred["target_name"],
+            predicted_value, scope, provenance, features, recorded_at,
         )
         prev_hash = self._last_prediction_hash()
         row_hash = _row_hash(prev_hash, content_json)
@@ -543,12 +584,12 @@ class SqliteStore:
             "INSERT INTO assessment_predictions "
             "(assessment_id, repo_id, action_id, target_type, target_name, predicted_value, "
             " prediction_scope, label_status, shadow_mode, features_json, provenance_json, "
-            " recorded_at, prev_hash, row_hash) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?, ?)",
+            " hash_version, recorded_at, prev_hash, row_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, 2, ?, ?, ?)",
             (
                 assessment_id, repo_id, pred.get("action_id"), pred["target_type"],
                 pred["target_name"], predicted_value, scope,
-                json.dumps(pred.get("features") or {}, sort_keys=True),
+                json.dumps(features, sort_keys=True),
                 json.dumps(provenance, sort_keys=True), recorded_at, prev_hash, row_hash,
             ),
         )
@@ -567,11 +608,12 @@ class SqliteStore:
                 "label_status": label_status,
                 "shadow_mode": shadow_mode,
                 "provenance": json.loads(provenance_json),
+                "features": json.loads(features_json),
             }
             for pid, action_id, target_type, target_name, predicted_value, scope, label_status,
-            shadow_mode, provenance_json in self._con.execute(
+            shadow_mode, provenance_json, features_json in self._con.execute(
                 "SELECT id, action_id, target_type, target_name, predicted_value, prediction_scope, "
-                "label_status, shadow_mode, provenance_json FROM assessment_predictions "
+                "label_status, shadow_mode, provenance_json, features_json FROM assessment_predictions "
                 "WHERE assessment_id = ? ORDER BY id ASC",
                 (row_id,),
             )
@@ -1002,19 +1044,26 @@ class SqliteStore:
     def _validate_prediction_chain(self) -> bool:
         prev_hash = GENESIS
         for (
-            assessment_id, target_type, target_name, predicted_value, scope, provenance_json,
-            recorded_at, stored_prev, stored_hash,
+            assessment_id, repo_id, action_id, target_type, target_name, predicted_value, scope,
+            provenance_json, features_json, hash_version, recorded_at, stored_prev, stored_hash,
         ) in self._con.execute(
-            "SELECT assessment_id, target_type, target_name, predicted_value, prediction_scope, "
-            "provenance_json, recorded_at, prev_hash, row_hash "
-            "FROM assessment_predictions ORDER BY id ASC"
+            "SELECT assessment_id, repo_id, action_id, target_type, target_name, predicted_value, "
+            "prediction_scope, provenance_json, features_json, hash_version, recorded_at, "
+            "prev_hash, row_hash FROM assessment_predictions ORDER BY id ASC"
         ):
             if stored_prev != prev_hash:
                 return False
-            content_json = _prediction_canonical(
-                assessment_id, target_type, target_name, predicted_value, scope,
-                json.loads(provenance_json), recorded_at,
-            )
+            provenance = json.loads(provenance_json)
+            if hash_version == 2:
+                content_json = _prediction_canonical(
+                    assessment_id, repo_id, action_id, target_type, target_name, predicted_value,
+                    scope, provenance, json.loads(features_json), recorded_at,
+                )
+            else:
+                content_json = _prediction_canonical_v1(
+                    assessment_id, target_type, target_name, predicted_value, scope,
+                    provenance, recorded_at,
+                )
             if _row_hash(prev_hash, content_json) != stored_hash:
                 return False
             prev_hash = stored_hash

@@ -60,6 +60,8 @@ def render(
             suggested_inspection.append(f"could not parse expected file: {f}")
 
     return {
+        # Logical placeholder for the pure guidance packet. The store assigns the canonical
+        # persisted id (assessment-row scoped) before hashing and writing the assessment.
         "guidance_packet_id": f"gp_{action.id}",
         "decision": decision,
         "risk_mode": result.risk_mode.value,

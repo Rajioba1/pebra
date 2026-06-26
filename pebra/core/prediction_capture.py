@@ -12,6 +12,7 @@ not decision adjustment (Milestone 5).
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,6 +34,10 @@ class PredictionTarget:
     action_id: str
     prediction_scope: str = "shadow"
     provenance: dict[str, Any] = field(default_factory=dict)
+    # Phase-4 reframe: the structural feature payload of the edit (same for every target of one
+    # action — features describe the edit context, not the calibration target). Persisted so M5 can
+    # scope learned facts to real structural context. Empty when no enrichment was supplied.
+    features: dict[str, Any] = field(default_factory=dict)
 
 
 def _clamp_unit(value: float) -> float:
@@ -49,6 +54,7 @@ def build_prediction_manifest(
     action_id: str,
     prediction_scope: str = "shadow",
     provenance: dict[str, Any] | None = None,
+    features: dict[str, Any] | None = None,
 ) -> list[PredictionTarget]:
     """Build the immutable prediction manifest for one scored action.
 
@@ -57,6 +63,9 @@ def build_prediction_manifest(
       benefit_binary    — ``immediate_benefit_realized`` (shadow proxy: immediate benefit
                            clamped to a probability-shaped value)
       benefit_continuous— ``maintainability_delta.<metric>`` per projected delta; ``measured_benefit``
+
+    ``features`` (Phase-4 reframe) is the structural feature payload of the edit; it is attached
+    (copied) to every target so M5 can scope learned facts to real structural context.
     """
     prov = dict(provenance or {"provider": "pebra", "source_type": "derived"})
 
@@ -74,6 +83,8 @@ def build_prediction_manifest(
             action_id=action_id,
             prediction_scope=prediction_scope,
             provenance=target_provenance,
+            # deep snapshot: an immutable record, isolated from later caller mutation (JSON-safe payload)
+            features=copy.deepcopy(features) if features else {},
         )
 
     manifest: list[PredictionTarget] = [_target(RISK_BINARY, "p_success", p_success)]

@@ -66,6 +66,25 @@ def test_maintainability_deltas_captured_per_metric_when_present() -> None:
     assert "maintainability_delta.coupling_delta" in by_name
 
 
+def test_features_attached_to_every_target_with_copy_semantics() -> None:
+    feats = {"schema_version": 1, "symbol": {"is_public_api": True}}
+    manifest = build_prediction_manifest(
+        p_success=0.7, events=[{"event": "e", "p_event": 0.1}], immediate_benefit=0.5,
+        projected_deltas={}, projected_benefit=0.5, action_id="a1", features=feats,
+    )
+    assert all(t.features == feats for t in manifest)
+    feats["symbol"]["is_public_api"] = False  # mutate caller's dict after the call
+    assert all(t.features["symbol"]["is_public_api"] is True for t in manifest)  # snapshot isolated
+
+
+def test_features_default_empty_when_omitted() -> None:
+    manifest = build_prediction_manifest(
+        p_success=0.7, events=[], immediate_benefit=0.5, projected_deltas={},
+        projected_benefit=0.5, action_id="a1",
+    )
+    assert all(t.features == {} for t in manifest)
+
+
 def test_no_event_targets_when_no_events() -> None:
     manifest = build_prediction_manifest(
         p_success=0.7, events=[], immediate_benefit=0.5, projected_deltas={},
