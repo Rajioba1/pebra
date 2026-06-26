@@ -24,6 +24,7 @@ METRIC_DIRECTION: dict[str, int] = {
     "technical_debt_interest_delta": -1,
     "recurrence_delta": -1,
     # higher is better
+    "maintainability_index_delta": +1,  # radon MI (0-100); higher = more maintainable (Slice 4b)
     "testability_delta": +1,
     "cohesion_delta": +1,
     "modularity_delta": +1,
