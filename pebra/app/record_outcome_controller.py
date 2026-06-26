@@ -32,4 +32,14 @@ def record_outcome(
     # benefit_realized, actual_review_cost, actual_rework_cost). Reject malformed labels before the
     # immutable write so a bad label never enters the chain. Absent labels are fine (-> censored).
     outcome_labels.validate_labels(detail)
+    if status == ActionStatus.COMPLETED.value:
+        latest = outcome_port.latest_guardrails(assessment_id)
+        if latest is None:
+            raise ValueError(
+                "completed outcome requires a latest passing pebra verify result"
+            )
+        if latest.get("pre_commit_decision") != "proceed":
+            raise ValueError(
+                "completed outcome requires latest pebra verify pre_commit_decision='proceed'"
+            )
     outcome_port.record_outcome(assessment_id, status, detail)

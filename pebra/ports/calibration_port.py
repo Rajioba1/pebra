@@ -7,3 +7,7 @@ from typing import Any, Protocol
 
 class CalibrationPort(Protocol):
     def calibration_data(self, repo_id: str) -> dict[str, Any]: ...
+
+    def production_calibration_data(self, repo_id: str) -> dict[str, Any]:
+        """Filtered M5 promotion input; excludes shadow/guided/censored rows."""
+        ...

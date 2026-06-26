@@ -19,7 +19,7 @@ from typing import Any
 import yaml
 
 from pebra.core.constants import STAGE_MAP
-from pebra.ports.config_port import CriticalityGlob, EditConfidenceWeights, PebraConfig
+from pebra.ports.config_port import CriticalityGlob, EditConfidenceWeights, PebraConfig, PolicyRule
 
 _CONFIG_NAME = ".pebra.yml"
 _RESERVED_WARN_KEYS = ("medium_auto_proceed_requires",)
@@ -68,6 +68,33 @@ def _thresholds(raw: Any) -> dict[str, float]:
             raise ValueError(f"threshold {str(k)!r} must be a finite positive number, got {v!r}")
         result[str(k)] = val
     return result
+
+
+def _policy_rules(raw: Any) -> list[PolicyRule]:
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("forbidden", {})
+    if isinstance(raw, dict):
+        return [
+            PolicyRule(pattern=str(pattern), violation=str(violation))
+            for pattern, violation in raw.items()
+        ]
+    if isinstance(raw, list):
+        rules: list[PolicyRule] = []
+        for item in raw:
+            if isinstance(item, str):
+                rules.append(PolicyRule(pattern=item, violation=f"forbidden:{item}"))
+            elif isinstance(item, dict):
+                pattern = item.get("pattern")
+                if not pattern:
+                    raise ValueError("policy forbidden entries must include a pattern")
+                violation = item.get("violation") or item.get("reason") or f"forbidden:{pattern}"
+                rules.append(PolicyRule(pattern=str(pattern), violation=str(violation)))
+            else:
+                raise ValueError(f"policy forbidden entries must be strings or mappings, got {item!r}")
+        return rules
+    raise ValueError("policy.forbidden must be a mapping or list")
 
 
 def _strict_mode(value: Any) -> bool:
@@ -132,6 +159,7 @@ class YamlConfigAdapter:
         try:
             return PebraConfig(
                 criticality_globs=_globs(raw.get("criticality", {})),
+                policy_rules=_policy_rules(raw.get("policy")),
                 thresholds=_thresholds(raw.get("thresholds", {})),
                 edit_confidence_weights=_weights(raw.get("edit_confidence_weights", {})),
                 has_medium_auto_proceed_requires=_warn_reserved(raw, path),

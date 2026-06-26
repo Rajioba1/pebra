@@ -39,6 +39,28 @@ def _effective_threshold(criticality_stage: str, thresholds: dict[str, float]) -
     return eff, key
 
 
+def _architecture_scope_penalty(inp: AssessmentInput) -> float:
+    """Bounded confidence penalty for high-reach structural context.
+
+    Architecture centrality is risk evidence, but not an expected-loss multiplier. It lowers
+    scope_control so high-reach edits become less autonomously confident without double-counting
+    blast or rewriting the scoring formulas.
+    """
+    arch = inp.architecture_evidence
+    penalty = 0.0
+    if arch.god_node_score >= 0.90:
+        penalty += 0.08
+    elif arch.god_node_score >= 0.75:
+        penalty += 0.04
+    if arch.cycle_participation:
+        penalty += 0.04
+    if arch.bridge_centrality >= 0.50:
+        penalty += 0.03
+    if arch.domain_entrypoint:
+        penalty += 0.03
+    return min(0.15, penalty)
+
+
 def build_assessment(inp: AssessmentInput) -> Assessment:
     # --- expected_loss with event-class-aware disutility floor (AD-1) ---
     floored_events: list[dict[str, Any]] = []
@@ -84,7 +106,13 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
     rau = score_math.risk_adjusted_utility(expected_utility, utility_sd)
 
     # --- confidence ---
-    edit_conf = score_math.edit_confidence(inp.edit_confidence_factors)
+    confidence_factors = dict(inp.edit_confidence_factors)
+    arch_penalty = _architecture_scope_penalty(inp)
+    if arch_penalty > 0.0:
+        confidence_factors["scope_control"] = max(
+            0.0, confidence_factors.get("scope_control", 1.0) - arch_penalty
+        )
+    edit_conf = score_math.edit_confidence(confidence_factors)
     band = confidence_gate.evaluate(edit_conf, inp.thresholds).band
 
     # --- risk budget ---
@@ -109,7 +137,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         "variance_source": variance_source,
         "rau": rau,
         "edit_confidence": edit_conf,
-        "edit_confidence_factors": dict(inp.edit_confidence_factors),
+        "edit_confidence_factors": confidence_factors,
         "effective_threshold": effective_threshold,
         "budget_threshold_key": budget_key,
         "risk_budget_used": risk_budget,

@@ -176,6 +176,7 @@ class EvidenceBundle:
     criticality_value: float
     edit_confidence_factors: dict[str, float]
     thresholds: dict[str, float] = field(default_factory=dict)
+    policy_violations: list[str] = field(default_factory=list)
     variance_breakdown: dict[str, float] | None = None
     p_success_variance: float = 0.0
     review_cost_variance: float = 0.0
@@ -199,6 +200,7 @@ class AssessmentInput:
     thresholds: dict[str, float]
     repo_id: str
     repo_root: str
+    policy_violations: list[str] = field(default_factory=list)
     p_success_variance: float = 0.0
     review_cost_variance: float = 0.0
     variance_breakdown: dict[str, float] | None = None  # explicit variance (AD-5 precedence 1)

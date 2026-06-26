@@ -20,6 +20,14 @@ class CriticalityGlob:
 
 
 @dataclass(frozen=True)
+class PolicyRule:
+    """A configured hard policy rule, e.g. ``src/secrets/** -> forbidden_path_edit``."""
+
+    pattern: str
+    violation: str
+
+
+@dataclass(frozen=True)
 class EditConfidenceWeights:
     """Per-factor weights (parsed from `N/M` fractions in `.pebra.yml`); equal by default."""
 
@@ -34,6 +42,7 @@ class EditConfidenceWeights:
 @dataclass(frozen=True)
 class PebraConfig:
     criticality_globs: list[CriticalityGlob] = field(default_factory=list)
+    policy_rules: list[PolicyRule] = field(default_factory=list)
     thresholds: dict[str, float] = field(default_factory=dict)
     edit_confidence_weights: EditConfidenceWeights = field(default_factory=EditConfidenceWeights)
     # AD-6: `medium_auto_proceed_requires` is v1.5-reserved — the loader WARNS if present and records

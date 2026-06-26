@@ -9,4 +9,8 @@ from typing import Protocol
 
 
 class OutcomePort(Protocol):
+    def latest_guardrails(self, assessment_id: str) -> dict | None:
+        """Return the latest verify/guardrails row for an assessment, or None."""
+        ...
+
     def record_outcome(self, assessment_id: str, status: str, detail: dict | None = None) -> None: ...

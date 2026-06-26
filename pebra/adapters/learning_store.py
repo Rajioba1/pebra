@@ -26,13 +26,3 @@ class LearningStore(LearningPort):
         status: str = "shadow",
     ) -> tuple[list[str], str]:
         return self._store.insert_learning_measurement(assessment_id, rows, repo_id, metrics, status)
-
-    def write_prediction_errors(
-        self, assessment_id: str, rows: list[dict[str, Any]]
-    ) -> list[str]:
-        return [self._store.insert_prediction_error(assessment_id, row) for row in rows]
-
-    def write_risk_snapshot(
-        self, repo_id: str, metrics: dict[str, Any], status: str = "shadow"
-    ) -> str:
-        return self._store.insert_risk_snapshot(repo_id, metrics, status)

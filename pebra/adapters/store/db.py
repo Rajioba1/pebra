@@ -47,10 +47,29 @@ def _canonical(result: AssessmentResult, request_payload: dict[str, Any]) -> str
 
 
 def _outcome_canonical(
-    row_id: int, terminal_status: str, detail: dict[str, Any], recorded_at: str
+    row_id: int,
+    terminal_status: str,
+    detail: dict[str, Any],
+    recorded_at: str,
+    guidance_packet_id: str | None = None,
+    hash_version: int = 2,
 ) -> str:
     """Per-field canonical content hashed for the outcome chain (Phase 3a / AD-4). Covers the FK,
     terminal status, detail payload, and timestamp so tampering with any of them is detectable."""
+    content = {
+        "assessment_id": row_id,
+        "terminal_status": terminal_status,
+        "detail": detail,
+        "recorded_at": recorded_at,
+        "guidance_packet_id": guidance_packet_id,
+        "hash_version": hash_version,
+    }
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
+def _outcome_legacy_canonical(
+    row_id: int, terminal_status: str, detail: dict[str, Any], recorded_at: str
+) -> str:
     content = {
         "assessment_id": row_id,
         "terminal_status": terminal_status,
@@ -88,6 +107,13 @@ def _prediction_canonical(
 _PREDICTION_ERROR_FIELDS = (
     "action_id", "target_type", "target_name", "predicted_probability", "predicted_value",
     "actual_outcome", "actual_value", "residual", "brier_error", "log_loss", "squared_error",
+    "outcome_label_status", "calibration_scope", "guidance_packet_id",
+    "benefit_guidance_influenced", "shadow_mode", "hash_version",
+)
+
+_PREDICTION_ERROR_LEGACY_FIELDS = (
+    "action_id", "target_type", "target_name", "predicted_probability", "predicted_value",
+    "actual_outcome", "actual_value", "residual", "brier_error", "log_loss", "squared_error",
     "outcome_label_status", "calibration_scope",
 )
 
@@ -100,8 +126,35 @@ def _prediction_error_canonical(row_id: int, row: dict[str, Any], recorded_at: s
     return json.dumps(content, sort_keys=True, separators=(",", ":"))
 
 
-def _risk_snapshot_canonical(repo_id: str, status: str, metrics: dict[str, Any], created_at: str) -> str:
+def _prediction_error_legacy_canonical(row_id: int, row: dict[str, Any], recorded_at: str) -> str:
+    content = {"assessment_id": row_id, "recorded_at": recorded_at}
+    content.update({f: row.get(f) for f in _PREDICTION_ERROR_LEGACY_FIELDS})
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
+_RISK_SNAPSHOT_LIFECYCLE_FIELDS = (
+    "parent_snapshot_id", "created_from_outcome_hash", "promotion_reason", "rollback_reason",
+    "drift_score", "activated_at", "hash_version",
+)
+
+
+def _risk_snapshot_canonical(
+    repo_id: str,
+    status: str,
+    metrics: dict[str, Any],
+    created_at: str,
+    lifecycle: dict[str, Any] | None = None,
+) -> str:
     """Per-field canonical for the (shadow) risk-snapshot chain (Milestone 4d)."""
+    content = {"repo_id": repo_id, "status": status, "metrics": metrics, "created_at": created_at}
+    lifecycle = lifecycle or {}
+    content.update({f: lifecycle.get(f) for f in _RISK_SNAPSHOT_LIFECYCLE_FIELDS})
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
+def _risk_snapshot_legacy_canonical(
+    repo_id: str, status: str, metrics: dict[str, Any], created_at: str
+) -> str:
     content = {"repo_id": repo_id, "status": status, "metrics": metrics, "created_at": created_at}
     return json.dumps(content, sort_keys=True, separators=(",", ":"))
 
@@ -155,6 +208,7 @@ class SqliteStore:
             CREATE TABLE IF NOT EXISTS model_guidance_packets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 assessment_id INTEGER NOT NULL,
+                guidance_packet_id TEXT,
                 packet_json TEXT NOT NULL,
                 FOREIGN KEY (assessment_id) REFERENCES assessments(id)
             );
@@ -180,6 +234,8 @@ class SqliteStore:
             CREATE TABLE IF NOT EXISTS outcomes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 assessment_id INTEGER NOT NULL,
+                guidance_packet_id TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 2,
                 terminal_status TEXT NOT NULL,
                 detail_json TEXT NOT NULL,
                 recorded_at TEXT NOT NULL,
@@ -232,6 +288,10 @@ class SqliteStore:
                 squared_error REAL,
                 outcome_label_status TEXT NOT NULL,
                 calibration_scope TEXT NOT NULL DEFAULT 'shadow',
+                guidance_packet_id TEXT,
+                benefit_guidance_influenced INTEGER NOT NULL DEFAULT 0,
+                shadow_mode INTEGER NOT NULL DEFAULT 1,
+                hash_version INTEGER NOT NULL DEFAULT 2,
                 recorded_at TEXT NOT NULL,
                 prev_hash TEXT NOT NULL,
                 row_hash TEXT NOT NULL,
@@ -246,10 +306,125 @@ class SqliteStore:
                 repo_id TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'shadow',
                 metrics_json TEXT NOT NULL DEFAULT '{}',
+                parent_snapshot_id TEXT,
+                created_from_outcome_hash TEXT,
+                promotion_reason TEXT,
+                rollback_reason TEXT,
+                drift_score REAL,
+                activated_at TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 2,
                 created_at TEXT NOT NULL,
                 prev_hash TEXT NOT NULL,
                 row_hash TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS learned_risk_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_id TEXT NOT NULL,
+                snapshot_id TEXT,
+                fact_type TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                scope_kind TEXT NOT NULL DEFAULT 'global',
+                scope_value TEXT NOT NULL DEFAULT '',
+                specificity_rank INTEGER NOT NULL DEFAULT 0,
+                scope_json TEXT NOT NULL DEFAULT '{}',
+                fact_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'shadow',
+                requires_human_ratification INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                row_hash TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_learned_risk_facts_repo_status
+                ON learned_risk_facts(repo_id, status);
+            CREATE INDEX IF NOT EXISTS ix_learned_risk_facts_apply_lookup
+                ON learned_risk_facts(
+                    repo_id, status, snapshot_id, target_type, target_name,
+                    requires_human_ratification, scope_kind, scope_value, specificity_rank
+                );
+            """
+        )
+        self._migrate_schema()
+        self._create_calibration_views()
+
+    def _migrate_schema(self) -> None:
+        self._ensure_column("model_guidance_packets", "guidance_packet_id", "TEXT")
+        self._ensure_column("outcomes", "guidance_packet_id", "TEXT")
+        self._ensure_column("outcomes", "hash_version", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column("prediction_errors", "guidance_packet_id", "TEXT")
+        self._ensure_column(
+            "prediction_errors", "benefit_guidance_influenced", "INTEGER NOT NULL DEFAULT 0"
+        )
+        self._ensure_column("prediction_errors", "shadow_mode", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column("prediction_errors", "hash_version", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column("risk_snapshots", "parent_snapshot_id", "TEXT")
+        self._ensure_column("risk_snapshots", "created_from_outcome_hash", "TEXT")
+        self._ensure_column("risk_snapshots", "promotion_reason", "TEXT")
+        self._ensure_column("risk_snapshots", "rollback_reason", "TEXT")
+        self._ensure_column("risk_snapshots", "drift_score", "REAL")
+        self._ensure_column("risk_snapshots", "activated_at", "TEXT")
+        self._ensure_column("risk_snapshots", "hash_version", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column("learned_risk_facts", "scope_kind", "TEXT NOT NULL DEFAULT 'global'")
+        self._ensure_column("learned_risk_facts", "scope_value", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("learned_risk_facts", "specificity_rank", "INTEGER NOT NULL DEFAULT 0")
+        self._con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_guidance_packets_assessment "
+            "ON model_guidance_packets(assessment_id)"
+        )
+        self._con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_guidance_packets_guidance_id "
+            "ON model_guidance_packets(guidance_packet_id) "
+            "WHERE guidance_packet_id IS NOT NULL"
+        )
+        self._con.execute(
+            "CREATE INDEX IF NOT EXISTS ix_learned_risk_facts_apply_lookup "
+            "ON learned_risk_facts("
+            "repo_id, status, snapshot_id, target_type, target_name, "
+            "requires_human_ratification, scope_kind, scope_value, specificity_rank)"
+        )
+
+    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        cols = {
+            row[1]
+            for row in self._con.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in cols:
+            self._con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    def _create_calibration_views(self) -> None:
+        self._con.executescript(
+            """
+            CREATE VIEW IF NOT EXISTS risk_binary_calibration_data AS
+                SELECT pe.*
+                FROM prediction_errors pe
+                WHERE pe.target_type = 'risk_binary'
+                  AND pe.shadow_mode = 0
+                  AND pe.hash_version = 2
+                  AND pe.outcome_label_status = 'observed'
+                  AND pe.calibration_scope = 'proceeded_edits_only'
+                  AND pe.guidance_packet_id IS NULL;
+            CREATE VIEW IF NOT EXISTS calibration_data AS
+                SELECT * FROM risk_binary_calibration_data;
+            CREATE VIEW IF NOT EXISTS benefit_binary_calibration_data AS
+                SELECT pe.*
+                FROM prediction_errors pe
+                WHERE pe.target_type = 'benefit_binary'
+                  AND pe.shadow_mode = 0
+                  AND pe.hash_version = 2
+                  AND pe.outcome_label_status = 'observed'
+                  AND pe.calibration_scope = 'proceeded_edits_only'
+                  AND pe.guidance_packet_id IS NULL
+                  AND pe.benefit_guidance_influenced = 0;
+            CREATE VIEW IF NOT EXISTS benefit_continuous_calibration_data AS
+                SELECT pe.*
+                FROM prediction_errors pe
+                WHERE pe.target_type = 'benefit_continuous'
+                  AND pe.shadow_mode = 0
+                  AND pe.hash_version = 2
+                  AND pe.outcome_label_status = 'observed'
+                  AND pe.calibration_scope = 'proceeded_edits_only'
+                  AND pe.guidance_packet_id IS NULL
+                  AND pe.benefit_guidance_influenced = 0;
             """
         )
 
@@ -289,10 +464,18 @@ class SqliteStore:
         request_payload: dict[str, Any],
         predictions: list[dict[str, Any]] | None = None,
     ) -> str:
-        content_json = _canonical(result, request_payload)
         recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
             self._con.execute("BEGIN IMMEDIATE")
+            assessment_id = self._next_assessment_row_id()
+            packet = None
+            guidance_packet_id = None
+            if result.model_guidance_packet is not None:
+                packet = dict(result.model_guidance_packet)
+                guidance_packet_id = self._guidance_packet_uid(assessment_id, packet)
+                packet["guidance_packet_id"] = guidance_packet_id
+                result.model_guidance_packet = packet
+            content_json = _canonical(result, request_payload)
             prev_hash = self._last_assessment_hash()
             row_hash = _row_hash(prev_hash, content_json)
             cur = self._con.execute(
@@ -301,10 +484,15 @@ class SqliteStore:
                 (result.repo_id, result.recommended_decision.value, content_json, prev_hash, row_hash),
             )
             assessment_id = cur.lastrowid
-            if result.model_guidance_packet is not None:
+            if packet is not None:
                 self._con.execute(
-                    "INSERT INTO model_guidance_packets (assessment_id, packet_json) VALUES (?, ?)",
-                    (assessment_id, json.dumps(result.model_guidance_packet, sort_keys=True)),
+                    "INSERT INTO model_guidance_packets "
+                    "(assessment_id, guidance_packet_id, packet_json) VALUES (?, ?, ?)",
+                    (
+                        assessment_id,
+                        guidance_packet_id,
+                        json.dumps(packet, sort_keys=True),
+                    ),
                 )
             # Milestone 4a: capture the prediction manifest atomically with the assessment so the two
             # can never diverge. Each row extends the prediction hash chain.
@@ -315,6 +503,28 @@ class SqliteStore:
             self._con.rollback()
             raise
         return f"asm_{assessment_id}"
+
+    def _next_assessment_row_id(self) -> int:
+        row = self._con.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'assessments'"
+        ).fetchone()
+        if row is not None:
+            return int(row[0]) + 1
+        row = self._con.execute("SELECT COALESCE(MAX(id), 0) FROM assessments").fetchone()
+        return int(row[0]) + 1
+
+    @staticmethod
+    def _guidance_packet_uid(row_id: int, packet: dict[str, Any]) -> str:
+        logical = str(packet.get("guidance_packet_id") or "packet")
+        return f"gp_{row_id}_{logical}"
+
+    def guidance_packet_id_for_assessment(self, assessment_id: str) -> str | None:
+        row_id = self._row_id(assessment_id)
+        row = self._con.execute(
+            "SELECT guidance_packet_id FROM model_guidance_packets WHERE assessment_id = ?",
+            (row_id,),
+        ).fetchone()
+        return row[0] if row else None
 
     def _insert_prediction(
         self, assessment_id: int, repo_id: str, pred: dict[str, Any], recorded_at: str
@@ -402,6 +612,13 @@ class SqliteStore:
         self, row_id: int, row: dict[str, Any], recorded_at: str
     ) -> str:
         """Append one computed prediction-error row. Caller may own an outer transaction."""
+        row = {
+            **row,
+            "guidance_packet_id": row.get("guidance_packet_id"),
+            "benefit_guidance_influenced": int(bool(row.get("benefit_guidance_influenced", False))),
+            "shadow_mode": int(row.get("shadow_mode", 1)),
+            "hash_version": int(row.get("hash_version", 2)),
+        }
         content_json = _prediction_error_canonical(row_id, row, recorded_at)
         prev_hash = self._last_prediction_error_hash()
         row_hash = _row_hash(prev_hash, content_json)
@@ -409,16 +626,18 @@ class SqliteStore:
             "INSERT INTO prediction_errors "
             "(assessment_id, action_id, target_type, target_name, predicted_probability, "
             " predicted_value, actual_outcome, actual_value, residual, brier_error, log_loss, "
-            " squared_error, outcome_label_status, calibration_scope, recorded_at, "
+            " squared_error, outcome_label_status, calibration_scope, guidance_packet_id, "
+            " benefit_guidance_influenced, shadow_mode, hash_version, recorded_at, "
             " prev_hash, row_hash) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 row_id, row.get("action_id"), row["target_type"], row["target_name"],
                 row.get("predicted_probability"), row.get("predicted_value"),
                 row.get("actual_outcome"), row.get("actual_value"), row.get("residual"),
                 row.get("brier_error"), row.get("log_loss"), row.get("squared_error"),
                 row["outcome_label_status"], row.get("calibration_scope", "shadow"),
-                recorded_at, prev_hash, row_hash,
+                row.get("guidance_packet_id"), row["benefit_guidance_influenced"],
+                row["shadow_mode"], row["hash_version"], recorded_at, prev_hash, row_hash,
             ),
         )
         return f"pe_{cur.lastrowid}"
@@ -440,13 +659,23 @@ class SqliteStore:
     ) -> str:
         """Append one risk-snapshot row. Caller may own an outer transaction."""
         metrics_json = json.dumps(metrics, sort_keys=True, separators=(",", ":"))
-        content_json = _risk_snapshot_canonical(repo_id, status, metrics, created_at)
+        lifecycle = {f: metrics.get(f) for f in _RISK_SNAPSHOT_LIFECYCLE_FIELDS}
+        lifecycle["hash_version"] = int(lifecycle.get("hash_version") or 2)
+        content_json = _risk_snapshot_canonical(repo_id, status, metrics, created_at, lifecycle)
         prev_hash = self._last_risk_snapshot_hash()
         row_hash = _row_hash(prev_hash, content_json)
         cur = self._con.execute(
-            "INSERT INTO risk_snapshots (repo_id, status, metrics_json, created_at, "
-            "prev_hash, row_hash) VALUES (?, ?, ?, ?, ?, ?)",
-            (repo_id, status, metrics_json, created_at, prev_hash, row_hash),
+            "INSERT INTO risk_snapshots "
+            "(repo_id, status, metrics_json, parent_snapshot_id, created_from_outcome_hash, "
+            "promotion_reason, rollback_reason, drift_score, activated_at, hash_version, "
+            "created_at, prev_hash, row_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                repo_id, status, metrics_json, lifecycle.get("parent_snapshot_id"),
+                lifecycle.get("created_from_outcome_hash"), lifecycle.get("promotion_reason"),
+                lifecycle.get("rollback_reason"), lifecycle.get("drift_score"),
+                lifecycle.get("activated_at"), lifecycle["hash_version"], created_at,
+                prev_hash, row_hash,
+            ),
         )
         return f"rs_{cur.lastrowid}"
 
@@ -492,7 +721,8 @@ class SqliteStore:
         sql = (
             "SELECT pe.target_type, pe.target_name, pe.predicted_probability, pe.predicted_value, "
             "pe.actual_outcome, pe.actual_value, pe.brier_error, pe.log_loss, pe.squared_error, "
-            "pe.outcome_label_status, pe.calibration_scope, pe.assessment_id "
+            "pe.outcome_label_status, pe.calibration_scope, pe.guidance_packet_id, "
+            "pe.benefit_guidance_influenced, pe.shadow_mode, pe.assessment_id "
             "FROM prediction_errors pe JOIN assessments a ON a.id = pe.assessment_id "
         )
         params: tuple = ()
@@ -503,9 +733,34 @@ class SqliteStore:
         cols = (
             "target_type", "target_name", "predicted_probability", "predicted_value",
             "actual_outcome", "actual_value", "brier_error", "log_loss", "squared_error",
-            "outcome_label_status", "calibration_scope", "assessment_id",
+            "outcome_label_status", "calibration_scope", "guidance_packet_id",
+            "benefit_guidance_influenced", "shadow_mode", "assessment_id",
         )
         return [dict(zip(cols, r)) for r in self._con.execute(sql, params)]
+
+    def load_production_calibration_rows(
+        self, repo_id: str | None = None, target_type: str = "risk_binary"
+    ) -> list[dict[str, Any]]:
+        """Rows from the filtered production calibration views (M5 promotion input).
+
+        This intentionally differs from ``load_prediction_errors``: the scorecard can inspect shadow
+        rows, but promotion must read only live, observed, proceeded, unguided labels.
+        """
+        views = {
+            "risk_binary": "risk_binary_calibration_data",
+            "benefit_binary": "benefit_binary_calibration_data",
+            "benefit_continuous": "benefit_continuous_calibration_data",
+        }
+        view = views[target_type]
+        sql = f"SELECT v.* FROM {view} v JOIN assessments a ON a.id = v.assessment_id "
+        params: tuple = ()
+        if repo_id is not None:
+            sql += "WHERE a.repo_id = ? "
+            params = (repo_id,)
+        sql += "ORDER BY v.id ASC"
+        rows = self._con.execute(sql, params)
+        cols = [d[0] for d in rows.description]
+        return [dict(zip(cols, r)) for r in rows.fetchall()]
 
     def record_outcome(self, assessment_id: str, status: str, detail: dict | None = None) -> None:
         """Append the terminal outcome of an assessed action (AD-4). OutcomePort impl: the assessment
@@ -513,9 +768,13 @@ class SqliteStore:
         mirrors the guardrail chain. Raises KeyError if the assessment doesn't exist."""
         row_id = self._row_id(assessment_id)
         payload = detail or {}
+        guidance_packet_id = self.guidance_packet_id_for_assessment(assessment_id)
+        hash_version = 2
         detail_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        content_json = _outcome_canonical(row_id, status, payload, recorded_at)
+        content_json = _outcome_canonical(
+            row_id, status, payload, recorded_at, guidance_packet_id, hash_version
+        )
         try:
             self._con.execute("BEGIN IMMEDIATE")
             # existence check inside the lock so the KeyError guarantee holds under concurrent writes
@@ -531,9 +790,12 @@ class SqliteStore:
             row_hash = _row_hash(prev_hash, content_json)
             self._con.execute(
                 "INSERT INTO outcomes "
-                "(assessment_id, terminal_status, detail_json, recorded_at, prev_hash, row_hash) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (row_id, status, detail_json, recorded_at, prev_hash, row_hash),
+                "(assessment_id, guidance_packet_id, hash_version, terminal_status, detail_json, "
+                "recorded_at, prev_hash, row_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row_id, guidance_packet_id, hash_version, status, detail_json,
+                    recorded_at, prev_hash, row_hash,
+                ),
             )
             self._con.commit()
         except Exception:
@@ -623,6 +885,7 @@ class SqliteStore:
             for table in (
                 "assessments", "sanction_events", "post_assessment_guardrails", "outcomes",
                 "assessment_predictions", "prediction_errors", "risk_snapshots",
+                "learned_risk_facts",
             )
         }
         return {"valid": self.validate_chain(), "counts": counts}
@@ -636,21 +899,64 @@ class SqliteStore:
             and self._validate_prediction_chain()
             and self._validate_prediction_error_chain()
             and self._validate_risk_snapshot_chain()
+            and self._validate_learned_risk_fact_chain()
         )
+
+    def _validate_learned_risk_fact_chain(self) -> bool:
+        prev_hash = GENESIS
+        for (
+            repo_id, snapshot_id, fact_type, target_type, target_name, scope_kind, scope_value,
+            specificity_rank, scope_json, fact_json, status, requires_human_ratification,
+            created_at, stored_prev, stored_hash,
+        ) in self._con.execute(
+            "SELECT repo_id, snapshot_id, fact_type, target_type, target_name, scope_kind, "
+            "scope_value, specificity_rank, scope_json, fact_json, status, "
+            "requires_human_ratification, created_at, prev_hash, row_hash "
+            "FROM learned_risk_facts ORDER BY id ASC"
+        ):
+            if stored_prev != prev_hash:
+                return False
+            content_json = json.dumps(
+                {
+                    "repo_id": repo_id,
+                    "snapshot_id": snapshot_id,
+                    "fact_type": fact_type,
+                    "target_type": target_type,
+                    "target_name": target_name,
+                    "scope_kind": scope_kind,
+                    "scope_value": scope_value,
+                    "specificity_rank": specificity_rank,
+                    "scope": json.loads(scope_json),
+                    "fact": json.loads(fact_json),
+                    "status": status,
+                    "requires_human_ratification": requires_human_ratification,
+                    "created_at": created_at,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if _row_hash(prev_hash, content_json) != stored_hash:
+                return False
+            prev_hash = stored_hash
+        return True
 
     def _validate_prediction_error_chain(self) -> bool:
         prev_hash = GENESIS
         for row in self._con.execute(
             "SELECT assessment_id, action_id, target_type, target_name, predicted_probability, "
             "predicted_value, actual_outcome, actual_value, residual, brier_error, log_loss, "
-            "squared_error, outcome_label_status, calibration_scope, recorded_at, prev_hash, row_hash "
+            "squared_error, outcome_label_status, calibration_scope, guidance_packet_id, "
+            "benefit_guidance_influenced, shadow_mode, hash_version, recorded_at, prev_hash, row_hash "
             "FROM prediction_errors ORDER BY id ASC"
         ):
             (assessment_id, *fields, recorded_at, stored_prev, stored_hash) = row
             if stored_prev != prev_hash:
                 return False
             content = dict(zip(_PREDICTION_ERROR_FIELDS, fields))
-            content_json = _prediction_error_canonical(assessment_id, content, recorded_at)
+            if content.get("hash_version") == 2:
+                content_json = _prediction_error_canonical(assessment_id, content, recorded_at)
+            else:
+                content_json = _prediction_error_legacy_canonical(assessment_id, content, recorded_at)
             if _row_hash(prev_hash, content_json) != stored_hash:
                 return False
             prev_hash = stored_hash
@@ -658,15 +964,36 @@ class SqliteStore:
 
     def _validate_risk_snapshot_chain(self) -> bool:
         prev_hash = GENESIS
-        for repo_id, status, metrics_json, created_at, stored_prev, stored_hash in self._con.execute(
-            "SELECT repo_id, status, metrics_json, created_at, prev_hash, row_hash "
+        for row in self._con.execute(
+            "SELECT repo_id, status, metrics_json, parent_snapshot_id, created_from_outcome_hash, "
+            "promotion_reason, rollback_reason, drift_score, activated_at, hash_version, created_at, "
+            "prev_hash, row_hash "
             "FROM risk_snapshots ORDER BY id ASC"
         ):
+            (
+                repo_id, status, metrics_json, parent_snapshot_id, created_from_outcome_hash,
+                promotion_reason, rollback_reason, drift_score, activated_at, hash_version, created_at,
+                stored_prev, stored_hash,
+            ) = row
             if stored_prev != prev_hash:
                 return False
-            content_json = _risk_snapshot_canonical(
-                repo_id, status, json.loads(metrics_json), created_at
-            )
+            if hash_version == 2:
+                content_json = _risk_snapshot_canonical(
+                    repo_id, status, json.loads(metrics_json), created_at,
+                    {
+                        "parent_snapshot_id": parent_snapshot_id,
+                        "created_from_outcome_hash": created_from_outcome_hash,
+                        "promotion_reason": promotion_reason,
+                        "rollback_reason": rollback_reason,
+                        "drift_score": drift_score,
+                        "activated_at": activated_at,
+                        "hash_version": hash_version,
+                    },
+                )
+            else:
+                content_json = _risk_snapshot_legacy_canonical(
+                    repo_id, status, json.loads(metrics_json), created_at
+                )
             if _row_hash(prev_hash, content_json) != stored_hash:
                 return False
             prev_hash = stored_hash
@@ -695,17 +1022,27 @@ class SqliteStore:
 
     def _validate_outcome_chain(self) -> bool:
         prev_hash = GENESIS
-        for assessment_id, terminal_status, detail_json, recorded_at, stored_prev, stored_hash in (
+        for (
+            assessment_id, guidance_packet_id, hash_version, terminal_status, detail_json,
+            recorded_at, stored_prev, stored_hash
+        ) in (
             self._con.execute(
-                "SELECT assessment_id, terminal_status, detail_json, recorded_at, prev_hash, row_hash "
+                "SELECT assessment_id, guidance_packet_id, hash_version, terminal_status, detail_json, "
+                "recorded_at, prev_hash, row_hash "
                 "FROM outcomes ORDER BY id ASC"
             )
         ):
             if stored_prev != prev_hash:
                 return False
-            content_json = _outcome_canonical(
-                assessment_id, terminal_status, json.loads(detail_json), recorded_at
-            )
+            if hash_version == 2:
+                content_json = _outcome_canonical(
+                    assessment_id, terminal_status, json.loads(detail_json), recorded_at,
+                    guidance_packet_id, hash_version
+                )
+            else:
+                content_json = _outcome_legacy_canonical(
+                    assessment_id, terminal_status, json.loads(detail_json), recorded_at
+                )
             if _row_hash(prev_hash, content_json) != stored_hash:
                 return False
             prev_hash = stored_hash
@@ -792,6 +1129,44 @@ class SqliteStore:
         ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def active_sanction_for_action(self, repo_id: str, action_id: str) -> dict[str, Any] | None:
+        """Return the newest active sanction whose risk profile is explicitly bound to this action.
+
+        A bare/string risk_profile is intentionally not reusable for assess-side conversion: the
+        sanction must name the action it authorizes, either at top level or inside risk_profile.
+        """
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            rows = self._con.execute(
+                "SELECT sanction_json FROM sanction_events "
+                "WHERE repo_id = ? AND status = 'active' ORDER BY id DESC",
+                (repo_id,),
+            ).fetchall()
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        for (raw,) in rows:
+            sanction = json.loads(raw)
+            profile = sanction.get("risk_profile")
+            action_ids: set[str] = set()
+            if isinstance(profile, dict):
+                value = profile.get("action_id")
+                if isinstance(value, str):
+                    action_ids.add(value)
+                value = profile.get("action_ids")
+                if isinstance(value, list):
+                    action_ids.update(str(v) for v in value)
+            value = sanction.get("action_id")
+            if isinstance(value, str):
+                action_ids.add(value)
+            value = sanction.get("action_ids")
+            if isinstance(value, list):
+                action_ids.update(str(v) for v in value)
+            if action_id in action_ids:
+                return sanction
+        return None
+
     def invalidate_sanctions_for_assessment(self, assessment_id: str, reason: str) -> list[str]:
         """Invalidate every active sanction bound to an assessment (drift). Returns their ids."""
         try:
@@ -828,6 +1203,17 @@ class SqliteStore:
         if row is None:
             raise KeyError(f"no assessment {assessment_id!r}")
         return json.loads(row[0])
+
+    def latest_guardrails(self, assessment_id: str) -> dict[str, Any] | None:
+        row_id = self._row_id(assessment_id)
+        if self._con.execute("SELECT 1 FROM assessments WHERE id = ?", (row_id,)).fetchone() is None:
+            raise KeyError(f"no assessment {assessment_id!r}")
+        row = self._con.execute(
+            "SELECT guardrails_json FROM post_assessment_guardrails "
+            "WHERE assessment_id = ? ORDER BY id DESC LIMIT 1",
+            (row_id,),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
 
     def persist_guardrails(self, assessment_id: str, guardrails: dict[str, Any]) -> str:
         # Serialize like the chained writes (BEGIN IMMEDIATE) so a guardrails INSERT can't interleave

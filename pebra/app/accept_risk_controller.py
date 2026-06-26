@@ -23,6 +23,8 @@ def accept_risk(
     sanction = {
         "valid": True,
         "risk_profile": risk_profile,
+        "action_id": sanction_spec.get("action_id"),
+        "action_ids": list(sanction_spec.get("action_ids", [])),
         "assessment_id": sanction_spec.get("assessment_id"),
         "pre_edit_authorization_controls_satisfied": bool(
             sanction_spec.get("pre_edit_authorization_controls_satisfied", False)

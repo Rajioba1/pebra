@@ -54,6 +54,14 @@ class StorePort(Protocol):
         """Return the active sanction bound to an assessment, or None (AD-26 verify-side lookup)."""
         ...
 
+    def active_sanction_for_action(self, repo_id: str, action_id: str) -> dict[str, Any] | None:
+        """Return the active sanction explicitly bound to an action, or None."""
+        ...
+
     def invalidate_sanctions_for_assessment(self, assessment_id: str, reason: str) -> list[str]:
         """Invalidate active sanctions bound to an assessment on drift (AD-26); return their ids."""
+        ...
+
+    def latest_guardrails(self, assessment_id: str) -> dict[str, Any] | None:
+        """Return the newest persisted verify/guardrails row for an assessment, or None."""
         ...

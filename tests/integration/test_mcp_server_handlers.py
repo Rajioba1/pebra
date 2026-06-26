@@ -145,17 +145,17 @@ def test_record_outcome_then_duplicate_raises(tmp_path) -> None:
     asm = server._handle_assess(_assess_args(tmp_path))["assessment_id"]
     common = _common(tmp_path)
     out = server._handle_record_outcome(
-        {"assessment_id": asm, "status": "completed", **common}
+        {"assessment_id": asm, "status": "skipped", **common}
     )
     assert out["recorded"] is True
     with pytest.raises(ValueError):
-        server._handle_record_outcome({"assessment_id": asm, "status": "skipped", **common})
+        server._handle_record_outcome({"assessment_id": asm, "status": "rejected", **common})
 
 
 def test_record_outcome_unknown_assessment_raises(tmp_path) -> None:
     with pytest.raises(KeyError):
         server._handle_record_outcome(
-            {"assessment_id": "asm_999", "status": "completed", **_common(tmp_path)}
+            {"assessment_id": "asm_999", "status": "skipped", **_common(tmp_path)}
         )
 
 

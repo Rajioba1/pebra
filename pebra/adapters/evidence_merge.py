@@ -54,6 +54,14 @@ def _config_criticality(globs, affected_files: list[str]) -> str | None:
     return best
 
 
+def _policy_violations(rules, affected_files: list[str]) -> list[str]:
+    violations: list[str] = []
+    for rule in rules:
+        if any(fnmatch(f, rule.pattern) for f in affected_files):
+            violations.append(rule.violation)
+    return violations
+
+
 def merge_evidence(
     base: EvidenceBundle,
     *,
@@ -81,7 +89,6 @@ def merge_evidence(
         factors["evidence_quality"] = max(
             0.0, factors.get("evidence_quality", 1.0) - evidence_quality_penalty
         )
-
     return EvidenceBundle(
         events=events,
         p_success=base.p_success,
@@ -91,6 +98,7 @@ def merge_evidence(
         criticality_value=criticality_value,
         edit_confidence_factors=factors,
         thresholds={**config.thresholds, **base.thresholds},
+        policy_violations=_policy_violations(config.policy_rules, affected_files),
         variance_breakdown=base.variance_breakdown,
         p_success_variance=base.p_success_variance,
         review_cost_variance=base.review_cost_variance,

@@ -32,7 +32,7 @@ def test_record_outcome_cli_writes_outcome(tmp_path) -> None:
     asm = _seed_assessment(db, str(tmp_path))
 
     rc = main(
-        ["record-outcome", "--assessment-id", asm, "--status", "completed",
+        ["record-outcome", "--assessment-id", asm, "--status", "skipped",
          "--repo-root", str(tmp_path), "--db", db]
     )
     assert rc == 0
@@ -40,7 +40,7 @@ def test_record_outcome_cli_writes_outcome(tmp_path) -> None:
     store = SqliteStore(db)
     outs = store.load_outcomes(asm)
     store.close()
-    assert outs and outs[0]["terminal_status"] == "completed"
+    assert outs and outs[0]["terminal_status"] == "skipped"
 
 
 def test_record_outcome_cli_bad_detail_json_errors_cleanly(tmp_path) -> None:

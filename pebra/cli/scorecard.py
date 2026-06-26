@@ -12,6 +12,7 @@ import sys
 from typing import Any
 
 from pebra import composition
+from pebra import learning_composition
 
 
 def register(subparsers: Any) -> None:
@@ -27,7 +28,7 @@ def register(subparsers: Any) -> None:
 def run(args: Any) -> int:
     ctx = composition.resolve_repo_and_db(args.repo_root or ".", args.db)
     try:
-        summary = composition.build_calibration_store(ctx).calibration_data(ctx.repo.repo_id)
+        summary = learning_composition.build_calibration_store(ctx).calibration_data(ctx.repo.repo_id)
         counts = ctx.store.chain_status()["counts"]
     except (KeyError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

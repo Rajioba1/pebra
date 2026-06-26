@@ -21,15 +21,3 @@ class LearningPort(Protocol):
     ) -> tuple[list[str], str]:
         """Atomically append prediction-error rows plus the shadow snapshot."""
         ...
-
-    def write_prediction_errors(
-        self, assessment_id: str, rows: list[dict[str, Any]]
-    ) -> list[str]:
-        """Append computed prediction-error rows for an assessment; return their ids."""
-        ...
-
-    def write_risk_snapshot(
-        self, repo_id: str, metrics: dict[str, Any], status: str = "shadow"
-    ) -> str:
-        """Append a shadow snapshot recording a measurement run's metrics; return its id."""
-        ...

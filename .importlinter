@@ -81,6 +81,8 @@ name = assess never imports learning (Hard Rule — Milestone 4: measure, never 
 type = forbidden
 source_modules =
     pebra.app.assess_controller
+    pebra.cli.assess
+    pebra.mcp_server
 forbidden_modules =
     pebra.app.learning_controller
     pebra.core.prediction_error

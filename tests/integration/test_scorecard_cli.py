@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pebra.adapters.store.db import SqliteStore
+
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "examples" / "login_patch.json"
 _VENV = REPO / ".venv" / "Scripts" / "python.exe"
@@ -34,6 +36,9 @@ def test_full_shadow_loop(tmp_path) -> None:
     db = str(tmp_path / "p.db")
     a = _pebra(tmp_path, "assess", str(FIXTURE), "--repo-root", str(tmp_path), "--db", db)
     assert a.returncode == 0, a.stderr
+    store = SqliteStore(db)
+    store.persist_guardrails("asm_1", {"pre_commit_decision": "proceed", "reasons": []})
+    store.close()
 
     labels = json.dumps({
         "actual_success": True,

@@ -41,6 +41,9 @@ class FakeStore:
         self.guardrails.append((assessment_id, guardrails))
         return f"pag_{len(self.guardrails)}"
 
+    def active_sanction_for_assessment(self, assessment_id):
+        return None
+
     def invalidate_sanctions_for_assessment(self, assessment_id, reason):
         self.invalidated.append((assessment_id, reason))
         return ["sx_1"]
@@ -178,6 +181,26 @@ def test_missing_check_routes_test_first() -> None:
     summary = ActualDiffSummary(current_head="abc123", changed_files=["src/auth.py"])
     outcome, _ = _run(summary, completed_checks={})
     assert outcome.result.pre_commit_decision is Decision.TEST_FIRST
+
+
+def test_sanction_pre_commit_controls_are_enforced() -> None:
+    class SanctionedStore(FakeStore):
+        def active_sanction_for_assessment(self, assessment_id):
+            return {"pre_commit_required_controls": ["migration dry-run"]}
+
+    store = SanctionedStore()
+    summary = ActualDiffSummary(current_head="abc123", changed_files=["src/auth.py"])
+    outcome = vc.verify(
+        "asm_1",
+        scope="staged",
+        completed_checks={"pytest -q src/auth": "passed"},
+        repo_root="/abs/path",
+        store=store,
+        change_verifier=FakeVerifier(summary),
+        contract_surface=FakeContract(),
+    )
+    assert outcome.result.pre_commit_decision is Decision.TEST_FIRST
+    assert "migration dry-run" in outcome.result.missing_checks
 
 
 def test_requires_dry_run_from_binding_routes_inspect_first_without_preview() -> None:

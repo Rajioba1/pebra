@@ -91,6 +91,7 @@ def _build_input(
         criticality_value=evidence.criticality_value,
         edit_confidence_factors=edit_confidence_factors,
         thresholds=effective_thresholds,
+        policy_violations=list(evidence.policy_violations),
         repo_id=repo_id,
         repo_root=repo_root,
         p_success_variance=evidence.p_success_variance,
@@ -121,10 +122,7 @@ def _score_action(
         sanction_port=ports["sanction_port"],
     )
     assessment = assessment_builder.build_assessment(inp)
-    # Phase-0 stub: policy violations are read from the request evidence block. This is provisional —
-    # in Phase 2 gate-1 will check a *configured* policy (yaml_config), not requester-supplied data,
-    # so a requester cannot self-bypass gate-1 by omitting violations.
-    policy_violations = request.evidence.get("policy_violations", [])
+    policy_violations = inp.policy_violations
     result = decision_engine.decide(assessment, policy_violations=policy_violations)
     result.assessed_commit = ports.get("assessed_commit")
     explanation = explanation_generator.render(result, inp.thresholds)

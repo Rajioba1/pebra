@@ -35,6 +35,16 @@ def test_criticality_glob_parsed(tmp_path) -> None:
     assert any(g.pattern == "src/payments/**" and g.stage == "C4" for g in cfg.criticality_globs)
 
 
+def test_policy_forbidden_globs_parsed(tmp_path) -> None:
+    root = _write(
+        tmp_path,
+        'policy:\n  forbidden:\n    "src/secrets/**": forbidden_secret_edit\n',
+    )
+    cfg = YamlConfigAdapter().load_config(root)
+    assert cfg.policy_rules[0].pattern == "src/secrets/**"
+    assert cfg.policy_rules[0].violation == "forbidden_secret_edit"
+
+
 def test_thresholds_parsed_as_floats(tmp_path) -> None:
     root = _write(tmp_path, "thresholds:\n  c3_max_expected_loss_without_human: 0.2\n")
     cfg = YamlConfigAdapter().load_config(root)

@@ -24,6 +24,9 @@ _THRESHOLDS = {
 
 
 class FakeEvidence:
+    def __init__(self, *, policy_violations=None):
+        self.policy_violations = list(policy_violations or [])
+
     def gather_evidence(self, request, action, repo_root):
         return m.EvidenceBundle(
             events=[
@@ -46,6 +49,7 @@ class FakeEvidence:
                 "review_cost": 0.0004, "scenario_variance": 0.0003,
             },
             benefit_delta_evidence=m.BenefitDeltaEvidence(source_type="projected"),
+            policy_violations=self.policy_violations,
         )
 
 
@@ -161,3 +165,22 @@ def test_controller_rejects_invalid_request() -> None:
             blast_provider=FakeBlast(), sanction_port=FakeSanction(),
             repository_registry=FakeRegistry(), store=FakeStore(),
         )
+
+
+def test_policy_violations_come_from_evidence_provider_not_request() -> None:
+    request = _request()
+    request.evidence["policy_violations"] = ["request_supplied_bypass_vector"]
+    store = FakeStore()
+    outcome = ac.assess(
+        request,
+        thresholds=_THRESHOLDS,
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(policy_violations=["configured_forbidden_path"]),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+    )
+    assert outcome.recommended_result.recommended_decision is Decision.REJECT
+    assert outcome.recommended_result.gates_fired[0]["detail"] == ["configured_forbidden_path"]

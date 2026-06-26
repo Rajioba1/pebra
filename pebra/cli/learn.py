@@ -12,6 +12,7 @@ import sys
 from typing import Any
 
 from pebra import composition
+from pebra import learning_composition
 from pebra.app import learning_controller
 
 _SHADOW_NOTE = "shadow measurement only; no decision parameters changed"
@@ -32,7 +33,9 @@ def run(args: Any) -> int:
     ctx = composition.resolve_repo_and_db(args.repo_root or ".", args.db)
     try:
         outcome = learning_controller.measure_learning(
-            args.assessment_id, store=ctx.store, learning_port=composition.build_learning_port(ctx)
+            args.assessment_id,
+            store=ctx.store,
+            learning_port=learning_composition.build_learning_port(ctx),
         )
     except (KeyError, ValueError) as exc:
         # unknown assessment / no outcome recorded / no manifest -> clean exit, not a traceback

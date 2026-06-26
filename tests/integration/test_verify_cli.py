@@ -59,6 +59,33 @@ def test_assess_then_verify_in_envelope_proceeds(tmp_path) -> None:
     assert "PEBRA Verify: Proceed" in v.stdout
 
 
+def test_completed_outcome_requires_passing_verify_then_succeeds(tmp_path) -> None:
+    repo = _init_repo(tmp_path)
+    a = _pebra(repo, "assess", str(FIXTURE), "--repo-root", str(repo))
+    assert a.returncode == 0, a.stderr
+
+    blocked = _pebra(
+        repo, "record-outcome", "--assessment-id", "asm_1", "--status", "completed",
+        "--repo-root", str(repo),
+    )
+    assert blocked.returncode == 2
+    assert "requires a latest passing pebra verify" in blocked.stderr
+
+    (repo / "src" / "auth.py").write_text(
+        "def validate_login(u, p):\n    return bool(u and p)\n", encoding="utf-8"
+    )
+    _git(repo, "add", "src/auth.py")
+    v = _pebra(repo, "verify", "--assessment-id", "asm_1", "--scope", "staged",
+               "--repo-root", str(repo), "--completed-check", f"{REQUIRED_CHECK}=passed")
+    assert v.returncode == 0, v.stderr
+
+    recorded = _pebra(
+        repo, "record-outcome", "--assessment-id", "asm_1", "--status", "completed",
+        "--repo-root", str(repo),
+    )
+    assert recorded.returncode == 0, recorded.stderr
+
+
 def test_assess_then_verify_out_of_envelope_is_caught(tmp_path) -> None:
     repo = _init_repo(tmp_path)
     a = _pebra(repo, "assess", str(FIXTURE), "--repo-root", str(repo))

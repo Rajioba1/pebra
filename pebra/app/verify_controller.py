@@ -65,6 +65,11 @@ def verify(
     safe_scope_files = list(binding["safe_scope"]["files"])
     risky_scope = list(binding.get("risky_scope", []))
     required_checks = list(binding.get("required_checks_before_commit", []))
+    sanction = store.active_sanction_for_assessment(assessment_id)
+    if sanction:
+        for check in sanction.get("pre_commit_required_controls", []):
+            if check not in required_checks:
+                required_checks.append(check)
     requires_dry_run = bool(binding.get("requires_dry_run", False))
     pre_edit_kind = stored["scores"]["symbol_scope_evidence"]["max_change_kind"]
     assessed_commit = stored.get("assessed_commit")

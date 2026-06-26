@@ -168,6 +168,36 @@ def test_sanction_lifecycle_active_lookup_and_invalidation(tmp_path) -> None:
     assert store.active_sanction_for_assessment(aid) is None
 
 
+def test_active_sanction_for_action_requires_explicit_action_binding(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    aid = store.persist_assessment(_result(), {"task": "t", "action_id": "a1"})
+    store.create_sanction(
+        "repo_local_example",
+        {
+            "assessment_id": aid,
+            "risk_profile": {"action_id": "a1", "diff_hash": "abc"},
+            "valid": True,
+        },
+    )
+    store.create_sanction(
+        "repo_local_example",
+        {"assessment_id": aid, "risk_profile": "standing-text-only", "valid": True},
+    )
+    assert store.active_sanction_for_action("repo_local_example", "a1")["risk_profile"][
+        "action_id"
+    ] == "a1"
+    assert store.active_sanction_for_action("repo_local_example", "a2") is None
+
+
+def test_guidance_packet_gets_unique_persisted_linkage(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    first = store.persist_assessment(_result(), {"task": "t", "action_id": "a1"})
+    second = store.persist_assessment(_result(), {"task": "t", "action_id": "a1"})
+    assert store.guidance_packet_id_for_assessment(first).startswith("gp_1_gp_a1")
+    assert store.guidance_packet_id_for_assessment(second).startswith("gp_2_gp_a1")
+    assert store.guidance_packet_id_for_assessment(first) != store.guidance_packet_id_for_assessment(second)
+
+
 def test_status_update_does_not_break_sanction_chain(tmp_path) -> None:
     # invalidation mutates the (un-hashed) status column; the integrity chain must stay valid.
     store = SqliteStore(str(tmp_path / "pebra.db"))

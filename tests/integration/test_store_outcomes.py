@@ -57,6 +57,14 @@ def test_outcome_chain_detects_tamper(tmp_path) -> None:
     assert store.validate_chain() is False
 
 
+def test_outcome_chain_detects_m5_guidance_linkage_tamper(tmp_path) -> None:
+    store = _store(tmp_path)
+    asm = _assessment(store)
+    store.record_outcome(asm, "completed")
+    store._con.execute("UPDATE outcomes SET guidance_packet_id = 'gp_forged' WHERE id = 1")
+    assert store.validate_chain() is False
+
+
 def test_second_outcome_is_rejected(tmp_path) -> None:
     # AD-4: the lifecycle closes exactly once — a second (possibly contradictory) outcome is refused.
     store = _store(tmp_path)

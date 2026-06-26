@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pebra.adapters.evidence_merge import merge_evidence
 from pebra.core.models import ArchitectureEvidence, BenefitDeltaEvidence, EvidenceBundle
-from pebra.ports.config_port import CriticalityGlob, PebraConfig
+from pebra.ports.config_port import CriticalityGlob, PebraConfig, PolicyRule
 
 
 def _base(**overrides) -> EvidenceBundle:
@@ -150,3 +150,29 @@ def test_architecture_evidence_is_carried_through() -> None:
     merged = _empty_merge(base, architecture_evidence=arch)
     assert merged.architecture_evidence.god_node_score == 0.9
     assert merged.architecture_evidence.cycle_participation is True
+
+
+def test_policy_rules_produce_gate1_violations_from_config() -> None:
+    base = _base()
+    merged = _empty_merge(
+        base,
+        config=PebraConfig(
+            policy_rules=[PolicyRule("src/secrets/**", "forbidden_secret_edit")]
+        ),
+        affected_files=["src/secrets/key.py"],
+    )
+    assert merged.policy_violations == ["forbidden_secret_edit"]
+
+
+def test_architecture_centrality_lowers_scope_control_bounded() -> None:
+    base = _base(edit_confidence_factors={"scope_control": 0.92, "evidence_quality": 0.90})
+    arch = ArchitectureEvidence(
+        god_node_score=0.95,
+        cycle_participation=True,
+        bridge_centrality=0.8,
+        domain_entrypoint=True,
+    )
+    merged = _empty_merge(base, architecture_evidence=arch)
+    assert merged.edit_confidence_factors["scope_control"] == 0.92
+    assert merged.architecture_evidence == arch
+    assert base.edit_confidence_factors["scope_control"] == 0.92

@@ -43,14 +43,6 @@ class FakeLearningPort:
         self.snapshot = (repo_id, metrics, status)
         return [f"pe_{i}" for i, _ in enumerate(rows, start=1)], "rs_1"
 
-    def write_prediction_errors(self, assessment_id, rows):
-        self.rows = rows
-        return [f"pe_{i}" for i, _ in enumerate(rows, start=1)]
-
-    def write_risk_snapshot(self, repo_id, metrics, status="shadow"):
-        self.snapshot = (repo_id, metrics, status)
-        return "rs_1"
-
 
 _PREDS = [
     {"target_type": "risk_binary", "target_name": "p_success", "predicted_value": 0.74, "action_id": "a1"},

@@ -1,8 +1,4 @@
-"""sanction_store (Phase-0 SanctionPort, AD-26) — reads/writes sanction events via the SQLite store.
-
-Phase 0: ``active_sanction`` returns ``None`` (cold start — no active sanctions), so gate-10 never
-converts a decision. ``create_sanction`` is wired for the accept-risk surface.
-"""
+"""sanction_store (AD-26) — reads/writes controlled-high-risk sanction events via SQLite."""
 
 from __future__ import annotations
 
@@ -17,7 +13,7 @@ class SanctionStore:
         self._store = store
 
     def active_sanction(self, repo_id: str, action: CandidateAction) -> dict[str, Any] | None:
-        return None
+        return self._store.active_sanction_for_action(repo_id, action.id)
 
     def create_sanction(self, repo_id: str, sanction: dict[str, Any]) -> str:
         return self._store.create_sanction(repo_id, sanction)

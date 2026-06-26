@@ -96,6 +96,25 @@ def test_builder_confidence_band_high() -> None:
     assert a.confidence_band == "high"
 
 
+def test_builder_applies_architecture_centrality_to_scope_control() -> None:
+    from dataclasses import replace
+
+    inp = replace(
+        _worked_example_input(),
+        architecture_evidence=m.ArchitectureEvidence(
+            god_node_score=0.95,
+            cycle_participation=True,
+            bridge_centrality=0.8,
+            domain_entrypoint=True,
+        ),
+    )
+    a = ab.build_assessment(inp)
+    assert a.scores["edit_confidence_factors"]["scope_control"] == pytest.approx(0.77)
+    assert a.scores["edit_confidence"] < ab.build_assessment(_worked_example_input()).scores[
+        "edit_confidence"
+    ]
+
+
 def test_builder_carries_symbol_scope_evidence() -> None:
     a = ab.build_assessment(_worked_example_input())
     sse = a.scores["symbol_scope_evidence"]
