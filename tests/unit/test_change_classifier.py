@@ -8,8 +8,38 @@ from __future__ import annotations
 
 from pebra.core import change_classifier as cc
 from pebra.core.constants import ChangeKind
+from pebra.core.models import SymbolDiffEvidence
 
 DEFAULT_THRESHOLDS = {"consequential_symbol_fan_in_percentile": 0.90}
+
+
+# --- is_high_fanin_consequential: assess-path helper over assembled SymbolDiffEvidence (M5c.5) ---
+
+
+def test_high_fanin_on_behavioral_is_consequential() -> None:
+    sde = SymbolDiffEvidence(max_change_kind="BEHAVIORAL", symbol_fan_in_percentile=0.95)
+    assert cc.is_high_fanin_consequential(sde, 0.90) is True
+
+
+def test_low_fanin_on_behavioral_is_not_consequential() -> None:
+    sde = SymbolDiffEvidence(max_change_kind="BEHAVIORAL", symbol_fan_in_percentile=0.50)
+    assert cc.is_high_fanin_consequential(sde, 0.90) is False
+
+
+def test_high_fanin_on_cosmetic_is_not_consequential() -> None:
+    # COSMETIC is not a consequence-bearing kind, so even max fan-in does not escalate
+    sde = SymbolDiffEvidence(max_change_kind="COSMETIC", symbol_fan_in_percentile=0.99)
+    assert cc.is_high_fanin_consequential(sde, 0.90) is False
+
+
+def test_unknown_change_kind_is_consequential_kind() -> None:
+    sde = SymbolDiffEvidence(max_change_kind="UNKNOWN", symbol_fan_in_percentile=0.95)
+    assert cc.is_high_fanin_consequential(sde, 0.90) is True
+
+
+def test_unparseable_change_kind_treated_as_unknown() -> None:
+    sde = SymbolDiffEvidence(max_change_kind="NOT_A_KIND", symbol_fan_in_percentile=0.95)
+    assert cc.is_high_fanin_consequential(sde, 0.90) is True
 
 
 def _row(**kw):

@@ -230,6 +230,80 @@ def test_structural_features_captured_without_changing_scores() -> None:
     )
 
 
+class FakeCodeGraph:
+    def __init__(self, ev):
+        self.ev = ev
+
+    def fanin(self, action, repo_root):
+        return self.ev
+
+
+def _run_cg(ev, extra_thresholds=None):
+    store = FakeStore()
+    outcome = ac.assess(
+        _request(),
+        thresholds={**_THRESHOLDS, **(extra_thresholds or {})},
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        codegraph_provider=FakeCodeGraph(ev),
+    )
+    return outcome
+
+
+def test_no_codegraph_provider_leaves_fan_in_at_evidence_value() -> None:
+    # Without codegraph, the symbol fan-in is whatever the symbol-diff provider supplied (0.42 here).
+    outcome, _ = _run()
+    assert outcome.recommended_result.symbol_scope_evidence["symbol_fan_in_percentile"] == pytest.approx(0.42)
+
+
+def test_trusted_high_fanin_patches_percentile_and_marks_consequential() -> None:
+    ev = m.CodeGraphFanInEvidence(
+        symbol_fan_in_percentile=0.95, symbol_caller_count=12,
+        resolution_method="location", graph_freshness="fresh",
+    )
+    sse = _run_cg(ev).recommended_result.symbol_scope_evidence
+    assert sse["symbol_fan_in_percentile"] == pytest.approx(0.95)  # codegraph value, not 0.42
+    assert sse["consequential_symbol_changed"] is True  # high fan-in on a BEHAVIORAL change escalates
+
+
+def test_trusted_low_fanin_patches_percentile_without_forcing_consequential() -> None:
+    ev = m.CodeGraphFanInEvidence(
+        symbol_fan_in_percentile=0.10, resolution_method="location", graph_freshness="fresh",
+    )
+    sse = _run_cg(ev).recommended_result.symbol_scope_evidence
+    assert sse["symbol_fan_in_percentile"] == pytest.approx(0.10)
+    assert sse["consequential_symbol_changed"] is False
+
+
+def test_untrusted_stale_lowers_edit_confidence_only_when_required() -> None:
+    baseline = _run()[0].recommended_result.scores["edit_confidence"]
+    stale = m.CodeGraphFanInEvidence(
+        resolution_method="unresolved", graph_freshness="stale", fallback_reason="stale",
+    )
+    # required: a stale/unresolved graph is absence-of-evidence -> deterministic fail-clear
+    required = _run_cg(stale, {"require_codegraph": True}).recommended_result
+    assert required.scores["edit_confidence"] < _THRESHOLDS["low_edit_confidence"]
+    assert required.recommended_decision is Decision.INSPECT_FIRST
+    # not required (default): codegraph is optional -> identity, golden preserved
+    optional = _run_cg(stale).recommended_result.scores["edit_confidence"]
+    assert optional == pytest.approx(baseline)
+
+
+def test_ambiguous_name_match_is_not_trusted_fanin() -> None:
+    ev = m.CodeGraphFanInEvidence(
+        resolution_method="name_fallback_ambiguous", node_ids_resolved=("x", "y"),
+        graph_freshness="fresh",
+    )
+    sse = _run_cg(ev, {"require_codegraph": True}).recommended_result.symbol_scope_evidence
+    # ambiguous never patches a trusted fan-in: the percentile stays the symbol-diff value
+    assert sse["symbol_fan_in_percentile"] == pytest.approx(0.42)
+
+
 def test_controller_rejects_invalid_request() -> None:
     from pebra.core.request_validator import RequestValidationError
     bad = m.AssessmentRequest(task="", candidate_actions=[])

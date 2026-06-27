@@ -17,6 +17,7 @@ Formulas (Architecture §5):
 
 from __future__ import annotations
 
+import bisect
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -137,3 +138,18 @@ def blast_score(direct: float, transitive: float, scale: float = 1.0) -> float:
     if raw < 0:
         raise ValueError("blast counts must be non-negative")
     return raw / (raw + scale)
+
+
+def fractional_rank(value: int, sorted_distribution: list[int]) -> float:
+    """Fractional rank of ``value`` in an already-sorted distribution (which must include the
+    zero-fan-in entries). Equals the fraction of the population whose count is ≤ ``value``.
+
+    This is the core, stdlib home of the per-symbol fan-in percentile: the codegraph adapter builds
+    the repo-wide caller-count distribution (one entry per callable symbol, zeros included) via SQL,
+    sorts it, and calls this. It mirrors the file-level math in import_graph_cache._fanin_percentiles,
+    lifted into ``core`` so it stays deterministic and contract-clean (adapters cannot be imported by
+    core). Returns 0.0 for an empty distribution (nothing to rank against).
+    """
+    if not sorted_distribution:
+        return 0.0
+    return bisect.bisect_right(sorted_distribution, value) / len(sorted_distribution)

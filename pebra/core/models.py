@@ -79,6 +79,32 @@ class SymbolDiffEvidence:
 
 
 @dataclass(frozen=True)
+class CodeGraphFanInEvidence:
+    """Language-agnostic per-symbol fan-in, resolved by location through codegraph's call graph.
+
+    The robust cross-language contract (M5c.5): the changed symbol is identified by (file, old-side
+    line range) — never by a guessed name — codegraph maps that location to a node, and the fan-in is
+    the reverse-edge count over call-like edges (calls/references/instantiates; NOT imports, which is
+    file/module-level). PEBRA owns the percentile math (core.score_math.fractional_rank); codegraph
+    owns identity + resolution. ``resolution_method`` records how the symbol was found so a name
+    fallback or an unresolved/stale read is auditable rather than silently scored as zero fan-in.
+
+    graph_freshness mirrors codegraph's own signal: 'fresh' (status clean) | 'stale' (pendingChanges
+    or reindexRecommended — fan-in is NOT trusted, percentile stays 0.0) | 'unknown' (engine/DB
+    absent). The codegraph/extraction versions are carried for provenance and calibration scope.
+    """
+
+    symbol_fan_in_percentile: float = 0.0
+    symbol_caller_count: int = 0
+    resolution_method: str = "unresolved"  # 'location' | 'name_fallback' | 'name_fallback_ambiguous' | 'unresolved'
+    node_ids_resolved: tuple[str, ...] = ()
+    codegraph_version: str | None = None
+    extraction_version: str | None = None
+    graph_freshness: str = "unknown"  # 'fresh' | 'stale' | 'unknown'
+    fallback_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class BlastEvidence:
     direct_count: int = 0
     transitive_count: int = 0
@@ -206,6 +232,9 @@ class AssessmentInput:
     variance_breakdown: dict[str, float] | None = None  # explicit variance (AD-5 precedence 1)
     benefit_delta_evidence: BenefitDeltaEvidence = field(default_factory=BenefitDeltaEvidence)
     symbol_diff_evidence: SymbolDiffEvidence = field(default_factory=SymbolDiffEvidence)
+    # M5c.5: language-agnostic per-symbol fan-in (codegraph-backed). None until the adapter is wired
+    # / codegraph is present; carried for provenance even when resolution_method='unresolved'.
+    codegraph_fanin_evidence: "CodeGraphFanInEvidence | None" = None
     blast_evidence: BlastEvidence = field(default_factory=BlastEvidence)
     architecture_evidence: ArchitectureEvidence = field(default_factory=ArchitectureEvidence)
     active_snapshot: Any | None = None  # no learning in Phase 0 (cold start)

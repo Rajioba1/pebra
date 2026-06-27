@@ -67,6 +67,27 @@ def test_public_api_false_when_no_init_or_repo(tmp_path) -> None:
     assert f["symbol"]["is_public_api"] is False
 
 
+def test_codegraph_provenance_recorded_when_present() -> None:
+    from pebra.core.models import CodeGraphFanInEvidence
+
+    inp = _inp()
+    inp.codegraph_fanin_evidence = CodeGraphFanInEvidence(
+        symbol_fan_in_percentile=0.9, resolution_method="location",
+        codegraph_version="1.1.1", extraction_version="24", graph_freshness="fresh",
+    )
+    p = StructuralFeatureAdapter().build_features(inp)["provenance"]
+    assert p["codegraph_version"] == "1.1.1"
+    assert p["extraction_version"] == "24"
+    assert p["codegraph_graph_freshness"] == "fresh"
+    assert p["codegraph_resolution_method"] == "location"
+
+
+def test_no_codegraph_provenance_keys_when_absent() -> None:
+    # _inp() has no codegraph_fanin_evidence -> the provenance keys are simply absent (no crash)
+    p = StructuralFeatureAdapter().build_features(_inp())["provenance"]
+    assert "codegraph_version" not in p
+
+
 def test_graceful_when_no_changed_symbols() -> None:
     f = StructuralFeatureAdapter().build_features(
         _inp(sde=SymbolDiffEvidence(changed_symbols=[]),

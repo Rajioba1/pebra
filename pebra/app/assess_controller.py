@@ -10,11 +10,12 @@ everything it needs arrives inside AssessmentInput.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from pebra.core import (
     assessment_builder,
+    change_classifier,
     decision_engine,
     explanation_generator,
     model_guidance,
@@ -25,6 +26,7 @@ from pebra.core.apply_snapshot import apply_snapshot
 from pebra.core.explanation_generator import Explanation
 from pebra.core.models import AssessmentInput, AssessmentRequest, AssessmentResult, CandidateAction
 from pebra.ports.blast_radius_port import BlastRadiusProvider
+from pebra.ports.codegraph_port import CodeGraphProvider
 from pebra.ports.evidence_port import EvidenceProvider
 from pebra.ports.repository_registry_port import RepositoryRegistryPort
 from pebra.ports.sanction_port import SanctionPort
@@ -65,11 +67,13 @@ def _build_input(
     symbol_diff_provider: SymbolDiffProvider,
     blast_provider: BlastRadiusProvider,
     sanction_port: SanctionPort,
+    codegraph_provider: CodeGraphProvider | None = None,
 ) -> AssessmentInput:
     evidence = evidence_provider.gather_evidence(request, action, repo_root)
     symbol_diff = symbol_diff_provider.symbol_diff(action, repo_root)
     blast = blast_provider.blast(action, repo_root)
     sanction = sanction_port.active_sanction(repo_id, action)
+    effective_thresholds = {**evidence.thresholds, **thresholds}
 
     # 3c — graph incompleteness caps evidence_quality: a blast estimate built over unresolved/dynamic/
     # wildcard imports (or missing expected files) is less trustworthy. The bounded penalty lowers
@@ -82,7 +86,44 @@ def _build_input(
             0.0, supplied_eq - blast.graph_uncertainty_score
         )
 
-    effective_thresholds = {**evidence.thresholds, **thresholds}
+    # M5c.5 — language-agnostic per-symbol fan-in. Trusted result (location/name_fallback over a FRESH
+    # graph): patch the real fan-in into the symbol evidence and OR-in the fan-in-based consequential
+    # flag (so Gate 2 escalates a high-fan-in consequential change). Untrusted result (unresolved/stale/
+    # ambiguous) is the ABSENCE of fan-in evidence, NOT "low fan-in = safe": when codegraph is required
+    # it lowers evidence_quality (fail-clear, same lever as graph uncertainty) so a would-be proceed is
+    # routed to inspect/ask via edit_confidence. When codegraph is optional (default) it is identity.
+    codegraph_fanin = None
+    if codegraph_provider is not None:
+        codegraph_fanin = codegraph_provider.fanin(action, repo_root)
+        trusted = (
+            codegraph_fanin.graph_freshness == "fresh"
+            and codegraph_fanin.resolution_method in ("location", "name_fallback")
+        )
+        if trusted:
+            fan_in_threshold = effective_thresholds.get(
+                "consequential_symbol_fan_in_percentile", 0.90
+            )
+            patched = replace(
+                symbol_diff,
+                symbol_fan_in_percentile=codegraph_fanin.symbol_fan_in_percentile,
+            )
+            symbol_diff = replace(
+                patched,
+                consequential_symbol_changed=(
+                    symbol_diff.consequential_symbol_changed
+                    or change_classifier.is_high_fanin_consequential(patched, fan_in_threshold)
+                ),
+            )
+        elif effective_thresholds.get("require_codegraph", False):
+            # Required CodeGraph is an evidence-validity precondition, not a soft heuristic. Use a
+            # tiny positive floor (score_math requires factors in (0, 1]) so Gate 8 reliably routes a
+            # would-be proceed to inspect_first instead of merely nudging confidence.
+            floor = float(effective_thresholds.get("codegraph_unavailable_evidence_quality", 0.01))
+            floor = min(1.0, max(0.01, floor))
+            edit_confidence_factors["evidence_quality"] = min(
+                edit_confidence_factors.get("evidence_quality", 1.0), floor
+            )
+
     return AssessmentInput(
         request=request,
         action=action,
@@ -102,6 +143,7 @@ def _build_input(
         variance_breakdown=evidence.variance_breakdown,
         benefit_delta_evidence=evidence.benefit_delta_evidence,
         symbol_diff_evidence=symbol_diff,
+        codegraph_fanin_evidence=codegraph_fanin,
         blast_evidence=blast,
         architecture_evidence=evidence.architecture_evidence,
         # active_snapshot left at its default None here; M5c assigns it after apply_snapshot.
@@ -123,6 +165,7 @@ def _score_action(
         symbol_diff_provider=ports["symbol_diff_provider"],
         blast_provider=ports["blast_provider"],
         sanction_port=ports["sanction_port"],
+        codegraph_provider=ports.get("codegraph_provider"),
     )
     # Phase-4 reframe: capture structural features pre-scoring and attach to the IR for CAPTURE only.
     # assessment_builder/decision_engine ignore inp.structural_features (no score/gate change — Hard
@@ -189,6 +232,7 @@ def assess(
     assessed_commit: str | None = None,
     structural_feature_provider: StructuralFeatureProvider | None = None,
     snapshot_read_port: SnapshotReadPort | None = None,
+    codegraph_provider: CodeGraphProvider | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     repo = repository_registry.resolve(start_path)
@@ -208,6 +252,7 @@ def assess(
                 assessed_commit=assessed_commit,
                 structural_feature_provider=structural_feature_provider,
                 active_snapshot_bundle=active_snapshot_bundle,
+                codegraph_provider=codegraph_provider,
             )
         )
 

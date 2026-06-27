@@ -63,6 +63,47 @@ def test_assessment_input_carries_everything_engine_needs() -> None:
     assert inp.repo_id == "repo_local_example"
 
 
+def test_codegraph_fanin_evidence_defaults() -> None:
+    # The language-agnostic per-symbol fan-in evidence (codegraph-backed). Defaults must describe
+    # the cold/unresolved state: zero fan-in, unresolved, freshness unknown, no version stamps.
+    ev = m.CodeGraphFanInEvidence()
+    assert ev.symbol_fan_in_percentile == 0.0
+    assert ev.symbol_caller_count == 0
+    assert ev.resolution_method == "unresolved"
+    assert ev.node_ids_resolved == ()
+    assert ev.codegraph_version is None
+    assert ev.extraction_version is None
+    assert ev.graph_freshness == "unknown"
+    assert ev.fallback_reason is None
+
+
+def test_codegraph_fanin_evidence_is_frozen() -> None:
+    import dataclasses
+
+    ev = m.CodeGraphFanInEvidence()
+    with __import__("pytest").raises(dataclasses.FrozenInstanceError):
+        ev.symbol_fan_in_percentile = 0.5  # type: ignore[misc]
+
+
+def test_assessment_input_defaults_codegraph_fanin_evidence_to_none() -> None:
+    req = m.AssessmentRequest.single_action(task="t", action_id="a1", label="l")
+    inp = m.AssessmentInput(
+        request=req,
+        action=req.candidate_actions[0],
+        events=[],
+        p_success=0.7,
+        immediate_benefit=0.8,
+        review_cost=0.1,
+        criticality_stage="C3",
+        criticality_value=0.8,
+        edit_confidence_factors={},
+        thresholds={},
+        repo_id="r",
+        repo_root="/p",
+    )
+    assert inp.codegraph_fanin_evidence is None
+
+
 def test_assessment_result_holds_decision_and_scores() -> None:
     res = m.AssessmentResult(
         recommended_decision=Decision.PROCEED,

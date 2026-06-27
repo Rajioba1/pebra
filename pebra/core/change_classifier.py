@@ -105,6 +105,23 @@ def _is_consequential(
     return (len(reasons) > 0), reasons
 
 
+def is_high_fanin_consequential(
+    sde: "Any", fan_in_threshold: float = _DEFAULT_FAN_IN_PERCENTILE
+) -> bool:
+    """Assess-path helper (M5c.5): a high-fan-in change to a consequence-bearing kind is consequential.
+
+    Mirrors the ``callers_percentile`` branch of ``_is_consequential`` but over the already-assembled
+    ``SymbolDiffEvidence`` (the assess path has no per-row dicts). An unrecognized ``max_change_kind``
+    is treated as UNKNOWN (which is itself a consequence-bearing kind — conservative)."""
+    try:
+        kind = ChangeKind(sde.max_change_kind)
+    except ValueError:
+        kind = ChangeKind.UNKNOWN
+    if kind not in _CONSEQUENTIAL_KINDS:
+        return False
+    return sde.symbol_fan_in_percentile >= fan_in_threshold
+
+
 def classify_diff(rows: list[dict[str, Any]], thresholds: dict[str, float]) -> ChangeSummary:
     """Summarize a set of parsed SymbolDiff rows (AD-27 Layer-1 evidence)."""
     fan_in_threshold = thresholds.get(

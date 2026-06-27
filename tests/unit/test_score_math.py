@@ -126,3 +126,30 @@ def test_blast_score_combines_direct_and_half_transitive() -> None:
     # 2 direct + 0.5*4 transitive = 4 raw; normalization keeps it in [0,1]
     score = sm.blast_score(direct=2, transitive=4)
     assert 0.0 <= score <= 1.0
+
+
+# --- fractional_rank: percentile of a value in an already-sorted distribution (incl. zeros).
+# The core, stdlib home for the per-symbol fan-in percentile (mirrors import_graph_cache's
+# file-level _fanin_percentiles math, lifted into core so the codegraph adapter can call it). ---
+
+
+def test_fractional_rank_matches_bisect_right_over_len() -> None:
+    # bisect_right([0,0,1,2,3,4,5], 3) == 5 ; 5/7
+    assert sm.fractional_rank(3, [0, 0, 1, 2, 3, 4, 5]) == pytest.approx(5 / 7)
+
+
+def test_fractional_rank_top_value_is_one() -> None:
+    assert sm.fractional_rank(5, [0, 0, 1, 2, 3, 4, 5]) == pytest.approx(1.0)
+
+
+def test_fractional_rank_zero_callers_counts_only_the_zero_bucket() -> None:
+    # two zero-fan-in symbols out of seven -> a zero-fan-in symbol ranks at 2/7, not 0
+    assert sm.fractional_rank(0, [0, 0, 1, 2, 3, 4, 5]) == pytest.approx(2 / 7)
+
+
+def test_fractional_rank_empty_distribution_is_zero() -> None:
+    assert sm.fractional_rank(0, []) == 0.0
+
+
+def test_fractional_rank_value_above_all_is_one() -> None:
+    assert sm.fractional_rank(99, [0, 1, 2]) == pytest.approx(1.0)

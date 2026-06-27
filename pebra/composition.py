@@ -21,6 +21,7 @@ from pebra.adapters.ast_import_graph import AstImportGraphAdapter
 from pebra.adapters.composite_evidence import CompositeEvidenceProvider
 from pebra.adapters.contract_surface import ContractSurfaceScanner
 from pebra.adapters.git_change_verifier import GitChangeVerifier
+from pebra.adapters.codegraph_adapter import CodeGraphAdapter
 from pebra.adapters.import_graph_cache import GraphProvider
 from pebra.adapters.repository_registry import RepositoryRegistry
 from pebra.adapters.sanction_store import SanctionStore
@@ -73,6 +74,11 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         # M5c: read-only active-snapshot provider (learned overrides applied pre-scoring). Read-only —
         # never writes learning. Cold-start (no active facts) -> identity, golden unchanged.
         "snapshot_read_port": SnapshotReadStore(ctx.store),
+        # M5c.5: language-agnostic per-symbol fan-in via codegraph. Optional by default — when the
+        # codegraph DB/CLI is absent it returns unresolved and the controller leaves scoring unchanged
+        # (golden preserved). Set threshold ``require_codegraph`` true once codegraph is deployed to make
+        # an unresolved/stale graph fail-clear (lower evidence_quality -> inspect) instead of silent.
+        "codegraph_provider": CodeGraphAdapter(),
     }
 
 
