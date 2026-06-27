@@ -80,7 +80,7 @@ pebra/
 ├── adapters/                          # I/O — implement ports; import core/ + ports/ + libs
 │   ├── paths.py · repository_registry.py · git_adapter.py · ast_import_graph.py · ast_diff_adapter.py
 │   ├── architecture_map.py · git_change_verifier.py · contract_surface.py · radon_adapter.py
-│   ├── bandit_adapter.py · sem_adapter.py · codeindex_adapter.py · yaml_config.py
+│   ├── bandit_adapter.py · codegraph_adapter.py · yaml_config.py
 │   ├── sanction_store.py · outcome_logger.py · calibration_store.py · learning_store.py   # flat per §3
 │   └── store/db.py                    # only db.py lives under store/ per §3
 │
@@ -123,12 +123,15 @@ needs git/sqlite/subprocess/a file path arrives *inside* `AssessmentInput`; the 
 
 ## 4. Cross-cutting setup (do this before any Phase 0 logic)
 
-1. **`pyproject.toml`** — runtime deps per §12 (`numpy`, `scikit-learn`, `cryptography`, `mapie`,
+1. **`pyproject.toml`** — Python runtime deps per §12 (`numpy`, `scikit-learn`, `cryptography`, `mapie`,
    `radon`, `bandit`, `pyyaml`, `fastapi`, `starlette`, `uvicorn`, `jinja2`); `[dependency-groups] dev`
    (`pytest`, `pytest-cov`, `hypothesis`, `syrupy`, `jsonschema`, `ruff`, `mypy`, `import-linter`,
    `nox`, `build`, `twine`, `pre-commit`); `[project.optional-dependencies]`
    `bench` / `bench-szz` / `bench-agent` / `bench-external`, plus `ui-e2e` (`playwright`) for the
    Phase-5d dashboard E2E; `requires-python = ">=3.11"`; `[project.scripts] pebra = "pebra.cli.main:main"`.
+   CodeGraph (`@colbymchenry/codegraph`) is a required external runtime graph engine, not a Python
+   dependency; installers/runtime checks must verify the `codegraph` command and repo `.codegraph/`
+   index before graph-backed assessment proceeds.
 2. **`import-linter` contracts** (the enforcement of §2's "one rule"):
    - `core` forbidden from importing `ports`, `adapters`, `app`, `cli`, `mcp_server`, `dashboard`,
      and any of `sqlite3, subprocess, argparse, pandas, scipy, matplotlib, seaborn, datasets,
@@ -229,8 +232,8 @@ verify returns `ask_human` on unmet binding control; sanction invalidates on sco
 **Build:** `adapters/yaml_config.py` (`.pebra.yml`; per **AD-6** it must **warn** if
 `medium_auto_proceed_requires` is present, never silently accept it), `core/query_validator.py`,
 the port `ports/architecture_knowledge_port.py` **then** its impl `adapters/architecture_map.py`
-(AD-22: self-built content-hash repo-scan map + optional external enrichment), AST edge confidence /
-depth buckets / graph uncertainty / entrypoint signal / import-cycle (AD-12), `adapters/radon_adapter.py`,
+(AD-22: temporary Python AST/import graph until Phase 4 installs CodeGraph as the product graph engine),
+AST edge confidence / depth buckets / graph uncertainty / entrypoint signal / import-cycle (AD-12), `adapters/radon_adapter.py`,
 `adapters/bandit_adapter.py`.
 Wire symbol-level criticality and real benefit deltas (radon MI/complexity, coupling) — replacing
 Phase-0 projected stubs.
@@ -249,11 +252,27 @@ dashboard trust, and benefit calibration depend on it.
 `action_status` lifecycle; shadow rows excluded from calibration views.
 **Exit:** agent can assess/compare/accept-risk/verify/record-outcome over MCP.
 
-### Phase 4 — external tool adapters
-**Build:** `adapters/sem_adapter.py`, `adapters/codeindex_adapter.py`; evidence fallback order
-`codeindex → sem → ast`. Missing binary → adapter returns `None` → built-in AST blast.
-**Tests:** fallback order honored; results swap without touching `core/`.
-**Exit:** richer blast/architecture available when binaries present; graceful degradation otherwise.
+### Phase 4 — CodeGraph graph engine
+**Build:** `ports/codegraph_provider_port.py`, `adapters/codegraph_adapter.py`, and the wiring that
+replaces Python-only file/import fan-in with CodeGraph-backed symbol graph evidence. CodeGraph is the
+required runtime graph backend. The adapter runs `codegraph sync --quiet <repo>`, then
+`codegraph status --json <repo>`, and trusts the graph only when initialized, pending changes are zero,
+`index.reindexRecommended=false`, and no worktree mismatch is present. It reads
+`.codegraph/codegraph.db` in read-only mode with Python `sqlite3` and normalizes CodeGraph `nodes`,
+`edges`, `files`, and `project_metadata` into PEBRA evidence.
+
+**PEBRA-owned math:** CodeGraph supplies graph facts only. PEBRA computes symbol fan-in percentiles,
+edge-confidence tiers from CodeGraph edge provenance, blast/affected-area summaries, structural
+features, and calibration scope. The adapter records `codegraph_version`, extraction version, freshness,
+and edge provenance in prediction provenance. The old stdlib AST/import graph becomes test fixture /
+emergency development support only, not the product graph path.
+
+**Tests:** missing binary/uninitialized index fails closed; dirty-after-sync status routes to stale
+graph handling; reindex-recommended and worktree-mismatch are stale; read-only DB queries compute
+symbol fan-in percentile; edge provenance maps to confidence tiers; `core/` import purity remains
+unchanged; golden fixture remains byte-identical when it deliberately uses graphless fixture evidence.
+**Exit:** PEBRA has platform-agnostic symbol fan-in and graph freshness wired through CodeGraph, with
+PEBRA still owning all risk math and learning semantics.
 
 ### Phase 5 — calibration + learning loop
 **Build:** `LearningPort`, `app/learning_controller.py` (async/batch), `core/prediction_error.py`

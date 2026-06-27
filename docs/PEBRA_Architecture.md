@@ -48,17 +48,17 @@ It also records **29 Architecture Decisions (AD-1…AD-29)** that resolve gaps t
                  |                         v
         +--------+---------+   +-----------------------------+
         |    adapters/     |   |           core/             |
-        |  ast_import_graph|   |  PURE DOMAIN, stdlib-only   |
-        |  sem · codeindex |   |  scoring math · gates ·     |
-        |  radon · bandit  |   |  decision engine · explainer|
-        |  git · yaml      |   |  constants · models         |
-        |  sqlite_store    |   |  (NEVER imports adapters)   |
+        |  codegraph       |   |  PURE DOMAIN, stdlib-only   |
+        |  radon · bandit  |   |  scoring math · gates ·     |
+        |  git · yaml      |   |  decision engine · explainer|
+        |  sqlite_store    |   |  constants · models         |
+        |  store readers   |   |  (NEVER imports adapters)   |
         +------------------+   +-----------------------------+
 ```
 
 **The one rule that matters:** `core/` imports **only** pure stdlib + `core/`. It never imports `ports/`, `adapters/`, `app/`, `cli/`, `mcp_server/`, `dashboard/`, any pip package, or I/O-oriented stdlib modules such as `sqlite3`, `subprocess`, or `argparse`. `app/` owns use-case orchestration and imports only `core/` + `ports/`; surfaces compose concrete adapters and pass them through ports. Adapters depend on `core/` and `ports/`; `core/` depends on nothing outside the deterministic standard-library subset. This is what keeps the decision brain deterministic, testable in isolation, and auditable.
 
-**Why hexagonal:** the value of PEBRA is the *decision math*, which must be reproducible and explainable. Isolating it from I/O (graphs, git, SQLite, MCP) means every number is a pure function of its inputs — an auditor can reconstruct any decision from `core/` alone. It also lets the graph/evidence sources be swapped (built-in AST ↔ sem ↔ codeindex) without touching the brain.
+**Why hexagonal:** the value of PEBRA is the *decision math*, which must be reproducible and explainable. Isolating it from I/O (graphs, git, SQLite, MCP) means every number is a pure function of its inputs — an auditor can reconstruct any decision from `core/` alone. CodeGraph is the required precision graph engine, but it remains an adapter-side evidence source: PEBRA owns the normalized graph schema, fan-in percentile math, edge-confidence policy, risk/benefit scoring, learning, audit chain, and fallback/fail-closed behavior.
 
 ---
 
@@ -105,13 +105,13 @@ It also records **29 Architecture Decisions (AD-1…AD-29)** that resolve gaps t
 | LearningPort | ports | `ports/learning_port.py` | Protocol | — |
 | SanctionPort | ports | `ports/sanction_port.py` | Protocol | — |
 | RepositoryRegistryPort | ports | `ports/repository_registry_port.py` | Protocol | — |
+| CodeGraphProvider | ports | `ports/codegraph_provider_port.py` | Protocol | — |
 | post-assessment guardrails | core | `core/post_assessment_guardrails.py` | stdlib | — |
 | repo/path resolver | adapters | `adapters/paths.py` | codeindex/Ctxo walk-up pattern | Apache-2.0 / MIT reference |
-| AST diff adapter | adapters | `adapters/ast_diff_adapter.py` | stdlib AST + git diff | — |
-| ast import graph (default blast) | adapters | `adapters/ast_import_graph.py` | **codeindex** `impact.py` (`d+0.5·t`) | Apache-2.0 |
-| sem adapter | adapters | `adapters/sem_adapter.py` | subprocess | MIT/Apache-2.0 |
-| codeindex adapter | adapters | `adapters/codeindex_adapter.py` | subprocess | Apache-2.0 |
-| architecture map adapter | adapters | `adapters/architecture_map.py` | stdlib repo scan + Graphify/codeindex comparison when configured | local / reference artifacts |
+| CodeGraph adapter | adapters | `adapters/codegraph_adapter.py` | required CodeGraph CLI + read-only SQLite DB | MIT |
+| AST diff adapter | adapters | `adapters/ast_diff_adapter.py` | git diff + CodeGraph symbol map | — / MIT evidence |
+| graph blast adapter | adapters | `adapters/ast_import_graph.py` or successor `adapters/codegraph_blast.py` | CodeGraph reverse-edge graph + PEBRA math | MIT evidence |
+| architecture map adapter | adapters | `adapters/architecture_map.py` | CodeGraph nodes/edges + PEBRA summaries | MIT evidence |
 | git change verifier | adapters | `adapters/git_change_verifier.py` | GitNexus `detect_changes` concept | PolyForm NC reference-only |
 | contract surface scanner | adapters | `adapters/contract_surface.py` | GitNexus `api_impact`/`route_map`/`tool_map`/`shape_check` concepts | PolyForm NC reference-only |
 | radon adapter | adapters | `adapters/radon_adapter.py` | radon | MIT |
@@ -313,9 +313,11 @@ ArchitectureEvidence {
 }
 ```
 
-This provider builds PEBRA's own architecture map from a single content-hash cached stdlib AST/import graph at `<repo>/.pebra/import_graph.json`. The cache stores per-file SHA256, import edges, entrypoint files, parse-error files, fan-in, fan-out, architecture anchors, and cycle participation. `fresh` means all file hashes match the cache; `rebuilt` means one or more files changed and the adapter rebuilt the map successfully; `stale` means the rebuild failed and the evidence cannot be vouched for; `unknown` means there is no graph to build, such as an empty or missing repo. `graph_commit` is provenance only and no longer drives architecture freshness.
+This provider reads the required local CodeGraph index as PEBRA's precision code graph. CodeGraph owns multi-language extraction, cross-file resolution, file watching, and SQLite graph storage. PEBRA owns the deterministic interpretation of that graph: normalized feature names, symbol fan-in percentiles, edge-confidence tiering, affected-area math, criticality integration, risk/benefit scoring, learning, and audit provenance. PEBRA never ingests a CodeGraph "risk score"; it ingests graph facts.
 
-The canonical source of record is the stdlib AST/import graph plus file paths, symbols, directory/package boundaries, and entrypoint heuristics that PEBRA already collects. External artifacts such as `ARCHITECTURE.md`, `graphify-out/ANCHORS.md`, `graphify-out/graph.json`, or `codeindex` output are optional validation/enrichment only, never prerequisites.
+The CodeGraph freshness contract is explicit. Before PEBRA trusts graph evidence, the adapter runs `codegraph sync --quiet <repo>` and then reads `codegraph status --json <repo>`. `fresh` means the status is initialized, has no pending added/modified/removed files, `index.reindexRecommended=false`, and no worktree mismatch. `rebuilt` means sync observed and repaired changes before the final clean status. `stale` means CodeGraph is unavailable, uninitialized, still reports pending changes after sync, recommends re-indexing, reports a worktree mismatch, or cannot be queried safely. `unknown` is reserved for non-repo or deliberately graphless fixture paths. A stale required graph is not silently treated as low risk; the evidence-validity gate routes would-be proceeds to `inspect_first` or fails closed for graph-required commands.
+
+The canonical graph fields are CodeGraph `nodes`, `edges`, `files`, and `project_metadata`, normalized through PEBRA's `CodeGraphProvider` port. PEBRA records `codegraph_version`, `extraction_version`, graph freshness, and edge provenance in prediction provenance. Those version fields are calibration scope inputs: a CodeGraph extractor/version bump can change fan-in features and therefore must be visible to learning and benchmark scorecards.
 
 A node like `SpreadsheetView.tsx` with very high fan-in and cross-domain edges becomes an architecture anchor / god-node signal, raising affected-area, review-cost, and `inspect_first` / `test_first` pressure. A lower-degree auth/account-linking node still becomes high risk through criticality/capability signals, not through centrality.
 
@@ -326,13 +328,15 @@ architecture centrality / god-node status -> p_event, review_cost, Affected Area
 criticality / sensitive capability        -> disutility floor, tighter thresholds, confirmation
 ```
 
-Baseline derivation is repo-agnostic and stdlib-backed:
+Graph derivation is repo-agnostic and CodeGraph-backed:
 
 ```text
-architecture_nodes / architecture_edges <- ast_import_graph + repo scan
+architecture_nodes / architecture_edges <- CodeGraph nodes + edges
+symbol_fan_in_percentile                <- PEBRA percentile over CodeGraph reverse edges
 god_node_score                          <- repo-relative fan-in percentile, floored below anchor minimum
 architecture anchors                    <- in-degree >= floor AND top fan-in percentile
 bridge_centrality                       <- cross-directory / cross-package edge proxy
+edge_confidence                         <- PEBRA mapping over CodeGraph edge provenance
 domain_entrypoint                       <- route/page/CLI/MCP/main/run/handle_* heuristics
 fan_out                                 <- outgoing import count of edited files
 cycle_participation                     <- edited file participates in an import-cycle SCC
@@ -851,7 +855,7 @@ benchmarks/flow/
     expected_decisions/*.json
   adapters/
     structural/
-      codeindex_adapter.py
+      legacy_codeindex_adapter.py
       gitnexus_external_adapter.py
     jit/
       apachejit_loader.py
@@ -869,7 +873,7 @@ The benchmark tracks are:
 | Track | Baseline / Oracle | Question | License / Scope |
 |---|---|---|---|
 | Deterministic flow regression | frozen golden corpus | Do identical inputs, snapshots, and models produce byte-identical scores, decisions, guidance, and guardrail outputs? | runs on every commit |
-| Structural agreement | codeindex / radon / bandit; GitNexus as optional external comparator | Does PEBRA's affected-area / centrality signal agree with established impact tools? | GitNexus is external-only, never shipped |
+| Structural agreement | CodeGraph-derived PEBRA facts vs legacy codeindex / Graphify / GitNexus external reports | Does PEBRA's affected-area / centrality signal agree with established impact tools? | comparators are external-only, never shipped as decision sources |
 | Calibration oracle | ApacheJIT / JIT-Defects4J labels plus logistic JIT-DP baseline | Are `p_success` and `p_event.*` calibrated and discriminative? | dataset version pinned |
 | Learning lift | genesis/no-learning snapshot | Does active learning beat cold-start after outcomes accumulate? | chronological replay |
 | Agent efficacy | SWE-bench Verified/Live with-vs-without PEBRA | Do guided agents introduce fewer regressions without losing resolved rate? | long-running benchmark tier |
@@ -958,9 +962,9 @@ Security posture follows the agentmemory viewer pattern: bind to `127.0.0.1` by 
 
 Playwright validation belongs to the dashboard surface. The headed visual E2E suite should assert that the dashboard opens on localhost, fixture-backed cards/tables/charts show the expected values, learning charts and reliability diagrams are nonblank, replay scrubbing works, guidance compliance renders safe/risky scope events, audit/hash-chain status renders, no console errors occur, and screenshots/traces are saved. Playwright validates visual fidelity and wiring; metric correctness remains covered by core tests and `benchmarks/flow` scorecards.
 
-**Architecture-map memory:** the SQLite store also caches derived codebase structure separately from risk decisions. `architecture_nodes`, `architecture_edges`, `architecture_anchors`, and `architecture_domains` are rebuildable projections of the current repo architecture. They answer "what is structurally central right now?" before scoring. They are not learned risk facts and do not replace `criticality_cache`; they feed `ArchitectureKnowledgeProvider` so PEBRA can distinguish high-reach architecture anchors from high-sensitivity domains.
+**Architecture-map memory:** the SQLite store also caches derived codebase structure separately from risk decisions. `architecture_nodes`, `architecture_edges`, `architecture_anchors`, and `architecture_domains` are rebuildable projections derived from CodeGraph facts plus PEBRA normalization. They answer "what is structurally central right now?" before scoring. They are not learned risk facts and do not replace `criticality_cache`; they feed `ArchitectureKnowledgeProvider` so PEBRA can distinguish high-reach architecture anchors from high-sensitivity domains.
 
-Architecture freshness is content-hash based, not commit based. Assessment freshness still compares the assessment commit to current `HEAD`; architecture freshness maintains a reusable structural map by comparing the current per-file SHA256 set to `<repo>/.pebra/import_graph.json`. If hashes match, `graph_freshness=fresh`. If files changed and the adapter rebuilds the graph successfully, `graph_freshness=rebuilt` and the evidence is trustworthy. If the rebuild fails, `graph_freshness=stale`.
+Architecture freshness is CodeGraph-status based, not commit based. Assessment freshness still compares the assessment commit to current `HEAD`; architecture freshness asks CodeGraph to sync, then trusts only a clean `codegraph status --json`: initialized, zero pending added/modified/removed files, `index.reindexRecommended=false`, and no worktree mismatch. If sync repairs changes and the final status is clean, `graph_freshness=rebuilt`; if the final status is not clean, `graph_freshness=stale`.
 
 The evidence-validity gate is the last gate before `proceed`: if `architecture_evidence.graph_freshness=stale` and `inspect_on_stale_arch_map=true` (default), the decision downgrades to `inspect_first`. This gate only downgrades an otherwise proceedable assessment; it never preempts a stricter `reject`, `ask_human`, `test_first`, or low-confidence result, and it is not sanction-convertible. `fresh`, `rebuilt`, and `unknown` do not fire the gate.
 
@@ -972,7 +976,7 @@ The evidence-validity gate is the last gate before `proceed`: if `architecture_e
 |---|---|---|---|
 | SQLite WAL store, schema versioning, soft-delete | codeindex `store/db.py` | Apache-2.0 | adapt pattern (Apache-2.0 permits direct reuse with attribution + NOTICE if we choose to copy) |
 | Blast-score `d + 0.5·transitive`, BFS over reverse import graph | codeindex `impact.py:62` | Apache-2.0 | adapt pattern / implement compatible adapter |
-| Persistent code structure graph and symbol index | PEBRA stdlib repo scan; optional codeindex / Graphify comparison | local / Apache-2.0 / local artifacts | PEBRA builds the baseline map; external artifacts only enrich or validate it |
+| Persistent code structure graph and symbol index | CodeGraph | MIT | required external graph engine; PEBRA normalizes facts and owns risk math |
 | MCP stdio JSON-RPC (`TOOLS` list + `_HANDLERS` dict + `serve()`) | codeindex `mcp_server.py` | Apache-2.0 | adapt pattern |
 | Per-language analyzer registry | codeindex `analyze.py` | Apache-2.0 | adapt pattern |
 | `gate_check` UX: verdict + `reasons[]`, human-first / JSON-under, cycle detection as hard signal | code-impact-mcp | MIT | adapt UX pattern (upgrade 3-way → 5-way) |
@@ -997,7 +1001,7 @@ The evidence-validity gate is the last gate before `proceed`: if `architecture_e
 
 - **Core import rule (not package dependency rule):** `core/` imports only deterministic stdlib + `core/`. It may use modules such as `dataclasses`, `typing`, `math`, `json`, `hashlib`, `fnmatch`, `uuid`, and pure parsing helpers such as `ast` when operating on already-supplied source text. It must not import I/O or surface modules such as `sqlite3`, `subprocess`, `argparse`, web frameworks, or dashboard code. This keeps the decision brain reproducible and auditable.
 - **Purity enforcement:** `import-linter` must forbid `pandas`, `scipy`, `matplotlib`, `seaborn`, `datasets`, `pydriller`, `swebench`, `fastapi`, `starlette`, `uvicorn`, and `jinja2` inside `pebra.core`, and must forbid `pebra.dashboard` from being imported by `pebra.core` or `pebra.adapters` (the dashboard reads *through* the store/scorecard readers; nothing in the brain reads back from it). The dashboard's web-stack deps are hard runtime deps (shipped, not optional), so the linter contract — not their absence — is what keeps them out of `core/`. Benchmark math that must stay in core (`Brier`, `log_loss`, bin summaries, decision-rate arithmetic, lift arithmetic) is pure stdlib. Heavy stats, plots, confidence intervals, dataset loading, and agent runners live only under `benchmarks/`; the web/dashboard stack lives only under `dashboard/`.
-- **PEBRA runtime dependencies:** the installed package should include the libraries needed for the designed product path:
+- **PEBRA runtime dependencies:** the installed package should include the Python libraries needed for the designed product path:
   - `pyyaml` — `.pebra.yml` config parsing.
   - `radon` — Python LOC, complexity, Halstead, Maintainability Index.
   - `bandit` — Python SAST / security-sensitive operation evidence.
@@ -1008,7 +1012,8 @@ The evidence-validity gate is the last gate before `proceed`: if `architecture_e
   - `fastapi` / `starlette` — local dashboard/API surface for the Risk Observatory.
   - `uvicorn` — local dashboard server.
   - `jinja2` — dashboard HTML templating.
-- **External tools consumed by subprocess, not imported into core:** `sem` and `codeindex` may be installed as external commands for richer blast-radius evidence. The adapter must degrade to the built-in AST graph if a configured external command is unavailable.
+- **Required external runtime graph engine:** CodeGraph (`@colbymchenry/codegraph`, MIT) is the required precision graph backend. It is not a Python package, so it is not listed in `pyproject.toml`'s `project.dependencies`; installers and runtime checks must ensure the `codegraph` command is available and initialized for the repo. PEBRA consumes CodeGraph by subprocess (`codegraph sync --quiet`, `codegraph status --json`) and by read-only SQLite queries against `.codegraph/codegraph.db`. PEBRA owns all fan-in percentile math, confidence tiering, risk/benefit scoring, learning, and audit. CodeGraph version and extraction version are recorded in evidence and calibration scope.
+- **External benchmark/comparison tools:** `sem`, legacy `codeindex`, Graphify artifacts, and GitNexus-style reports are comparison/enrichment references only. They may be used by benchmark adapters or research runs, but they are not the runtime source of record once CodeGraph is the required graph engine.
 - **Developer dependencies:** `pytest`, `pytest-cov`, `ruff`, `mypy`, `import-linter`, `hypothesis`, `syrupy`, `nox`, `jsonschema`, `build`, `twine`, and `pre-commit`.
 - **UI test dependencies:** `playwright` for headed visual E2E validation of the self-hosted dashboard. Playwright tests rendering/wiring against fixture store/API data; it does not validate metric formulas.
 - **Benchmark dependencies:** keep benchmark tooling out of normal runtime and core development:
@@ -1020,7 +1025,7 @@ The evidence-validity gate is the last gate before `proceed`: if `architecture_e
 
 Benchmark scorecards must record both library versions and dataset/comparator identities: dataset name, dataset version/split/commit, comparator tool version/commit, PEBRA git commit, `risk_snapshot_id`, `prediction_error_model_id`, and `calibration_scope`. Benchmark numbers are comparable only when both code and data are pinned.
 
-**Explicit non-goals for v1:** no GitNexus-style graph database, Cypher, embeddings, SaaS web app, auto-wiki, cross-repo contract graph, full PDG/taint engine, or LLM cluster enrichment. PEBRA owns a small, rebuildable baseline architecture map derived from its repo scan, but it does not own heavy graph generation or visualization. A self-hosted Risk Observatory and a minimal machine repo registry are allowed as runtime/operator surfaces; neither is part of `core/`, and neither may become a general web platform or global learning store. If heavier graph features are needed later, those arrive as adapters, never inside `core/`.
+**Explicit non-goals for v1:** no GitNexus-style graph database, Cypher, embeddings, SaaS web app, auto-wiki, cross-repo contract graph, full PDG/taint engine, or LLM cluster enrichment inside PEBRA. CodeGraph is the required external graph engine, but PEBRA does not become a graph platform: it normalizes CodeGraph facts into risk-relevant evidence and keeps the decision brain, learning, audit, and dashboard as its product surface. A self-hosted Risk Observatory and a minimal machine repo registry are allowed as runtime/operator surfaces; neither is part of `core/`, and neither may become a general web platform or global learning store.
 
 ---
 
@@ -1047,7 +1052,7 @@ Benchmark scorecards must record both library versions and dataset/comparator id
 - **AD-19 — Learning-loop value must be evaluated as a stream.** PEBRA validates learning by replaying assessments chronologically, comparing active learned snapshots against a genesis/no-learning baseline, and reporting calibration improvement, false-proceed drift, contradiction rate, staleness distribution, and rework efficiency. **(Spec ratified — §14.4.)**
 - **AD-20 — Top-k learned fact composition.** Phase 6 replaces single-winner reapplication with top-k composition per target. Matching facts are partitioned by target, ranked by specificity and evidence quality, and combined by reliability-weighted logarithmic pooling for probability targets or weighted arithmetic pooling for [0,1] reliability targets. Correlated facts cannot stack unboundedly because normalized weights sum to 1. AD-16 remains the v1/k=1 fallback. **(Spec ratified — §12.8.)**
 - **AD-21 — Typed scope/action DAG.** Phase 7 introduces a deterministic scope graph for learned-fact matching: repo, path glob, symbol, dependency, and action-type nodes with dominance edges. The DAG is serialized in snapshot JSON and hash-chained as data. It replaces string-order heuristics with maximal-element / longest-prefix dominance traversal, while rejecting RL, softmax node weights, embeddings, and non-deterministic traversal. **(Spec ratified — §12.9.)**
-- **AD-22 — Architecture knowledge is first-class evidence.** PEBRA already has SQLite, freshness checks, and an AST/import graph. AD-22 makes PEBRA repo-architecture agnostic by deriving a baseline architecture map from its own repo scan: nodes, edges, fan-in percentiles, fan-out, import-cycle participation, cross-directory bridge proxy, entrypoint signals, coarse domains, and capability hints. The map is backed by one content-hash cached stdlib import graph shared by blast and architecture adapters. Graph incompleteness lowers confidence and produces model guidance; it never fabricates blast. External artifacts such as `ARCHITECTURE.md`, Graphify, or codeindex are configured enrichment/validation sources, not prerequisites. The provider runs before scoring and may raise affected-area, review-cost, `p_event`, and explanation pressure for architecture anchors / god nodes. It must not auto-raise criticality without capability evidence or human-ratified policy. **(Spec ratified — §4.3.)**
+- **AD-22 — Architecture knowledge is first-class evidence.** CodeGraph is the required external graph engine for production graph evidence. AD-22 makes PEBRA repo-architecture agnostic by deriving a risk-relevant architecture map from CodeGraph nodes, edges, files, and metadata: symbol fan-in percentiles, fan-out, import/call/reference reach, cycle participation, cross-directory bridge proxy, entrypoint signals, coarse domains, and capability hints. PEBRA owns the normalized features and graph math; CodeGraph supplies graph facts only. Graph incompleteness or stale CodeGraph status lowers confidence or triggers the evidence-validity gate; it never fabricates blast. External artifacts such as `ARCHITECTURE.md`, Graphify, legacy codeindex, or GitNexus reports are benchmark/comparison sources, not production prerequisites. The provider runs before scoring and may raise affected-area, review-cost, `p_event`, and explanation pressure for architecture anchors / god nodes. It must not auto-raise criticality without capability evidence or human-ratified policy. **(Spec ratified — §4.3.)**
 - **AD-23 — Model guidance is the pre-edit autonomy envelope.** PEBRA remains model-free in scoring and reapplication, but it renders deterministic model guidance for the editing agent. Binding fields (`safe_scope`, `risky_scope`, `required_checks_before_commit`) are derived from the approved action envelope, gates, project policy, architecture evidence, and learned facts, then enforced by `pebra_verify`. `risky_scope` entries carry an action enum: `requires_reassessment`, `avoid_unless_required`, or `forbidden`. Advisory fields (`risk_facts`, `why`, `suggested_inspection`, `safer_alternative`) steer the model but are not hard gates. JSON is only the canonical audit representation; adapters may render the same facts as prompt text, MCP payloads, or PR cards. The packet is hash-chained and logged because guided outcomes must be calibrated separately from unguided outcomes. **(Spec ratified — §12.10; example rendering — §18.3.)**
 - **AD-24 — Repo-scoped runtime state.** PEBRA supports many local repos by making `<repo>/.pebra/pebra.db` the authoritative store for that repo's assessments, outcomes, learning snapshots, architecture cache, guidance packets, and dashboard state. `adapters/paths.py` resolves the current repo by walking up for `.pebra/` or `.git/`; MCP/CLI/dashboard all use the same resolver. A small machine registry records known repos and ports for discovery only; it does not hold learned facts or policy. Worktrees are detected and isolated by default so parallel agent branches do not share learning accidentally. Every hash-chain append is serialized with `BEGIN IMMEDIATE` and `busy_timeout` before reading the tail hash. **(Spec ratified — §12.11.)**
 - **AD-25 — Dashboard port assignment is deterministic but collision-safe.** The Risk Observatory declares base port `9473`, reuses a live repo-local `dashboard.json` port when available, honors explicit `--port`/`PEBRA_PORT` as fail-fast pins, supports `--port 0` for OS-assigned ephemeral ports, auto-increments only when using defaults, and supports `--instance N` as an agentmemory-style escape hatch (`9473 + N*100`). Host allowlists and printed URLs use the actually bound port. **(Spec ratified — §14.5.)**
@@ -1065,7 +1070,7 @@ Benchmark scorecards must record both library versions and dataset/comparator id
 - **Phase 1 — autonomy guardrails first:** `post_assessment_guardrails`, `app/verify_controller.py`, `change_verifier_port`, `contract_surface_port`, `git_change_verifier`, `pebra verify` CLI, evidence freshness check, actual-diff drift check, post-edit full symbol reclassification, measured post-edit benefit deltas from the actual diff, guidance compliance logging, dry-run refactor requirement, pre-commit/PR risk card. The `pebra_verify` MCP tool ships in Phase 3 with the MCP server.
 - **Phase 2 — evidence quality enrichment:** `yaml_config`, `query_validator`, `ArchitectureKnowledgeProvider`, `architecture_map` adapter, unified content-hash import-graph cache, AST edge confidence, depth buckets, entrypoint signal, import-cycle detection, graph incompleteness and parse-failure uncertainty, repo-relative anchor/god-node metrics, `radon`, `bandit`.
 - **Phase 3 — MCP + outcomes:** `mcp_server` (`pebra_compare`/`pebra_assess`/`pebra_verify`/`pebra_accept_risk`/`pebra_record_outcome`), `app/record_outcome_controller.py`, `outcome_logger`, `calibration_store` (shadow read), `cli/record_outcome`.
-- **Phase 4 — external tool adapters:** `sem`, `codeindex`; evidence registry fallback order codeindex → sem → ast.
+- **Phase 4 — CodeGraph graph engine:** required CodeGraph adapter, read-only `.codegraph/codegraph.db` queries, `codegraph sync --quiet` + `status --json` freshness gate, symbol fan-in percentiles, edge-confidence tiers, and provenance/version capture.
 - **Phase 5 — calibration + learning loop:** `LearningPort`, `app/learning_controller.py`, `prediction_error.py`, `learning_store`, `snapshot_resolver`, `apply_snapshot`, `risk_fact_decay`, `promotion_evaluator`, `snapshot_reconciler`, `contradiction_gate`, `risk_learning`, raw `outcomes`, `prediction_errors`, `learned_risk_facts`, `risk_snapshots`, rolling Brier/log-loss reporter, benefit outcome labels (`reverted`, `reedit_required`, `issue_reopened`, measured maintainability delta), separate risk/benefit calibration views, decoupled promotion gates, shadow/canary promotion gates, flip `shadow_mode=false`, SWE-bench pilot. Canary/benchmark rows are not included in the default calibration views; they feed separate validation reports unless a future calibrated model explicitly stratifies by `calibration_scope`.
 - **Phase 5b — executable product benchmark:** `benchmarks/flow/replay.py`, `benchmarks/flow/scorecard.py`, fixture corpora under `benchmarks/flow/corpus/`, benchmark manifests, deterministic flow regression, structural agreement adapters, JIT outcome-oracle loaders, chronological learning-lift replay, genesis/no-learning baseline, calibration-improvement report, false-proceed/false-block scorecard, and optional SWE-bench-style with-vs-without PEBRA agent runs.
 - **Phase 5c — Risk Observatory dashboard:** `dashboard/server.py`, `dashboard/api.py`, `dashboard/ports.py`, local templates/static assets, `pebra dashboard`, repo switcher backed by the machine registry, current-repo default, `/repos/<repo_id>/...` route scoping, port reuse/auto-increment/`--instance` handling, stale PID detection, overview/assessment/risk/learning/guidance/replay/architecture/audit panels, localhost-first security, bearer auth, Host allowlist, CSP nonce, and no benchmark-result panels.

@@ -9,7 +9,9 @@ description = "Pre-Edit Benefit-Risk Assessment for coding agents — a determin
 requires-python = ">=3.11"
 readme = "README.md"
 
-# Runtime deps per Architecture §12. NOTE: core/ uses none of these (stdlib-only, enforced).
+# Python runtime deps per Architecture §12. NOTE: core/ uses none of these (stdlib-only, enforced).
+# Required external runtime graph engine: @colbymchenry/codegraph (npm/binary), checked at runtime
+# by the CodeGraph adapter; it is intentionally not listed here because pip cannot install npm deps.
 # Phase 0 is runnable stdlib-only; the heavy deps below are consumed by adapters/benchmarks in
 # later phases. For Phase 0, install with `pip install -e . --no-deps`.
 dependencies = [

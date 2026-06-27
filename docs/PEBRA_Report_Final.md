@@ -127,7 +127,7 @@ Use `source_type` for semantic provenance:
 Use `provider` for the concrete source:
 
 ```text
-radon | sem | bandit | ast_import_graph | architecture_map | graphify | codeindex | .pebra.yml | outcome_store | model | user | criticality_token_prior
+radon | bandit | codegraph | architecture_map | graphify | legacy_codeindex | .pebra.yml | outcome_store | model | user | criticality_token_prior
 ```
 
 Example:
@@ -357,10 +357,10 @@ PEBRA should combine absolute thresholds with repo-relative percentiles.
 | Signal | Why It Matters | Primary Method / Provider |
 |---|---|---|
 | File LOC / logical LOC | Monolith files are harder to understand and review | `radon`, `lizard`, `ast-metrics` |
-| Module import fan-in | Many modules import this module | import graph in-degree |
-| Module import fan-out | This file imports many modules | import graph out-degree |
-| Symbol import fan-in | Many files import a specific function/class | AST import resolution |
-| Architecture anchor / god node | The file or symbol is a stable domain anchor with high repo-relative fan-in or centrality | `ArchitectureKnowledgeProvider` from PEBRA repo scan |
+| Module import fan-in | Many modules import this module | CodeGraph reverse edges |
+| Module import fan-out | This file imports many modules | CodeGraph outgoing edges |
+| Symbol fan-in | Many callers/references target a specific function/class/method | CodeGraph symbol graph + PEBRA percentile math |
+| Architecture anchor / god node | The file or symbol is a stable domain anchor with high repo-relative fan-in or centrality | `ArchitectureKnowledgeProvider` over CodeGraph facts |
 | Bridge centrality | The node connects multiple domains, so small changes can cross boundaries | cross-directory / cross-package edge proxy |
 | Domain entrypoint | The node hosts a route, page, shell, grid, command, CLI, or public tool surface | architecture map, AST heuristics |
 | Architecture domain ownership | The touched file belongs to a named domain such as spreadsheet/grid, auth, cache, payments, or plotting | coarse directory/package grouping |
@@ -408,14 +408,14 @@ Absolute caller counts may be displayed in explanations, but high-risk escalatio
 
 ### 4.3 Architecture Knowledge Layer
 
-PEBRA's SQLite store, freshness checks, and AST/import graph are already sufficient plumbing for codebase knowledge. PEBRA must build its own small derived architecture map from the repository scan, separate from the risk-decision ledger.
+PEBRA uses CodeGraph as the required local precision graph engine. CodeGraph supplies multi-language symbols, edges, files, and index freshness. PEBRA builds its own small risk-relevant architecture summary from those facts, separate from the risk-decision ledger.
 
 Architecture knowledge is **pre-decision evidence**:
 
 ```text
 candidate edit
   -> ArchitectureKnowledgeProvider
-      -> architecture_nodes / edges
+      -> CodeGraph nodes / edges / files
       -> architecture_anchors
       -> architecture_domains
       -> graph_freshness
@@ -424,13 +424,13 @@ candidate edit
   -> decision gates
 ```
 
-This layer builds from PEBRA's own repo scan, then may compare configured enrichment artifacts when present:
+This layer builds from CodeGraph's local SQLite index plus PEBRA's own deterministic interpretation:
 
-- PEBRA's own AST/import graph and repo scan.
-- file paths, symbols, directory/package boundaries, and entrypoint heuristics.
-- comparison/enrichment artifacts such as `ARCHITECTURE.md`, `graphify-out/ANCHORS.md`, `graphify-out/graph.json`, or `codeindex`.
+- CodeGraph `nodes`, `edges`, `files`, and `project_metadata`.
+- PEBRA-normalized symbols, directory/package boundaries, edge-confidence tiers, and entrypoint/criticality mapping.
+- comparison artifacts such as `ARCHITECTURE.md`, `graphify-out/ANCHORS.md`, `graphify-out/graph.json`, legacy `codeindex`, or GitNexus reports only in benchmarks/research, not the production graph path.
 
-External artifacts are never prerequisites. They may validate or enrich PEBRA's map, but the source of record is PEBRA's self-built architecture map.
+CodeGraph is a runtime prerequisite for product graph evidence. Before PEBRA trusts graph evidence it runs `codegraph sync --quiet <repo>`, then `codegraph status --json <repo>`. Fresh graph evidence requires initialized status, zero pending added/modified/removed files, `index.reindexRecommended=false`, and no worktree mismatch. Otherwise graph evidence is stale and PEBRA fails closed or routes a would-be proceed to `inspect_first`.
 
 It should produce:
 
@@ -473,7 +473,7 @@ Baseline derivation:
 
 | Derived Field | Default Method |
 |---|---|
-| `architecture_nodes` / `architecture_edges` | built from one content-hash cached stdlib AST/import graph and repo scan |
+| `architecture_nodes` / `architecture_edges` | derived from CodeGraph nodes/edges and normalized by PEBRA |
 | `god_node_score` | repo-relative fan-in percentile, floored below the architecture-anchor minimum |
 | `architecture_anchors` | in-degree must meet both a minimum floor and a top fan-in percentile |
 | `fan_out` | outgoing import count of edited files |
@@ -505,9 +505,9 @@ Freshness has two roles:
 | assessment freshness | detects that one risk decision used stale evidence |
 | architecture-map freshness | maintains or invalidates the reusable codebase map |
 
-Architecture-map freshness is content-hash based, not commit based. PEBRA stores per-file SHA256 in `<repo>/.pebra/import_graph.json`; when hashes match, the map is `fresh`. When file content changes and the rebuild succeeds, the map is `rebuilt`. If the rebuild fails, the map is `stale`. `graph_commit` remains provenance only.
+Architecture-map freshness is CodeGraph-status based, not commit based. PEBRA asks CodeGraph to sync, then trusts only a clean `codegraph status --json`: initialized, zero pending added/modified/removed files, `index.reindexRecommended=false`, and no worktree mismatch. `graph_commit` remains provenance only.
 
-If an external enrichment artifact is stale, PEBRA should mark that artifact stale and continue with the self-built map. Only if PEBRA cannot build the baseline map should architecture evidence become unavailable and lower `evidence_quality`.
+If CodeGraph is stale, unavailable, uninitialized, worktree-mismatched, or reindex-recommended, PEBRA must not treat graph evidence as fresh. The adapter should attempt `codegraph sync --quiet` first; if `codegraph status --json` is still not clean, graph evidence is stale and the evidence-validity gate routes a would-be proceed to `inspect_first` or fails closed for graph-required commands. Legacy external artifacts may be marked stale and ignored, but they do not replace CodeGraph as the production graph source.
 
 The evidence-validity gate runs as the last check before `proceed`: if `graph_freshness=stale` and `inspect_on_stale_arch_map=true`, PEBRA returns `inspect_first`. The gate only downgrades an otherwise proceedable assessment; it never masks stricter risk gates and cannot be converted by a sanction.
 
@@ -2320,8 +2320,8 @@ architecture:
     - ARCHITECTURE.md
     - graphify-out/ANCHORS.md
     - graphify-out/graph.json
-    - codeindex
-  stale_external_artifact_policy: ignore_and_use_pebra_map
+    - codegraph
+  stale_graph_policy: sync_then_inspect_first_or_fail_closed
   baseline_rebuild_policy: rebuild_if_stale
   god_node_percentile: 0.95
   bridge_node_percentile: 0.95
@@ -2405,7 +2405,7 @@ learning:
     semantic_probability_floor: 0.01
     semantic_probability_ceiling: 0.99
 
-preferred_blast_radius_tool: sem
+preferred_graph_engine: codegraph
 
 evidence:
   file_size:
@@ -3389,7 +3389,7 @@ Roadmap:
 - Decision enum and state machine.
 - Tier-1 evidence discovery:
   - LOC and complexity via `radon`.
-  - Python AST import graph fan-in/fan-out.
+  - CodeGraph-backed symbol fan-in/fan-out and edge provenance.
   - PEBRA-built architecture anchors and domain map from repo scan.
   - Symbol-level diff classification for proposed and actual edits.
   - Python SAST via `bandit`.
@@ -3424,11 +3424,11 @@ Roadmap:
 - Decoupled risk/benefit learning tracks with separate calibration views, min-N gates, and promotion gates.
 - Top-k learned-fact composition with reliability-weighted logarithmic pooling.
 - Learning-loop evaluation report comparing active snapshots against a genesis/no-learning baseline.
-- Architecture-map comparison/enrichment adapters for Graphify/codeindex artifacts when configured.
+- Architecture-map comparison/enrichment adapters for Graphify / legacy codeindex artifacts in benchmark or research mode.
 
 ### 13.4 v1 Should Not Include
 
-- Full new code graph engine.
+- Owning a full in-process code graph engine; CodeGraph is the external graph engine and PEBRA owns interpretation.
 - Full multi-language evidence discovery.
 - Generic MCDA method catalogue or MCDA studio UI.
 - Runtime EVPI, EVPPI, CEAC, or PSA.
@@ -3509,7 +3509,7 @@ benchmarks/flow/
     expected_decisions/*.json
   adapters/
     structural/
-      codeindex_adapter.py
+      legacy_codeindex_adapter.py
       gitnexus_external_adapter.py
     jit/
       apachejit_loader.py
@@ -3687,8 +3687,8 @@ Blast-radius and code graph tools are useful evidence providers for PEBRA, but t
 |---|---|---|
 | `code-impact-mcp` | MCP-style code impact / blast-radius gate such as pass, warn, or block | Single-axis impact gate; no benefit, criticality, RAU, confidence state machine, or five-way action enum |
 | `Ctxo` | Repo context, dependency information, and safe-edit style guardrails | Primarily context and edit-safety support; not an expected-loss decision controller |
-| `codeindex`, `Glyphtrail`, code graph MCPs | Dependency graph, call graph, structural impact analysis | Evidence providers; they estimate spread, not full action utility |
-| AgentMemory + Graphify / codegraph pairing | Persistent session memory plus architecture/code graph context | Useful model for "remember the repo before editing"; PEBRA builds its own baseline architecture map and may use these tools only as configured enrichment |
+| CodeGraph, `codeindex`, Glyphtrail, code graph MCPs | Dependency graph, call graph, structural impact analysis | CodeGraph is PEBRA's required production graph engine; the others are comparators/references |
+| AgentMemory + Graphify / CodeGraph pairing | Persistent session memory plus architecture/code graph context | Useful model for "remember the repo before editing"; PEBRA uses CodeGraph for graph facts and owns risk/benefit decisions |
 | `sdl-mcp` | Symbol/context governance and access-control style constraints for agents reading code | Related governance idea, but not a change-safety or blast-radius decision system |
 | GitHub Copilot Coding Agent validation | Post-generation security and quality validation before finishing a PR | Post-edit validation loop, not pre-edit action selection |
 | SonarQube AI Code Assurance, Semgrep, CodeScene | Code quality, security findings, hotspots, critical components, and review prioritization | Scanner/triage systems; useful signals, but not a pre-edit controller |
@@ -3737,7 +3737,8 @@ expected-loss/RAU scoring, and a five-way pre-edit action enum.
 | Tool | Use | License / Constraint |
 |---|---|---|
 | sem | Entity-level diff, blame, impact analysis | MIT OR Apache-2.0 |
-| codeindex | Per-file blast-radius scoring | Apache-2.0 |
+| CodeGraph | Multi-language symbol graph, callers/callees, impact, freshness | MIT |
+| legacy codeindex | Per-file blast-radius scoring | Apache-2.0 |
 | radon | Python LOC, complexity, Halstead, MI | MIT |
 | Bandit | Python AST security detection | Apache-2.0 |
 | lizard | Multi-language complexity | MIT |
@@ -3757,7 +3758,7 @@ PEBRA separates core import purity from package dependencies:
 - `pebra.core` must remain stdlib-only so the decision brain is deterministic and auditable.
 - The PEBRA package may still ship runtime dependencies used by adapters, calibration, Monte Carlo, config parsing, and signing.
 
-Recommended runtime dependencies:
+Recommended Python runtime dependencies:
 
 | Dependency | Purpose | License / Constraint |
 |---|---|---|
@@ -3773,12 +3774,20 @@ Recommended runtime dependencies:
 | uvicorn | local dashboard server | BSD-3 |
 | Jinja2 | dashboard HTML templating | BSD-3 |
 
-External tools consumed by subprocess:
+Required external runtime tools:
 
 | Tool | Purpose | License / Constraint |
 |---|---|---|
-| sem | Entity-level diff, blame, impact analysis | MIT OR Apache-2.0 |
-| codeindex | Per-file blast-radius scoring / enrichment | Apache-2.0 |
+| CodeGraph (`@colbymchenry/codegraph`) | Required multi-language symbol graph, call/reference edges, symbol fan-in substrate, and graph freshness signal | MIT; external npm/binary runtime, not a Python package |
+
+PEBRA consumes CodeGraph by subprocess and read-only SQLite, not by importing it into `pebra.core`. The adapter runs `codegraph sync --quiet`, checks `codegraph status --json`, reads `.codegraph/codegraph.db` with Python `sqlite3`, and records CodeGraph package/extraction versions in evidence and calibration scope. CodeGraph supplies graph facts; PEBRA computes fan-in percentiles, edge-confidence tiers, risk/benefit scores, learning, and audit provenance.
+
+External benchmark/comparison tools:
+
+| Tool | Purpose | License / Constraint |
+|---|---|---|
+| sem | Entity-level diff, blame, impact analysis for comparison/enrichment experiments | MIT OR Apache-2.0 |
+| legacy codeindex | Per-file blast-radius scoring / enrichment comparator | Apache-2.0 |
 
 Recommended development dependencies:
 
@@ -4112,8 +4121,9 @@ PEBRA should cite and implement from public method definitions or permissive lib
 | Logarithmic opinion pool / log-linear pooling | Top-k probability composition for matching learned facts | Cite public method definitions in implementation |
 | Longest-prefix / specificity matching | Deterministic scope precedence for learned facts | Use public routing/CSS specificity definitions as implementation notes |
 | AgentMemory | Session memory, structured facts, hybrid BM25/vector/graph retrieval, and pairing with code graph tools | https://github.com/rohitg00/agentmemory |
-| Graphify / architecture anchors | Example of local architecture anchors, degree, and bridge-degree summaries | Optional enrichment/validation only; PEBRA builds its own baseline map |
-| codeindex | SQLite code structure graph, symbol index, and blast-radius impact | Optional enrichment/validation only; PEBRA builds its own baseline map |
+| Graphify / architecture anchors | Example of local architecture anchors, degree, and bridge-degree summaries | Benchmark/reference comparison only |
+| CodeGraph | Required local symbol graph, call/reference edges, impact queries, and freshness status | MIT; production graph backend, PEBRA owns scoring/learning |
+| legacy codeindex | SQLite code structure graph, symbol index, and blast-radius impact | Benchmark/reference comparator only |
 | Inverse-variance weighting | Precision-weighted evidence aggregation | https://www.nist.gov/document/combine-1pdf |
 | WGCNA | Weighted graph propagation and soft adjacency over dependency graphs | https://link.springer.com/article/10.1186/1471-2105-9-559 |
 | Probability calibration | Calibrated `p_success` and event probabilities | https://scikit-learn.org/stable/modules/calibration.html |
