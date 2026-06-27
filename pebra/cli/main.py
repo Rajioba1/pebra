@@ -11,6 +11,7 @@ from pebra.cli import dashboard as dashboard_cmd
 from pebra.cli import learn as learn_cmd
 from pebra.cli import record_outcome as record_outcome_cmd
 from pebra.cli import scorecard as scorecard_cmd
+from pebra.cli import setup_graph as setup_graph_cmd
 from pebra.cli import verify as verify_cmd
 
 
@@ -24,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     learn_cmd.register(subparsers)
     scorecard_cmd.register(subparsers)
     dashboard_cmd.register(subparsers)
+    setup_graph_cmd.register(subparsers)
     return parser
 
 

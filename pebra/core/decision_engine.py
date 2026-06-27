@@ -74,6 +74,33 @@ def _graph_evidence(blast: Any) -> dict[str, Any]:
     }
 
 
+def _fanin_validity(inp: Any) -> dict[str, Any]:
+    """Codegraph evidence-validity advisory (Gate 13). Empty unless the graph engine is REQUIRED
+    (threshold ``require_graph``) AND the per-symbol fan-in evidence is untrusted — absent, stale,
+    worktree-mismatched, ambiguous, or unresolved. A 0.0 percentile from such a state is the ABSENCE of
+    evidence, not 'low fan-in = safe', so it must downgrade a would-be proceed to inspect_first with an
+    actionable remediation (carried in ``reason``)."""
+    if not inp.thresholds.get("require_graph", False):
+        return {}
+    ev = inp.fanin_evidence
+    if ev is None:
+        # Required, but no provider produced fan-in evidence at all (e.g. fanin_provider not wired).
+        # That is the ABSENCE of required evidence -> fail CLEAR (Gate 13), never silently fail open.
+        return {
+            "resolution_method": "unresolved",
+            "graph_freshness": "unknown",
+            "reason": "graph engine required but no fan-in evidence was produced; run: pebra setup-graph",
+        }
+    trusted = ev.graph_freshness == "fresh" and ev.resolution_method in ("location", "name_fallback")
+    if trusted:
+        return {}
+    return {
+        "resolution_method": ev.resolution_method,
+        "graph_freshness": ev.graph_freshness,
+        "reason": ev.fallback_reason or "graph evidence unavailable",
+    }
+
+
 def decide(
     assessment: Assessment, *, policy_violations: Sequence[str] = ()
 ) -> AssessmentResult:
@@ -82,6 +109,7 @@ def decide(
     stage = s["criticality_stage"]
     sse = s["symbol_scope_evidence"]
     ge = _graph_evidence(assessment.input.blast_evidence)
+    cg = _fanin_validity(assessment.input)
     flat = _flatten_scores(assessment)
 
     def _result(
@@ -105,6 +133,7 @@ def decide(
             high_risk_triggers=high_risk_triggers or [],
             symbol_scope_evidence=sse,
             graph_evidence=ge,
+            fanin_validity=cg,
             provenance={"provider": "pebra", "source_type": "derived"},
             decision_reason=decision_reason,
         )
@@ -179,6 +208,12 @@ def decide(
     ):
         provisional, fired_gate = Decision.INSPECT_FIRST, 12
         gates_fired.append({"gate": 12, "name": "stale_architecture_map"})
+    # --- Gate 13: codegraph evidence-validity (required graph engine, untrusted fan-in) ---
+    # Same family as Gate 12: only downgrades a would-be proceed to inspect_first; never preempts a
+    # more severe gate above. Carries the actionable remediation so the user knows WHAT to run.
+    elif cg:
+        provisional, fired_gate = Decision.INSPECT_FIRST, 13
+        gates_fired.append({"gate": 13, "name": "fanin_evidence_invalid", **cg})
     # --- Gate 11: proceed ---
     else:
         provisional, fired_gate = Decision.PROCEED, 11
@@ -194,9 +229,15 @@ def decide(
     ):
         gates_fired.append({"gate": 12, "name": "stale_architecture_map", "advisory": True})
 
+    # Same observability for codegraph evidence-validity: record it even when a higher gate decided,
+    # so the audit trail shows the fan-in evidence was untrustworthy, not just the headline gate.
+    if cg and not any(g.get("gate") == 13 for g in gates_fired):
+        gates_fired.append({"gate": 13, "name": "fanin_evidence_invalid", "advisory": True, **cg})
+
     # --- Gate 10: authorized sanction resolution (AD-26) ---
-    # NOTE: gate 12 (stale arch map) yields INSPECT_FIRST, never ASK_HUMAN/REJECT, so the provisional
-    # guard below already excludes it — a sanction can never convert the evidence-validity gate.
+    # NOTE: gates 12 (stale arch map) and 13 (codegraph evidence-validity) both yield INSPECT_FIRST,
+    # never ASK_HUMAN/REJECT, so the provisional guard below already excludes them — a sanction can
+    # never convert an evidence-validity gate.
     sanction = assessment.input.sanction
     elevated = provisional in {Decision.INSPECT_FIRST, Decision.TEST_FIRST} and stage in _SENSITIVE_STAGES
     if (

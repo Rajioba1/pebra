@@ -8,7 +8,7 @@ identity + cross-file resolution.
 
 Boundaries (Architecture "one rule"): this is an ADAPTER — it may use stdlib I/O (sqlite3 read-only,
 subprocess for the freshness gate) but imports only ``pebra.core`` + ``pebra.ports``. It is fail-soft:
-codegraph absent / DB missing / index stale -> ``CodeGraphFanInEvidence(resolution_method='unresolved')``
+codegraph absent / DB missing / index stale -> ``FanInEvidence(resolution_method='unresolved')``
 with a ``fallback_reason``; it never raises and never fabricates fan-in.
 
 Verified codegraph facts (schema v5): nodes(id, kind, name, qualified_name, file_path, start_line,
@@ -23,13 +23,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from pebra.core.models import CandidateAction, CodeGraphFanInEvidence
+from pebra.core.models import CandidateAction, FanInEvidence
 from pebra.core.score_math import fractional_rank
 
 # Edge kinds that constitute per-symbol fan-in. 'imports' is deliberately excluded (file/module-level).
@@ -40,8 +41,8 @@ _CALLABLE_KINDS = ("function", "method", "class", "struct", "interface", "trait"
 _OWNER_KINDS = _CALLABLE_KINDS + ("component", "route", "namespace", "module")
 _MIN_SCHEMA_VERSION = 5
 
-_INSTALL_HINT = "install with: npm install -g @colbymchenry/codegraph"
-_INIT_HINT = "run: codegraph init"
+_INSTALL_HINT = "install with: npm install -g @colbymchenry/codegraph (or run: pebra setup-graph)"
+_INIT_HINT = "run: pebra setup-graph"
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@")
 
@@ -114,24 +115,51 @@ def _merge_contiguous(line_numbers: list[int]) -> list[tuple[int, int]]:
 
 
 def _default_status(repo_root: str) -> dict[str, Any] | None:
-    """Real freshness gate: best-effort ``codegraph sync`` then ``codegraph status --json``.
+    """Real freshness gate — STATUS-FIRST, then a *conditional* repair sync.
 
-    Returns the parsed status dict, or None if the codegraph CLI is unavailable / errors / times out
-    (the caller treats None as 'cannot verify freshness' -> unresolved with an install hint)."""
+    Ordering is load-bearing: ``codegraph sync`` must NEVER run before we know the index state, because
+    a worktree mismatch means the resolved index belongs to a *different* worktree — syncing it would
+    refresh (and mutate) the wrong, borrowed index without fixing the mismatch. So:
+
+        status  ->  if absent/uninitialized/worktree-mismatch/already-fresh: stop (no sync)
+                ->  else (initialized, same worktree, merely stale): sync to repair, then re-status
+
+    Returns the parsed status dict, or None if the codegraph CLI is unavailable / errors / times out.
+    The path is POSITIONAL on ``sync``/``status`` (no ``--path`` option on those two)."""
+    if shutil.which("codegraph") is None:
+        return None  # binary not on PATH -> don't even spawn (caller emits an install hint)
     try:
-        # `sync [path]` / `status [path]` take the path POSITIONALLY (no --path option on these two).
+        initial = _run_status(repo_root)
+        if initial is None:
+            return None
+        # Only an initialized, same-worktree, merely-stale index is safe to repair with sync.
+        if (
+            initial.get("initialized") is False
+            or initial.get("worktreeMismatch")
+            or _is_fresh(initial)
+        ):
+            return initial
         subprocess.run(
             ["codegraph", "sync", repo_root],
             capture_output=True, text=True, timeout=120, check=False,
         )
-        proc = subprocess.run(
-            ["codegraph", "status", repo_root, "--json"],
-            capture_output=True, text=True, timeout=30, check=False,
-        )
-        if proc.returncode != 0 or not proc.stdout.strip():
-            return None
+        post = _run_status(repo_root)
+        return post if post is not None else initial
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def _run_status(repo_root: str) -> dict[str, Any] | None:
+    """One ``codegraph status <repo> --json`` probe -> parsed dict, or None on failure/bad JSON."""
+    proc = subprocess.run(
+        ["codegraph", "status", repo_root, "--json"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    try:
         return json.loads(proc.stdout)
-    except (FileNotFoundError, OSError, subprocess.SubprocessError, json.JSONDecodeError):
+    except json.JSONDecodeError:
         return None
 
 
@@ -170,19 +198,24 @@ class CodeGraphAdapter:
         self._status_fn = status_fn or _default_status
         self._dist_cache: dict[tuple[str, float], list[int]] = {}
 
-    def fanin(self, action: CandidateAction, repo_root: str) -> CodeGraphFanInEvidence:
+    def fanin(self, action: CandidateAction, repo_root: str) -> FanInEvidence:
         status = self._status_fn(repo_root)
         if status is None:
             return _unresolved("unknown", f"codegraph CLI not found; {_INSTALL_HINT}")
         if status.get("initialized") is False:
-            return _unresolved("unknown", f"codegraph not initialized; {_INIT_HINT}")
+            return _unresolved("unknown", f"codegraph index not initialized; {_INIT_HINT}")
         if not _is_fresh(status):
             if status.get("worktreeMismatch"):
+                # The resolved index belongs to a DIFFERENT worktree (borrowed). The fix is a
+                # worktree-local index (codegraph init -i), NOT a sync — surfaced via setup-graph --fix.
                 return _unresolved(
                     "stale",
-                    "codegraph worktree mismatch; initialize/sync the index for this worktree",
+                    "codegraph worktree mismatch (index belongs to another worktree); "
+                    "run: pebra setup-graph --fix",
                 )
-            return _unresolved("stale", "codegraph index stale; run: codegraph sync")
+            return _unresolved(
+                "stale", "codegraph index stale after sync; run: pebra doctor --fix-graph"
+            )
 
         db_path = _db_path_from_status(repo_root, status)
         if not db_path.is_file():
@@ -200,29 +233,29 @@ class CodeGraphAdapter:
             cg_ver, ext_ver = self._versions(con)
             node_ids, method = self._resolve(con, action, repo_root)
             if not node_ids:
-                return CodeGraphFanInEvidence(
+                return FanInEvidence(
                     resolution_method="unresolved", graph_freshness="fresh",
-                    codegraph_version=cg_ver, extraction_version=ext_ver,
+                    provider_version=cg_ver, index_version=ext_ver,
                     fallback_reason="changed symbol could not be located in the graph",
                 )
             if method == "name_fallback_ambiguous":
                 # Agent-supplied name matched >1 symbol and location resolution did not succeed:
                 # carry the candidates for provenance but DO NOT emit trusted fan-in (zero, untrusted).
-                return CodeGraphFanInEvidence(
+                return FanInEvidence(
                     resolution_method="name_fallback_ambiguous",
                     node_ids_resolved=tuple(node_ids),
                     graph_freshness="fresh",
-                    codegraph_version=cg_ver, extraction_version=ext_ver,
+                    provider_version=cg_ver, index_version=ext_ver,
                     fallback_reason="ambiguous name match; fan-in not trusted (no location resolution)",
                 )
             count, pctl = self._fanin(con, node_ids, db_path)
-            return CodeGraphFanInEvidence(
+            return FanInEvidence(
                 symbol_fan_in_percentile=pctl,
                 symbol_caller_count=count,
                 resolution_method=method,
                 node_ids_resolved=tuple(node_ids),
-                codegraph_version=cg_ver,
-                extraction_version=ext_ver,
+                provider_version=cg_ver,
+                index_version=ext_ver,
                 graph_freshness="fresh",
             )
         except (sqlite3.Error, OSError) as exc:
@@ -367,7 +400,7 @@ def _repo_relative(path: str, repo_root: str) -> str:
     return p
 
 
-def _unresolved(freshness: str, reason: str) -> CodeGraphFanInEvidence:
-    return CodeGraphFanInEvidence(
+def _unresolved(freshness: str, reason: str) -> FanInEvidence:
+    return FanInEvidence(
         resolution_method="unresolved", graph_freshness=freshness, fallback_reason=reason
     )

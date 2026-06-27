@@ -79,7 +79,7 @@ class SymbolDiffEvidence:
 
 
 @dataclass(frozen=True)
-class CodeGraphFanInEvidence:
+class FanInEvidence:
     """Language-agnostic per-symbol fan-in, resolved by location through codegraph's call graph.
 
     The robust cross-language contract (M5c.5): the changed symbol is identified by (file, old-side
@@ -91,15 +91,15 @@ class CodeGraphFanInEvidence:
 
     graph_freshness mirrors codegraph's own signal: 'fresh' (status clean) | 'stale' (pendingChanges
     or reindexRecommended — fan-in is NOT trusted, percentile stays 0.0) | 'unknown' (engine/DB
-    absent). The codegraph/extraction versions are carried for provenance and calibration scope.
+    absent). Provider/index versions are carried for provenance and calibration scope.
     """
 
     symbol_fan_in_percentile: float = 0.0
     symbol_caller_count: int = 0
     resolution_method: str = "unresolved"  # 'location' | 'name_fallback' | 'name_fallback_ambiguous' | 'unresolved'
     node_ids_resolved: tuple[str, ...] = ()
-    codegraph_version: str | None = None
-    extraction_version: str | None = None
+    provider_version: str | None = None
+    index_version: str | None = None
     graph_freshness: str = "unknown"  # 'fresh' | 'stale' | 'unknown'
     fallback_reason: str | None = None
 
@@ -234,7 +234,7 @@ class AssessmentInput:
     symbol_diff_evidence: SymbolDiffEvidence = field(default_factory=SymbolDiffEvidence)
     # M5c.5: language-agnostic per-symbol fan-in (codegraph-backed). None until the adapter is wired
     # / codegraph is present; carried for provenance even when resolution_method='unresolved'.
-    codegraph_fanin_evidence: "CodeGraphFanInEvidence | None" = None
+    fanin_evidence: "FanInEvidence | None" = None
     blast_evidence: BlastEvidence = field(default_factory=BlastEvidence)
     architecture_evidence: ArchitectureEvidence = field(default_factory=ArchitectureEvidence)
     active_snapshot: Any | None = None  # no learning in Phase 0 (cold start)
@@ -263,6 +263,7 @@ class AssessmentResult:
     high_risk_triggers: list[dict[str, Any]] = field(default_factory=list)
     symbol_scope_evidence: dict[str, Any] = field(default_factory=dict)
     graph_evidence: dict[str, Any] = field(default_factory=dict)  # 3c/3d blast graph incompleteness
+    fanin_validity: dict[str, Any] = field(default_factory=dict)  # M5c.5 Gate 13 evidence-validity
     explanation: list[str] = field(default_factory=list)
     model_guidance_packet: dict[str, Any] | None = None
     provenance: dict[str, Any] = field(default_factory=dict)

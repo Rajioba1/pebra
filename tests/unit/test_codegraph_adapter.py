@@ -151,8 +151,8 @@ def test_location_resolves_tightest_owner_and_counts_callers(tmp_path) -> None:
     # distribution: validate_login=3, five fillers=1 each, helper=0, class=0 -> 8 callable nodes
     # fractional_rank(3, sorted[0,0,1,1,1,1,1,3]) = 8/8 = 1.0
     assert ev.symbol_fan_in_percentile == pytest.approx(1.0)
-    assert ev.codegraph_version == "1.1.1"
-    assert ev.extraction_version == "24"
+    assert ev.provider_version == "1.1.1"
+    assert ev.index_version == "24"
 
 
 def test_imports_edges_excluded_from_fanin(tmp_path) -> None:
@@ -192,7 +192,10 @@ def test_worktree_mismatch_is_stale(tmp_path) -> None:
     ev = _adapter(status=status).fanin(action, str(tmp_path))
     assert ev.graph_freshness == "stale"
     assert ev.resolution_method == "unresolved"
+    # mismatch remediation is a worktree-local index (setup-graph --fix), NOT a sync
     assert ev.fallback_reason and "worktree mismatch" in ev.fallback_reason.lower()
+    assert "setup-graph --fix" in ev.fallback_reason
+    assert "sync" not in ev.fallback_reason.lower()
 
 
 def test_status_index_path_selects_non_default_codegraph_dir(tmp_path) -> None:
@@ -222,7 +225,7 @@ def test_missing_db_returns_unresolved(tmp_path) -> None:
     ev = _adapter().fanin(action, str(tmp_path))  # no .codegraph dir
     assert ev.resolution_method == "unresolved"
     assert ev.graph_freshness == "unknown"
-    assert ev.fallback_reason and "init" in ev.fallback_reason.lower()
+    assert ev.fallback_reason and "setup-graph" in ev.fallback_reason.lower()
 
 
 def test_cli_missing_returns_unresolved_with_install_hint(tmp_path) -> None:
@@ -353,6 +356,99 @@ def test_windows_path_normalized_to_repo_relative(tmp_path) -> None:
     ev = _adapter().fanin(action, str(tmp_path))
     assert ev.resolution_method == "name_fallback"
     assert ev.node_ids_resolved == ("method:vl",)
+
+
+# --- _default_status sequencing (STATUS-FIRST, conditional repair sync) over mocked subprocess ---
+
+import json as _json
+from types import SimpleNamespace
+
+
+class _Recorder:
+    """Fake subprocess.run: serves a queue of status payloads and records every argv. A status payload
+    of None simulates a failed status probe (returncode 1)."""
+
+    def __init__(self, status_payloads):
+        self._status = list(status_payloads)
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append(argv)
+        if argv[1] == "status":
+            payload = self._status.pop(0)
+            if payload is None:
+                return SimpleNamespace(returncode=1, stdout="")
+            return SimpleNamespace(returncode=0, stdout=_json.dumps(payload))
+        return SimpleNamespace(returncode=0, stdout="")  # sync
+
+    @property
+    def sync_calls(self):
+        return [c for c in self.calls if c[1] == "sync"]
+
+    @property
+    def status_calls(self):
+        return [c for c in self.calls if c[1] == "status"]
+
+
+def _patch(monkeypatch, recorder, *, on_path=True):
+    monkeypatch.setattr(cga.shutil, "which", lambda name: "/usr/bin/codegraph" if on_path else None)
+    monkeypatch.setattr(cga.subprocess, "run", recorder)
+
+
+def test_default_status_never_syncs_on_worktree_mismatch(monkeypatch) -> None:
+    rec = _Recorder([{"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+                      "index": {"reindexRecommended": False},
+                      "worktreeMismatch": {"worktreeRoot": "/wt", "indexRoot": "/main"}}])
+    _patch(monkeypatch, rec)
+    out = cga._default_status("/repo")
+    assert rec.sync_calls == []  # the borrowed index must NOT be synced
+    assert out and out.get("worktreeMismatch")
+
+
+def test_default_status_never_syncs_when_uninitialized(monkeypatch) -> None:
+    rec = _Recorder([{"initialized": False}])
+    _patch(monkeypatch, rec)
+    out = cga._default_status("/repo")
+    assert rec.sync_calls == []
+    assert out == {"initialized": False}
+
+
+def test_default_status_no_sync_when_already_fresh(monkeypatch) -> None:
+    rec = _Recorder([{"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+                      "index": {"reindexRecommended": False}}])
+    _patch(monkeypatch, rec)
+    out = cga._default_status("/repo")
+    assert rec.sync_calls == [] and rec.status_calls and out is not None
+
+
+def test_default_status_syncs_only_when_stale_initialized_same_worktree(monkeypatch) -> None:
+    stale = {"initialized": True, "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
+             "index": {"reindexRecommended": False}}
+    fresh = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+             "index": {"reindexRecommended": False}}
+    rec = _Recorder([stale, fresh])  # initial=stale -> sync -> re-status=fresh
+    _patch(monkeypatch, rec)
+    out = cga._default_status("/repo")
+    assert len(rec.sync_calls) == 1
+    assert len(rec.status_calls) == 2
+    assert out == fresh  # returns the post-sync status
+
+
+def test_default_status_returns_initial_when_post_sync_status_fails(monkeypatch) -> None:
+    stale = {"initialized": True, "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
+             "index": {"reindexRecommended": False}}
+    rec = _Recorder([stale, None])  # post-sync status probe fails -> fall back to the stale initial
+    _patch(monkeypatch, rec)
+    out = cga._default_status("/repo")
+    assert len(rec.sync_calls) == 1
+    assert out == stale
+
+
+def test_default_status_no_subprocess_when_binary_absent(monkeypatch) -> None:
+    rec = _Recorder([])
+    _patch(monkeypatch, rec, on_path=False)
+    assert cga._default_status("/repo") is None
+    assert rec.calls == []  # not even one spawn when codegraph is not on PATH
 
 
 # --- real binary path (skipped unless the codegraph CLI is installed) ---

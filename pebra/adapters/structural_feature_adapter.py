@@ -69,15 +69,15 @@ class StructuralFeatureAdapter:
         }
 
         # M5c.5: stamp codegraph provenance when per-symbol fan-in evidence is present. The version +
-        # extraction_version belong in calibration scope (a codegraph upgrade can move fan-in, so a
+        # index_version belong in calibration scope (a codegraph upgrade can move fan-in, so a
         # learned fact must know which engine produced its features); resolution_method/freshness make
         # an untrusted (name_fallback/stale) reading auditable rather than silently trusted.
-        cg = getattr(inp, "codegraph_fanin_evidence", None)
+        cg = getattr(inp, "fanin_evidence", None)
         if cg is not None:
-            provenance["codegraph_version"] = cg.codegraph_version
-            provenance["extraction_version"] = cg.extraction_version
-            provenance["codegraph_graph_freshness"] = cg.graph_freshness
-            provenance["codegraph_resolution_method"] = cg.resolution_method
+            provenance["provider_version"] = cg.provider_version
+            provenance["index_version"] = cg.index_version
+            provenance["fanin_graph_freshness"] = cg.graph_freshness
+            provenance["fanin_resolution_method"] = cg.resolution_method
 
         return structural_features.build_structural_features(
             symbol_id=symbol_id,

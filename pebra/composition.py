@@ -76,9 +76,10 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         "snapshot_read_port": SnapshotReadStore(ctx.store),
         # M5c.5: language-agnostic per-symbol fan-in via codegraph. Optional by default — when the
         # codegraph DB/CLI is absent it returns unresolved and the controller leaves scoring unchanged
-        # (golden preserved). Set threshold ``require_codegraph`` true once codegraph is deployed to make
-        # an unresolved/stale graph fail-clear (lower evidence_quality -> inspect) instead of silent.
-        "codegraph_provider": CodeGraphAdapter(),
+        # (golden preserved). Set threshold ``require_graph`` true once codegraph is deployed to make
+        # an unresolved/stale graph fail-clear through Gate 13 instead of silently treating absent
+        # fan-in as low fan-in.
+        "fanin_provider": CodeGraphAdapter(),
     }
 
 

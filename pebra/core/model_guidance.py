@@ -59,6 +59,13 @@ def render(
         for f in graph_evidence.get("parse_error_files", []):
             suggested_inspection.append(f"could not parse expected file: {f}")
 
+    # M5c.5 — surface the graph-engine (codegraph) evidence-validity remediation when Gate 13 flagged
+    # the fan-in evidence as untrusted (required + stale/mismatch/uninitialized/ambiguous). Empty when
+    # the graph is trusted or optional, so a clean assessment carries no noise.
+    fanin_validity = result.fanin_validity or {}
+    if fanin_validity.get("reason"):
+        suggested_inspection.append(fanin_validity["reason"])
+
     return {
         # Logical placeholder for the pure guidance packet. The store assigns the canonical
         # persisted id (assessment-row scoped) before hashing and writing the assessment.
@@ -87,6 +94,7 @@ def render(
             "why": list(explanation.why),
             "suggested_inspection": suggested_inspection,
             "graph_evidence": graph_evidence,
+            "fanin_validity": fanin_validity,
             "safer_alternative": (
                 "make a targeted patch instead of a broad refactor"
                 if decision != "proceed"

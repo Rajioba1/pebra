@@ -175,6 +175,88 @@ def test_stale_arch_map_is_recorded_even_when_a_higher_gate_decides() -> None:
     assert any(g["name"] == "stale_architecture_map" for g in result.gates_fired)
 
 
+# --- Gate 13: codegraph evidence-validity (mirrors Gate 12 stale-arch-map) ---
+
+
+def _cg(**kw):
+    from pebra.core.models import FanInEvidence
+    return FanInEvidence(**kw)
+
+
+def _require_cg(inp):
+    from dataclasses import replace
+    return replace(inp, thresholds={**inp.thresholds, "require_graph": True})
+
+
+def test_gate13_untrusted_codegraph_downgrades_proceed_to_inspect_first() -> None:
+    a = _assess(
+        thresholds={**_worked_example_input().thresholds, "require_graph": True},
+        fanin_evidence=_cg(
+            resolution_method="unresolved", graph_freshness="stale",
+            fallback_reason="codegraph worktree mismatch; run: pebra setup-graph --fix",
+        ),
+    )
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.INSPECT_FIRST
+    g13 = next(g for g in result.gates_fired if g.get("gate") == 13)
+    assert g13["name"] == "fanin_evidence_invalid"
+    assert "setup-graph --fix" in g13["reason"]
+    assert result.fanin_validity["reason"]
+
+
+def test_gate13_fails_clear_when_required_but_no_evidence_produced() -> None:
+    # require_graph set but the provider was never wired (fanin_evidence stays None):
+    # absence of REQUIRED evidence must fail CLEAR (inspect_first), never fail open to proceed.
+    a = _assess(thresholds={**_worked_example_input().thresholds, "require_graph": True})
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.INSPECT_FIRST
+    g13 = next(g for g in result.gates_fired if g.get("gate") == 13)
+    assert "setup-graph" in g13["reason"]
+    assert result.fanin_validity["reason"]
+
+
+def test_gate13_does_not_fire_when_codegraph_optional() -> None:
+    # require_graph not set (default): an untrusted graph is silently optional -> proceed
+    a = _assess(fanin_evidence=_cg(resolution_method="unresolved", graph_freshness="stale"))
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.PROCEED
+    assert not any(g.get("gate") == 13 for g in result.gates_fired)
+
+
+def test_gate13_does_not_fire_when_trusted() -> None:
+    a = _assess(
+        thresholds={**_worked_example_input().thresholds, "require_graph": True},
+        fanin_evidence=_cg(resolution_method="location", graph_freshness="fresh",
+                                     symbol_fan_in_percentile=0.5),
+    )
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.PROCEED
+    assert not any(g.get("gate") == 13 for g in result.gates_fired)
+
+
+def test_gate13_does_not_preempt_a_more_severe_gate() -> None:
+    a = _assess(
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,  # gate 3 ask_human
+        thresholds={**_worked_example_input().thresholds, "require_graph": True},
+        fanin_evidence=_cg(resolution_method="unresolved", graph_freshness="stale"),
+    )
+    result = de.decide(a)
+    assert result.recommended_decision is Decision.ASK_HUMAN  # gate 3 wins
+
+
+def test_gate13_recorded_as_advisory_when_a_higher_gate_decides() -> None:
+    a = _assess(
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        thresholds={**_worked_example_input().thresholds, "require_graph": True},
+        fanin_evidence=_cg(resolution_method="unresolved", graph_freshness="stale"),
+    )
+    result = de.decide(a)
+    g13 = next(g for g in result.gates_fired if g.get("gate") == 13)
+    assert g13.get("advisory") is True
+
+
 def test_gate1_policy_violation_rejects_before_threshold() -> None:
     # even with a perfectly safe assessment, a policy violation rejects first
     result = de.decide(_assess(), policy_violations=["forbidden_path_edit"])

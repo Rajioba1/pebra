@@ -39,7 +39,7 @@ def test_build_assess_ports_has_the_controller_keys(tmp_path) -> None:
     assert set(ports) >= {
         "evidence_provider", "symbol_diff_provider", "blast_provider",
         "sanction_port", "repository_registry", "store", "assessed_commit",
-        "codegraph_provider",
+        "fanin_provider",
     }
 
 
