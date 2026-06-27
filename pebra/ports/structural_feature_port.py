@@ -14,5 +14,5 @@ from pebra.core.models import AssessmentInput
 
 class StructuralFeatureProvider(Protocol):
     def build_features(self, inp: AssessmentInput) -> dict[str, Any]:
-        """Return the versioned structural feature payload (schema v1) for the edit in ``inp``."""
+        """Return the versioned structural feature payload for the edit in ``inp``."""
         ...

@@ -162,6 +162,80 @@ def test_path_glob_matches_any_edited_file_not_just_representative() -> None:
     assert out.p_success == 0.40
 
 
+def test_high_symbol_fan_in_scope_matches_schema_v2_feature() -> None:
+    inp = _inp(
+        p_success=0.70,
+        features={
+            "symbol": {"symbol_id": "src/payments.py::charge", "change_kind": "BEHAVIORAL"},
+            # v2: per-symbol fan-in lives in the STRUCTURAL block (matches build_structural_features)
+            "structural": {"symbol_fan_in_percentile": 0.94, "is_high_symbol_fan_in": True},
+            "domain": {"matched_domains": []},
+        },
+    )
+    out = apply_snapshot(inp, _bundle(
+        _fact(scope_kind="high_symbol_fan_in", rank=85, value=0.42)
+    ))
+    assert out.p_success == 0.42
+
+
+def test_high_symbol_fan_in_scope_matches_REAL_build_structural_features() -> None:
+    # Regression guard: feed apply_snapshot the ACTUAL v2 payload (not a hand-built dict) so the scope
+    # match is pinned to where build_structural_features really puts symbol fan-in (the structural block).
+    from pebra.core import structural_features as sf
+
+    feats = sf.build_structural_features(
+        symbol_id="src/payments.py::charge", file_path="src/payments.py", action_type="edit",
+        change_kind="BEHAVIORAL", visibility="internal", is_public_api=False, body_changed=True,
+        signature_changed=False, container_file_fan_in_percentile=0.1, bridge_centrality=0.0,
+        cycle_participation=False, is_architecture_anchor=False, domain_entrypoint=False, fan_out=0,
+        dependency_boundary=False, matched_domains=[], domain_criticality_hint=None,
+        criticality_stage="C3", symbol_fan_in_percentile=0.96, consequential_symbol_changed=True,
+        provenance={},
+    )
+    out = apply_snapshot(_inp(p_success=0.70, features=feats),
+                         _bundle(_fact(scope_kind="high_symbol_fan_in", rank=85, value=0.42)))
+    assert out.p_success == 0.42
+
+
+def test_domain_high_symbol_fan_in_scope_matches_domain_and_threshold() -> None:
+    inp = _inp(
+        p_success=0.70,
+        features={
+            "symbol": {"symbol_id": "src/payments.py::charge", "change_kind": "BEHAVIORAL"},
+            "structural": {"symbol_fan_in_percentile": 0.88},
+            "domain": {"matched_domains": ["payments"]},
+        },
+    )
+    out = apply_snapshot(inp, _bundle(
+        _fact(
+            scope_kind="domain_high_symbol_fan_in",
+            rank=75,
+            value=0.43,
+            scope_json={"domain": "payments", "min_percentile": 0.80},
+        )
+    ))
+    assert out.p_success == 0.43
+
+
+def test_domain_high_symbol_fan_in_scope_rejects_wrong_domain() -> None:
+    inp = _inp(
+        p_success=0.70,
+        features={
+            "structural": {"symbol_fan_in_percentile": 0.95},
+            "domain": {"matched_domains": ["auth"]},
+        },
+    )
+    out = apply_snapshot(inp, _bundle(
+        _fact(
+            scope_kind="domain_high_symbol_fan_in",
+            rank=75,
+            value=0.43,
+            scope_json={"domain": "payments", "min_percentile": 0.80},
+        )
+    ))
+    assert out is inp
+
+
 # --- benefit targets explicitly skipped (v1 risk-only) -----------------------
 
 

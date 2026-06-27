@@ -253,7 +253,9 @@ def assess(
     recommended = _recommended(scored)
     assessment_id = store.persist_assessment(
         recommended.result,
-        {"task": request.task, "action_id": recommended.action.id},
+        # persist the thresholds used so the post-edit verify path can reproduce the SAME consequential
+        # fan-in threshold (otherwise verify silently falls back to the 0.90 default — assess/verify drift).
+        {"task": request.task, "action_id": recommended.action.id, "thresholds": dict(thresholds)},
         predictions=recommended.predictions,
     )
     return AssessmentOutcome(

@@ -58,6 +58,10 @@ class GuardrailInput:
     dry_run_preview_present: bool = False
     policy_forbidden: bool = False
     reclassification_attempted: bool = False
+    # A1 (M5c.5): consequence verdict pre-edit (from the stored assessment) vs post-edit (reclassifier
+    # with real fan-in). Escalate only when NEWLY consequential — never re-flag what assess approved.
+    pre_edit_consequential: bool = False
+    actual_consequential: bool = False
 
 
 @dataclass
@@ -82,6 +86,7 @@ class GuardrailResult:
     missing_checks: list[str] = field(default_factory=list)
     failed_checks: list[str] = field(default_factory=list)
     necessity_evidence_present: bool = False
+    newly_consequential: bool = False  # A1: post-edit fan-in/scope made it consequential, assess didn't
     verify_decision: str = "proceed"
 
 
@@ -177,6 +182,20 @@ def evaluate(inp: GuardrailInput) -> GuardrailResult:
         )
         candidates.append(Decision.INSPECT_FIRST)
 
+    # --- 3c. Newly-consequential post-edit change (A1, AD-27) ---
+    # The actual edit is consequential by post-edit per-symbol fan-in/scope evidence that the pre-edit
+    # assessment did NOT flag (e.g. the edit landed in a higher-fan-in symbol than planned). This is a
+    # softer signal than a kind-severity increase (3) — the change KIND didn't escalate — so it routes
+    # to inspect_first, not ask_human. Only fires when NEWLY consequential, so an already-approved
+    # consequential change is not re-flagged. Stage-independent: verify is envelope compliance.
+    newly_consequential = inp.actual_consequential and not inp.pre_edit_consequential
+    if newly_consequential:
+        reasons.append(
+            "Actual change is consequential by post-edit fan-in/scope evidence that the pre-edit "
+            "assessment did not flag; inspect before autonomous proceed."
+        )
+        candidates.append(Decision.INSPECT_FIRST)
+
     # --- 4. Contract surface changes ---
     if inp.contract_surface_changes:
         reasons.append(f"Contract-surface changes detected: {inp.contract_surface_changes}.")
@@ -257,5 +276,6 @@ def evaluate(inp: GuardrailInput) -> GuardrailResult:
         missing_checks=missing,
         failed_checks=failed,
         necessity_evidence_present=necessity_present,
+        newly_consequential=newly_consequential,
         verify_decision=decision.value,
     )

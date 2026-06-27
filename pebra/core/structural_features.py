@@ -6,10 +6,15 @@ deriving boundary edges from the import graph) live in ``adapters/structural_fea
 which extracts the primitives and calls this assembler. Keeping the schema + versioning + field names
 in core means M5's ``apply_snapshot`` can match learned-fact scopes against a stable contract.
 
-HONESTY CONTRACT (ratified): the v1 fan-in signal is CONTAINER-FILE level
-(``container_file_fan_in_percentile``). The import graph has no per-symbol call graph yet, so there is
-NO ``symbol_fan_in_percentile`` field — true per-symbol fan-in is a later precision slice, not a fake
-zero. M5 must not pretend it has a function-level call graph.
+HONESTY CONTRACT (v2, M5c.5): there are now TWO distinct fan-in signals.
+  - ``container_file_fan_in_percentile`` — file-level import-graph fan-in (the v1 signal, always
+    available from the architecture map).
+  - ``symbol_fan_in_percentile`` — REAL per-symbol call-graph fan-in from the graph engine (codegraph),
+    patched onto SymbolDiffEvidence on the assess path. It is 0.0 when the graph engine is absent or the
+    symbol could not be trusted-resolved — that 0.0 is an HONEST "no trusted per-symbol fan-in", NOT a
+    claim of low fan-in. The trust context (resolution method / freshness) is carried in ``provenance``
+    (``fanin_resolution_method`` / ``fanin_graph_freshness``) so M5 can tell a trusted low fan-in from an
+    absent graph. ``is_high_symbol_fan_in`` is True only on a trusted high value (>= ANCHOR_FANIN_PERCENTILE).
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from typing import Any
 
 from pebra.core.constants import ANCHOR_FANIN_PERCENTILE
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def build_structural_features(
@@ -41,9 +46,11 @@ def build_structural_features(
     matched_domains: list[str],
     domain_criticality_hint: str | None,
     criticality_stage: str,
+    symbol_fan_in_percentile: float,
+    consequential_symbol_changed: bool,
     provenance: dict[str, Any],
 ) -> dict[str, Any]:
-    """Assemble the v1 feature payload from already-extracted primitives. No I/O."""
+    """Assemble the v2 feature payload from already-extracted primitives. No I/O."""
     return {
         "schema_version": SCHEMA_VERSION,
         "symbol": {
@@ -57,13 +64,19 @@ def build_structural_features(
             # carried honestly as structural.domain_entrypoint (see honesty contract in docstring).
             "body_changed": body_changed,
             "signature_changed": signature_changed,
+            # v2: whether this change was judged consequential (visibility/fan-in/side-effect), patched
+            # from the assess-path symbol evidence so M5 can learn against the same consequence signal.
+            "consequential_symbol_changed": consequential_symbol_changed,
         },
         "structural": {
-            # honest: container/file-level fan-in, NOT per-symbol (see module docstring). This IS the
-            # repo-relative file fan-in percentile (what ArchitectureEvidence calls god_node_score);
-            # a "god node" is just a high-fan-in container file -> the derived flag below.
+            # container/file-level fan-in (v1): repo-relative file fan-in percentile (what
+            # ArchitectureEvidence calls god_node_score); a "god node" is a high-fan-in container file.
             "container_file_fan_in_percentile": container_file_fan_in_percentile,
             "is_high_container_fan_in": container_file_fan_in_percentile >= ANCHOR_FANIN_PERCENTILE,
+            # v2: REAL per-symbol call-graph fan-in (graph engine). 0.0 = no trusted value (see honesty
+            # contract); trust context is in provenance.fanin_resolution_method / fanin_graph_freshness.
+            "symbol_fan_in_percentile": symbol_fan_in_percentile,
+            "is_high_symbol_fan_in": symbol_fan_in_percentile >= ANCHOR_FANIN_PERCENTILE,
             "bridge_centrality": bridge_centrality,
             "cycle_participation": cycle_participation,
             "is_architecture_anchor": is_architecture_anchor,

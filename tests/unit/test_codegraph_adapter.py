@@ -451,6 +451,57 @@ def test_default_status_no_subprocess_when_binary_absent(monkeypatch) -> None:
     assert rec.calls == []  # not even one spawn when codegraph is not on PATH
 
 
+# --- percentiles_by_name (verify-path per-symbol fan-in lookup, A1) ---
+
+def test_percentiles_by_name_resolves_known_symbol(tmp_path) -> None:
+    _seed_repo(tmp_path)
+    out = _adapter().percentiles_by_name(["src/auth.py::LoginManager::validate_login"], str(tmp_path))
+    assert out == {"src/auth.py::LoginManager::validate_login": pytest.approx(1.0)}
+
+
+def test_percentiles_by_name_resolves_class_method_dotted_id(tmp_path) -> None:
+    # the VERIFY path passes AST-dotted qualified names ("LoginManager.validate_login"); codegraph
+    # stores "::". _resolve_named must normalize so class methods resolve (Critical bug fix).
+    _seed_repo(tmp_path)
+    out = _adapter().percentiles_by_name(["src/auth.py::LoginManager.validate_login"], str(tmp_path))
+    assert out == {"src/auth.py::LoginManager.validate_login": pytest.approx(1.0)}
+
+
+def test_percentiles_by_name_omits_ambiguous(tmp_path) -> None:
+    _seed_repo(tmp_path)
+    con = sqlite3.connect(str(tmp_path / ".codegraph" / "codegraph.db"))
+    _node(con, "method:vl2", "method", "validate_login", "LoginManager::validate_login",
+          "src/auth.py", 100, 110)
+    con.commit()
+    con.close()
+    out = _adapter().percentiles_by_name(["src/auth.py::LoginManager::validate_login"], str(tmp_path))
+    assert out == {}  # ambiguous -> untrusted -> omitted (caller reads 0.0)
+
+
+def test_percentiles_by_name_omits_unresolved(tmp_path) -> None:
+    _seed_repo(tmp_path)
+    out = _adapter().percentiles_by_name(["src/auth.py::does_not_exist"], str(tmp_path))
+    assert out == {}
+
+
+def test_percentiles_by_name_empty_when_stale(tmp_path) -> None:
+    _seed_repo(tmp_path)
+    out = _adapter(status=STALE).percentiles_by_name(
+        ["src/auth.py::LoginManager::validate_login"], str(tmp_path)
+    )
+    assert out == {}
+
+
+def test_percentiles_by_name_empty_when_db_absent(tmp_path) -> None:
+    out = _adapter().percentiles_by_name(["src/auth.py::validate_login"], str(tmp_path))
+    assert out == {}
+
+
+def test_percentiles_by_name_empty_for_no_symbols(tmp_path) -> None:
+    _seed_repo(tmp_path)
+    assert _adapter().percentiles_by_name([], str(tmp_path)) == {}
+
+
 # --- real binary path (skipped unless the codegraph CLI is installed) ---
 
 @pytest.mark.requires_codegraph

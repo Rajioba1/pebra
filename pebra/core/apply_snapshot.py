@@ -66,6 +66,13 @@ def _clamp(value: float) -> float:
     return max(_CLAMP_LO, min(_CLAMP_HI, value))
 
 
+def _float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _applicable(fact: SnapshotFact) -> bool:
     """Defense-in-depth gate (read-port is primary): a fact may override a live risk probability only
     if it is risk-binary, ratified, carries a calibration sample AND method, and its value is a finite
@@ -99,6 +106,7 @@ def _matches(fact: SnapshotFact, inp: AssessmentInput, features: dict[str, Any] 
     if features is None:
         return False
     sym = features.get("symbol", {})
+    st = features.get("structural", {}) or {}
     domains = (features.get("domain", {}) or {}).get("matched_domains") or []
     if sk == "symbol":
         return sym.get("symbol_id") == fact.scope_value
@@ -112,6 +120,19 @@ def _matches(fact: SnapshotFact, inp: AssessmentInput, features: dict[str, Any] 
         return (
             fact.scope_json.get("domain") in domains
             and fact.scope_json.get("change_kind") == sym.get("change_kind")
+        )
+    if sk == "high_symbol_fan_in":
+        # per-symbol fan-in lives in the STRUCTURAL block of the v2 feature payload (alongside the
+        # container/file fan-in), NOT the symbol block — read it there.
+        threshold = _float(fact.scope_json.get("min_percentile", 0.90), 0.90)
+        return bool(st.get("is_high_symbol_fan_in")) or (
+            _float(st.get("symbol_fan_in_percentile", 0.0)) >= threshold
+        )
+    if sk == "domain_high_symbol_fan_in":
+        threshold = _float(fact.scope_json.get("min_percentile", 0.90), 0.90)
+        return (
+            fact.scope_json.get("domain") in domains
+            and _float(st.get("symbol_fan_in_percentile", 0.0)) >= threshold
         )
     return False
 

@@ -9,6 +9,7 @@ guardrails escalate when the committed change is more severe than the pre-edit p
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -34,7 +35,17 @@ def _basename(path: str) -> str:
 
 
 class GitChangeVerifier:
-    def actual_diff(self, repo_root: str, scope: str) -> ActualDiffSummary:
+    def __init__(
+        self, fanin_lookup: Callable[[list[str], str], dict[str, float]] | None = None
+    ) -> None:
+        # Injected by composition (bound to CodeGraphAdapter.percentiles_by_name). None -> verify keeps
+        # the pre-A1 behavior (callers_percentile stays 0.0, no fan-in escalation). No adapter→adapter
+        # import: the verifier depends only on the callable shape.
+        self._fanin_lookup = fanin_lookup
+
+    def actual_diff(
+        self, repo_root: str, scope: str, thresholds: dict[str, float] | None = None
+    ) -> ActualDiffSummary:
         files = git_adapter.changed_files(repo_root, scope)
         lowered = [f.lower() for f in files]
         dependency_changed = any(
@@ -44,8 +55,8 @@ class GitChangeVerifier:
                              for f in lowered)
         migration_changed = any("migration" in f for f in lowered)
 
-        max_kind, changed_symbols, complexity_delta, analyzed = self._reclassify(
-            repo_root, files, scope
+        max_kind, changed_symbols, complexity_delta, analyzed, consequential, reason = (
+            self._reclassify(repo_root, files, scope, thresholds=thresholds)
         )
         # record the delta whenever Python files were analyzed — even a net-zero delta is signal
         # (distinct from "no Python files changed") for AD-29 benefit learning.
@@ -58,18 +69,24 @@ class GitChangeVerifier:
             migration_changed=migration_changed,
             actual_max_change_kind=max_kind,
             actual_changed_symbols=changed_symbols,
+            actual_consequential_symbol_changed=consequential,
+            actual_consequence_reason=reason,
             measured_benefit_deltas=measured_deltas,
             reclassification_attempted=analyzed,
         )
 
-    @staticmethod
     def _reclassify(
-        repo_root: str, files: list[str], scope: str
-    ) -> tuple[str, list[str], float, bool]:
+        self, repo_root: str, files: list[str], scope: str,
+        thresholds: dict[str, float] | None = None,
+    ) -> tuple[str, list[str], float, bool, bool, list[str]]:
         """Rerun the symbol classifier on the actual diff (AD-27) + measure complexity delta.
 
         The "after" source must match the scope: for ``staged`` the actual diff is index-vs-HEAD, so
         we read the staged blob (``:0:path``); otherwise we read the working tree on disk.
+
+        A1: when a fan-in lookup is wired, fill each row's ``callers_percentile`` from the graph engine
+        BEFORE classifying, so the post-edit consequence verdict sees real per-symbol fan-in (symmetric
+        with assess). Returns the consequential flag + reasons so the guardrail can escalate on it.
         """
         rows: list[dict] = []
         complexity_delta = 0.0
@@ -97,13 +114,29 @@ class GitChangeVerifier:
             complexity_delta += compute_complexity_delta(before, after)
 
         if rows:
-            summary = change_classifier.classify_diff(rows, {})
-            return summary.max_change_kind, summary.changed_symbols, complexity_delta, analyzed
+            self._enrich_fanin(rows, repo_root)
+            summary = change_classifier.classify_diff(rows, thresholds or {})
+            return (summary.max_change_kind, summary.changed_symbols, complexity_delta, analyzed,
+                    summary.consequential_symbol_changed, list(summary.consequence_reason))
         if unparsable:
             # changed Python we couldn't parse -> cannot prove envelope compliance (escalates)
-            return "UNKNOWN", [], complexity_delta, analyzed
+            return "UNKNOWN", [], complexity_delta, analyzed, False, []
         if parsed_ok:
             # parsed cleanly with no semantic change (docstring/comment/whitespace only) -> cosmetic
-            return ChangeKind.COSMETIC.value, [], complexity_delta, analyzed
+            return ChangeKind.COSMETIC.value, [], complexity_delta, analyzed, False, []
         # no Python files analyzed at all (pure non-code change)
-        return "UNKNOWN", [], complexity_delta, analyzed
+        return "UNKNOWN", [], complexity_delta, analyzed, False, []
+
+    def _enrich_fanin(self, rows: list[dict], repo_root: str) -> None:
+        """Fill ``callers_percentile`` per row from the graph engine (no-op when no lookup is wired or
+        the engine returns nothing — the row keeps its conservative 0.0)."""
+        if self._fanin_lookup is None or not rows:
+            return
+        try:
+            percentiles = self._fanin_lookup([r["symbol_id"] for r in rows], repo_root)
+        except Exception:  # never let fan-in lookup break verify (fail-soft, mirrors the assess path)
+            return
+        for r in rows:
+            value = percentiles.get(r["symbol_id"])
+            if value is not None:
+                r["callers_percentile"] = value

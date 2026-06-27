@@ -325,22 +325,43 @@ class CodeGraphAdapter:
         return kept
 
     @staticmethod
+    def _resolve_named(
+        con: sqlite3.Connection, symbol_id: str, repo_root: str
+    ) -> tuple[list[str], bool]:
+        """Resolve ONE 'file::Qualified' symbol_id to node ids by name. Returns (ids, ambiguous).
+
+        Separator-tolerant: the assess path supplies '::'-qualified names while the verify path's AST
+        diff supplies '.'-qualified names (e.g. ``LoginManager.validate_login``); codegraph stores '::'
+        (``LoginManager::validate_login``). We match the qualified_name in EITHER separator first
+        (precise — a class method resolves to exactly its node), and only fall back to the leaf ``name``
+        when no qualified match exists, so a qualified id never over-matches an unrelated same-leaf symbol.
+        """
+        file_part, _, qual = symbol_id.partition("::")
+        if not qual:
+            return [], False
+        rel = _repo_relative(file_part, repo_root)
+        qual_cg = qual.replace(".", "::")  # AST '.' separator -> codegraph '::'
+        rows = con.execute(
+            "SELECT id FROM nodes WHERE file_path = ? AND qualified_name IN (?, ?)",
+            (rel, qual, qual_cg),
+        ).fetchall()
+        if not rows:  # fall back to the leaf name only when the qualified name didn't resolve
+            leaf = qual.replace("::", ".").split(".")[-1]
+            rows = con.execute(
+                "SELECT id FROM nodes WHERE file_path = ? AND name = ?", (rel, leaf)
+            ).fetchall()
+        ids = [r["id"] for r in rows]
+        return ids, len(ids) > 1
+
+    @staticmethod
     def _name_fallback(
         con: sqlite3.Connection, action: CandidateAction, repo_root: str
     ) -> tuple[list[str], str]:
         resolved: list[str] = []
         ambiguous = False
         for sym in action.affected_symbols:
-            file_part, _, qual = sym.partition("::")
-            if not qual:
-                continue
-            rel = _repo_relative(file_part, repo_root)
-            rows = con.execute(
-                "SELECT id FROM nodes WHERE file_path = ? AND (qualified_name = ? OR name = ?)",
-                (rel, qual, qual),
-            ).fetchall()
-            ids = [r["id"] for r in rows]
-            if len(ids) > 1:
+            ids, amb = CodeGraphAdapter._resolve_named(con, sym, repo_root)
+            if amb:
                 ambiguous = True
             for nid in ids:
                 if nid not in resolved:
@@ -348,6 +369,46 @@ class CodeGraphAdapter:
         if not resolved:
             return [], "unresolved"
         return resolved, "name_fallback_ambiguous" if ambiguous else "name_fallback"
+
+    def percentiles_by_name(self, symbol_ids: list[str], repo_root: str) -> dict[str, float]:
+        """Per-symbol TRUSTED fan-in percentile keyed by symbol_id ('file::Qualified').
+
+        Used by the post-edit verify path to fill ``callers_percentile`` symmetrically with the assess
+        path. A symbol is omitted from the result (caller reads 0.0) when the graph is absent / stale /
+        worktree-mismatched / its name is ambiguous or unresolvable — i.e. never a fabricated fan-in.
+        Runs the freshness gate + opens the DB once for the whole batch."""
+        if not symbol_ids:
+            return {}
+        status = self._status_fn(repo_root)
+        if (
+            status is None
+            or status.get("initialized") is False
+            or status.get("worktreeMismatch")
+            or not _is_fresh(status)
+        ):
+            return {}
+        db_path = _db_path_from_status(repo_root, status)
+        if not db_path.is_file():
+            return {}
+        try:
+            con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        except (sqlite3.Error, OSError, ValueError):
+            return {}
+        con.row_factory = sqlite3.Row
+        try:
+            if self._schema_version(con) < _MIN_SCHEMA_VERSION:
+                return {}
+            out: dict[str, float] = {}
+            for sid in symbol_ids:
+                node_ids, ambiguous = self._resolve_named(con, sid, repo_root)
+                if node_ids and not ambiguous:  # ambiguous = untrusted -> omit (0.0)
+                    _, pctl = self._fanin(con, node_ids, db_path)
+                    out[sid] = pctl
+            return out
+        except (sqlite3.Error, OSError):
+            return {}
+        finally:
+            con.close()
 
     def _fanin(
         self, con: sqlite3.Connection, node_ids: list[str], db_path: Path

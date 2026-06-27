@@ -88,11 +88,24 @@ def test_no_codegraph_provenance_keys_when_absent() -> None:
     assert "provider_version" not in p
 
 
+def test_symbol_fan_in_captured_from_symbol_diff_evidence() -> None:
+    # A0: the real per-symbol fan-in patched onto SymbolDiffEvidence (assess path) must flow into the
+    # learning feature payload so M5 can scope/learn facts against true per-symbol fan-in context.
+    sde = SymbolDiffEvidence(
+        changed_symbols=["src/auth.py::validate_login"], max_change_kind="BEHAVIORAL",
+        visibility="internal", symbol_fan_in_percentile=0.95, consequential_symbol_changed=True,
+    )
+    f = StructuralFeatureAdapter().build_features(_inp(sde=sde))
+    assert f["structural"]["symbol_fan_in_percentile"] == 0.95
+    assert f["structural"]["is_high_symbol_fan_in"] is True
+    assert f["symbol"]["consequential_symbol_changed"] is True
+
+
 def test_graceful_when_no_changed_symbols() -> None:
     f = StructuralFeatureAdapter().build_features(
         _inp(sde=SymbolDiffEvidence(changed_symbols=[]),
              action=CandidateAction(id="a1", label="x", action_type="edit", expected_files=[]))
     )
-    assert f["schema_version"] == 1
+    assert f["schema_version"] == 2
     assert f["symbol"]["symbol_id"] == ""
     assert f["symbol"]["is_public_api"] is False

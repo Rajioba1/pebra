@@ -12,4 +12,6 @@ from pebra.core.models import ActualDiffSummary
 
 
 class ChangeVerifier(Protocol):
-    def actual_diff(self, repo_root: str, scope: str) -> ActualDiffSummary: ...
+    def actual_diff(
+        self, repo_root: str, scope: str, thresholds: dict[str, float] | None = None
+    ) -> ActualDiffSummary: ...

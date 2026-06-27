@@ -71,10 +71,13 @@ def verify(
             if check not in required_checks:
                 required_checks.append(check)
     requires_dry_run = bool(binding.get("requires_dry_run", False))
-    pre_edit_kind = stored["scores"]["symbol_scope_evidence"]["max_change_kind"]
+    sse = stored["scores"]["symbol_scope_evidence"]
+    pre_edit_kind = sse["max_change_kind"]
+    pre_edit_consequential = bool(sse.get("consequential_symbol_changed", False))
+    stored_thresholds = dict((stored.get("request") or {}).get("thresholds") or {})
     assessed_commit = stored.get("assessed_commit")
 
-    actual = change_verifier.actual_diff(repo_root, scope)
+    actual = change_verifier.actual_diff(repo_root, scope, thresholds=stored_thresholds)
     contract = contract_surface.contract_findings(repo_root, actual.changed_files)
 
     inp = GuardrailInput(
@@ -88,6 +91,8 @@ def verify(
         pre_edit_max_change_kind=pre_edit_kind,
         actual_max_change_kind=actual.actual_max_change_kind,
         actual_changed_symbols=list(actual.actual_changed_symbols),
+        pre_edit_consequential=pre_edit_consequential,
+        actual_consequential=actual.actual_consequential_symbol_changed,
         contract_surface_changes=list(contract.changes),
         risky_scope=risky_scope,
         triggered_signals=_triggered_signals(actual, list(contract.changes)),

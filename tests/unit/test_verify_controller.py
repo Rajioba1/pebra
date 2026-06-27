@@ -52,8 +52,10 @@ class FakeStore:
 class FakeVerifier:
     def __init__(self, summary):
         self._summary = summary
+        self.thresholds = None
 
-    def actual_diff(self, repo_root, scope):
+    def actual_diff(self, repo_root, scope, thresholds=None):
+        self.thresholds = thresholds
         return self._summary
 
 
@@ -79,6 +81,74 @@ def _run(summary, *, completed_checks=None, contract_changes=()):
         contract_surface=FakeContract(contract_changes),
     )
     return outcome, store
+
+
+def test_newly_consequential_actual_diff_routes_inspect_first() -> None:
+    # verify reads pre_edit consequential from the stored assessment (False here) and the actual
+    # (consequential True from real fan-in) -> newly consequential -> inspect_first.
+    summary = ActualDiffSummary(
+        current_head="abc123", changed_files=["src/auth.py"], actual_max_change_kind="BEHAVIORAL",
+        actual_consequential_symbol_changed=True,
+    )
+    outcome, _ = _run(summary)
+    assert outcome.result.newly_consequential is True
+    assert outcome.result.pre_commit_decision is Decision.INSPECT_FIRST
+
+
+def test_pre_edit_consequential_suppresses_verify_re_escalation() -> None:
+    # stored assessment already consequential -> verify must not re-flag the same signal.
+    class ConseqStore(FakeStore):
+        def load_assessment(self, assessment_id):
+            s = dict(_STORED)
+            s["scores"] = {"symbol_scope_evidence": {"max_change_kind": "BEHAVIORAL",
+                                                     "consequential_symbol_changed": True}}
+            return s
+
+    summary = ActualDiffSummary(
+        current_head="abc123", changed_files=["src/auth.py"], actual_max_change_kind="BEHAVIORAL",
+        actual_consequential_symbol_changed=True,
+    )
+    outcome = vc.verify(
+        "asm_1", scope="staged", completed_checks={"pytest -q src/auth": "passed"},
+        repo_root="/abs/path", store=ConseqStore(),
+        change_verifier=FakeVerifier(summary), contract_surface=FakeContract(),
+    )
+    assert outcome.result.newly_consequential is False
+    assert outcome.result.pre_commit_decision is Decision.PROCEED
+
+
+def test_stored_threshold_override_is_threaded_to_the_verifier() -> None:
+    # Bug-2 guard: assess persists thresholds under stored["request"]["thresholds"]; verify must read
+    # them and pass them to the verifier so the consequential fan-in threshold is symmetric, not the
+    # hardcoded 0.90 default.
+    class ThreshStore(FakeStore):
+        def load_assessment(self, assessment_id):
+            s = dict(_STORED)
+            s["request"] = {"task": "t", "thresholds": {"consequential_symbol_fan_in_percentile": 0.80}}
+            return s
+
+    fv = FakeVerifier(ActualDiffSummary(
+        current_head="abc123", changed_files=["src/auth.py"], actual_max_change_kind="BEHAVIORAL"))
+    vc.verify(
+        "asm_1", scope="staged", completed_checks={"pytest -q src/auth": "passed"},
+        repo_root="/abs/path", store=ThreshStore(), change_verifier=fv, contract_surface=FakeContract(),
+    )
+    assert fv.thresholds == {"consequential_symbol_fan_in_percentile": 0.80}
+
+
+def test_no_stored_request_thresholds_passes_empty_dict() -> None:
+    # _STORED has no "request" key -> verify threads {} (verifier then uses the 0.90 default). No crash.
+    fv = FakeVerifier(ActualDiffSummary(current_head="abc123", changed_files=["src/auth.py"],
+                                        actual_max_change_kind="BEHAVIORAL"))
+    _run_with_verifier(fv)
+    assert fv.thresholds == {}
+
+
+def _run_with_verifier(fv):
+    return vc.verify(
+        "asm_1", scope="staged", completed_checks={"pytest -q src/auth": "passed"},
+        repo_root="/abs/path", store=FakeStore(), change_verifier=fv, contract_surface=FakeContract(),
+    )
 
 
 def test_within_envelope_diff_proceeds_and_persists() -> None:
@@ -256,3 +326,24 @@ def test_dry_run_preview_present_clears_the_dry_run_requirement() -> None:
     )
     assert outcome.result.dry_run_required is False
     assert outcome.result.pre_commit_decision is Decision.PROCEED
+
+
+def test_verify_passes_stored_request_thresholds_to_change_verifier() -> None:
+    stored = dict(_STORED)
+    stored["request"] = {"thresholds": {"consequential_symbol_fan_in_percentile": 0.80}}
+
+    class ThresholdStore(FakeStore):
+        def load_assessment(self, assessment_id):
+            return dict(stored)
+
+    verifier = FakeVerifier(ActualDiffSummary(current_head="abc123", changed_files=["src/auth.py"]))
+    vc.verify(
+        "asm_1",
+        scope="staged",
+        completed_checks={"pytest -q src/auth": "passed"},
+        repo_root="/abs/path",
+        store=ThresholdStore(),
+        change_verifier=verifier,
+        contract_surface=FakeContract(),
+    )
+    assert verifier.thresholds == {"consequential_symbol_fan_in_percentile": 0.80}

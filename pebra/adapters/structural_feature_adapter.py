@@ -10,9 +10,11 @@ Layer: adapter — may do I/O (reads ``__init__.py`` to detect public-API surfac
 only (ast, pathlib). Implements ``StructuralFeatureProvider``. It does NOT feed scoring (the
 controller attaches the payload to AssessmentInput for capture only; the engine ignores it).
 
-HONESTY: the fan-in signal is container-file level (``container_file_fan_in_percentile`` == the import
-graph's repo-relative file fan-in percentile). There is no per-symbol call graph yet, so no per-symbol
-fan-in is emitted (a later precision slice).
+HONESTY (v2, M5c.5): TWO fan-in signals are now emitted. ``container_file_fan_in_percentile`` is still
+the import graph's repo-relative FILE fan-in. ``symbol_fan_in_percentile`` is the REAL per-symbol
+call-graph fan-in from the graph engine (codegraph), taken from the assess-patched SymbolDiffEvidence —
+0.0 when the engine is absent or the symbol wasn't trusted-resolved (an honest "no trusted value", with
+the trust context carried in provenance's ``fanin_resolution_method`` / ``fanin_graph_freshness``).
 """
 
 from __future__ import annotations
@@ -89,6 +91,11 @@ class StructuralFeatureAdapter:
             body_changed=change_kind in _BODY_KINDS,
             signature_changed=change_kind in _SIGNATURE_KINDS,
             container_file_fan_in_percentile=arch.god_node_score,
+            # A0 (M5c.5): real per-symbol fan-in + the consequence verdict, patched onto SymbolDiffEvidence
+            # on the assess path (codegraph-backed when trusted, 0.0/False otherwise). Captured so M5 can
+            # learn/scope facts against true per-symbol fan-in context, not just file-level god-node score.
+            symbol_fan_in_percentile=sde.symbol_fan_in_percentile,
+            consequential_symbol_changed=sde.consequential_symbol_changed,
             bridge_centrality=arch.bridge_centrality,
             cycle_participation=arch.cycle_participation,
             is_architecture_anchor=is_anchor,

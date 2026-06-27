@@ -1,8 +1,8 @@
-"""Phase-4 reframe (M5-prep) — pure structural feature schema v1.
+"""Phase-4 reframe (M5-prep) — pure structural feature schema v2.
 
-Honest naming: the v1 fan-in signal is CONTAINER-FILE level (the import graph has no per-symbol call
-graph yet), so there is NO `symbol_fan_in_percentile` field — true per-symbol fan-in is a later
-precision slice, not a fake zero.
+Two honest fan-in signals: CONTAINER-FILE level (``container_file_fan_in_percentile``, import graph)
+AND real per-symbol call-graph fan-in (``symbol_fan_in_percentile``, from the graph engine; 0.0 = no
+trusted value, with trust context in provenance). M5c.5 added the per-symbol field; schema is v2.
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ def _build(**over):
         matched_domains=["payments"],
         domain_criticality_hint=None,
         criticality_stage="C3",
+        symbol_fan_in_percentile=0.0,
+        consequential_symbol_changed=False,
         provenance={"structural_source": "structural_feature_adapter", "graph_freshness": "rebuilt"},
     )
     base.update(over)
@@ -38,20 +40,30 @@ def _build(**over):
 
 def test_schema_version_and_blocks() -> None:
     f = _build()
-    assert f["schema_version"] == sf.SCHEMA_VERSION == 1
+    assert f["schema_version"] == sf.SCHEMA_VERSION == 2  # v2: real per-symbol fan-in added
     assert set(f) >= {"schema_version", "symbol", "structural", "domain", "provenance"}
     assert f["symbol"]["symbol_id"] == "src/payments/charge.py::calculateCharge"
     assert f["symbol"]["is_public_api"] is True
     assert f["domain"]["matched_domains"] == ["payments"]
 
 
-def test_container_fan_in_named_honestly_no_symbol_fan_in() -> None:
-    f = _build(container_file_fan_in_percentile=0.95)
+def test_symbol_fan_in_present_alongside_container_v2() -> None:
+    # v2: real per-symbol fan-in (from the graph engine) is carried, DISTINCT from container/file-level.
+    f = _build(container_file_fan_in_percentile=0.95, symbol_fan_in_percentile=0.97)
     assert f["structural"]["container_file_fan_in_percentile"] == 0.95
-    assert f["structural"]["is_high_container_fan_in"] is True  # >= ANCHOR_FANIN_PERCENTILE (0.90)
-    # the honesty contract: no fake per-symbol fan-in anywhere in the payload
-    assert "symbol_fan_in_percentile" not in f["structural"]
-    assert "symbol_fan_in_percentile" not in f["symbol"]
+    assert f["structural"]["is_high_container_fan_in"] is True
+    assert f["structural"]["symbol_fan_in_percentile"] == 0.97
+    assert f["structural"]["is_high_symbol_fan_in"] is True
+
+
+def test_high_symbol_fan_in_threshold() -> None:
+    assert _build(symbol_fan_in_percentile=0.89)["structural"]["is_high_symbol_fan_in"] is False
+    assert _build(symbol_fan_in_percentile=0.90)["structural"]["is_high_symbol_fan_in"] is True
+
+
+def test_consequential_symbol_changed_carried() -> None:
+    assert _build(consequential_symbol_changed=True)["symbol"]["consequential_symbol_changed"] is True
+    assert _build()["symbol"]["consequential_symbol_changed"] is False
 
 
 def test_high_container_fan_in_threshold() -> None:

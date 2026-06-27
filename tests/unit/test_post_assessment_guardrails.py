@@ -41,6 +41,29 @@ def _clean_input(**overrides):
     return pag.GuardrailInput(**base)
 
 
+def test_newly_consequential_post_edit_routes_inspect_first() -> None:
+    # actual change is consequential by post-edit fan-in, but the pre-edit assessment didn't flag it:
+    # softer than a kind-severity increase -> inspect_first, with the new flag set.
+    r = pag.evaluate(_clean_input(actual_consequential=True, pre_edit_consequential=False))
+    assert r.newly_consequential is True
+    assert r.pre_commit_decision is Decision.INSPECT_FIRST
+    assert any("consequential" in reason.lower() for reason in r.reasons)
+
+
+def test_already_consequential_pre_edit_is_not_re_flagged() -> None:
+    # assess already flagged it consequential (and the agent proceeded under that approval): verify must
+    # NOT re-escalate the same signal -> no newly_consequential, clean proceed.
+    r = pag.evaluate(_clean_input(actual_consequential=True, pre_edit_consequential=True))
+    assert r.newly_consequential is False
+    assert r.pre_commit_decision is Decision.PROCEED
+
+
+def test_not_consequential_post_edit_does_not_escalate() -> None:
+    r = pag.evaluate(_clean_input(actual_consequential=False, pre_edit_consequential=False))
+    assert r.newly_consequential is False
+    assert r.pre_commit_decision is Decision.PROCEED
+
+
 def test_within_envelope_verify_proceeds() -> None:
     r = pag.evaluate(_clean_input())
     assert r.pre_commit_decision is Decision.PROCEED

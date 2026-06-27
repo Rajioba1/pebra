@@ -173,6 +173,11 @@ class ActualDiffSummary:
     migration_changed: bool = False
     actual_max_change_kind: str = "UNKNOWN"
     actual_changed_symbols: list[str] = field(default_factory=list)
+    # A1 (M5c.5): post-edit consequence verdict from the reclassifier, now fed by REAL per-symbol fan-in
+    # (graph engine) — symmetric with the assess path. Lets the guardrail escalate a high-fan-in
+    # consequential change the pre-edit assessment didn't flag.
+    actual_consequential_symbol_changed: bool = False
+    actual_consequence_reason: list[str] = field(default_factory=list)
     measured_benefit_deltas: dict[str, float] = field(default_factory=dict)
     # True iff ≥1 changed file was a Python file we attempted to reclassify. Distinguishes
     # "couldn't parse code we changed" (escalate) from "no code symbols at all" (don't).

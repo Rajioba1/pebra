@@ -84,8 +84,15 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
 
 
 def build_verify_ports() -> dict[str, Any]:
-    """The (stateless) adapter bundle ``verify_controller.verify`` needs."""
-    return {"change_verifier": GitChangeVerifier(), "contract_surface": ContractSurfaceScanner()}
+    """The (stateless) adapter bundle ``verify_controller.verify`` needs.
+
+    A1: the verifier gets the graph engine's per-symbol fan-in lookup so post-edit reclassification
+    sees real fan-in (symmetric with assess). Absent codegraph -> the lookup returns {} -> verify keeps
+    its pre-A1 behavior."""
+    return {
+        "change_verifier": GitChangeVerifier(fanin_lookup=CodeGraphAdapter().percentiles_by_name),
+        "contract_surface": ContractSurfaceScanner(),
+    }
 
 
 def build_sanction_port(ctx: RepoContext) -> SanctionPort:
