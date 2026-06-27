@@ -125,6 +125,13 @@ GRAPH_UNCERTAINTY_WEIGHTS: dict[str, float] = {
 ANCHOR_MIN_IN_DEGREE: int = 3
 ANCHOR_FANIN_PERCENTILE: float = 0.90
 
+# --- Learning (M5) calibration gate ---
+# Minimum held-out outcome sample before a learned fact may OVERRIDE a live prediction. Shared by the
+# M5c read-port (enforced as the primary >= gate) and M5d promotion (must agree) so a tiny-sample
+# empirical rate never overrides a decision. apply_snapshot keeps a looser defense-in-depth gate
+# (sample_size > 0 + a calibration_method) — the real floor lives here.
+MIN_CALIBRATION_SAMPLES: int = 30
+
 # --- Cold-start priors (AD-9) — documented uncalibrated defaults used when evidence is absent. ---
 
 COLD_START_PRIORS: dict[str, object] = {

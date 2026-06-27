@@ -24,6 +24,7 @@ from pebra.adapters.git_change_verifier import GitChangeVerifier
 from pebra.adapters.import_graph_cache import GraphProvider
 from pebra.adapters.repository_registry import RepositoryRegistry
 from pebra.adapters.sanction_store import SanctionStore
+from pebra.adapters.snapshot_read_store import SnapshotReadStore
 from pebra.adapters.store.db import SqliteStore
 from pebra.adapters.structural_feature_adapter import StructuralFeatureAdapter
 from pebra.app.assess_controller import AssessmentOutcome, ScoredAction
@@ -69,6 +70,9 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         # Phase-4 reframe: PEBRA-owned structural feature capture (no external codeindex/sem). Shared
         # by CLI + MCP so both persist the same feature payload with predictions.
         "structural_feature_provider": StructuralFeatureAdapter(),
+        # M5c: read-only active-snapshot provider (learned overrides applied pre-scoring). Read-only —
+        # never writes learning. Cold-start (no active facts) -> identity, golden unchanged.
+        "snapshot_read_port": SnapshotReadStore(ctx.store),
     }
 
 

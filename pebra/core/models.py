@@ -214,6 +214,9 @@ class AssessmentInput:
     # assessment_builder/decision_engine MUST ignore it (no score/gate change); persisted with the
     # prediction manifest and consumed by M5 apply_snapshot. None until enrichment is wired.
     structural_features: dict[str, Any] | None = None
+    # M5b: provenance of learned-override facts applied by apply_snapshot (which fact won each target,
+    # prior vs new value). Set on the adjusted copy; builder/engine IGNORE it. None when nothing applied.
+    applied_snapshot_provenance: dict[str, Any] | None = None
 
 
 @dataclass

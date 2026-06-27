@@ -21,12 +21,14 @@ from pebra.core import (
     prediction_capture,
     request_validator,
 )
+from pebra.core.apply_snapshot import apply_snapshot
 from pebra.core.explanation_generator import Explanation
 from pebra.core.models import AssessmentInput, AssessmentRequest, AssessmentResult, CandidateAction
 from pebra.ports.blast_radius_port import BlastRadiusProvider
 from pebra.ports.evidence_port import EvidenceProvider
 from pebra.ports.repository_registry_port import RepositoryRegistryPort
 from pebra.ports.sanction_port import SanctionPort
+from pebra.ports.snapshot_read_port import SnapshotReadPort
 from pebra.ports.store_port import StorePort
 from pebra.ports.structural_feature_port import StructuralFeatureProvider
 from pebra.ports.symbol_diff_port import SymbolDiffProvider
@@ -102,7 +104,7 @@ def _build_input(
         symbol_diff_evidence=symbol_diff,
         blast_evidence=blast,
         architecture_evidence=evidence.architecture_evidence,
-        active_snapshot=None,  # no learning in Phase 0
+        # active_snapshot left at its default None here; M5c assigns it after apply_snapshot.
         sanction=sanction,
     )
 
@@ -128,6 +130,14 @@ def _score_action(
     sfp = ports.get("structural_feature_provider")
     if sfp is not None:
         inp.structural_features = sfp.build_features(inp)
+    # M5c: apply the active learned snapshot PRE-scoring. The bundle is loaded once per assess()
+    # (not once per action) and passed in here. apply_snapshot is pure; the assess path performs NO
+    # learning write. No active facts -> identity (golden unchanged).
+    # The prediction manifest below records the USED (possibly overridden) values; the raw priors are
+    # preserved in inp.applied_snapshot_provenance.
+    bundle = ports.get("active_snapshot_bundle")
+    inp = apply_snapshot(inp, bundle)
+    inp.active_snapshot = bundle
     assessment = assessment_builder.build_assessment(inp)
     policy_violations = inp.policy_violations
     result = decision_engine.decide(assessment, policy_violations=policy_violations)
@@ -146,6 +156,7 @@ def _score_action(
         projected_benefit=result.scores["benefit"],
         action_id=action.id,
         features=inp.structural_features,
+        applied_snapshot_provenance=inp.applied_snapshot_provenance,
     )
     return ScoredAction(
         action=action,
@@ -177,9 +188,13 @@ def assess(
     store: StorePort,
     assessed_commit: str | None = None,
     structural_feature_provider: StructuralFeatureProvider | None = None,
+    snapshot_read_port: SnapshotReadPort | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     repo = repository_registry.resolve(start_path)
+    active_snapshot_bundle = (
+        snapshot_read_port.load_active_snapshot(repo.repo_id) if snapshot_read_port is not None else None
+    )
 
     scored: list[ScoredAction] = []
     for action in request.candidate_actions:
@@ -192,6 +207,7 @@ def assess(
                 sanction_port=sanction_port,
                 assessed_commit=assessed_commit,
                 structural_feature_provider=structural_feature_provider,
+                active_snapshot_bundle=active_snapshot_bundle,
             )
         )
 

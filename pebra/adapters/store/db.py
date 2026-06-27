@@ -619,6 +619,48 @@ class SqliteStore:
             )
         ]
 
+    def read_active_snapshot_rows(self, repo_id: str) -> dict[str, Any] | None:
+        """M5c read-path (read-only): the newest ACTIVE risk_snapshot for a repo + its ACTIVE,
+        human-ratified learned facts as raw rows. Returns None when no active snapshot exists. The
+        snapshot_read adapter decodes fact_json/scope_json and applies the min-sample policy; this
+        method only issues SELECTs. learned_risk_facts.snapshot_id is the bare integer-as-text, e.g.
+        "1", matching risk_snapshots.id; the "rs_{id}" display form is also accepted defensively."""
+        snap = self._con.execute(
+            "SELECT id FROM risk_snapshots WHERE repo_id = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (repo_id,),
+        ).fetchone()
+        if snap is None:
+            return None
+        rs_id = snap[0]
+        rows = self._con.execute(
+            "SELECT id, target_type, target_name, scope_kind, scope_value, specificity_rank, "
+            "scope_json, fact_json, created_at FROM learned_risk_facts "
+            "WHERE repo_id = ? AND snapshot_id IN (?, ?) AND status = 'active' "
+            "AND requires_human_ratification = 0 AND fact_type = 'learned_override' "
+            "ORDER BY id ASC",
+            # canonical is the bare integer-as-text ("1"); also accept the "rs_{id}" display form so a
+            # future M5d writer that stores insert_risk_snapshot's return value can't silently break.
+            (repo_id, str(rs_id), f"rs_{rs_id}"),
+        ).fetchall()
+        return {
+            "snapshot_id": f"rs_{rs_id}",
+            "facts": [
+                {
+                    "fact_id": f"lrf_{fid}",
+                    "target_type": tt,
+                    "target_name": tn,
+                    "scope_kind": sk,
+                    "scope_value": sv,
+                    "specificity_rank": rank,
+                    "scope_json": scope_json,
+                    "fact_json": fact_json,
+                    "created_at": created_at,
+                }
+                for (fid, tt, tn, sk, sv, rank, scope_json, fact_json, created_at) in rows
+            ],
+        }
+
     # --- Milestone 4d: computed prediction errors + shadow snapshots (the learning store writes here)
 
     def _last_prediction_error_hash(self) -> str:
@@ -944,6 +986,10 @@ class SqliteStore:
             and self._validate_learned_risk_fact_chain()
         )
 
+    def validate_learning_chains(self) -> bool:
+        """Return True iff the snapshot/fact chains trusted by the live read path are intact."""
+        return self._validate_risk_snapshot_chain() and self._validate_learned_risk_fact_chain()
+
     def _validate_learned_risk_fact_chain(self) -> bool:
         prev_hash = GENESIS
         for (
@@ -958,6 +1004,11 @@ class SqliteStore:
         ):
             if stored_prev != prev_hash:
                 return False
+            try:
+                scope = json.loads(scope_json)
+                fact = json.loads(fact_json)
+            except (TypeError, ValueError):
+                return False
             content_json = json.dumps(
                 {
                     "repo_id": repo_id,
@@ -968,8 +1019,8 @@ class SqliteStore:
                     "scope_kind": scope_kind,
                     "scope_value": scope_value,
                     "specificity_rank": specificity_rank,
-                    "scope": json.loads(scope_json),
-                    "fact": json.loads(fact_json),
+                    "scope": scope,
+                    "fact": fact,
                     "status": status,
                     "requires_human_ratification": requires_human_ratification,
                     "created_at": created_at,

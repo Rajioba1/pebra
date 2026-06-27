@@ -55,6 +55,7 @@ def build_prediction_manifest(
     prediction_scope: str = "shadow",
     provenance: dict[str, Any] | None = None,
     features: dict[str, Any] | None = None,
+    applied_snapshot_provenance: dict[str, Any] | None = None,
 ) -> list[PredictionTarget]:
     """Build the immutable prediction manifest for one scored action.
 
@@ -65,9 +66,17 @@ def build_prediction_manifest(
       benefit_continuous— ``maintainability_delta.<metric>`` per projected delta; ``measured_benefit``
 
     ``features`` (Phase-4 reframe) is the structural feature payload of the edit; it is attached
-    (copied) to every target so M5 can scope learned facts to real structural context.
+    (copied) to every target so M5 can scope learned facts to real structural context. When learned
+    overrides were applied, the target-specific override provenance is persisted with that target so
+    calibration can see both the used value and the raw pre-override value.
     """
     prov = dict(provenance or {"provider": "pebra", "source_type": "derived"})
+    applied_by_target = {
+        item.get("target"): item
+        for item in (applied_snapshot_provenance or {}).get("applied_facts", [])
+        if isinstance(item, dict)
+    }
+    applied_snapshot_id = (applied_snapshot_provenance or {}).get("snapshot_id")
 
     def _target(
         target_type: str,
@@ -76,6 +85,12 @@ def build_prediction_manifest(
         provenance_update: dict[str, Any] | None = None,
     ) -> PredictionTarget:
         target_provenance = {**prov, **(provenance_update or {})}
+        applied = applied_by_target.get(name)
+        if applied is not None:
+            target_provenance["applied_snapshot"] = {
+                "snapshot_id": applied_snapshot_id,
+                **copy.deepcopy(applied),
+            }
         return PredictionTarget(
             target_type=target_type,
             target_name=name,

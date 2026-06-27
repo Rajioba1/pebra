@@ -95,6 +95,16 @@ class FakeStore:
         return True
 
 
+class FakeSnapshotRead:
+    def __init__(self):
+        self.calls = 0
+
+    def load_active_snapshot(self, repo_id):
+        assert repo_id == "repo_local_example"
+        self.calls += 1
+        return None
+
+
 def _request():
     return m.AssessmentRequest.single_action(
         task="Fix failing login validation",
@@ -103,6 +113,22 @@ def _request():
         action_type="edit",
         affected_symbols=["src/auth.py::validate_login"],
         expected_files=["src/auth.py"],
+    )
+
+
+def _multi_request():
+    return m.AssessmentRequest(
+        task="Compare two edits",
+        candidate_actions=[
+            m.CandidateAction(
+                id="a1", label="Patch validate_login", action_type="edit",
+                affected_symbols=["src/auth.py::validate_login"], expected_files=["src/auth.py"],
+            ),
+            m.CandidateAction(
+                id="a2", label="Patch session timeout", action_type="edit",
+                affected_symbols=["src/session.py::timeout"], expected_files=["src/session.py"],
+            ),
+        ],
     )
 
 
@@ -153,6 +179,25 @@ def test_controller_persists_and_returns_repo_scope() -> None:
     assert outcome.assessment_id == "asm_1"
     assert outcome.repo_id == "repo_local_example"
     assert len(store.persisted) == 1
+
+
+def test_snapshot_read_loaded_once_per_assess_not_per_action() -> None:
+    store = FakeStore()
+    snapshot_read = FakeSnapshotRead()
+    outcome = ac.assess(
+        _multi_request(),
+        thresholds=_THRESHOLDS,
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        snapshot_read_port=snapshot_read,
+    )
+    assert len(outcome.scored_actions) == 2
+    assert snapshot_read.calls == 1
 
 
 class _FakeStructuralFeatures:

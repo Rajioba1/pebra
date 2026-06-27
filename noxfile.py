@@ -45,5 +45,6 @@ def core_only(session: nox.Session) -> None:
         "-c",
         "import pebra.core.decision_engine, pebra.core.assessment_builder, "
         "pebra.core.prediction_error, pebra.core.prediction_capture, "
-        "pebra.core.outcome_labels, pebra.core.structural_features; print('core-only OK')",
+        "pebra.core.outcome_labels, pebra.core.structural_features, "
+        "pebra.core.apply_snapshot; print('core-only OK')",
     )
