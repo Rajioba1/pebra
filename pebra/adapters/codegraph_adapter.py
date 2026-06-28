@@ -23,13 +23,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pebra.core.engine_argv import resolve_engine_argv
+from pebra.core.engine_paths import find_engine
 from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range
 from pebra.core.models import CandidateAction, FanInEvidence
 from pebra.core.score_math import fractional_rank
@@ -127,10 +128,11 @@ def _default_status(repo_root: str) -> dict[str, Any] | None:
 
     Returns the parsed status dict, or None if the codegraph CLI is unavailable / errors / times out.
     The path is POSITIONAL on ``sync``/``status`` (no ``--path`` option on those two)."""
-    if shutil.which("codegraph") is None:
-        return None  # binary not on PATH -> don't even spawn (caller emits an install hint)
+    exe = find_engine()  # PEBRA_CODEGRAPH_BIN -> PATH -> managed install (works in a fresh shell)
+    if exe is None:
+        return None  # engine not found anywhere -> don't even spawn (caller emits an install hint)
     try:
-        initial = _run_status(repo_root)
+        initial = _run_status(repo_root, exe)
         if initial is None:
             return None
         # Only an initialized, same-worktree, merely-stale index is safe to repair with sync.
@@ -140,21 +142,27 @@ def _default_status(repo_root: str) -> dict[str, Any] | None:
             or _is_fresh(initial)
         ):
             return initial
+        # resolve_engine_argv handles the Windows .cmd shim (codegraph has no .exe) — a bare
+        # ["codegraph", ...] FileNotFoundErrors on Windows even when installed.
         subprocess.run(
-            ["codegraph", "sync", repo_root],
-            capture_output=True, text=True, timeout=120, check=False,
+            resolve_engine_argv(exe, ["sync", repo_root]),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120, check=False,
         )
-        post = _run_status(repo_root)
+        post = _run_status(repo_root, exe)
         return post if post is not None else initial
     except (FileNotFoundError, OSError, subprocess.SubprocessError):
         return None
 
 
-def _run_status(repo_root: str) -> dict[str, Any] | None:
-    """One ``codegraph status <repo> --json`` probe -> parsed dict, or None on failure/bad JSON."""
+def _run_status(repo_root: str, exe: str) -> dict[str, Any] | None:
+    """One ``codegraph status <repo> --json`` probe -> parsed dict, or None on failure/bad JSON.
+    ``exe`` is the resolved launcher path (from find_engine) so the Windows .cmd shim is invoked
+    correctly — callers must pre-resolve (no bare-name default, which would FileNotFound on Windows)."""
     proc = subprocess.run(
-        ["codegraph", "status", repo_root, "--json"],
-        capture_output=True, text=True, timeout=30, check=False,
+        resolve_engine_argv(exe, ["status", repo_root, "--json"]),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30, check=False,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         return None

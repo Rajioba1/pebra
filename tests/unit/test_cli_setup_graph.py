@@ -209,13 +209,29 @@ def test_ensure_installed_explicit_version_does_not_skip_different_current(monke
 
 
 def test_link_onto_path_updates_current_process_path_for_immediate_init(tmp_path, monkeypatch) -> None:
-    old_path = "OLDPATH"
-    monkeypatch.setenv("PATH", old_path)
-    launcher = tmp_path / "inst" / "bin" / "codegraph.exe"
+    # Windows: the real launcher is .cmd; in-process PATH is updated so the same process can run init/sync.
+    monkeypatch.setattr(sg.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("PATH", "OLDPATH")
+    launcher = tmp_path / "inst" / "bin" / "codegraph.cmd"
     launcher.parent.mkdir(parents=True)
     launcher.write_bytes(b"")
     sg._link_onto_path(launcher, True, "1.1.1")
     assert str(launcher.parent) in sg.os.environ["PATH"].split(sg.os.pathsep)
+
+
+def test_install_standalone_win32_uses_cmd_launcher(tmp_path, monkeypatch) -> None:
+    # the win32 bundle's launcher is bin/codegraph.cmd (no .exe) — verify must run THAT (A2 finding)
+    asset = _make_zip("codegraph-win32-x64", {"bin/codegraph.cmd": b"@echo 1.1.1\n", "node.exe": b"x"})
+    sums = f"{hashlib.sha256(asset).hexdigest()}  codegraph-win32-x64.zip\n"
+    monkeypatch.setattr(sg, "_download",
+                        lambda url, timeout=60: sums.encode() if url.endswith("SHA256SUMS") else asset)
+    monkeypatch.setattr(sg, "_install_root", lambda v: tmp_path / "inst")
+    verified: list[list[str]] = []
+    monkeypatch.setattr(sg, "_run", lambda cmd, timeout: (verified.append(cmd), (0, "1.1.1", ""))[1])
+    monkeypatch.setattr(sg, "_link_onto_path", lambda *a, **k: None)
+    assert sg._install_standalone(True, "1.1.1", "win32-x64") is True
+    assert (tmp_path / "inst" / "bin" / "codegraph.cmd").exists()
+    assert verified and verified[0][0].endswith("codegraph.cmd")  # verified the .cmd, not a .exe
 
 
 def test_allow_unsupported_install_is_still_untrusted_at_runtime() -> None:
@@ -246,10 +262,13 @@ class _Engine:
 
     def __call__(self, cmd, timeout):
         self.calls.append(cmd)
-        if cmd[:2] == ["codegraph", "status"]:
+        # key on the SUBCOMMAND (cmd[1]), not cmd[0]: cmd[0] is the resolved engine path (a real
+        # managed install on a dev box, or bare "codegraph") — the subcommand is invariant.
+        sub = cmd[1] if len(cmd) > 1 else ""
+        if sub == "status":
             p = self._status.pop(0) if self._status else None
             return (1, "", "") if p is None else (0, json.dumps(p), "")
-        if cmd[:2] == ["codegraph", "--version"]:
+        if sub == "--version":
             return (0, self._version, "")
         return (0, "", "")  # init / sync
 
@@ -259,7 +278,7 @@ def test_setup_graph_happy_builds_index(monkeypatch) -> None:
     eng = _Engine([_FRESH])
     monkeypatch.setattr(sg, "_run", eng)
     assert sg.run_setup_graph(_args()) == 0
-    assert ["codegraph", "init", "/repo"] in eng.calls
+    assert any(c[1:] == ["init", "/repo"] for c in eng.calls)  # init ran (cmd[0] = resolved exe)
 
 
 def test_setup_graph_fix_nonzero_if_mismatch_persists(monkeypatch) -> None:
@@ -270,7 +289,8 @@ def test_setup_graph_fix_nonzero_if_mismatch_persists(monkeypatch) -> None:
 
 def test_doctor_reports_version_and_range(monkeypatch, capsys) -> None:
     monkeypatch.setattr(sg, "_installed", lambda: True)
-    monkeypatch.setattr(sg, "_run", _Engine([_FRESH], version="1.1.1"))
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")  # version detection mocked
+    monkeypatch.setattr(sg, "_run", _Engine([_FRESH]))
     rc = sg.run_doctor(_args(as_json=True))
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0 and payload["version_in_range"] is True
@@ -279,7 +299,8 @@ def test_doctor_reports_version_and_range(monkeypatch, capsys) -> None:
 
 def test_doctor_out_of_range_is_unhealthy(monkeypatch, capsys) -> None:
     monkeypatch.setattr(sg, "_installed", lambda: True)
-    monkeypatch.setattr(sg, "_run", _Engine([_FRESH], version="2.0.0"))
+    monkeypatch.setattr(sg, "_installed_version", lambda: "2.0.0")
+    monkeypatch.setattr(sg, "_run", _Engine([_FRESH]))
     rc = sg.run_doctor(_args(as_json=True))
     payload = json.loads(capsys.readouterr().out)
     assert rc == 1 and payload["version_in_range"] is False

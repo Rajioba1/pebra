@@ -412,7 +412,8 @@ class _Recorder:
 
 
 def _patch(monkeypatch, recorder, *, on_path=True):
-    monkeypatch.setattr(cga.shutil, "which", lambda name: "/usr/bin/codegraph" if on_path else None)
+    # _default_status resolves the engine via find_engine() (not shutil.which directly), so mock that
+    monkeypatch.setattr(cga, "find_engine", lambda: "/usr/bin/codegraph" if on_path else None)
     monkeypatch.setattr(cga.subprocess, "run", recorder)
 
 
@@ -451,6 +452,9 @@ def test_default_status_syncs_only_when_stale_initialized_same_worktree(monkeypa
     _patch(monkeypatch, rec)
     out = cga._default_status("/repo")
     assert len(rec.sync_calls) == 1
+    # A2/Windows: the SYNC invocation (the stale-repair path) must use the resolved full path, not the
+    # bare "codegraph" name (which FileNotFoundErrors on the Windows .cmd shim).
+    assert rec.sync_calls[0][0] == "/usr/bin/codegraph"
     assert len(rec.status_calls) == 2
     assert out == fresh  # returns the post-sync status
 
@@ -462,6 +466,7 @@ def test_default_status_returns_initial_when_post_sync_status_fails(monkeypatch)
     _patch(monkeypatch, rec)
     out = cga._default_status("/repo")
     assert len(rec.sync_calls) == 1
+    assert rec.sync_calls[0][0] == "/usr/bin/codegraph"  # resolved full path, not bare name
     assert out == stale
 
 
@@ -523,6 +528,16 @@ def test_percentiles_by_name_empty_for_no_symbols(tmp_path) -> None:
     assert _adapter().percentiles_by_name([], str(tmp_path)) == {}
 
 
+def test_default_status_invokes_resolved_full_path_not_bare_name(monkeypatch) -> None:
+    # A2/Windows: status/sync must run the resolved full path (shutil.which), never the bare name
+    # ("codegraph"), or Windows FileNotFoundErrors on the .cmd shim even when installed.
+    rec = _Recorder([{"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+                      "index": {"reindexRecommended": False}}])
+    _patch(monkeypatch, rec)
+    cga._default_status("/repo")
+    assert rec.calls and all(c[0] == "/usr/bin/codegraph" for c in rec.calls)
+
+
 # --- real binary path (skipped unless the codegraph CLI is installed) ---
 
 @pytest.mark.requires_codegraph
@@ -530,7 +545,11 @@ def test_default_status_against_real_initialized_repo(tmp_path) -> None:
     import subprocess
 
     (tmp_path / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    subprocess.run(["codegraph", "init", str(tmp_path)], capture_output=True, text=True, timeout=180)
+    # resolve via find_engine (PATH or managed install), then build argv (cmd /c for the Windows .cmd
+    # shim); utf-8 decode because codegraph emits UTF-8 progress output (cp1252 default raises on Windows)
+    exe = cga.find_engine()
+    subprocess.run(cga.resolve_engine_argv(exe, ["init", str(tmp_path)]),
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     status = cga._default_status(str(tmp_path))
     assert isinstance(status, dict)
     assert "pendingChanges" in status and "index" in status

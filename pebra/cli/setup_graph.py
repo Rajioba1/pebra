@@ -37,6 +37,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from pebra.core.engine_argv import resolve_engine_argv
+from pebra.core.engine_paths import find_engine, managed_install_root
 from pebra.core.graph_version import (
     CODEGRAPH_ACCEPTED_RANGE,
     CODEGRAPH_DEFAULT_VERSION,
@@ -56,7 +58,10 @@ _MANUAL_HINT = (
 
 def register(subparsers: Any) -> None:
     sg = subparsers.add_parser(
-        "setup-graph", help="Install/initialize the graph engine index for this repo/worktree."
+        "setup-graph", help="Install/initialize the graph engine index for this repo/worktree.",
+        epilog="Env: PEBRA_CODEGRAPH_BIN overrides where PEBRA looks for codegraph "
+               "(a bin directory or the launcher path) — takes precedence over PATH and the "
+               "managed install.",
     )
     sg.add_argument("--repo-root", default=".")
     sg.add_argument("--fix", action="store_true",
@@ -82,12 +87,24 @@ def register(subparsers: Any) -> None:
 # --- engine shell helpers (stdlib only) ---
 
 def _installed() -> bool:
-    return shutil.which(_ENGINE) is not None
+    return find_engine() is not None  # PEBRA_CODEGRAPH_BIN -> PATH -> managed install
+
+
+def _engine_exe() -> str:
+    """The resolved engine launcher (full path) for codegraph invocations; bare name if unresolved
+    (subprocess then fails naturally). Ensures off-PATH managed installs are still invoked."""
+    return find_engine() or _ENGINE
 
 
 def _run(cmd: list[str], timeout: int) -> tuple[int, str, str]:
+    # resolve_engine_argv handles the Windows .cmd shim (codegraph/npm have no .exe) — a bare
+    # ["codegraph", ...] FileNotFoundErrors on Windows even when on PATH. Also handles full launcher paths.
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        argv = resolve_engine_argv(cmd[0], cmd[1:])
+        # force UTF-8 decode: codegraph emits UTF-8 progress output; the Windows default cp1252 raises
+        # UnicodeDecodeError on it (A2 finding).
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, check=False)
         return p.returncode, p.stdout, p.stderr
     except FileNotFoundError:
         return 127, "", f"{cmd[0]} not found on PATH"
@@ -96,12 +113,15 @@ def _run(cmd: list[str], timeout: int) -> tuple[int, str, str]:
 
 
 def _installed_version() -> str | None:
-    rc, out, _ = _run([_ENGINE, "--version"], timeout=30)
+    exe = find_engine()
+    if exe is None:
+        return None
+    rc, out, _ = _run([exe, "--version"], timeout=30)
     return out.strip() if rc == 0 and out.strip() else None
 
 
 def _status(repo_root: str) -> dict[str, Any] | None:
-    rc, out, _ = _run([_ENGINE, "status", repo_root, "--json"], timeout=30)
+    rc, out, _ = _run([_engine_exe(), "status", repo_root, "--json"], timeout=30)
     if rc != 0 or not out.strip():
         return None
     try:
@@ -183,7 +203,7 @@ def _expected_sha(sums_text: str, asset_name: str) -> str | None:
 
 
 def _install_root(version: str) -> Path:
-    return Path.home() / ".codegraph" / "pebra" / version
+    return managed_install_root(version)  # single source of truth (shared with find_engine)
 
 
 def _release_tag(version: str) -> str:
@@ -264,7 +284,15 @@ def _install_standalone(as_json: bool, version: str, target: str) -> bool:
               [f"could not extract {asset} ({exc}); falling back to npm."])
         return False
 
-    launcher = dest / "bin" / (f"{_ENGINE}.exe" if target.startswith("win32") else _ENGINE)
+    if target.startswith("win32"):
+        # the real win32 bundle ships bin/codegraph.cmd (a node.exe shim), NOT a .exe (A2 finding).
+        launcher = next(
+            (dest / "bin" / n for n in (f"{_ENGINE}.cmd", f"{_ENGINE}.exe")
+             if (dest / "bin" / n).is_file()),
+            dest / "bin" / f"{_ENGINE}.cmd",
+        )
+    else:
+        launcher = dest / "bin" / _ENGINE
     rc, out, _ = _run([str(launcher), "--version"], timeout=30)  # verify the extracted binary runs
     if rc != 0:
         _emit({"ok": False, "step": "verify", "launcher": str(launcher)}, as_json,
@@ -278,7 +306,7 @@ def _link_onto_path(launcher: Path, as_json: bool, version: str) -> None:
     """Best-effort: symlink the launcher into a per-user bin dir on POSIX; on Windows, advise the PATH
     addition (we do not edit the registry). The current process PATH is updated in all cases so the
     same `pebra setup-graph` invocation can immediately run `codegraph init/sync`."""
-    if launcher.name.endswith(".exe"):
+    if platform.system() == "Windows":  # .cmd or .exe launcher — no POSIX symlink, advise PATH
         os.environ["PATH"] = f"{launcher.parent}{os.pathsep}{os.environ.get('PATH', '')}"
         _emit({"ok": True, "step": "path", "bin": str(launcher.parent), "version": version}, as_json,
               [f"codegraph {version} installed at {launcher}.",
@@ -365,8 +393,9 @@ def _ensure_installed(
 
 def _build_worktree_local_index(repo_root: str) -> dict[str, Any] | None:
     """init (worktree-local; indexes by default) + sync, then return the fresh status."""
-    _run([_ENGINE, "init", repo_root], timeout=600)
-    _run([_ENGINE, "sync", repo_root], timeout=300)
+    exe = _engine_exe()
+    _run([exe, "init", repo_root], timeout=600)
+    _run([exe, "sync", repo_root], timeout=300)
     return _status(repo_root)
 
 
