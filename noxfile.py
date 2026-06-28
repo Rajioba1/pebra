@@ -9,6 +9,7 @@ DEV = [
     "pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema",
     "pyyaml", "radon", "bandit",
     "fastapi", "uvicorn", "jinja2", "httpx",  # Risk Observatory dashboard surface + test client
+    "numpy", "scikit-learn", "scipy",  # Oracle math references for tests/oracles.
 ]
 
 

@@ -47,6 +47,12 @@ dev = [
     "build",
     "twine",
     "pre-commit",
+    # Oracle backends for tests/oracles/ ONLY: PEBRA's stdlib core math is validated against these
+    # reference implementations (numpy/sklearn/scipy) to machine precision. They are NEVER imported
+    # by pebra.core (purity contract) — they exist here purely as test ground-truth.
+    "numpy",
+    "scikit-learn",
+    "scipy",
 ]
 
 [project.optional-dependencies]
