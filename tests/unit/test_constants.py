@@ -99,3 +99,18 @@ def test_edit_confidence_factors_are_six_equally_weighted() -> None:
         "scope_control",
     )
     assert C.EDIT_CONFIDENCE_WEIGHT == pytest.approx(1 / 6)
+
+
+def test_m5_active_learning_requires_spec_minimum_sample_size() -> None:
+    assert C.MIN_CALIBRATION_SAMPLES == 100
+
+
+def test_cold_start_variances_match_spec_table() -> None:
+    assert C.COLD_START_VARIANCES == {
+        "p_success": 0.04,
+        "benefit": 0.01,
+        "p_event": 0.0025,
+        "disutility": 0.0025,
+        "review_cost": 0.01,
+        "scenario_variance": 0.0003,
+    }

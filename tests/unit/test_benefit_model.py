@@ -75,3 +75,13 @@ def test_projected_mode_widens_variance_vs_measured() -> None:
         future_change_exposure=1.0,
     )
     assert projected.benefit_variance > measured.benefit_variance
+
+
+def test_projected_mode_uses_spec_variance_floor() -> None:
+    projected = bm.resolve_benefit(
+        immediate_benefit=0.82,
+        deltas={},
+        source_type="projected",
+        future_change_exposure=0.0,
+    )
+    assert projected.benefit_variance == pytest.approx(0.04)

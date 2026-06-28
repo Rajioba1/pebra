@@ -100,6 +100,17 @@ EDIT_CONFIDENCE_FACTORS: tuple[str, ...] = (
 )
 EDIT_CONFIDENCE_WEIGHT: float = 1.0 / len(EDIT_CONFIDENCE_FACTORS)
 
+# AD-5 cold-start variance table. These are component variances, not a single opaque utility
+# variance; score_normalizer composes them into utility variance with first-order propagation.
+COLD_START_VARIANCES: dict[str, float] = {
+    "p_success": 0.04,
+    "benefit": 0.01,
+    "p_event": 0.0025,
+    "disutility": 0.0025,
+    "review_cost": 0.01,
+    "scenario_variance": 0.0003,
+}
+
 # --- Graph-incompleteness penalties (Slice 3c) — uncalibrated, bounded defaults. ---
 # Each unresolved/dynamic/wildcard import (and missing expected file) erodes confidence in the blast
 # estimate. Weights are per-count, summed, then capped at GRAPH_UNCERTAINTY_CAP: incompleteness can
@@ -130,7 +141,7 @@ ANCHOR_FANIN_PERCENTILE: float = 0.90
 # M5c read-port (enforced as the primary >= gate) and M5d promotion (must agree) so a tiny-sample
 # empirical rate never overrides a decision. apply_snapshot keeps a looser defense-in-depth gate
 # (sample_size > 0 + a calibration_method) — the real floor lives here.
-MIN_CALIBRATION_SAMPLES: int = 30
+MIN_CALIBRATION_SAMPLES: int = 100
 
 # --- Cold-start priors (AD-9) — documented uncalibrated defaults used when evidence is absent. ---
 

@@ -13,8 +13,10 @@ tools, reads files, or infers new evidence.
 
 from __future__ import annotations
 
+from pebra.core.constants import COLD_START_VARIANCES
+
 # Cold-start total utility variance (prior_uncalibrated) — widest, used only when nothing better.
-COLD_START_UTILITY_VARIANCE: float = 0.04
+COLD_START_UTILITY_VARIANCE: float = sum(COLD_START_VARIANCES.values())
 
 
 def clamp_unit(x: float) -> float:
@@ -24,6 +26,22 @@ def clamp_unit(x: float) -> float:
     if x > 1.0:
         return 1.0
     return x
+
+
+def variance_from_confidence(confidence: float) -> float:
+    """AD-5 confidence-derived variance fallback: Var(x) = ((1 - confidence) / 2)^2."""
+    c = clamp_unit(confidence)
+    return ((1.0 - c) / 2.0) ** 2
+
+
+def _component_variance(
+    supplied: float | None, confidence: float | None, cold_start_key: str
+) -> float:
+    if supplied is not None and supplied > 0.0:
+        return supplied
+    if confidence is not None:
+        return variance_from_confidence(confidence)
+    return COLD_START_VARIANCES[cold_start_key]
 
 
 def resolve_utility_variance(
@@ -36,6 +54,11 @@ def resolve_utility_variance(
     var_review_cost: float | None = None,
     event_variance: float | None = None,
     scenario_variance: float | None = None,
+    p_success_confidence: float | None = None,
+    benefit_confidence: float | None = None,
+    review_cost_confidence: float | None = None,
+    event_confidence: float | None = None,
+    disutility_confidence: float | None = None,
 ) -> tuple[dict[str, float], float, str]:
     """Return ``(variance_breakdown, total_variance, source)`` following AD-5 precedence."""
     # Precedence 1 — explicit breakdown supplied with the input.
@@ -44,22 +67,40 @@ def resolve_utility_variance(
         return dict(explicit_breakdown), total, "explicit"
 
     # Precedence 2 — first-order error propagation from component variances.
-    have_components = all(
-        v is not None
-        for v in (benefit, p_success, var_p_success, var_benefit, var_review_cost)
-    )
+    have_components = benefit is not None and p_success is not None
     if have_components:
         assert benefit is not None and p_success is not None
-        assert var_p_success is not None and var_benefit is not None and var_review_cost is not None
+        p_success_var = _component_variance(
+            var_p_success, p_success_confidence, "p_success"
+        )
+        benefit_var = _component_variance(var_benefit, benefit_confidence, "benefit")
+        review_cost_var = _component_variance(
+            var_review_cost, review_cost_confidence, "review_cost"
+        )
+        if event_variance is None:
+            event_variance = _component_variance(None, event_confidence, "p_event")
+            event_variance += _component_variance(None, disutility_confidence, "disutility")
         breakdown = {
-            "p_success": (benefit**2) * var_p_success,
-            "benefit": (p_success**2) * var_benefit,
-            "event_losses": event_variance or 0.0,
-            "review_cost": var_review_cost,
-            "scenario_variance": scenario_variance or 0.0,
+            "p_success": (benefit**2) * p_success_var,
+            "benefit": (p_success**2) * benefit_var,
+            "event_losses": event_variance,
+            "review_cost": review_cost_var,
+            "scenario_variance": (
+                scenario_variance
+                if scenario_variance is not None
+                else COLD_START_VARIANCES["scenario_variance"]
+            ),
         }
         return breakdown, sum(breakdown.values()), "first_order"
 
     # Precedence 3 — cold-start default.
-    breakdown = {"cold_start_total": COLD_START_UTILITY_VARIANCE}
+    breakdown = {
+        "p_success": COLD_START_VARIANCES["p_success"],
+        "benefit": COLD_START_VARIANCES["benefit"],
+        "event_losses": (
+            COLD_START_VARIANCES["p_event"] + COLD_START_VARIANCES["disutility"]
+        ),
+        "review_cost": COLD_START_VARIANCES["review_cost"],
+        "scenario_variance": COLD_START_VARIANCES["scenario_variance"],
+    }
     return breakdown, COLD_START_UTILITY_VARIANCE, "cold_start"

@@ -46,7 +46,38 @@ def test_first_order_propagation_when_no_explicit_breakdown() -> None:
     assert total == pytest.approx(0.0036)
 
 
+def test_confidence_maps_to_variance_when_component_variance_absent() -> None:
+    assert sn.variance_from_confidence(1.0) == pytest.approx(0.0)
+    assert sn.variance_from_confidence(0.6) == pytest.approx(0.04)
+
+    breakdown, _total, source = sn.resolve_utility_variance(
+        explicit_breakdown=None,
+        benefit=0.80,
+        p_success=0.75,
+        var_p_success=None,
+        var_benefit=None,
+        var_review_cost=None,
+        p_success_confidence=0.60,
+        benefit_confidence=0.80,
+        review_cost_confidence=0.90,
+        event_confidence=0.70,
+        disutility_confidence=0.70,
+    )
+    assert source == "first_order"
+    assert breakdown["p_success"] == pytest.approx((0.80**2) * 0.04)
+    assert breakdown["benefit"] == pytest.approx((0.75**2) * 0.01)
+    assert breakdown["review_cost"] == pytest.approx(0.0025)
+    assert breakdown["event_losses"] == pytest.approx(0.045)
+
+
 def test_cold_start_default_when_nothing_supplied() -> None:
     breakdown, total, source = sn.resolve_utility_variance(explicit_breakdown=None)
     assert source == "cold_start"
-    assert total > 0
+    assert breakdown == {
+        "p_success": 0.04,
+        "benefit": 0.01,
+        "event_losses": 0.005,
+        "review_cost": 0.01,
+        "scenario_variance": 0.0003,
+    }
+    assert total == pytest.approx(0.0653)

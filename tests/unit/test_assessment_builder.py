@@ -136,8 +136,8 @@ def test_builder_uses_first_order_variance_when_no_explicit_breakdown() -> None:
     inp = replace(_worked_example_input(), variance_breakdown=None)
     a = ab.build_assessment(inp)
     assert a.scores["variance_source"] == "first_order"
-    # contribution from benefit: p_success^2 * benefit_variance (projected 0.0064)
-    assert a.scores["variance_breakdown"]["benefit"] == pytest.approx((0.74**2) * 0.0064)
+    # contribution from benefit: p_success^2 * benefit_variance (projected 0.04)
+    assert a.scores["variance_breakdown"]["benefit"] == pytest.approx((0.74**2) * 0.04)
 
 
 def test_builder_scope_basis_file_fallback_when_not_parsed() -> None:

@@ -39,7 +39,7 @@ METRIC_DIRECTION: dict[str, int] = {
 
 # Cold-start / projected variance (prior_uncalibrated, AD-5/AD-9): projected benefit is the most
 # uncertain; measured benefit narrows it.
-PROJECTED_BENEFIT_VARIANCE: float = 0.0064
+PROJECTED_BENEFIT_VARIANCE: float = 0.04
 MEASURED_BENEFIT_VARIANCE: float = 0.0004
 
 

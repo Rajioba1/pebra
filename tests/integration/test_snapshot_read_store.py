@@ -40,7 +40,7 @@ def _seed_fact(store, *, repo_id="r1", snapshot_id="1", target_name="p_success",
                created_at="2026-01-01T00:00:00Z"):
     if fact_json is None:
         fact_json = json.dumps(fact if fact is not None
-                                else {"value": 0.80, "sample_size": 50, "calibration_method": "brier_bucket"})
+                                else {"value": 0.80, "sample_size": 100, "calibration_method": "brier_bucket"})
     prev_hash = store._con.execute(
         "SELECT row_hash FROM learned_risk_facts ORDER BY id DESC LIMIT 1"
     ).fetchone()
@@ -119,7 +119,7 @@ def test_active_snapshot_with_applicable_fact(tmp_path) -> None:
     assert bundle is not None and bundle.snapshot_id == f"rs_{rs}"
     (f,) = bundle.facts
     assert f.fact_id.startswith("lrf_") and f.value == 0.80
-    assert f.sample_size == 50 and f.calibration_method == "brier_bucket"
+    assert f.sample_size == 100 and f.calibration_method == "brier_bucket"
 
 
 def test_rs_prefixed_snapshot_id_also_joins(tmp_path) -> None:
@@ -143,7 +143,7 @@ def test_low_sample_fact_excluded(tmp_path) -> None:
 def test_missing_calibration_method_excluded(tmp_path) -> None:
     store = _store(tmp_path)
     _seed_snapshot(store)
-    _seed_fact(store, fact={"value": 0.8, "sample_size": 50, "calibration_method": ""})
+    _seed_fact(store, fact={"value": 0.8, "sample_size": 100, "calibration_method": ""})
     assert SnapshotReadStore(store).load_active_snapshot("r1").facts == ()
     store.close()
 
@@ -151,7 +151,7 @@ def test_missing_calibration_method_excluded(tmp_path) -> None:
 def test_whitespace_calibration_method_excluded(tmp_path) -> None:
     store = _store(tmp_path)
     _seed_snapshot(store)
-    _seed_fact(store, fact={"value": 0.8, "sample_size": 50, "calibration_method": "   "})
+    _seed_fact(store, fact={"value": 0.8, "sample_size": 100, "calibration_method": "   "})
     assert SnapshotReadStore(store).load_active_snapshot("r1").facts == ()
     store.close()
 
@@ -167,10 +167,10 @@ def test_non_override_fact_type_excluded(tmp_path) -> None:
 def test_tampered_learned_fact_chain_fails_closed(tmp_path) -> None:
     store = _store(tmp_path)
     rs = _seed_snapshot(store)
-    _seed_fact(store, snapshot_id=str(rs), fact={"value": 0.8, "sample_size": 50, "calibration_method": "m"})
+    _seed_fact(store, snapshot_id=str(rs), fact={"value": 0.8, "sample_size": 100, "calibration_method": "m"})
     store._con.execute(
         "UPDATE learned_risk_facts SET fact_json = ?",
-        (json.dumps({"value": 0.1, "sample_size": 50, "calibration_method": "m"}),),
+        (json.dumps({"value": 0.1, "sample_size": 100, "calibration_method": "m"}),),
     )
     assert store.validate_chain() is False
     assert SnapshotReadStore(store).load_active_snapshot("r1") is None
@@ -215,8 +215,8 @@ def test_newest_active_snapshot_wins(tmp_path) -> None:
     store = _store(tmp_path)
     old = _seed_snapshot(store)
     new = _seed_snapshot(store)
-    _seed_fact(store, snapshot_id=str(old), target_name="p_success", fact={"value": 0.1, "sample_size": 50, "calibration_method": "m"})
-    _seed_fact(store, snapshot_id=str(new), target_name="p_event.new", fact={"value": 0.2, "sample_size": 50, "calibration_method": "m"})
+    _seed_fact(store, snapshot_id=str(old), target_name="p_success", fact={"value": 0.1, "sample_size": 100, "calibration_method": "m"})
+    _seed_fact(store, snapshot_id=str(new), target_name="p_event.new", fact={"value": 0.2, "sample_size": 100, "calibration_method": "m"})
     bundle = SnapshotReadStore(store).load_active_snapshot("r1")
     store.close()
     assert bundle.snapshot_id == f"rs_{new}"

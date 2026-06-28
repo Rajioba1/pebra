@@ -163,6 +163,9 @@ _PROCEED_EVIDENCE = {
         "p_success": 0.9, "evidence_quality": 0.9, "testability": 0.9,
         "reversibility": 0.9, "source_reliability": 0.9, "scope_control": 0.9,
     },
+    # Keep this fixture focused on Gate 12. Without an explicit low variance, the corrected AD-5
+    # cold-start variance triggers Gate 5 before the architecture freshness gate can be observed.
+    "variance_breakdown": {"fixture_low_variance": 0.0001},
 }
 _HIGH_RISK_EVIDENCE = {
     "events": [{"event": "public_api_break", "p_event": 0.6, "elicited_disutility": 0.9}],

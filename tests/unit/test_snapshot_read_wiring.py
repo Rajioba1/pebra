@@ -20,7 +20,7 @@ from pebra.core import candidate_parser
 FIXTURE = Path(__file__).resolve().parents[1].parent / "examples" / "login_patch.json"
 
 
-def _seed_active_p_success_fact(store, repo_id, *, value=0.10, sample_size=50):
+def _seed_active_p_success_fact(store, repo_id, *, value=0.10, sample_size=100):
     created_at = "2026-01-01T00:00:00Z"
     rs_content = _risk_snapshot_canonical(repo_id, "active", {}, created_at, {"hash_version": 2})
     rs_hash = _row_hash(GENESIS, rs_content)
