@@ -836,7 +836,20 @@ class SqliteStore:
             "benefit_continuous": "benefit_continuous_calibration_data",
         }
         view = views[target_type]
-        sql = f"SELECT v.* FROM {view} v JOIN assessments a ON a.id = v.assessment_id "
+        # Expose the persisted features_json so promotion can derive symbol/public_api/domain/fan-in
+        # scopes (not just global/action_type). A correlated subquery (latest capture per key, NULL-safe
+        # action_id via IS) can never fan out and inflate calibration counts.
+        sql = (
+            f"SELECT v.*, ("
+            "  SELECT ap.features_json FROM assessment_predictions ap"
+            "  WHERE ap.assessment_id = v.assessment_id"
+            "    AND ap.target_type = v.target_type"
+            "    AND ap.target_name = v.target_name"
+            "    AND ap.action_id IS v.action_id"
+            "  ORDER BY ap.id DESC LIMIT 1"
+            ") AS features_json "
+            f"FROM {view} v JOIN assessments a ON a.id = v.assessment_id "
+        )
         params: tuple = ()
         if repo_id is not None:
             sql += "WHERE a.repo_id = ? "
@@ -844,7 +857,17 @@ class SqliteStore:
         sql += "ORDER BY v.id ASC"
         rows = self._con.execute(sql, params)
         cols = [d[0] for d in rows.description]
-        return [dict(zip(cols, r)) for r in rows.fetchall()]
+        out: list[dict[str, Any]] = []
+        for r in rows.fetchall():
+            d = dict(zip(cols, r))
+            features_json = d.pop("features_json", None)
+            try:
+                parsed_features = json.loads(features_json) if features_json else {}
+            except (TypeError, ValueError):
+                parsed_features = {}
+            d["features"] = parsed_features if isinstance(parsed_features, dict) else {}
+            out.append(d)
+        return out
 
     def record_outcome(self, assessment_id: str, status: str, detail: dict | None = None) -> None:
         """Append the terminal outcome of an assessed action (AD-4). OutcomePort impl: the assessment

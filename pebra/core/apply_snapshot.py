@@ -13,6 +13,8 @@ Safety rails:
 - only ``risk_binary`` targets (p_success / p_event.*) are applied; benefit targets are skipped (v1).
 - defense-in-depth: facts requiring human ratification, or with no calibration sample, are not applied
   (the read-port is the primary gate: status='active', ratified, min sample size).
+- stale/weak facts whose churn-decayed reliability falls below the auto-apply threshold are skipped
+  on both hard-replace and log-pool paths.
 - adjusted probabilities clamped to [0.01, 0.99] (logit safety; intentionally stricter than the
   capture clamp of [0,1] in prediction_capture).
 - the original input is never mutated; adjusted event dicts are deep-copied.
@@ -27,6 +29,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from pebra.core import risk_fact_decay
 from pebra.core.models import AssessmentInput
 from pebra.core.prediction_capture import RISK_BINARY
 
@@ -54,12 +57,42 @@ class SnapshotFact:
     weight: float = 1.0
     requires_human_ratification: bool = False
     scope_json: dict[str, Any] = field(default_factory=dict)
+    # Read-side enriched reliability inputs. Hard-replace uses them only for auto-apply eligibility;
+    # log-pool also uses them as the contributor weight.
+    # ``calibration_quality`` scales the base reliability weight; ``scope_change_count`` is scope churn
+    # since the fact was learned (drives AD-17 decay).
+    calibration_quality: float = 1.0
+    scope_change_count: int = 0
 
 
 @dataclass(frozen=True)
 class SnapshotBundle:
     snapshot_id: str
     facts: tuple[SnapshotFact, ...] = ()
+
+
+@dataclass(frozen=True)
+class PoolConfig:
+    """How matching facts are combined (AD-20). ``hard_replace`` (default) is the v1 winner-take-all
+    path. ``log_pool`` combines the top-k matching facts in logit space, weighted by churn-decayed
+    reliability, anchored to the model's prior so the pooled value cannot move more than
+    ``max_logit_shift`` logits away from the original belief."""
+
+    mode: str = "hard_replace"  # "hard_replace" | "log_pool"
+    top_k: int = 1
+    max_logit_shift: float = 2.0
+
+
+def _validate_pool_config(cfg: PoolConfig | None) -> PoolConfig | None:
+    if cfg is None:
+        return None
+    if cfg.mode not in {"hard_replace", "log_pool"}:
+        raise ValueError(f"unsupported pool mode: {cfg.mode!r}")
+    if cfg.top_k < 1:
+        raise ValueError(f"top_k must be >= 1, got {cfg.top_k}")
+    if cfg.max_logit_shift < 0.0 or not math.isfinite(cfg.max_logit_shift):
+        raise ValueError(f"max_logit_shift must be finite and >= 0, got {cfg.max_logit_shift}")
+    return cfg
 
 
 def _clamp(value: float) -> float:
@@ -143,16 +176,10 @@ def _winner(
 ) -> SnapshotFact | None:
     """Most-specific-wins (k=1) with a deterministic tiebreak on equal specificity:
     specificity_rank -> sample_size -> created_at (newest) -> fact_id."""
-    candidates = [
-        f for f in facts
-        if f.target_name == target_name and _applicable(f) and _matches(f, inp, features)
-    ]
+    candidates = _candidates(facts, target_name, inp, features)
     if not candidates:
         return None
-    return max(
-        candidates,
-        key=lambda f: (f.specificity_rank, f.sample_size, f.created_at, f.fact_id),
-    )
+    return candidates[0]
 
 
 def _provenance(target: str, prior: float, new: float, fact: SnapshotFact) -> dict[str, Any]:
@@ -168,11 +195,138 @@ def _provenance(target: str, prior: float, new: float, fact: SnapshotFact) -> di
     }
 
 
+def _effective_fact_weight(fact: SnapshotFact) -> float | None:
+    try:
+        weight = float(fact.weight)
+        quality = float(fact.calibration_quality)
+        count = int(fact.scope_change_count)
+    except (TypeError, ValueError):
+        return None
+    if weight < 0.0 or quality < 0.0 or count < 0:
+        return None
+    if not math.isfinite(weight) or not math.isfinite(quality):
+        return None
+    try:
+        decayed = risk_fact_decay.effective_weight(weight * quality, count)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return decayed if math.isfinite(decayed) else None
+
+
+def _auto_applies(fact: SnapshotFact) -> bool:
+    weight = _effective_fact_weight(fact)
+    return weight is not None and risk_fact_decay.should_auto_apply(weight)
+
+
+def _logit(p: float) -> float:
+    p = _clamp(p)
+    return math.log(p / (1.0 - p))
+
+
+def _sigmoid(x: float) -> float:
+    # numerically stable: avoid exp() overflow on large |x| (e.g. a far-off pooled logit).
+    if x >= 0.0:
+        return 1.0 / (1.0 + math.exp(-x))
+    z = math.exp(x)
+    return z / (1.0 + z)
+
+
+def _candidates(
+    facts: tuple[SnapshotFact, ...], target_name: str, inp: AssessmentInput,
+    features: dict[str, Any] | None,
+) -> list[SnapshotFact]:
+    """Applicable + matching facts for a target, most-specific first (same order key as ``_winner``)."""
+    cands = [
+        f for f in facts
+        if (
+            f.target_name == target_name
+            and _applicable(f)
+            and _auto_applies(f)
+            and _matches(f, inp, features)
+        )
+    ]
+    cands.sort(
+        key=lambda f: (f.specificity_rank, f.sample_size, f.created_at, f.fact_id), reverse=True
+    )
+    return cands
+
+
+def _pool_value(
+    prior: float, candidates: list[SnapshotFact], cfg: PoolConfig
+) -> tuple[float | None, list[tuple[SnapshotFact, float]]]:
+    """Logit-space reliability-weighted pool of the top-k candidates, anchored to ``prior``.
+
+    Each candidate's weight is its churn-decayed reliability (AD-17); candidates that decay below the
+    auto-apply threshold are dropped. The pooled logit cannot move more than ``cfg.max_logit_shift``
+    from ``logit(prior)``. Returns ``(None, [])`` when no candidate survives.
+    """
+    weighted: list[tuple[SnapshotFact, float]] = []
+    for f in candidates[: cfg.top_k]:
+        w = _effective_fact_weight(f)
+        if w is None or not risk_fact_decay.should_auto_apply(w):
+            continue
+        weighted.append((f, w))
+    if not weighted:
+        return None, []
+    total = math.fsum(w for _, w in weighted)
+    pooled_logit = math.fsum(w * _logit(f.value) for f, w in weighted) / total
+    anchor = _logit(prior)
+    lo, hi = anchor - cfg.max_logit_shift, anchor + cfg.max_logit_shift
+    pooled_logit = max(lo, min(hi, pooled_logit))
+    return _clamp(_sigmoid(pooled_logit)), weighted
+
+
+def _pool_provenance(
+    target: str, prior: float, new: float, contributors: list[tuple[SnapshotFact, float]]
+) -> dict[str, Any]:
+    return {
+        "target": target,
+        "mode": "log_pool",
+        "prior_predicted_p": prior,
+        "new_value": new,
+        "pooled_facts": [
+            {
+                "fact_id": f.fact_id, "scope_kind": f.scope_kind, "scope_rank": f.specificity_rank,
+                "value": f.value, "pool_weight": w, "sample_size": f.sample_size,
+                "calibration_method": f.calibration_method,
+            }
+            for f, w in contributors
+        ],
+    }
+
+
+def _resolve_target(
+    facts: tuple[SnapshotFact, ...], target_name: str, prior: float, inp: AssessmentInput,
+    features: dict[str, Any] | None, cfg: PoolConfig | None,
+) -> tuple[float | None, dict[str, Any] | None]:
+    """Resolve one target to ``(new_value, provenance)`` or ``(None, None)`` when nothing applies.
+
+    ``cfg is None`` or ``mode == "hard_replace"`` uses the v1 winner-take-all path after
+    auto-apply eligibility filtering; ``mode == "log_pool"`` uses reliability-weighted logit pooling.
+    """
+    if cfg is None or cfg.mode == "hard_replace":
+        winner = _winner(facts, target_name, inp, features)
+        if winner is None:
+            return None, None
+        new = _clamp(winner.value)
+        return new, _provenance(target_name, prior, new, winner)
+    new, contributors = _pool_value(prior, _candidates(facts, target_name, inp, features), cfg)
+    if new is None:
+        return None, None
+    return new, _pool_provenance(target_name, prior, new, contributors)
+
+
 def apply_snapshot(
-    inp: AssessmentInput, snapshot: SnapshotBundle | None = None
+    inp: AssessmentInput,
+    snapshot: SnapshotBundle | None = None,
+    pool_config: PoolConfig | None = None,
 ) -> AssessmentInput:
     """Return ``inp`` unchanged when no active snapshot/fact applies; otherwise an adjusted copy with
-    overridden risk probabilities and ``applied_snapshot_provenance`` set."""
+    overridden risk probabilities and ``applied_snapshot_provenance`` set.
+
+    ``pool_config`` defaults to ``None`` == v1 hard-replace; ``PoolConfig(mode=
+    "log_pool", ...)`` opts into top-k reliability-weighted logit pooling (AD-20)."""
+    pool_config = _validate_pool_config(pool_config)
     if snapshot is None or not snapshot.facts:
         return inp
 
@@ -180,24 +334,27 @@ def apply_snapshot(
     applied: list[dict[str, Any]] = []
 
     new_p_success = inp.p_success
-    ps_winner = _winner(snapshot.facts, "p_success", inp, features)
-    if ps_winner is not None:
-        new_p_success = _clamp(ps_winner.value)
-        applied.append(_provenance("p_success", inp.p_success, new_p_success, ps_winner))
+    val, prov = _resolve_target(
+        snapshot.facts, "p_success", inp.p_success, inp, features, pool_config
+    )
+    if val is not None:
+        new_p_success = val
+        applied.append(prov)  # type: ignore[arg-type]
 
     new_events: list[dict[str, Any]] | None = None
     for idx, event in enumerate(inp.events):
-        winner = _winner(snapshot.facts, f"p_event.{event['event']}", inp, features)
-        if winner is None:
+        prior = event["p_event"]
+        val, prov = _resolve_target(
+            snapshot.facts, f"p_event.{event['event']}", prior, inp, features, pool_config
+        )
+        if val is None:
             continue
         if new_events is None:
             # shallow copy is sufficient: v1 event dicts hold only scalars (event/p_event/
             # elicited_disutility). Revisit if the event schema ever gains nested mutables.
             new_events = [dict(e) for e in inp.events]  # never mutate the original
-        prior = new_events[idx]["p_event"]
-        new_value = _clamp(winner.value)
-        new_events[idx]["p_event"] = new_value
-        applied.append(_provenance(f"p_event.{event['event']}", prior, new_value, winner))
+        new_events[idx]["p_event"] = val
+        applied.append(prov)  # type: ignore[arg-type]
 
     if not applied:
         return inp  # no matching facts -> byte-equivalent

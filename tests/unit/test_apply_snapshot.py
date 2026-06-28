@@ -28,12 +28,14 @@ def _inp(*, p_success=0.70, events=None, features=None, action_type="edit", expe
 def _fact(target_name="p_success", scope_kind="global", scope_value="", rank=0, value=0.90,
           sample_size=50, created_at="2026-06-26T00:00:00Z", fact_id="lrf_1",
           target_type="risk_binary", ratify=False, scope_json=None,
-          calibration_method="brier_bucket"):
+          calibration_method="brier_bucket", weight=1.0, calibration_quality=1.0,
+          scope_change_count=0):
     return SnapshotFact(
         fact_id=fact_id, target_type=target_type, target_name=target_name, scope_kind=scope_kind,
         scope_value=scope_value, specificity_rank=rank, value=value, sample_size=sample_size,
         created_at=created_at, requires_human_ratification=ratify, scope_json=scope_json or {},
-        calibration_method=calibration_method,
+        calibration_method=calibration_method, weight=weight,
+        calibration_quality=calibration_quality, scope_change_count=scope_change_count,
     )
 
 
@@ -134,6 +136,37 @@ def test_unratified_fact_not_applied() -> None:
 def test_zero_sample_fact_not_applied_defense_in_depth() -> None:
     out = apply_snapshot(_inp(p_success=0.7), _bundle(_fact(value=0.9, sample_size=0)))
     assert out.p_success == 0.7
+
+
+def test_default_hard_replace_drops_churned_ineligible_fact() -> None:
+    out = apply_snapshot(
+        _inp(p_success=0.70),
+        _bundle(_fact(value=0.95, scope_change_count=200, fact_id="lrf_stale")),
+    )
+    assert out.p_success == 0.70
+    assert out.applied_snapshot_provenance is None
+
+
+def test_default_hard_replace_does_not_boost_weak_fact_weight() -> None:
+    out = apply_snapshot(
+        _inp(p_success=0.70),
+        _bundle(_fact(value=0.95, weight=0.05, fact_id="lrf_weak")),
+    )
+    assert out.p_success == 0.70
+    assert out.applied_snapshot_provenance is None
+
+
+def test_malformed_reliability_fact_is_skipped_not_raised() -> None:
+    out = apply_snapshot(
+        _inp(p_success=0.70),
+        _bundle(
+            _fact(value=0.95, weight=-1.0, fact_id="lrf_bad"),
+            _fact(value=0.80, fact_id="lrf_good"),
+        ),
+    )
+    assert out.p_success == 0.80
+    (entry,) = out.applied_snapshot_provenance["applied_facts"]
+    assert entry["winning_fact_id"] == "lrf_good"
 
 
 def test_missing_calibration_method_not_applied() -> None:
@@ -273,3 +306,120 @@ def test_original_input_not_mutated() -> None:
     assert inp.events[0]["p_event"] == 0.10       # original event dict untouched
     assert out.events is not inp.events           # adjusted events is a fresh list
     assert out.events[0] is not inp.events[0]     # and fresh dicts
+
+
+# ============================ Step 3: top-k logit pooling (AD-20) ============================
+# Default (no pool_config) and PoolConfig(mode="hard_replace") both use the same winner-take-all
+# path after auto-apply eligibility filtering. log_pool is opt-in: combine the top-k facts in logit space,
+# weighted by churn-decayed reliability, anchored to the model's prior via max_logit_shift.
+
+import math  # noqa: E402
+
+from pebra.core.apply_snapshot import PoolConfig  # noqa: E402
+
+_CLAMP_LO, _CLAMP_HI = 0.01, 0.99
+
+
+def _logit(p):
+    p = max(_CLAMP_LO, min(_CLAMP_HI, p))
+    return math.log(p / (1.0 - p))
+
+
+def _sigmoid(x):
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+def test_pool_config_defaults_to_hard_replace() -> None:
+    pc = PoolConfig()
+    assert pc.mode == "hard_replace"
+    assert pc.top_k == 1
+    assert pc.max_logit_shift == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        PoolConfig(mode="typo"),
+        PoolConfig(mode="log_pool", top_k=0),
+        PoolConfig(mode="log_pool", top_k=-1),
+        PoolConfig(mode="log_pool", max_logit_shift=-0.1),
+        PoolConfig(mode="log_pool", max_logit_shift=float("nan")),
+    ],
+)
+def test_invalid_pool_config_rejected(cfg) -> None:
+    with pytest.raises(ValueError):
+        apply_snapshot(_inp(), _bundle(_fact()), cfg)
+
+
+def test_pooling_fields_default_on_snapshot_fact() -> None:
+    f = _fact()
+    assert f.weight == pytest.approx(1.0)
+    assert f.calibration_quality == pytest.approx(1.0)
+    assert f.scope_change_count == 0
+
+
+def test_default_pool_config_is_byte_identical_to_hard_replace() -> None:
+    inp = _inp(p_success=0.70)
+    bundle = _bundle(_fact(value=0.90))
+    hard = apply_snapshot(inp, bundle)                    # default None -> hard replace
+    explicit = apply_snapshot(inp, bundle, PoolConfig())  # explicit hard_replace mode
+    assert explicit.p_success == hard.p_success == 0.90
+
+
+def test_log_pool_combines_two_facts_in_logit_space() -> None:
+    inp = _inp(p_success=0.50)
+    bundle = _bundle(_fact(value=0.80, fact_id="lrf_a"), _fact(value=0.60, fact_id="lrf_b"))
+    out = apply_snapshot(inp, bundle, PoolConfig(mode="log_pool", top_k=2, max_logit_shift=10.0))
+    expected = _sigmoid((_logit(0.80) + _logit(0.60)) / 2.0)  # equal reliability -> simple mean
+    assert out.p_success == pytest.approx(expected)
+
+
+def test_log_pool_respects_top_k_limit() -> None:
+    inp = _inp(p_success=0.50)
+    bundle = _bundle(
+        _fact(value=0.90, rank=3, fact_id="lrf_hi"),
+        _fact(value=0.80, rank=2, fact_id="lrf_mid"),
+        _fact(value=0.10, rank=1, fact_id="lrf_lo"),   # excluded by top_k=2
+    )
+    out = apply_snapshot(inp, bundle, PoolConfig(mode="log_pool", top_k=2, max_logit_shift=10.0))
+    expected = _sigmoid((_logit(0.90) + _logit(0.80)) / 2.0)
+    assert out.p_success == pytest.approx(expected)
+
+
+def test_log_pool_clamps_to_max_logit_shift_from_prior() -> None:
+    inp = _inp(p_success=0.50)  # logit(prior) == 0
+    bundle = _bundle(_fact(value=0.999, fact_id="lrf_far"))
+    out = apply_snapshot(inp, bundle, PoolConfig(mode="log_pool", top_k=1, max_logit_shift=2.0))
+    assert out.p_success == pytest.approx(_sigmoid(2.0))  # clamped to prior + max_logit_shift
+    assert out.p_success < 0.999
+
+
+def test_log_pool_weights_by_reliability() -> None:
+    inp = _inp(p_success=0.50)
+    bundle = _bundle(
+        _fact(value=0.90, calibration_quality=1.0, fact_id="lrf_strong"),
+        _fact(value=0.10, calibration_quality=0.25, fact_id="lrf_weak"),
+    )
+    out = apply_snapshot(inp, bundle, PoolConfig(mode="log_pool", top_k=2, max_logit_shift=10.0))
+    expected = _sigmoid((1.0 * _logit(0.90) + 0.25 * _logit(0.10)) / 1.25)
+    assert out.p_success == pytest.approx(expected)
+
+
+def test_log_pool_drops_churned_ineligible_fact() -> None:
+    # single fact decayed below the auto-apply threshold -> not applied -> input unchanged.
+    inp = _inp(p_success=0.70)
+    bundle = _bundle(_fact(value=0.95, scope_change_count=200, fact_id="lrf_stale"))
+    out = apply_snapshot(inp, bundle, PoolConfig(mode="log_pool", top_k=3, max_logit_shift=10.0))
+    assert out.p_success == 0.70
+    assert out.applied_snapshot_provenance is None
+
+
+def test_log_pool_applies_to_p_event_targets_too() -> None:
+    inp = _inp(events=[{"event": "test_regression", "p_event": 0.50}])
+    bundle = _bundle(
+        _fact(target_name="p_event.test_regression", value=0.80, fact_id="lrf_a"),
+        _fact(target_name="p_event.test_regression", value=0.60, fact_id="lrf_b"),
+    )
+    out = apply_snapshot(inp, bundle, PoolConfig(mode="log_pool", top_k=2, max_logit_shift=10.0))
+    expected = _sigmoid((_logit(0.80) + _logit(0.60)) / 2.0)
+    assert out.events[0]["p_event"] == pytest.approx(expected)

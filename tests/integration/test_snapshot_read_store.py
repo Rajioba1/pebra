@@ -122,6 +122,47 @@ def test_active_snapshot_with_applicable_fact(tmp_path) -> None:
     assert f.sample_size == 100 and f.calibration_method == "brier_bucket"
 
 
+def test_active_fact_hydrates_pooling_fields(tmp_path) -> None:
+    store = _store(tmp_path)
+    rs = _seed_snapshot(store)
+    _seed_fact(
+        store,
+        snapshot_id=str(rs),
+        fact={
+            "value": 0.8,
+            "sample_size": 100,
+            "calibration_method": "brier_bucket",
+            "weight": 0.75,
+            "calibration_quality": 0.5,
+            "scope_change_count": 7,
+        },
+    )
+    bundle = SnapshotReadStore(store).load_active_snapshot("r1")
+    store.close()
+
+    assert bundle is not None
+    (f,) = bundle.facts
+    assert f.weight == 0.75
+    assert f.calibration_quality == 0.5
+    assert f.scope_change_count == 7
+
+
+def test_malformed_pooling_fields_excluded(tmp_path) -> None:
+    store = _store(tmp_path)
+    _seed_snapshot(store)
+    _seed_fact(
+        store,
+        fact={
+            "value": 0.8,
+            "sample_size": 100,
+            "calibration_method": "brier_bucket",
+            "weight": -1.0,
+        },
+    )
+    assert SnapshotReadStore(store).load_active_snapshot("r1").facts == ()
+    store.close()
+
+
 def test_rs_prefixed_snapshot_id_also_joins(tmp_path) -> None:
     # defensive: a fact stored with the "rs_{id}" display form (not bare "1") still joins
     store = _store(tmp_path)

@@ -49,7 +49,18 @@ class SnapshotReadStore(SnapshotReadPort):
             value = float(fact["value"])
             sample_size = int(fact.get("sample_size", 0))
             method = str(fact.get("calibration_method", "")).strip()
+            weight = float(fact.get("weight", 1.0))
+            calibration_quality = float(fact.get("calibration_quality", 1.0))
+            scope_change_count = int(fact.get("scope_change_count", 0))
             if sample_size < MIN_CALIBRATION_SAMPLES or not method or not math.isfinite(value):
+                return None
+            if (
+                weight < 0.0
+                or calibration_quality < 0.0
+                or scope_change_count < 0
+                or not math.isfinite(weight)
+                or not math.isfinite(calibration_quality)
+            ):
                 return None
             scope_json = json.loads(row["scope_json"] or "{}")
             return SnapshotFact(
@@ -63,9 +74,11 @@ class SnapshotReadStore(SnapshotReadPort):
                 sample_size=sample_size,
                 calibration_method=method,
                 created_at=row["created_at"] or "",
-                weight=float(fact.get("weight", 1.0)),
+                weight=weight,
                 requires_human_ratification=False,  # SQL already filtered ratification=0
                 scope_json=scope_json if isinstance(scope_json, dict) else {},
+                calibration_quality=calibration_quality,
+                scope_change_count=scope_change_count,
             )
         except (ValueError, TypeError):
             return None  # malformed JSON / non-numeric value -> skip, never raise
