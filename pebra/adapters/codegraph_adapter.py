@@ -30,6 +30,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range
 from pebra.core.models import CandidateAction, FanInEvidence
 from pebra.core.score_math import fractional_rank
 
@@ -202,6 +203,15 @@ class CodeGraphAdapter:
         status = self._status_fn(repo_root)
         if status is None:
             return _unresolved("unknown", f"codegraph CLI not found; {_INSTALL_HINT}")
+        runtime_ver = status.get("version")
+        if runtime_ver and not in_accepted_range(runtime_ver):
+            # running an unsupported codegraph version -> untrusted (its fan-in/extraction semantics may
+            # differ from what PEBRA validated). Gate 13 routes this to inspect_first under require_graph.
+            return _unresolved(
+                "unknown",
+                f"codegraph version {runtime_ver} is outside the accepted range "
+                f"{CODEGRAPH_ACCEPTED_RANGE}; run: pebra setup-graph --fix",
+            )
         if status.get("initialized") is False:
             return _unresolved("unknown", f"codegraph index not initialized; {_INIT_HINT}")
         if not _is_fresh(status):
@@ -385,6 +395,7 @@ class CodeGraphAdapter:
             or status.get("initialized") is False
             or status.get("worktreeMismatch")
             or not _is_fresh(status)
+            or (status.get("version") and not in_accepted_range(status["version"]))
         ):
             return {}
         db_path = _db_path_from_status(repo_root, status)

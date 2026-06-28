@@ -236,6 +236,27 @@ def test_cli_missing_returns_unresolved_with_install_hint(tmp_path) -> None:
     assert ev.fallback_reason and "install" in ev.fallback_reason.lower()
 
 
+_OUT_OF_RANGE = {"pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+                 "index": {"reindexRecommended": False}, "version": "2.0.0"}
+
+
+def test_out_of_range_runtime_version_is_untrusted(tmp_path) -> None:
+    _seed_repo(tmp_path)
+    action = CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=_PATCH)
+    ev = _adapter(status=_OUT_OF_RANGE).fanin(action, str(tmp_path))
+    assert ev.resolution_method == "unresolved"
+    assert ev.fallback_reason and "outside the accepted range" in ev.fallback_reason
+    assert "setup-graph --fix" in ev.fallback_reason
+
+
+def test_out_of_range_runtime_version_omits_percentiles(tmp_path) -> None:
+    _seed_repo(tmp_path)
+    out = _adapter(status=_OUT_OF_RANGE).percentiles_by_name(
+        ["src/auth.py::LoginManager::validate_login"], str(tmp_path)
+    )
+    assert out == {}
+
+
 def test_corrupt_db_returns_unresolved_not_raises(tmp_path) -> None:
     # a non-SQLite / half-written file at the DB path must fail soft, never crash the assessment
     cg_dir = tmp_path / ".codegraph"
