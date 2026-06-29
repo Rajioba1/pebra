@@ -45,6 +45,16 @@ forbidden_modules =
     sklearn
     mcp
 
+# --- Benchmark wall (Phase 5b): production never imports the benchmark harness ---
+
+[importlinter:contract:pebra-no-benchmarks]
+name = production never imports benchmarks
+type = forbidden
+source_modules =
+    pebra
+forbidden_modules =
+    benchmarks
+
 # --- Layer discipline ---
 
 [importlinter:contract:app-no-adapters]

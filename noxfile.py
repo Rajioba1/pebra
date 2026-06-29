@@ -24,8 +24,24 @@ def tests(session: nox.Session) -> None:
 def lint(session: nox.Session) -> None:
     session.install("-e", ".", "--no-deps")
     session.install("ruff", "import-linter")
-    session.run("ruff", "check", "pebra")
+    session.run("ruff", "check", "pebra", "benchmarks")
     session.run("lint-imports")
+
+
+@nox.session(name="bench-math")
+def bench_math(session: nox.Session) -> None:
+    """Fast benchmark math/oracle tier: formula references + deterministic report shaping."""
+    session.install("-e", ".", "--no-deps")
+    session.install("pytest", "numpy", "scikit-learn", "scipy")
+    session.run("pytest", "benchmarks/math", "-q")
+
+
+@nox.session(name="bench-flow")
+def bench_flow(session: nox.Session) -> None:
+    """Fast benchmark flow tier: deterministic scorecard JSON and fixture-safe comparison logic."""
+    session.install("-e", ".", "--no-deps")
+    session.install("pytest")
+    session.run("pytest", "benchmarks/flow", "-q")
 
 
 @nox.session(name="mcp-smoke")
