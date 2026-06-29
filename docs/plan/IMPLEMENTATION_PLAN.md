@@ -63,9 +63,9 @@ pebra/
 │   ├── score_normalizer.py            ├── confidence_gate.py         ├── decision_engine.py
 │   ├── high_risk_controls.py (AD-26)  ├── explanation_generator.py   ├── model_guidance.py (AD-23)
 │   ├── post_assessment_guardrails.py  # pure: pre-fetched data → GuardrailResult (AD-11)
-│   ├── apply_snapshot.py (AD-16)      ├── prediction_error.py (AD-15) ├── risk_learning.py (AD-14)
-│   ├── snapshot_resolver.py           ├── risk_fact_decay.py (AD-17) ├── promotion_evaluator.py (AD-18)
-│   ├── snapshot_reconciler.py         ├── contradiction_gate.py      ├── learning_eval.py (AD-19)
+│   ├── apply_snapshot.py (AD-16; includes snapshot/fact resolution) ├── prediction_error.py (AD-15)
+│   ├── risk_fact_decay.py (AD-17)     ├── promotion_evaluator.py (AD-18) ├── snapshot_reconciler.py
+│   ├── contradiction_gate.py          ├── learning_eval.py (AD-19)
 │   ├── topk_composer.py (AD-20)       └── scope_dag_resolver.py (AD-21)
 │
 ├── ports/                             # Protocol contracts only
@@ -277,9 +277,11 @@ PEBRA still owning all risk math and learning semantics.
 ### Phase 5 — calibration + learning loop
 **Build:** `LearningPort`, `app/learning_controller.py` (async/batch), `core/prediction_error.py`
 (AD-15: residual/Brier/log-loss + continuous metrics for benefit AD-29), `adapters/learning_store.py`,
-`core/snapshot_resolver.py`, `core/apply_snapshot.py` (AD-16 — wired into the live pipeline pre-scoring,
-read-only), `core/risk_fact_decay.py` (AD-17), `core/promotion_evaluator.py` (AD-18 counterfactual replay),
-`core/snapshot_reconciler.py`, `core/contradiction_gate.py`, `core/risk_learning.py` (AD-14),
+`core/apply_snapshot.py` (AD-16 — wired into the live pipeline pre-scoring,
+read-only; snapshot resolution is folded into its target/fact resolver),
+`core/risk_fact_decay.py` (AD-17), `core/promotion_evaluator.py` (AD-18 counterfactual replay),
+`core/snapshot_reconciler.py`, `core/contradiction_gate.py`, AD-14 risk learning folded across
+`app/learning_controller.py`, `core/prediction_error.py`, and `core/outcome_labels.py`,
 `core/learning_eval.py` (AD-19 stream eval). Tables `outcomes`, `prediction_errors`, `learned_risk_facts`,
 `risk_snapshots`. **Benefit learning (AD-29):** separate prediction targets (`p_recurrence` binary,
 `maintainability_delta` continuous), **separate calibration views** (no Brier/MSE mixing), **decoupled
