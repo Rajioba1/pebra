@@ -32,7 +32,7 @@ from typing import Any
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
 from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range
-from pebra.core.models import CandidateAction, FanInEvidence
+from pebra.core.models import CandidateAction, FanInEvidence, FileFanInRollup
 from pebra.core.score_math import fractional_rank
 
 # Edge kinds that constitute per-symbol fan-in. 'imports' is deliberately excluded (file/module-level).
@@ -426,6 +426,63 @@ class CodeGraphAdapter:
             return out
         except (sqlite3.Error, OSError):
             return {}
+        finally:
+            con.close()
+
+    def file_fanin_rollup(self, file_path: str, repo_root: str) -> FileFanInRollup:
+        """Aggregate call-graph fan-in across ALL callable symbols in a file (whole-file destructive
+        ops). Mirrors ``fanin()``'s freshness/version/DB gates; any gate failure or query error returns
+        an ``unresolved`` rollup (fail-soft — never crashes the assessment)."""
+        status = self._status_fn(repo_root)
+        if status is None:
+            return FileFanInRollup(fallback_reason="codegraph CLI not found")
+        runtime_ver = status.get("version")
+        if runtime_ver and not in_accepted_range(runtime_ver):
+            return FileFanInRollup(fallback_reason=f"codegraph version {runtime_ver} out of range")
+        if status.get("initialized") is False:
+            return FileFanInRollup(fallback_reason="codegraph index not initialized")
+        if not _is_fresh(status):
+            return FileFanInRollup(graph_freshness="stale", fallback_reason="codegraph index stale")
+        db_path = _db_path_from_status(repo_root, status)
+        if not db_path.is_file():
+            return FileFanInRollup(fallback_reason="codegraph DB not found")
+        try:
+            con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            return FileFanInRollup(fallback_reason=f"codegraph DB could not be opened: {exc}")
+        con.row_factory = sqlite3.Row
+        try:
+            if self._schema_version(con) < _MIN_SCHEMA_VERSION:
+                return FileFanInRollup(
+                    graph_freshness="fresh", fallback_reason=f"schema below v{_MIN_SCHEMA_VERSION}"
+                )
+            rel = _repo_relative(file_path, repo_root)
+            edge_ph = ",".join("?" * len(_FANIN_EDGE_KINDS))
+            call_ph = ",".join("?" * len(_CALLABLE_KINDS))
+            distinct = int(con.execute(
+                f"SELECT COUNT(DISTINCT e.source) AS c FROM edges e JOIN nodes n ON n.id = e.target "
+                f"WHERE n.file_path = ? AND n.kind IN ({call_ph}) AND e.kind IN ({edge_ph})",
+                (rel, *_CALLABLE_KINDS, *_FANIN_EDGE_KINDS),
+            ).fetchone()["c"])
+            mx = int(con.execute(
+                f"SELECT COALESCE(MAX(cnt), 0) AS mx FROM ("
+                f"SELECT COUNT(DISTINCT e.source) AS cnt FROM edges e JOIN nodes n ON n.id = e.target "
+                f"WHERE n.file_path = ? AND n.kind IN ({call_ph}) AND e.kind IN ({edge_ph}) "
+                f"GROUP BY e.target)",
+                (rel, *_CALLABLE_KINDS, *_FANIN_EDGE_KINDS),
+            ).fetchone()["mx"])
+            sym_count = int(con.execute(
+                f"SELECT COUNT(*) AS c FROM nodes WHERE file_path = ? AND kind IN ({call_ph})",
+                (rel, *_CALLABLE_KINDS),
+            ).fetchone()["c"])
+            pctl = fractional_rank(distinct, self._distribution(con, db_path))
+            return FileFanInRollup(
+                max_caller_count=mx, distinct_caller_count=distinct, symbol_count=sym_count,
+                file_symbol_fanin_rollup_percentile=pctl, resolution_method="file_location",
+                graph_freshness="fresh",
+            )
+        except (sqlite3.Error, OSError) as exc:
+            return FileFanInRollup(fallback_reason=f"codegraph DB query failed: {exc}")
         finally:
             con.close()
 

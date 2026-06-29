@@ -58,6 +58,9 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
     """The adapter bundle ``assess_controller.assess`` needs (keyword args minus thresholds/start_path).
     One GraphProvider is shared by the architecture + blast adapters (build-once memo, 5c)."""
     graph_provider = GraphProvider()
+    # One CodeGraphAdapter serves both the per-symbol fan-in and the whole-file roll-up (it satisfies
+    # both ports structurally) — sharing the instance shares its distribution cache (one DB scan).
+    codegraph = CodeGraphAdapter()
     return {
         "evidence_provider": CompositeEvidenceProvider(graph_provider=graph_provider),
         "symbol_diff_provider": AstDiffAdapter(request.evidence.get("symbol_diff")),
@@ -79,7 +82,9 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         # (golden preserved). Set threshold ``require_graph`` true once codegraph is deployed to make
         # an unresolved/stale graph fail-clear through Gate 13 instead of silently treating absent
         # fan-in as low fan-in.
-        "fanin_provider": CodeGraphAdapter(),
+        "fanin_provider": codegraph,
+        # Destructive-op (DELETE) whole-file fan-in roll-up — same adapter, fail-soft when absent.
+        "file_fanin_provider": codegraph,
     }
 
 

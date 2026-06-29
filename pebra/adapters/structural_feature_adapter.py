@@ -90,6 +90,8 @@ class StructuralFeatureAdapter:
             is_public_api=is_public_api,
             body_changed=change_kind in _BODY_KINDS,
             signature_changed=change_kind in _SIGNATURE_KINDS,
+            file_operation_kind=sde.file_operation_kind,
+            file_operation_path_count=len(sde.file_operation_paths),
             container_file_fan_in_percentile=arch.god_node_score,
             # A0 (M5c.5): real per-symbol fan-in + the consequence verdict, patched onto SymbolDiffEvidence
             # on the assess path (codegraph-backed when trusted, 0.0/False otherwise). Captured so M5 can
@@ -107,6 +109,13 @@ class StructuralFeatureAdapter:
             domain_criticality_hint=arch.domain_criticality_hint,
             criticality_stage=inp.criticality_stage,
             provenance=provenance,
+            # whole-file destructive-op roll-up (union call fan-in over all symbols in the file);
+            # 0.0 for ordinary edits or when the graph is absent.
+            file_symbol_fanin_rollup_percentile=(
+                rollup.file_symbol_fanin_rollup_percentile
+                if (rollup := getattr(inp, "file_fanin_rollup", None)) is not None
+                else 0.0
+            ),
         )
 
     @staticmethod

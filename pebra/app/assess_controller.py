@@ -17,6 +17,7 @@ from pebra.core import (
     assessment_builder,
     change_classifier,
     decision_engine,
+    destructive_op_model,
     explanation_generator,
     model_guidance,
     prediction_capture,
@@ -24,9 +25,16 @@ from pebra.core import (
 )
 from pebra.core.apply_snapshot import apply_snapshot
 from pebra.core.explanation_generator import Explanation
-from pebra.core.models import AssessmentInput, AssessmentRequest, AssessmentResult, CandidateAction
+from pebra.core.models import (
+    AssessmentInput,
+    AssessmentRequest,
+    AssessmentResult,
+    CandidateAction,
+    FileFanInRollup,
+)
 from pebra.ports.blast_radius_port import BlastRadiusProvider
 from pebra.ports.fanin_port import FanInProvider
+from pebra.ports.file_fanin_port import FileFanInProvider
 from pebra.ports.evidence_port import EvidenceProvider
 from pebra.ports.repository_registry_port import RepositoryRegistryPort
 from pebra.ports.sanction_port import SanctionPort
@@ -56,6 +64,19 @@ class AssessmentOutcome:
     scored_actions: list[ScoredAction] = field(default_factory=list)
 
 
+def _merge_event_max(existing: dict[str, Any], injected: dict[str, Any]) -> dict[str, Any]:
+    """Merge same-name event evidence conservatively: stronger probability/disutility wins."""
+    merged = dict(existing)
+    merged["p_event"] = max(existing.get("p_event", 0.0), injected.get("p_event", 0.0))
+    merged["elicited_disutility"] = max(
+        existing.get("elicited_disutility", 0.0), injected.get("elicited_disutility", 0.0)
+    )
+    for key, value in injected.items():
+        if key not in merged:
+            merged[key] = value
+    return merged
+
+
 def _build_input(
     request: AssessmentRequest,
     action: CandidateAction,
@@ -68,6 +89,7 @@ def _build_input(
     blast_provider: BlastRadiusProvider,
     sanction_port: SanctionPort,
     fanin_provider: FanInProvider | None = None,
+    file_fanin_provider: FileFanInProvider | None = None,
 ) -> AssessmentInput:
     evidence = evidence_provider.gather_evidence(request, action, repo_root)
     symbol_diff = symbol_diff_provider.symbol_diff(action, repo_root)
@@ -118,10 +140,46 @@ def _build_input(
                 ),
             )
 
+    # Destructive-op event injection (assess-path risk model). Only DELETE injects (symbol loss →
+    # call-graph roll-up + no-graph baseline floor). RENAME/MOVE are recorded on the symbol_diff axis
+    # but NOT scored here (path migration is an import-graph question, modeled in a later slice); CREATE
+    # is inert. events stays the SAME object for non-DELETE so ordinary patches are byte-identical.
+    events_list = evidence.events
+    file_fanin_rollup: FileFanInRollup | None = None
+    if symbol_diff.file_operation_kind == "DELETE":
+        rollups = (
+            [file_fanin_provider.file_fanin_rollup(fp, repo_root)
+             for fp in symbol_diff.file_operation_paths]
+            if file_fanin_provider is not None else []
+        )
+        file_fanin_rollup = (
+            max(rollups, key=lambda r: (r.file_symbol_fanin_rollup_percentile, r.distinct_caller_count))
+            if rollups else FileFanInRollup()
+        )
+        # public_api_break only when the symbol is actually exported. NOT consequential_symbol_changed —
+        # that flag means HIGH INTERNAL fan-in (many internal callers), not public API surface; using it
+        # would inject a spurious public_api_break (and inflate expected_loss) for internal deletions.
+        is_pub = symbol_diff.visibility in {"public_api", "exported"}
+        injected = destructive_op_model.events_for_destructive_op(
+            op_kind="DELETE", rollup=file_fanin_rollup, arch=evidence.architecture_evidence,
+            is_public_api=is_pub, is_migration=action.is_migration,
+            is_schema_change=action.is_schema_change,
+        )
+        if injected:
+            events_list = list(evidence.events)
+            for ev in injected:
+                existing_idx = next(
+                    (i for i, e in enumerate(events_list) if e.get("event") == ev["event"]), None
+                )
+                if existing_idx is None:
+                    events_list.append(ev)
+                else:
+                    events_list[existing_idx] = _merge_event_max(events_list[existing_idx], ev)
+
     return AssessmentInput(
         request=request,
         action=action,
-        events=evidence.events,
+        events=events_list,
         p_success=evidence.p_success,
         immediate_benefit=evidence.immediate_benefit,
         review_cost=evidence.review_cost,
@@ -138,6 +196,7 @@ def _build_input(
         benefit_delta_evidence=evidence.benefit_delta_evidence,
         symbol_diff_evidence=symbol_diff,
         fanin_evidence=fanin_ev,
+        file_fanin_rollup=file_fanin_rollup,
         blast_evidence=blast,
         architecture_evidence=evidence.architecture_evidence,
         # active_snapshot left at its default None here; M5c assigns it after apply_snapshot.
@@ -160,6 +219,7 @@ def _score_action(
         blast_provider=ports["blast_provider"],
         sanction_port=ports["sanction_port"],
         fanin_provider=ports.get("fanin_provider"),
+        file_fanin_provider=ports.get("file_fanin_provider"),
     )
     # Phase-4 reframe: capture structural features pre-scoring and attach to the IR for CAPTURE only.
     # assessment_builder/decision_engine ignore inp.structural_features (no score/gate change — Hard
@@ -227,6 +287,7 @@ def assess(
     structural_feature_provider: StructuralFeatureProvider | None = None,
     snapshot_read_port: SnapshotReadPort | None = None,
     fanin_provider: FanInProvider | None = None,
+    file_fanin_provider: FileFanInProvider | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     repo = repository_registry.resolve(start_path)
@@ -247,6 +308,7 @@ def assess(
                 structural_feature_provider=structural_feature_provider,
                 active_snapshot_bundle=active_snapshot_bundle,
                 fanin_provider=fanin_provider,
+                file_fanin_provider=file_fanin_provider,
             )
         )
 

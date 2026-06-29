@@ -6,6 +6,8 @@ action_status=pending (AD-4), and reproduces the spec §10 worked-example score 
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from pebra.core import assessment_builder as ab
@@ -83,6 +85,23 @@ def test_builder_reproduces_worked_example_scores() -> None:
 def test_builder_sets_action_status_pending() -> None:
     a = ab.build_assessment(_worked_example_input())
     assert a.action_status is ActionStatus.PENDING
+
+
+def test_builder_surfaces_file_operation_axis_in_symbol_scope_audit() -> None:
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        symbol_diff_evidence=replace(
+            inp.symbol_diff_evidence,
+            file_operation_kind="DELETE",
+            file_operation_paths=("src/auth.py",),
+        ),
+    )
+
+    sse = ab.build_assessment(inp).scores["symbol_scope_evidence"]
+
+    assert sse["file_operation_kind"] == "DELETE"
+    assert sse["file_operation_paths"] == ["src/auth.py"]
 
 
 def test_builder_uses_tighter_c3_threshold_as_effective() -> None:

@@ -54,6 +54,19 @@ class ChangeKind(Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class FileOperationKind(Enum):
+    """File-level operation axis — ORTHOGONAL to ChangeKind (symbol-semantic change). A file can be
+    deleted AND its symbols had a contract change; the two are tracked independently so a file op
+    never masks the per-symbol severity. DELETE removes symbols (call-graph question); RENAME/MOVE
+    relocate them (import-path question, modeled later via blast); CREATE adds a file (no callers)."""
+
+    NONE = "NONE"
+    DELETE = "DELETE"
+    CREATE = "CREATE"
+    RENAME = "RENAME"
+    MOVE = "MOVE"
+
+
 # --- Stage map (spec §2.7): ordinal stage -> cardinal value. Raw stage is never multiplied. ---
 
 STAGE_MAP: dict[str, float] = {

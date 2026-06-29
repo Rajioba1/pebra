@@ -49,6 +49,9 @@ def build_structural_features(
     symbol_fan_in_percentile: float,
     consequential_symbol_changed: bool,
     provenance: dict[str, Any],
+    file_symbol_fanin_rollup_percentile: float = 0.0,
+    file_operation_kind: str = "NONE",
+    file_operation_path_count: int = 0,
 ) -> dict[str, Any]:
     """Assemble the v2 feature payload from already-extracted primitives. No I/O."""
     return {
@@ -64,6 +67,8 @@ def build_structural_features(
             # carried honestly as structural.domain_entrypoint (see honesty contract in docstring).
             "body_changed": body_changed,
             "signature_changed": signature_changed,
+            "file_operation_kind": file_operation_kind,
+            "file_operation_path_count": file_operation_path_count,
             # v2: whether this change was judged consequential (visibility/fan-in/side-effect), patched
             # from the assess-path symbol evidence so M5 can learn against the same consequence signal.
             "consequential_symbol_changed": consequential_symbol_changed,
@@ -77,6 +82,12 @@ def build_structural_features(
             # contract); trust context is in provenance.fanin_resolution_method / fanin_graph_freshness.
             "symbol_fan_in_percentile": symbol_fan_in_percentile,
             "is_high_symbol_fan_in": symbol_fan_in_percentile >= ANCHOR_FANIN_PERCENTILE,
+            # whole-file destructive-op roll-up: union call fan-in over ALL symbols in the file
+            # (0.0 for ordinary edits or when the graph is absent).
+            "file_symbol_fanin_rollup_percentile": file_symbol_fanin_rollup_percentile,
+            "is_high_file_symbol_fanin_rollup": (
+                file_symbol_fanin_rollup_percentile >= ANCHOR_FANIN_PERCENTILE
+            ),
             "bridge_centrality": bridge_centrality,
             "cycle_participation": cycle_participation,
             "is_architecture_anchor": is_architecture_anchor,

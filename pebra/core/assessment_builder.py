@@ -151,6 +151,8 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "symbol_fan_in_percentile": sde.symbol_fan_in_percentile,
             "consequential_symbol_changed": sde.consequential_symbol_changed,
             "consequence_reason": list(sde.consequence_reason),
+            "file_operation_kind": sde.file_operation_kind,
+            "file_operation_paths": list(sde.file_operation_paths),
             "fallback_reason": sde.fallback_reason,
         },
     }

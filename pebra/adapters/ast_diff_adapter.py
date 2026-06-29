@@ -11,11 +11,17 @@ from __future__ import annotations
 
 import ast
 import difflib
+from dataclasses import replace
 from typing import Any
 
+from pebra.adapters.patch_header_adapter import parse_patch_headers
 from pebra.core.models import CandidateAction, SymbolDiffEvidence
 
 _ALLOWED = set(SymbolDiffEvidence.__dataclass_fields__)
+
+# File-op dominance when a patch touches several files: DELETE (symbol loss) > MOVE/RENAME (path
+# migration) > CREATE (no callers). Drives the single file_operation_kind axis.
+_FILE_OP_SEVERITY = {"CREATE": 1, "RENAME": 2, "MOVE": 2, "DELETE": 3}
 
 # Body-only source similarity below this ratio (signature unchanged, body wholly rewritten) flags a
 # suspected identity replacement. Empirically calibrated: a total rewrite scores ~0.45 body-only while
@@ -245,12 +251,32 @@ class AstDiffAdapter:
 
     def symbol_diff(self, action: CandidateAction, repo_root: str) -> SymbolDiffEvidence:
         if self._evidence:
-            return SymbolDiffEvidence(
+            base = SymbolDiffEvidence(
                 **{k: v for k, v in self._evidence.items() if k in _ALLOWED}
             )
-        return SymbolDiffEvidence(
-            parsed_patch_available=False,
-            changed_symbols=list(action.affected_symbols),
-            max_change_kind="UNKNOWN",
-            fallback_reason="no symbol diff supplied; Phase-0 cold-start file/path-level risk",
-        )
+        else:
+            base = SymbolDiffEvidence(
+                parsed_patch_available=False,
+                changed_symbols=list(action.affected_symbols),
+                max_change_kind="UNKNOWN",
+                fallback_reason="no symbol diff supplied; Phase-0 cold-start file/path-level risk",
+            )
+        return _detect_file_operation(base, action)
+
+
+def _detect_file_operation(
+    base: SymbolDiffEvidence, action: CandidateAction
+) -> SymbolDiffEvidence:
+    """Set the FileOperationKind axis from patch headers. Independent of max_change_kind (symbol
+    semantics): a deleted file and a contract change are recorded separately. Supplied evidence that
+    already set a non-NONE op is preserved."""
+    if base.file_operation_kind != "NONE" or not action.proposed_patch:
+        return base
+    ops = parse_patch_headers(action.proposed_patch)
+    if not ops:
+        return base
+    dominant = max(ops, key=lambda o: _FILE_OP_SEVERITY.get(o.kind, 0))
+    paths = tuple(
+        p for o in ops if o.kind == dominant.kind and (p := (o.old_path or o.new_path)) is not None
+    )
+    return replace(base, file_operation_kind=dominant.kind, file_operation_paths=paths)

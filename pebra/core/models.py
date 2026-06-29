@@ -76,6 +76,11 @@ class SymbolDiffEvidence:
     transitive_reaches_consequence_symbol: bool = False
     directive_comment_changed: bool = False
     fallback_reason: str | None = None
+    # File-level operation axis (separate from max_change_kind, which is symbol-semantic). Detected
+    # from patch headers; "NONE" for ordinary modify patches. file_operation_paths holds the old-side
+    # path(s) of the affected file(s) for the fan-in roll-up / event injection.
+    file_operation_kind: str = "NONE"  # FileOperationKind value
+    file_operation_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,24 @@ class FanInEvidence:
     provider_version: str | None = None
     index_version: str | None = None
     graph_freshness: str = "unknown"  # 'fresh' | 'stale' | 'unknown'
+    fallback_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class FileFanInRollup:
+    """Aggregate call-graph fan-in across ALL callable symbols in a file — for whole-file destructive
+    ops (DELETE) where a single changed symbol understates the impact. ``distinct_caller_count`` is the
+    UNION of distinct callers across every callable in the file (what breaks when the file is deleted);
+    ``max_caller_count`` is the worst single symbol. The percentile is ranked against the same repo-wide
+    distribution used for per-symbol fan-in (score_math.fractional_rank). ``resolution_method`` mirrors
+    FanInEvidence: 'file_location' when a fresh graph answered, 'unresolved' otherwise (no trust)."""
+
+    max_caller_count: int = 0
+    distinct_caller_count: int = 0
+    symbol_count: int = 0
+    file_symbol_fanin_rollup_percentile: float = 0.0
+    resolution_method: str = "unresolved"  # 'file_location' | 'unresolved'
+    graph_freshness: str = "unknown"
     fallback_reason: str | None = None
 
 
@@ -240,6 +263,8 @@ class AssessmentInput:
     # M5c.5: language-agnostic per-symbol fan-in (codegraph-backed). None until the adapter is wired
     # / codegraph is present; carried for provenance even when resolution_method='unresolved'.
     fanin_evidence: "FanInEvidence | None" = None
+    # File-level fan-in roll-up for whole-file destructive ops; None for ordinary edits / no graph.
+    file_fanin_rollup: "FileFanInRollup | None" = None
     blast_evidence: BlastEvidence = field(default_factory=BlastEvidence)
     architecture_evidence: ArchitectureEvidence = field(default_factory=ArchitectureEvidence)
     active_snapshot: Any | None = None  # no learning in Phase 0 (cold start)
