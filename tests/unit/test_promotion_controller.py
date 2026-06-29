@@ -31,11 +31,23 @@ class _FakeLearning:
         return "rs_1", [f"lrf_{i}" for i, _ in enumerate(facts)]
 
 
-def _features(*, action_type="edit", provider="cg-1.1.1", index="idx-7"):
+def _features(
+    *,
+    action_type="edit",
+    provider="cg-1.1.1",
+    index="idx-7",
+    is_public_api=False,
+    domains=None,
+    change_kind="BEHAVIORAL",
+):
     return {
-        "symbol": {"action_type": action_type, "is_public_api": False, "change_kind": "BEHAVIORAL"},
+        "symbol": {
+            "action_type": action_type,
+            "is_public_api": is_public_api,
+            "change_kind": change_kind,
+        },
         "structural": {"is_high_symbol_fan_in": False},
-        "domain": {"matched_domains": [], "criticality_stage": "C2"},
+        "domain": {"matched_domains": domains or [], "criticality_stage": "C2"},
         "provenance": {"provider_version": provider, "index_version": index},
     }
 
@@ -110,3 +122,40 @@ def test_promoted_fact_carries_version_metadata():
     assert fj["index_version"] == "idx-7"
     assert fj["calibration_method"] == "observed_rate_v1"
     assert fj["value"] == pytest.approx(1.0)
+
+
+def test_derives_public_api_domain_and_domain_change_kind_scopes():
+    rows = [
+        {
+            "predicted_probability": 0.1,
+            "actual_outcome": 1,
+            "target_type": "risk_binary",
+            "target_name": "p_success",
+            "features": _features(
+                is_public_api=True,
+                domains=["payments"],
+                change_kind="CONTRACT",
+            ),
+        }
+        for _ in range(5)
+    ]
+    learning = _FakeLearning()
+    cfg = pe.PromotionConfig(min_calibration_samples=5)
+
+    result = pc.run_promotion("r", store=_FakeStore(rows), learning_port=learning, config=cfg)
+
+    assert result.promoted is True
+    _, _, facts, _ = learning.calls[0]
+    public_api_domain = [
+        f for f in facts if f["scope_kind"] == "public_api_domain"
+    ]
+    domain_change_kind = [
+        f for f in facts if f["scope_kind"] == "domain_change_kind"
+    ]
+    assert public_api_domain
+    assert public_api_domain[0]["scope_json"] == {"domain": "payments"}
+    assert domain_change_kind
+    assert domain_change_kind[0]["scope_json"] == {
+        "domain": "payments",
+        "change_kind": "CONTRACT",
+    }

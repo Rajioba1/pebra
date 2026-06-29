@@ -20,7 +20,8 @@ from pebra.ports.store_port import StorePort
 # scope_kind -> specificity_rank (higher = more specific; mirrors apply_snapshot tie-break ordering).
 _SCOPE_SPECIFICITY: dict[str, int] = {
     "global": 0, "action_type": 2, "public_api": 3, "domain": 4,
-    "high_symbol_fan_in": 6, "domain_high_symbol_fan_in": 7, "symbol": 9,
+    "domain_change_kind": 5, "high_symbol_fan_in": 6,
+    "domain_high_symbol_fan_in": 7, "public_api_domain": 8, "symbol": 9,
 }
 
 
@@ -58,8 +59,8 @@ def _cand(target_name: str, scope_kind: str, scope_value: str = "",
 
 
 def _derive_scope_candidates(rows: list[dict[str, Any]], target_name: str) -> list[pe.CandidateFact]:
-    """Derive the candidate scopes that the features payload supports (v1 set). path_glob and the
-    composite scopes (public_api_domain, domain_change_kind) are deferred — not auto-derived here."""
+    """Derive the candidate scopes that the features payload supports. ``path_glob`` is deliberately
+    not auto-derived here; extracting useful globs from arbitrary repo layout is policy-laden."""
     cands: list[pe.CandidateFact] = [_cand(target_name, "global")]
     action_types = {at for r in rows if (at := _sym(r).get("action_type"))}
     cands += [_cand(target_name, "action_type", at) for at in sorted(action_types)]
@@ -71,6 +72,21 @@ def _derive_scope_candidates(rows: list[dict[str, Any]], target_name: str) -> li
     cands += [_cand(target_name, "symbol", sid) for sid in sorted(symbol_ids)]
     all_domains = sorted({d for r in rows for d in _domains(r)})
     cands += [_cand(target_name, "domain", d) for d in all_domains]
+    cands += [
+        _cand(target_name, "public_api_domain", scope_json={"domain": d})
+        for d in all_domains
+        if any(_sym(r).get("is_public_api") and d in _domains(r) for r in rows)
+    ]
+    domain_change_kinds = sorted({
+        (d, ck)
+        for r in rows
+        if (ck := _sym(r).get("change_kind"))
+        for d in _domains(r)
+    })
+    cands += [
+        _cand(target_name, "domain_change_kind", scope_json={"domain": d, "change_kind": ck})
+        for d, ck in domain_change_kinds
+    ]
     cands += [
         _cand(target_name, "domain_high_symbol_fan_in",
               scope_json={"domain": d, "min_percentile": 0.90})
