@@ -42,6 +42,13 @@ METRIC_DIRECTION: dict[str, int] = {
 PROJECTED_BENEFIT_VARIANCE: float = 0.04
 MEASURED_BENEFIT_VARIANCE: float = 0.0004
 
+# Conservative unit-utility ceiling for a learned ``measured_benefit`` override (prior_uncalibrated).
+# The continuous benefit override (unlike the [0.01,0.99] probability clamp) is otherwise raw, so a
+# malformed/out-of-range observed value could inflate expected_utility→RAU without bound. Clamping to
+# [0, 1] is the safe direction — it under-credits an unusually-large benefit rather than over-inflating
+# RAU. Raise this only once the benefit scale is confirmed to exceed unit utility.
+BENEFIT_OVERRIDE_MAX: float = 1.0
+
 
 @dataclass(frozen=True)
 class BenefitBreakdown:

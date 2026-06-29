@@ -109,10 +109,12 @@ def _float(value: Any, default: float = 0.0) -> float:
 
 
 def _applicable(fact: SnapshotFact) -> bool:
-    """Defense-in-depth gate (read-port is primary): a fact may override a live risk probability only
-    if it is risk-binary, ratified, carries a calibration sample AND method, and its value is a finite
-    number. A non-finite or method-less value is treated as malformed and skipped — never clamped into
-    a strong override."""
+    """Defense-in-depth gate (read-port is primary): admits risk-binary, benefit-binary, AND
+    benefit-continuous targets. A fact applies only if it is ratified, carries a calibration sample AND
+    method, and its value is finite; a non-finite, method-less, or no-sample value is treated as
+    malformed and skipped. Note: probability targets (risk-binary, benefit-binary) are clamped to
+    [0.01, 0.99] at application; the benefit-continuous `measured_benefit` override is NOT a probability,
+    so it bypasses that clamp and is bounded separately by BENEFIT_OVERRIDE_MAX in assessment_builder."""
     return (
         fact.target_type in {RISK_BINARY, BENEFIT_BINARY, BENEFIT_CONTINUOUS}
         and not fact.requires_human_ratification

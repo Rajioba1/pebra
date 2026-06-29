@@ -84,9 +84,10 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         future_change_exposure=bd.future_change_exposure,
     )
     if inp.benefit_override is not None:
-        benefit_breakdown = dataclasses.replace(
-            benefit_breakdown, benefit=inp.benefit_override
-        )
+        # clamp to the unit-utility ceiling so a malformed/out-of-range observed benefit can't inflate
+        # expected_utility→RAU without bound (the continuous override is otherwise raw). Safe direction.
+        bounded = max(0.0, min(benefit_model.BENEFIT_OVERRIDE_MAX, inp.benefit_override))
+        benefit_breakdown = dataclasses.replace(benefit_breakdown, benefit=bounded)
     benefit = benefit_breakdown.benefit
 
     # --- expected utility, variance, RAU ---

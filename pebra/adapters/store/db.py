@@ -218,9 +218,20 @@ def _learned_fact_read_usable(fact_json: str | None) -> bool:
         value = float(fact["value"])
         sample_size = int(fact.get("sample_size", 0))
         method = str(fact.get("calibration_method", "")).strip()
+        weight = float(fact.get("weight", 1.0))
+        calibration_quality = float(fact.get("calibration_quality", 1.0))
+        scope_change_count = int(fact.get("scope_change_count", 0))
     except (TypeError, ValueError, KeyError):
         return False
-    return sample_size >= MIN_CALIBRATION_SAMPLES and bool(method) and math.isfinite(value)
+    # Mirror ALL of SnapshotReadStore._build_fact's gates (not just value/sample/method): otherwise a
+    # newer fact that passes here but is dropped by _build_fact would stop the scan and shadow an older
+    # fully-usable fact.
+    return (
+        sample_size >= MIN_CALIBRATION_SAMPLES and bool(method) and math.isfinite(value)
+        and weight >= 0.0 and math.isfinite(weight)
+        and calibration_quality >= 0.0 and math.isfinite(calibration_quality)
+        and scope_change_count >= 0
+    )
 
 
 def _learned_fact_canonical(

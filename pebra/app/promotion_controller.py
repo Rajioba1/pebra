@@ -239,8 +239,8 @@ def run_benefit_promotion(
 ) -> PromotionResult:
     """Benefit promotion (AD-29), DECOUPLED from risk: benefit_binary uses the Brier/log-loss gate
     (the false-proceed veto is naturally skipped — its target isn't p_event.*); benefit_continuous uses
-    the LOO-MSE gate. Writes one benefit snapshot. NOTE: this promotes (writes) benefit facts;
-    APPLYING them to the benefit model is a separate read-path concern, not this slice."""
+    the LOO-MSE gate. Writes one benefit snapshot; the assess read path applies active benefit facts
+    through ``apply_snapshot`` before scoring."""
     config = config or pe.PromotionConfig()
     fb, vb, cb = _collect_facts(
         store.load_production_calibration_rows(repo_id, BENEFIT_BINARY),

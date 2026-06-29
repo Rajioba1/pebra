@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+from pebra.adapters.snapshot_read_store import SnapshotReadStore
 from pebra.adapters.store.db import GENESIS, SqliteStore, _learned_fact_canonical, _row_hash
 
 
@@ -164,6 +165,27 @@ def test_low_sample_newer_risk_snapshot_does_not_mask_active_risk_facts(tmp_path
     assert bundle is not None
     assert bundle["snapshot_id"] == "rs_1"
     assert [f["target_name"] for f in bundle["facts"]] == ["p_success"]
+
+
+def test_unusable_weight_newer_benefit_snapshot_does_not_mask_older(tmp_path):
+    # A newer benefit fact that passes the cheap value/sample/method gate but FAILS _build_fact
+    # (negative weight) must not stop the scan and shadow an older fully-valid benefit fact.
+    store = SqliteStore(str(tmp_path / "p.db"))
+    store.insert_learned_fact_batch_with_snapshot(
+        "r", {"promotion_reason": "M5d_benefit_promotion", "hash_version": 2},
+        [_fact(target_type="benefit_continuous", target_name="measured_benefit")],
+    )  # rs_1: valid benefit
+    store.insert_learned_fact_batch_with_snapshot(
+        "r", {"promotion_reason": "M5d_benefit_promotion", "hash_version": 2},
+        [_fact(target_type="benefit_continuous", target_name="measured_benefit",
+               fact_json={"value": 0.5, "weight": -1.0, "sample_size": 150,
+                          "calibration_method": "observed_mean_v1"})],
+    )  # rs_2: newer but unusable (negative weight -> dropped by _build_fact)
+
+    bundle = SnapshotReadStore(store).load_active_snapshot("r")
+    store.close()
+    assert bundle is not None
+    assert any(f.target_name == "measured_benefit" for f in bundle.facts)  # older valid survives
 
 
 def test_active_facts_readable_via_read_path(tmp_path):
