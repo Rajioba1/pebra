@@ -72,3 +72,8 @@ class StorePort(Protocol):
         """M5d promotion input: production-only (live, observed, proceeded, unguided) calibration rows.
         Each row carries a parsed ``features`` dict (the structural feature payload, ``{}`` if absent)."""
         ...
+
+    def read_active_snapshot_rows(self, repo_id: str) -> dict[str, Any] | None:
+        """The newest ACTIVE snapshot + its active, ratified learned facts as raw rows, or None.
+        Used by the promotion drift-freeze (snapshot_reconciler) to compare active facts to the ledger."""
+        ...

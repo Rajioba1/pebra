@@ -103,6 +103,69 @@ def test_requires_human_ratification_stored_as_int_and_candidate(tmp_path):
     store.close()
 
 
+def test_benefit_snapshot_is_read_alongside_active_risk_facts(tmp_path):
+    # Critical regression: risk + benefit promotion each write their own ACTIVE snapshot. The assess
+    # read path must return the newest active snapshot CONTAINING RISK facts — a later benefit-only
+    # snapshot must not shadow the risk overrides (apply_snapshot only applies risk_binary facts).
+    store = SqliteStore(str(tmp_path / "p.db"))
+    store.insert_learned_fact_batch_with_snapshot(
+        "r", {"promotion_reason": "M5d_auto_promotion", "hash_version": 2},
+        [_fact(target_type="risk_binary", target_name="p_success")],
+    )  # rs_1: risk
+    store.insert_learned_fact_batch_with_snapshot(
+        "r", {"promotion_reason": "M5d_benefit_promotion", "hash_version": 2},
+        [_fact(target_type="benefit_binary", target_name="immediate_benefit_realized")],
+    )  # rs_2: benefit (newer)
+
+    bundle = store.read_active_snapshot_rows("r")
+    store.close()
+    assert bundle is not None
+    assert any(f["target_type"] == "benefit_binary" for f in bundle["facts"])
+    assert any(f["target_name"] == "p_success" for f in bundle["facts"])
+    assert any(f["target_name"] == "immediate_benefit_realized" for f in bundle["facts"])
+
+
+def test_unusable_newer_risk_snapshot_does_not_mask_active_risk_facts(tmp_path):
+    store = SqliteStore(str(tmp_path / "p.db"))
+    store.insert_learned_fact_batch_with_snapshot(
+        "r", {"promotion_reason": "M5d_auto_promotion", "hash_version": 2},
+        [_fact(target_type="risk_binary", target_name="p_success")],
+    )  # rs_1: active/applicable risk fact
+    store.insert_learned_fact_batch_with_snapshot(
+        "r", {"promotion_reason": "M5d_auto_promotion", "hash_version": 2},
+        [_fact(target_type="risk_binary", target_name="p_event.x", status="candidate")],
+    )  # rs_2: newer risk snapshot, but no applicable active fact
+
+    bundle = store.read_active_snapshot_rows("r")
+    store.close()
+    assert bundle is not None
+    assert bundle["snapshot_id"] == "rs_1"
+    assert [f["target_name"] for f in bundle["facts"]] == ["p_success"]
+
+
+def test_low_sample_newer_risk_snapshot_does_not_mask_active_risk_facts(tmp_path):
+    store = SqliteStore(str(tmp_path / "p.db"))
+    store.insert_learned_fact_batch_with_snapshot(
+        "r", {"promotion_reason": "M5d_auto_promotion", "hash_version": 2},
+        [_fact(target_type="risk_binary", target_name="p_success")],
+    )
+    store.insert_learned_fact_batch_with_snapshot(
+        "r", {"promotion_reason": "M5d_auto_promotion", "hash_version": 2},
+        [_fact(
+            target_type="risk_binary",
+            target_name="p_event.low_sample",
+            fact_json={"value": 0.2, "weight": 1.0, "sample_size": 1,
+                       "calibration_method": "observed_rate_v1"},
+        )],
+    )
+
+    bundle = store.read_active_snapshot_rows("r")
+    store.close()
+    assert bundle is not None
+    assert bundle["snapshot_id"] == "rs_1"
+    assert [f["target_name"] for f in bundle["facts"]] == ["p_success"]
+
+
 def test_active_facts_readable_via_read_path(tmp_path):
     # an active snapshot + active ratified-not-required fact must be visible to read_active_snapshot_rows.
     store = SqliteStore(str(tmp_path / "p.db"))

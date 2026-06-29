@@ -8,6 +8,7 @@ written only by the outcome logger.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -82,6 +83,10 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         source_type=bd.source_type,
         future_change_exposure=bd.future_change_exposure,
     )
+    if inp.benefit_override is not None:
+        benefit_breakdown = dataclasses.replace(
+            benefit_breakdown, benefit=inp.benefit_override
+        )
     benefit = benefit_breakdown.benefit
 
     # --- expected utility, variance, RAU ---

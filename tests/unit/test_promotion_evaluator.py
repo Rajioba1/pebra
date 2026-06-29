@@ -198,3 +198,83 @@ def test_c4_weakening_detected_flag():
     r = pe.evaluate_promotion_gate(_cand(target_name="p_event.x"), _fpr_fixture(stage="C4"), cfg)
     assert r.promoted is False
     assert r.c4_weakening_detected is True
+
+
+# --- benefit continuous gate (AD-29): LOO-MSE, no false-proceed/C4 -----------------------------
+
+def _crow_cont(predicted_value, actual_value):
+    return {"predicted_value": predicted_value, "actual_value": actual_value,
+            "features": _features(), "target_type": "benefit_continuous"}
+
+
+def _cand_cont(target_name="maintainability_delta.mi", scope_kind="global"):
+    return pe.CandidateFact(target_name=target_name, target_type="benefit_continuous",
+                            scope_kind=scope_kind, scope_value="", scope_json={})
+
+
+def test_empirical_continuous_value_is_mean_actual():
+    rows = [{"actual_value": 1.0}, {"actual_value": 0.0}, {"actual_value": 0.5}]
+    assert pe.compute_empirical_continuous_value(rows) == pytest.approx(0.5)
+
+
+def test_benefit_continuous_gate_promotes_when_loo_mse_improves():
+    # model predicted 0.0 but actuals were all 1.0 -> learned ~1.0 mean predicts far better (LOO).
+    rows = [_crow_cont(0.0, 1.0) for _ in range(5)]
+    cfg = pe.PromotionConfig(min_calibration_samples=5)
+    r = pe.evaluate_benefit_continuous_gate(_cand_cont(), rows, cfg)
+    assert r.promoted is True
+    assert r.delta_mse > 0
+    assert r.false_proceed_rate_without is None  # continuous: no false-proceed veto
+
+
+def test_benefit_continuous_gate_vetoes_when_loo_mse_worse():
+    # perfect model (predicted == actual); the learned mean is worse out-of-sample on a varied set.
+    rows = [_crow_cont(1.0, 1.0), _crow_cont(0.0, 0.0), _crow_cont(1.0, 1.0), _crow_cont(0.0, 0.0)]
+    cfg = pe.PromotionConfig(min_calibration_samples=4)
+    r = pe.evaluate_benefit_continuous_gate(_cand_cont(), rows, cfg)
+    assert r.promoted is False
+    assert r.veto_reason == "DELTA_MSE_NEGATIVE"
+
+
+def test_benefit_continuous_gate_insufficient_n():
+    cfg = pe.PromotionConfig(min_calibration_samples=10)
+    r = pe.evaluate_benefit_continuous_gate(_cand_cont(), [_crow_cont(0.0, 1.0)], cfg)
+    assert r.promoted is False
+    assert r.veto_reason == "INSUFFICIENT_N"
+
+
+# --- disutility-aware false-proceed proxy (Item 5): (p * disutility) >= concern_budget -> concerned --
+
+def _fpr_fixture_dis(disutility):
+    rows = [_crow(0.9, 0) for _ in range(8)] + [_crow(0.9, 1) for _ in range(2)]
+    for r in rows:
+        r["event_disutility"] = disutility
+    return rows
+
+
+def test_event_concern_budget_default_is_prior():
+    assert pe.PromotionConfig().event_concern_budget == pytest.approx(0.10)
+
+
+def test_false_proceed_proxy_high_disutility_vetoes():
+    # high-disutility event: harmful rows are "concerned" without the fact but the fact drops their
+    # risk_contribution below the budget -> they flip to "not concerned" -> false-proceed increase.
+    cfg = pe.PromotionConfig(min_calibration_samples=10, event_concern_budget=0.10)
+    r = pe.evaluate_promotion_gate(_cand(target_name="p_event.x"), _fpr_fixture_dis(0.8), cfg)
+    assert r.delta_brier > 0           # brier gate passes...
+    assert r.promoted is False         # ...disutility-aware false-proceed veto fires
+    assert r.veto_reason == "FALSE_PROCEED_RATE_INCREASE"
+
+
+def test_false_proceed_proxy_low_disutility_no_veto():
+    # same probabilities, low-disutility event: never crosses the concern budget -> no false-proceed veto.
+    cfg = pe.PromotionConfig(min_calibration_samples=10, event_concern_budget=0.10)
+    r = pe.evaluate_promotion_gate(_cand(target_name="p_event.x"), _fpr_fixture_dis(0.05), cfg)
+    assert r.promoted is True
+
+
+def test_false_proceed_proxy_falls_back_to_threshold_without_disutility():
+    # rows lacking event_disutility -> the flat decision_threshold proxy is used (back-compat).
+    cfg = pe.PromotionConfig(min_calibration_samples=10)
+    r = pe.evaluate_promotion_gate(_cand(target_name="p_event.x"), _fpr_fixture(), cfg)
+    assert r.veto_reason == "FALSE_PROCEED_RATE_INCREASE"

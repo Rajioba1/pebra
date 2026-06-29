@@ -1,8 +1,9 @@
 """apply_snapshot (M5b) — pure learned-override reapplication.
 
 Takes a (read-port-decoded) SnapshotBundle of learned facts and the raw AssessmentInput, and returns
-an adjusted copy where matching facts have OVERRIDDEN the predicted risk probabilities (p_success,
-p_event.<event>) PRE-scoring. Pure stdlib + core only — no DB, no I/O, no learning writes.
+an adjusted copy where matching facts have OVERRIDDEN predicted risk probabilities (p_success,
+p_event.<event>) and benefit inputs PRE-scoring. Pure stdlib + core only — no DB, no I/O, no
+learning writes.
 
 v1 semantics (ratified, deliberately simple): most-specific scope wins (k=1), REPLACEMENT — i.e. a
 "learned override", NOT a blended calibrated prior. The references (Calibrate-Then-Act, MICE) treat a
@@ -10,7 +11,8 @@ calibrated value as a monotone remap of / blend with the model's own belief; log
 confidence-weighted blending is the v2 roadmap. v1 overrides outright and is honestly named so.
 
 Safety rails:
-- only ``risk_binary`` targets (p_success / p_event.*) are applied; benefit targets are skipped (v1).
+- ``risk_binary`` targets adjust risk probabilities; benefit targets adjust immediate benefit,
+  maintainability deltas, or the final measured-benefit override.
 - defense-in-depth: facts requiring human ratification, or with no calibration sample, are not applied
   (the read-port is the primary gate: status='active', ratified, min sample size).
 - stale/weak facts whose churn-decayed reliability falls below the auto-apply threshold are skipped
@@ -31,7 +33,7 @@ from typing import Any
 
 from pebra.core import risk_fact_decay
 from pebra.core.models import AssessmentInput
-from pebra.core.prediction_capture import RISK_BINARY
+from pebra.core.prediction_capture import BENEFIT_BINARY, BENEFIT_CONTINUOUS, RISK_BINARY
 
 _CLAMP_LO = 0.01
 _CLAMP_HI = 0.99
@@ -112,7 +114,7 @@ def _applicable(fact: SnapshotFact) -> bool:
     number. A non-finite or method-less value is treated as malformed and skipped — never clamped into
     a strong override."""
     return (
-        fact.target_type == RISK_BINARY
+        fact.target_type in {RISK_BINARY, BENEFIT_BINARY, BENEFIT_CONTINUOUS}
         and not fact.requires_human_ratification
         and fact.sample_size > 0
         and bool(fact.calibration_method)
@@ -297,18 +299,18 @@ def _pool_provenance(
 
 def _resolve_target(
     facts: tuple[SnapshotFact, ...], target_name: str, prior: float, inp: AssessmentInput,
-    features: dict[str, Any] | None, cfg: PoolConfig | None,
+    features: dict[str, Any] | None, cfg: PoolConfig | None, *, probability: bool = True,
 ) -> tuple[float | None, dict[str, Any] | None]:
     """Resolve one target to ``(new_value, provenance)`` or ``(None, None)`` when nothing applies.
 
     ``cfg is None`` or ``mode == "hard_replace"`` uses the v1 winner-take-all path after
     auto-apply eligibility filtering; ``mode == "log_pool"`` uses reliability-weighted logit pooling.
     """
-    if cfg is None or cfg.mode == "hard_replace":
+    if not probability or cfg is None or cfg.mode == "hard_replace":
         winner = _winner(facts, target_name, inp, features)
         if winner is None:
             return None, None
-        new = _clamp(winner.value)
+        new = _clamp(winner.value) if probability else winner.value
         return new, _provenance(target_name, prior, new, winner)
     new, contributors = _pool_value(prior, _candidates(facts, target_name, inp, features), cfg)
     if new is None:
@@ -356,6 +358,48 @@ def apply_snapshot(
         new_events[idx]["p_event"] = val
         applied.append(prov)  # type: ignore[arg-type]
 
+    new_immediate_benefit = inp.immediate_benefit
+    val, prov = _resolve_target(
+        snapshot.facts, "immediate_benefit_realized", inp.immediate_benefit,
+        inp, features, pool_config,
+    )
+    if val is not None:
+        new_immediate_benefit = val
+        applied.append(prov)  # type: ignore[arg-type]
+
+    new_benefit_delta_evidence = inp.benefit_delta_evidence
+    delta_targets = sorted({
+        fact.target_name for fact in snapshot.facts
+        if fact.target_name.startswith("maintainability_delta.")
+    })
+    for target_name in delta_targets:
+        if not target_name.startswith("maintainability_delta."):
+            continue
+        metric = target_name.split(".", 1)[1]
+        prior = inp.benefit_delta_evidence.deltas.get(metric, 0.0)
+        val, prov = _resolve_target(
+            snapshot.facts, target_name, prior, inp, features, None, probability=False
+        )
+        if val is None:
+            continue
+        deltas = dict(new_benefit_delta_evidence.deltas)
+        deltas[metric] = val
+        new_benefit_delta_evidence = dataclasses.replace(
+            new_benefit_delta_evidence,
+            deltas=deltas,
+            source_type="learned_override",
+        )
+        applied.append(prov)  # type: ignore[arg-type]
+
+    new_benefit_override = inp.benefit_override
+    val, prov = _resolve_target(
+        snapshot.facts, "measured_benefit", inp.benefit_override or inp.immediate_benefit,
+        inp, features, None, probability=False,
+    )
+    if val is not None:
+        new_benefit_override = val
+        applied.append(prov)  # type: ignore[arg-type]
+
     if not applied:
         return inp  # no matching facts -> byte-equivalent
 
@@ -363,5 +407,8 @@ def apply_snapshot(
         inp,
         p_success=new_p_success,
         events=new_events if new_events is not None else inp.events,
+        immediate_benefit=new_immediate_benefit,
+        benefit_delta_evidence=new_benefit_delta_evidence,
+        benefit_override=new_benefit_override,
         applied_snapshot_provenance={"snapshot_id": snapshot.snapshot_id, "applied_facts": applied},
     )

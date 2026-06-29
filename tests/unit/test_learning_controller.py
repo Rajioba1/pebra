@@ -72,6 +72,43 @@ def test_measure_writes_errors_and_shadow_snapshot() -> None:
     assert len(result.prediction_error_ids) == 3
 
 
+def test_completed_outcome_marks_rows_production_eligible() -> None:
+    # IGNITION: a completed (proceeded) edit -> rows are production calibration (shadow_mode=0,
+    # proceeded_edits_only) so load_production_calibration_rows finally returns them.
+    store = FakeStore(
+        predictions=_PREDS,
+        outcomes=[{"terminal_status": "completed", "detail": {"actual_success": True}, "recorded_at": "t"}],
+    )
+    port = FakeLearningPort()
+    result = lc.measure_learning("asm_1", store=store, learning_port=port)
+    assert all(r["shadow_mode"] == 0 for r in port.rows)
+    assert all(r["calibration_scope"] == "proceeded_edits_only" for r in port.rows)
+    assert result.proceeded is True
+
+
+def test_skipped_outcome_keeps_rows_shadow() -> None:
+    store = FakeStore(
+        predictions=_PREDS,
+        outcomes=[{"terminal_status": "skipped", "detail": {}, "recorded_at": "t"}],
+    )
+    port = FakeLearningPort()
+    result = lc.measure_learning("asm_1", store=store, learning_port=port)
+    assert all(r["shadow_mode"] == 1 for r in port.rows)
+    assert all(r["calibration_scope"] == "shadow" for r in port.rows)
+    assert result.proceeded is False
+
+
+def test_rejected_outcome_keeps_rows_shadow() -> None:
+    store = FakeStore(
+        predictions=_PREDS,
+        outcomes=[{"terminal_status": "rejected", "detail": {}, "recorded_at": "t"}],
+    )
+    port = FakeLearningPort()
+    result = lc.measure_learning("asm_1", store=store, learning_port=port)
+    assert all(r["shadow_mode"] == 1 for r in port.rows)
+    assert result.proceeded is False
+
+
 def test_measure_without_outcome_raises() -> None:
     store = FakeStore(predictions=_PREDS, outcomes=[])
     with pytest.raises(lc.OutcomeNotRecordedError):

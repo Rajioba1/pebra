@@ -87,6 +87,13 @@ def test_builder_sets_action_status_pending() -> None:
     assert a.action_status is ActionStatus.PENDING
 
 
+def test_builder_applies_final_benefit_override() -> None:
+    inp = replace(_worked_example_input(), benefit_override=0.33)
+    a = ab.build_assessment(inp)
+    assert a.scores["benefit"] == pytest.approx(0.33)
+    assert a.scores["benefit_breakdown"].benefit == pytest.approx(0.33)
+
+
 def test_builder_surfaces_file_operation_axis_in_symbol_scope_audit() -> None:
     inp = _worked_example_input()
     inp = replace(

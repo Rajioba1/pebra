@@ -25,7 +25,7 @@ from typing import Any
 
 from pebra.core.constants import MIN_CALIBRATION_SAMPLES
 from pebra.core.learning_eval import DecisionOutcome, false_proceed_rate
-from pebra.core.prediction_error import mean_brier, mean_log_loss
+from pebra.core.prediction_error import mean_brier, mean_log_loss, mse
 
 _LOW = "p_event."  # event-risk target prefix; false-proceed/C4 vetoes apply only to these
 
@@ -86,10 +86,20 @@ def _float(value: Any, default: float = 0.0) -> float:
 class PromotionConfig:
     min_delta_brier: float = 0.0
     min_delta_log_loss: float = 0.0
+    min_delta_mse: float = 0.0  # benefit_continuous gate (AD-29)
     min_calibration_samples: int = MIN_CALIBRATION_SAMPLES
-    # proxy for "would have proceeded": a row's risk prediction below this is treated as a proceed.
-    # v1 simplification — the real decision is multi-target + threshold config in assess_controller.
+    # Drift-freeze (snapshot_reconciler): pause promotion when the active snapshot has diverged from
+    # the ledger by >= this. None disables the check (backward-compatible default).
+    drift_freeze_threshold: float | None = None
+    # false-proceed proxy fallback when a row carries no per-event disutility: a risk prediction below
+    # this is treated as a proceed (flat, probability-only).
     decision_threshold: float = 0.5
+    # disutility-aware false-proceed proxy (Item 5, prior_uncalibrated): a row is "concerned" when
+    # p_event * event_disutility >= event_concern_budget. Severity-aware (a rare-but-catastrophic event
+    # is concerning at a lower probability) and decoupled from the actual proceed-decision, so it stays
+    # functional on the proceeded-only corpus (a faithful proceed-replay would saturate the veto). The
+    # exact non-proceeded/canary replay is a Phase 5b DATA requirement, not a design deferral.
+    event_concern_budget: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -119,6 +129,7 @@ class PromotionGateResult:
     c4_weakening_detected: bool
     n_group: int
     n_eval: int
+    delta_mse: float | None = None  # benefit_continuous gate only (AD-29)
 
 
 def _criticality(row: dict[str, Any]) -> str:
@@ -177,10 +188,18 @@ def evaluate_promotion_gate(
             stage = _criticality(r)
             p0 = float(r["predicted_probability"])
             p1 = (s_total - y) / (n_group - 1)
-            ow = DecisionOutcome(proceeded=p0 < config.decision_threshold, harmful=bool(y),
-                                 criticality_stage=stage)
-            ww = DecisionOutcome(proceeded=p1 < config.decision_threshold, harmful=bool(y),
-                                 criticality_stage=stage)
+            # disutility-aware proxy when the row carries its (post-floor) event disutility; else the
+            # flat probability fallback. "concerned" = p * disutility >= budget; proceeded = not concerned.
+            dis = r.get("event_disutility")
+            if dis is not None:
+                dis = float(dis)
+                proceeded0 = (p0 * dis) < config.event_concern_budget
+                proceeded1 = (p1 * dis) < config.event_concern_budget
+            else:
+                proceeded0 = p0 < config.decision_threshold
+                proceeded1 = p1 < config.decision_threshold
+            ow = DecisionOutcome(proceeded=proceeded0, harmful=bool(y), criticality_stage=stage)
+            ww = DecisionOutcome(proceeded=proceeded1, harmful=bool(y), criticality_stage=stage)
             oc_without.append(ow)
             oc_with.append(ww)
             if stage == "C4":
@@ -208,6 +227,55 @@ def evaluate_promotion_gate(
         log_loss_without=log_loss_without, log_loss_with=log_loss_with,
         false_proceed_rate_without=fpr_without, false_proceed_rate_with=fpr_with,
         c4_weakening_detected=c4_weak, n_group=n_group, n_eval=n_eval,
+    )
+
+
+def compute_empirical_continuous_value(rows: list[dict[str, Any]]) -> float:
+    """The learned continuous fact value = mean observed actual_value over the scope-matched rows."""
+    if not rows:
+        raise ValueError("cannot compute empirical continuous value over empty rows")
+    return sum(float(r["actual_value"]) for r in rows) / len(rows)
+
+
+def evaluate_benefit_continuous_gate(
+    candidate: CandidateFact, all_rows: list[dict[str, Any]], config: PromotionConfig
+) -> PromotionGateResult:
+    """AD-29 benefit-continuous promotion gate. LOO-MSE replay: does the learned empirical mean predict
+    the actual_value better (out-of-sample) than the model's predicted_value? No false-proceed / C4 veto
+    — benefit is not harm. Matched-scope only (positive thresholds not diluted)."""
+    matched_idx = [
+        i for i, r in enumerate(all_rows)
+        if scope_matches_features(candidate.scope_kind, candidate.scope_value, candidate.scope_json,
+                                  r.get("features") or {})
+    ]
+    n_group = len(matched_idx)
+    n_eval = len(all_rows)
+    none_result = dict(
+        delta_brier=None, delta_log_loss=None, brier_without=None, brier_with=None,
+        log_loss_without=None, log_loss_with=None, false_proceed_rate_without=None,
+        false_proceed_rate_with=None, c4_weakening_detected=False,
+    )
+    if n_group < config.min_calibration_samples or n_group < 2:
+        return PromotionGateResult(
+            promoted=False, veto_reason="INSUFFICIENT_N", n_group=n_group, n_eval=n_eval,
+            delta_mse=None, **none_result,
+        )
+
+    s_total = sum(float(all_rows[i]["actual_value"]) for i in matched_idx)
+    pairs_without: list[tuple[float, float]] = []
+    pairs_with: list[tuple[float, float]] = []
+    for i in matched_idx:
+        r = all_rows[i]
+        p0 = float(r["predicted_value"])
+        a = float(r["actual_value"])
+        p1 = (s_total - a) / (n_group - 1)  # leave-one-out empirical mean (out-of-sample)
+        pairs_without.append((p0, a))
+        pairs_with.append((p1, a))
+    delta_mse = mse(pairs_without) - mse(pairs_with)
+    veto = "DELTA_MSE_NEGATIVE" if delta_mse < config.min_delta_mse else None
+    return PromotionGateResult(
+        promoted=veto is None, veto_reason=veto, n_group=n_group, n_eval=n_eval,
+        delta_mse=delta_mse, **none_result,
     )
 
 

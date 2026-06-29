@@ -276,6 +276,9 @@ class AssessmentInput:
     # M5b: provenance of learned-override facts applied by apply_snapshot (which fact won each target,
     # prior vs new value). Set on the adjusted copy; builder/engine IGNORE it. None when nothing applied.
     applied_snapshot_provenance: dict[str, Any] | None = None
+    # Benefit-continuous learned override for the final projected/measured benefit target. None unless an
+    # active ``measured_benefit`` fact applied; assessment_builder owns the actual score replacement.
+    benefit_override: float | None = None
 
 
 @dataclass

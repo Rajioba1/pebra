@@ -269,15 +269,41 @@ def test_domain_high_symbol_fan_in_scope_rejects_wrong_domain() -> None:
     assert out is inp
 
 
-# --- benefit targets explicitly skipped (v1 risk-only) -----------------------
+# --- benefit targets ----------------------------------------------------------
 
 
-def test_benefit_fact_is_ignored() -> None:
+def test_benefit_binary_fact_overrides_immediate_benefit() -> None:
     out = apply_snapshot(
-        _inp(p_success=0.7),
+        _inp(),
+        _bundle(_fact(
+            target_type="benefit_binary",
+            target_name="immediate_benefit_realized",
+            value=0.8,
+        )),
+    )
+    assert out.immediate_benefit == pytest.approx(0.8)
+    assert out.applied_snapshot_provenance["applied_facts"][0]["target"] == "immediate_benefit_realized"
+
+
+def test_benefit_continuous_delta_fact_updates_delta_evidence() -> None:
+    out = apply_snapshot(
+        _inp(),
+        _bundle(_fact(
+            target_type="benefit_continuous",
+            target_name="maintainability_delta.complexity_delta",
+            value=-3.0,
+        )),
+    )
+    assert out.benefit_delta_evidence.deltas["complexity_delta"] == pytest.approx(-3.0)
+    assert out.benefit_delta_evidence.source_type == "learned_override"
+
+
+def test_measured_benefit_fact_sets_final_benefit_override() -> None:
+    out = apply_snapshot(
+        _inp(),
         _bundle(_fact(target_type="benefit_continuous", target_name="measured_benefit", value=0.9)),
     )
-    assert out.p_success == 0.7 and out.applied_snapshot_provenance is None
+    assert out.benefit_override == pytest.approx(0.9)
 
 
 # --- None structural_features fallback ---------------------------------------

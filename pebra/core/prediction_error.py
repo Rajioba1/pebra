@@ -149,9 +149,15 @@ def build_error_rows(
     measured_benefit: float | None = None,
     measured_deltas: dict[str, float] | None = None,
     calibration_scope: str = "shadow",
+    shadow_mode: int = 1,
 ) -> list[dict[str, Any]]:
     """Join captured predictions to outcome labels into prediction-error rows. Computes errors only
-    where a real label exists; everything else is recorded ``censored`` (never guessed)."""
+    where a real label exists; everything else is recorded ``censored`` (never guessed).
+
+    ``shadow_mode``/``calibration_scope`` are stamped at build time (the caller decides eligibility from
+    the terminal outcome). shadow_mode=0 + proceeded_edits_only = production calibration row. They are
+    set here, never UPDATEd later — shadow_mode is in the prediction_errors hash canonical, so a post-hoc
+    flip would break the chain."""
     measured_deltas = measured_deltas or {}
     rows: list[dict[str, Any]] = []
     for pred in predictions:
@@ -162,6 +168,7 @@ def build_error_rows(
             "target_type": tt,
             "target_name": tn,
             "calibration_scope": calibration_scope,
+            "shadow_mode": shadow_mode,
             "outcome_label_status": "censored",
         }
         if tt in (RISK_BINARY, BENEFIT_BINARY):

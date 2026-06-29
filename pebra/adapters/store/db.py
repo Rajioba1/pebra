@@ -15,9 +15,11 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import math
 import sqlite3
 from typing import Any
 
+from pebra.core.constants import MIN_CALIBRATION_SAMPLES
 from pebra.core.models import AssessmentResult
 
 GENESIS = "GENESIS"
@@ -187,6 +189,38 @@ def _risk_snapshot_legacy_canonical(
 ) -> str:
     content = {"repo_id": repo_id, "status": status, "metrics": metrics, "created_at": created_at}
     return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
+def _event_disutility(content_json: str | None, target_name: str) -> float | None:
+    """The post-floor disutility of the event a ``p_event.<event>`` calibration row targets, pulled from
+    the assessment's stored ``scores.loss_components``. None for non-event targets or when unavailable
+    (fail-soft — never crashes promotion)."""
+    if not content_json or not target_name.startswith("p_event."):
+        return None
+    event = target_name.split(".", 1)[1]
+    try:
+        scores = (json.loads(content_json) or {}).get("scores") or {}
+        for comp in scores.get("loss_components") or []:
+            if comp.get("event") == event:
+                return float(comp["disutility"])
+    except (TypeError, ValueError, KeyError):
+        return None
+    return None
+
+
+def _learned_fact_read_usable(fact_json: str | None) -> bool:
+    """Mirror the read-port's cheap fact-json gates so a newer unusable risk snapshot cannot mask an
+    older usable one. Hash-chain validation remains the authoritative tamper check."""
+    try:
+        fact = json.loads(fact_json or "{}")
+        if not isinstance(fact, dict):
+            return False
+        value = float(fact["value"])
+        sample_size = int(fact.get("sample_size", 0))
+        method = str(fact.get("calibration_method", "")).strip()
+    except (TypeError, ValueError, KeyError):
+        return False
+    return sample_size >= MIN_CALIBRATION_SAMPLES and bool(method) and math.isfinite(value)
 
 
 def _learned_fact_canonical(
@@ -656,31 +690,62 @@ class SqliteStore:
         ]
 
     def read_active_snapshot_rows(self, repo_id: str) -> dict[str, Any] | None:
-        """M5c read-path (read-only): the newest ACTIVE risk_snapshot for a repo + its ACTIVE,
-        human-ratified learned facts as raw rows. Returns None when no active snapshot exists. The
-        snapshot_read adapter decodes fact_json/scope_json and applies the min-sample policy; this
-        method only issues SELECTs. learned_risk_facts.snapshot_id is the bare integer-as-text, e.g.
-        "1", matching risk_snapshots.id; the "rs_{id}" display form is also accepted defensively."""
-        snap = self._con.execute(
-            "SELECT id FROM risk_snapshots WHERE repo_id = ? AND status = 'active' "
-            "ORDER BY id DESC LIMIT 1",
+        """M5c read-path (read-only): active learned facts for a repo as raw rows. Returns None when no
+        active snapshot exists.
+
+        Target-aware on purpose: risk and benefit promotion each write their own active snapshot, so the
+        plain "newest active snapshot" can mask one family with the other. We pick the newest usable
+        risk facts and newest usable benefit facts independently, then return their union. snapshot_id is
+        the selected ``rs_*`` id or a ``+``-joined display id when multiple snapshots contribute."""
+        snaps = self._con.execute(
+            "SELECT rs.id FROM risk_snapshots rs "
+            "WHERE rs.repo_id = ? AND rs.status = 'active' "
+            "ORDER BY rs.id DESC",
             (repo_id,),
-        ).fetchone()
-        if snap is None:
-            return None
-        rs_id = snap[0]
-        rows = self._con.execute(
-            "SELECT id, target_type, target_name, scope_kind, scope_value, specificity_rank, "
-            "scope_json, fact_json, created_at FROM learned_risk_facts "
-            "WHERE repo_id = ? AND snapshot_id IN (?, ?) AND status = 'active' "
-            "AND requires_human_ratification = 0 AND fact_type = 'learned_override' "
-            "ORDER BY id ASC",
-            # canonical is the bare integer-as-text ("1"); also accept the "rs_{id}" display form so a
-            # future M5d writer that stores insert_risk_snapshot's return value can't silently break.
-            (repo_id, str(rs_id), f"rs_{rs_id}"),
         ).fetchall()
+        if not snaps:
+            return None
+        fallback_rs_id = snaps[0][0]
+        selected_ids: list[int] = []
+        selected_rows: list[Any] = []
+        have_risk = False
+        have_benefit = False
+        for (candidate_id,) in snaps:
+            if have_risk and have_benefit:
+                break
+            candidate_rows = self._con.execute(
+                "SELECT id, target_type, target_name, scope_kind, scope_value, specificity_rank, "
+                "scope_json, fact_json, created_at FROM learned_risk_facts "
+                "WHERE repo_id = ? AND snapshot_id IN (?, ?) AND status = 'active' "
+                "AND requires_human_ratification = 0 AND fact_type = 'learned_override' "
+                "ORDER BY id ASC",
+                # canonical is the bare integer-as-text ("1"); also accept the "rs_{id}" display form so
+                # a future M5d writer that stores insert_risk_snapshot's return value can't break reads.
+                (repo_id, str(candidate_id), f"rs_{candidate_id}"),
+            ).fetchall()
+            usable_risk = [
+                row for row in candidate_rows
+                if row[1] == "risk_binary" and _learned_fact_read_usable(row[7])
+            ]
+            usable_benefit = [
+                row for row in candidate_rows
+                if row[1] in {"benefit_binary", "benefit_continuous"}
+                and _learned_fact_read_usable(row[7])
+            ]
+            if usable_risk and not have_risk:
+                selected_ids.append(candidate_id)
+                selected_rows.extend(usable_risk)
+                have_risk = True
+            if usable_benefit and not have_benefit:
+                selected_ids.append(candidate_id)
+                selected_rows.extend(usable_benefit)
+                have_benefit = True
+        snapshot_id = "+".join(f"rs_{sid}" for sid in dict.fromkeys(selected_ids))
+        if not snapshot_id:
+            snapshot_id = f"rs_{fallback_rs_id}"
+        rows = sorted(selected_rows, key=lambda row: row[0])
         return {
-            "snapshot_id": f"rs_{rs_id}",
+            "snapshot_id": snapshot_id,
             "facts": [
                 {
                     "fact_id": f"lrf_{fid}",
@@ -955,7 +1020,7 @@ class SqliteStore:
             "    AND ap.target_name = v.target_name"
             "    AND ap.action_id IS v.action_id"
             "  ORDER BY ap.id DESC LIMIT 1"
-            ") AS features_json "
+            ") AS features_json, a.content_json AS _assessment_content "
             f"FROM {view} v JOIN assessments a ON a.id = v.assessment_id "
         )
         params: tuple = ()
@@ -974,6 +1039,11 @@ class SqliteStore:
             except (TypeError, ValueError):
                 parsed_features = {}
             d["features"] = parsed_features if isinstance(parsed_features, dict) else {}
+            # Per-event (post-floor) disutility for p_event.* targets, from the assessment's
+            # loss_components — feeds the disutility-aware false-proceed proxy (promotion_evaluator).
+            d["event_disutility"] = _event_disutility(
+                d.pop("_assessment_content", None), d.get("target_name") or ""
+            )
             out.append(d)
         return out
 

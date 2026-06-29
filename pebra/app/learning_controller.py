@@ -30,6 +30,7 @@ class LearningMeasurementOutcome:
     snapshot_id: str
     observed: int
     censored: int
+    proceeded: bool = False
 
 
 def _benefit_measurements(guardrails: list[dict[str, Any]]) -> tuple[float | None, dict[str, float]]:
@@ -66,8 +67,18 @@ def measure_learning(
     detail = store.assessment_detail(assessment_id)
     measured_benefit, measured_deltas = _benefit_measurements(detail["guardrails"])
 
+    # IGNITION (the shadow→production gate): only a COMPLETED (proceeded + carried-out) edit yields
+    # production calibration rows. The eligibility is stamped at INSERT time (shadow_mode is hashed in
+    # prediction_errors — it can never be flipped post-hoc without breaking the chain). skipped/rejected
+    # stay shadow so they never enter the production calibration views.
+    terminal_status = outcomes[-1]["terminal_status"]
+    proceeded = terminal_status == "completed"
+    calibration_scope = "proceeded_edits_only" if proceeded else "shadow"
+    shadow_mode_val = 0 if proceeded else 1
+
     rows = prediction_error.build_error_rows(
-        predictions, labels, measured_benefit=measured_benefit, measured_deltas=measured_deltas
+        predictions, labels, measured_benefit=measured_benefit, measured_deltas=measured_deltas,
+        calibration_scope=calibration_scope, shadow_mode=shadow_mode_val,
     )
     observed = sum(1 for r in rows if r["outcome_label_status"] == "observed")
     censored = len(rows) - observed
@@ -90,4 +101,5 @@ def measure_learning(
         snapshot_id=snapshot_id,
         observed=observed,
         censored=censored,
+        proceeded=proceeded,
     )

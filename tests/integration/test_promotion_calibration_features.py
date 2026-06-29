@@ -7,6 +7,8 @@ The features are already captured in assessment_predictions; this only adds the 
 
 from __future__ import annotations
 
+import pytest
+
 from pebra.adapters.store.db import SqliteStore
 from pebra.core.constants import ActionStatus, Decision, RiskMode
 from pebra.core.models import AssessmentResult
@@ -106,6 +108,43 @@ def test_calibration_features_join_null_action_id(tmp_path) -> None:
 
     assert len(rows) == 1
     assert rows[0]["features"] == _FEATURES
+
+
+def test_calibration_row_exposes_event_disutility_from_loss_components(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "p.db"))
+    result = AssessmentResult(
+        recommended_decision=Decision.PROCEED, requires_confirmation=False,
+        action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL,
+        scores={"benefit": 0.82, "effective_threshold": 0.45,
+                "loss_components": [{"event": "x", "p_event": 0.2, "disutility": 0.8,
+                                     "expected_loss": 0.16}]},
+        repo_id="r", repo_root="/x",
+    )
+    asm = store.persist_assessment(
+        result, {"task": "t"},
+        predictions=[{"action_id": "a1", "target_type": "risk_binary", "target_name": "p_event.x",
+                      "predicted_value": 0.2, "features": _FEATURES}],
+    )
+    store.insert_prediction_error(asm, {
+        "action_id": "a1", "target_type": "risk_binary", "target_name": "p_event.x",
+        "predicted_probability": 0.2, "actual_outcome": 1, "residual": 0.8, "brier_error": 0.64,
+        "log_loss": 1.6, "outcome_label_status": "observed",
+        "calibration_scope": "proceeded_edits_only", "shadow_mode": 0,
+    })
+
+    rows = store.load_production_calibration_rows("r", "risk_binary")
+    store.close()
+    assert len(rows) == 1
+    assert rows[0]["event_disutility"] == pytest.approx(0.8)
+
+
+def test_calibration_row_event_disutility_none_for_non_event_target(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "p.db"))
+    asm = store.persist_assessment(_result(), {"task": "t"})  # scores has no loss_components
+    store.insert_prediction_error(asm, _production_err())      # p_success target
+    rows = store.load_production_calibration_rows("r", "risk_binary")
+    store.close()
+    assert rows[0]["event_disutility"] is None
 
 
 def test_malformed_calibration_features_default_empty(tmp_path) -> None:
