@@ -13,10 +13,10 @@ from pebra.core.models import AssessmentResult
 
 
 _FEATURES = {
-    "symbol": {"symbol_id": "src/payments.py::charge", "is_public_api": True},
+    # action_type lives INSIDE symbol (where every scope matcher reads it), not at top level.
+    "symbol": {"symbol_id": "src/payments.py::charge", "is_public_api": True, "action_type": "edit"},
     "structural": {"symbol_fan_in_percentile": 0.96, "is_high_symbol_fan_in": True},
     "domain": {"matched_domains": ["payments"]},
-    "action_type": "edit",
 }
 
 

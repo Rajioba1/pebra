@@ -189,6 +189,42 @@ def _risk_snapshot_legacy_canonical(
     return json.dumps(content, sort_keys=True, separators=(",", ":"))
 
 
+def _learned_fact_canonical(
+    repo_id: str,
+    snapshot_id: str,
+    fact_type: str,
+    target_type: str,
+    target_name: str,
+    scope_kind: str,
+    scope_value: str,
+    specificity_rank: int,
+    scope: dict[str, Any],
+    fact: dict[str, Any],
+    status: str,
+    requires_human_ratification: int,
+    created_at: str,
+) -> str:
+    """Per-field canonical for the learned-fact chain (M5d). The JSON keys are ``"scope"`` and
+    ``"fact"`` (NOT the column names scope_json/fact_json) and carry the PARSED dicts — the writer and
+    the validator both call this so they can never byte-diverge."""
+    content = {
+        "repo_id": repo_id,
+        "snapshot_id": snapshot_id,
+        "fact_type": fact_type,
+        "target_type": target_type,
+        "target_name": target_name,
+        "scope_kind": scope_kind,
+        "scope_value": scope_value,
+        "specificity_rank": specificity_rank,
+        "scope": scope,
+        "fact": fact,
+        "status": status,
+        "requires_human_ratification": requires_human_ratification,
+        "created_at": created_at,
+    }
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
 def _guardrail_canonical(row_id: int, recorded_at: str, guardrails: dict[str, Any]) -> str:
     """Per-field canonical content hashed for the guardrail chain (Architecture §10).
 
@@ -791,6 +827,78 @@ class SqliteStore:
             raise
         return error_ids, snapshot_id
 
+    def _last_learned_risk_fact_hash(self) -> str:
+        row = self._con.execute(
+            "SELECT row_hash FROM learned_risk_facts ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row[0] if row else GENESIS
+
+    def _insert_one_learned_fact(
+        self, repo_id: str, snapshot_id: str, fact: dict[str, Any], created_at: str
+    ) -> str:
+        """Append one learned_risk_fact row to the chain. Caller owns the transaction. ``snapshot_id``
+        is the BARE integer-as-text (matches read_active_snapshot_rows' stored form)."""
+        scope_dict = fact.get("scope_json") or {}
+        fact_dict = fact.get("fact_json") or {}
+        ratification_int = int(bool(fact.get("requires_human_ratification", False)))
+        status = fact.get("status", "active")
+        fact_type = fact.get("fact_type", "learned_override")
+        scope_kind = fact.get("scope_kind", "global")
+        scope_value = fact.get("scope_value", "")
+        specificity_rank = int(fact.get("specificity_rank", 0))
+        target_type = fact["target_type"]
+        target_name = fact["target_name"]
+        content_json = _learned_fact_canonical(
+            repo_id, snapshot_id, fact_type, target_type, target_name, scope_kind, scope_value,
+            specificity_rank, scope_dict, fact_dict, status, ratification_int, created_at,
+        )
+        prev_hash = self._last_learned_risk_fact_hash()
+        row_hash = _row_hash(prev_hash, content_json)
+        cur = self._con.execute(
+            "INSERT INTO learned_risk_facts "
+            "(repo_id, snapshot_id, fact_type, target_type, target_name, scope_kind, "
+            "scope_value, specificity_rank, scope_json, fact_json, status, "
+            "requires_human_ratification, created_at, prev_hash, row_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                repo_id, snapshot_id, fact_type, target_type, target_name, scope_kind, scope_value,
+                specificity_rank,
+                json.dumps(scope_dict, sort_keys=True, separators=(",", ":")),
+                json.dumps(fact_dict, sort_keys=True, separators=(",", ":")),
+                status, ratification_int, created_at, prev_hash, row_hash,
+            ),
+        )
+        return f"lrf_{cur.lastrowid}"
+
+    def insert_learned_fact_batch_with_snapshot(
+        self,
+        repo_id: str,
+        snapshot_metrics: dict[str, Any],
+        facts: list[dict[str, Any]],
+        snapshot_status: str = "active",
+    ) -> tuple[str, list[str]]:
+        """M5d promotion writer: atomically append one risk_snapshot (status=snapshot_status) and N
+        learned_risk_facts. All rows share one ``created_at`` (deterministic within the batch). The
+        facts' snapshot_id column stores the bare integer-as-text (matches the read path). Returns
+        ``(rs_{id}, [lrf_{id}, ...])``; rolls back the whole batch on any error."""
+        if not facts:
+            raise ValueError("cannot write a promotion snapshot with zero learned facts")
+        created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            snapshot_display = self._insert_risk_snapshot(
+                repo_id, snapshot_metrics, snapshot_status, created_at
+            )
+            bare_id = snapshot_display[3:]  # strip "rs_" -> bare integer-as-text
+            fact_ids = [
+                self._insert_one_learned_fact(repo_id, bare_id, fact, created_at) for fact in facts
+            ]
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        return snapshot_display, fact_ids
+
     def prediction_errors_exist(self, assessment_id: str) -> bool:
         """True iff this assessment already has computed prediction-error rows (idempotency guard:
         re-measuring would double-count in the scorecard)."""
@@ -1032,24 +1140,10 @@ class SqliteStore:
                 fact = json.loads(fact_json)
             except (TypeError, ValueError):
                 return False
-            content_json = json.dumps(
-                {
-                    "repo_id": repo_id,
-                    "snapshot_id": snapshot_id,
-                    "fact_type": fact_type,
-                    "target_type": target_type,
-                    "target_name": target_name,
-                    "scope_kind": scope_kind,
-                    "scope_value": scope_value,
-                    "specificity_rank": specificity_rank,
-                    "scope": scope,
-                    "fact": fact,
-                    "status": status,
-                    "requires_human_ratification": requires_human_ratification,
-                    "created_at": created_at,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
+            content_json = _learned_fact_canonical(
+                repo_id, snapshot_id, fact_type, target_type, target_name, scope_kind,
+                scope_value, specificity_rank, scope, fact, status,
+                requires_human_ratification, created_at,
             )
             if _row_hash(prev_hash, content_json) != stored_hash:
                 return False

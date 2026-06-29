@@ -26,3 +26,14 @@ class LearningStore(LearningPort):
         status: str = "shadow",
     ) -> tuple[list[str], str]:
         return self._store.insert_learning_measurement(assessment_id, rows, repo_id, metrics, status)
+
+    def write_promotion(
+        self,
+        repo_id: str,
+        snapshot_metrics: dict[str, Any],
+        facts: list[dict[str, Any]],
+        snapshot_status: str = "active",
+    ) -> tuple[str, list[str]]:
+        return self._store.insert_learned_fact_batch_with_snapshot(
+            repo_id, snapshot_metrics, facts, snapshot_status
+        )

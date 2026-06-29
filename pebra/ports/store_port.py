@@ -65,3 +65,10 @@ class StorePort(Protocol):
     def latest_guardrails(self, assessment_id: str) -> dict[str, Any] | None:
         """Return the newest persisted verify/guardrails row for an assessment, or None."""
         ...
+
+    def load_production_calibration_rows(
+        self, repo_id: str | None = None, target_type: str = "risk_binary"
+    ) -> list[dict[str, Any]]:
+        """M5d promotion input: production-only (live, observed, proceeded, unguided) calibration rows.
+        Each row carries a parsed ``features`` dict (the structural feature payload, ``{}`` if absent)."""
+        ...

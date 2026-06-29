@@ -21,3 +21,14 @@ class LearningPort(Protocol):
     ) -> tuple[list[str], str]:
         """Atomically append prediction-error rows plus the shadow snapshot."""
         ...
+
+    def write_promotion(
+        self,
+        repo_id: str,
+        snapshot_metrics: dict[str, Any],
+        facts: list[dict[str, Any]],
+        snapshot_status: str = "active",
+    ) -> tuple[str, list[str]]:
+        """M5d: atomically append one risk_snapshot (status=snapshot_status) plus one or more
+        learned_risk_facts (hash-chained). Returns ``(snapshot_id, [fact_ids])``."""
+        ...

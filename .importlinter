@@ -85,7 +85,10 @@ source_modules =
     pebra.mcp_server
 forbidden_modules =
     pebra.app.learning_controller
+    pebra.app.promotion_controller
     pebra.core.prediction_error
+    pebra.core.learning_eval
+    pebra.core.promotion_evaluator
     pebra.adapters.learning_store
     pebra.adapters.calibration_store
 
