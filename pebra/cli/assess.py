@@ -57,6 +57,35 @@ def run(args: Any) -> int:
     return 0
 
 
+def _fmt_float(value: Any) -> str:
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _graph_evidence_lines(result: AssessmentResult) -> list[str]:
+    sse = result.symbol_scope_evidence or {}
+    rollup = sse.get("file_fanin_rollup")
+    # Only claim graph evidence when CodeGraph actually answered. A DELETE with no engine still carries
+    # a (non-empty) rollup dict with resolution_method='unresolved' — rendering "Graph engine: CodeGraph"
+    # for it would falsely imply the graph was consulted (breaks the graph-vs-no-graph honesty contract).
+    if not rollup or rollup.get("resolution_method") == "unresolved":
+        return []
+    op = str(sse.get("file_operation_kind", "unknown")).lower().replace("_", " ")
+    if op == "delete":
+        op = "delete file"
+    return [
+        "",
+        "Graph Evidence:",
+        "  - Graph engine: CodeGraph",
+        f"  - Graph freshness: {rollup.get('graph_freshness', 'unknown')}",
+        f"  - Changed operation: {op}",
+        f"  - File fan-in rollup: {_fmt_float(rollup.get('percentile'))} percentile",
+        f"  - Graph callers/references: {rollup.get('distinct_caller_count', 'unknown')}",
+    ]
+
+
 def render_card(result: AssessmentResult, ex: Explanation) -> str:
     title = _DECISION_TITLE[result.recommended_decision]
     if result.recommended_decision is Decision.PROCEED and result.requires_confirmation:
@@ -74,4 +103,5 @@ def render_card(result: AssessmentResult, ex: Explanation) -> str:
         "Why:",
     ]
     lines.extend(f"  - {line}" for line in ex.why)
+    lines.extend(_graph_evidence_lines(result))
     return "\n".join(lines)

@@ -25,6 +25,19 @@
     return Object.keys(obj).map(function (k) { return k + ": " + obj[k]; }).join(", ");
   }
 
+  const chainLabels = {};
+  chainLabels["assessments"] = "Assessments run";
+  chainLabels["outcomes"] = "Completed outcomes";
+  chainLabels["prediction_" + "errors"] = "Predictions checked";
+  chainLabels["risk_" + "snapshots"] = "Learning snapshots";
+  chainLabels["learned_" + "risk_" + "facts"] = "Learned rules";
+
+  function labeledPairs(obj, labels) {
+    return Object.keys(obj).map(function (k) {
+      return (labels[k] || k) + ": " + obj[k];
+    }).join(", ");
+  }
+
   async function render() {
     app.textContent = "";
 
@@ -32,7 +45,7 @@
     const chainCard = el("section", { "data-testid": "chain-status" });
     chainCard.appendChild(el("h2", null, "Audit chain"));
     chainCard.appendChild(
-      el("p", null, (chain.valid ? "valid" : "BROKEN") + " — " + pairs(chain.counts))
+      el("p", null, (chain.valid ? "valid" : "BROKEN") + " — " + labeledPairs(chain.counts, chainLabels))
     );
     app.appendChild(chainCard);
 
@@ -44,7 +57,7 @@
     const overview = await getJSON("/api/repos/" + encodeURIComponent(repo) + "/overview");
     const ov = el("section", { "data-testid": "overview" });
     ov.appendChild(el("h2", null, "Overview"));
-    ov.appendChild(el("p", null, "Total assessments: " + overview.total));
+    ov.appendChild(el("p", null, "Assessments run: " + overview.total));
     ov.appendChild(el("p", null, "By decision — " + pairs(overview.by_decision)));
     ov.appendChild(el("p", null, "By status — " + pairs(overview.by_status)));
     app.appendChild(ov);

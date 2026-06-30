@@ -116,3 +116,15 @@ def test_static_served_without_bearer(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/static/app.js")
     assert resp.status_code == 200
+
+
+def test_dashboard_static_uses_human_metric_labels(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+    assert "Assessments run" in text
+    assert "Completed outcomes" in text
+    assert "Predictions checked" in text
+    assert "Learning snapshots" in text
+    assert "Learned rules" in text
+    assert "prediction_errors" not in text
+    assert "learned_risk_facts" not in text

@@ -78,9 +78,9 @@ def render_scorecard(payload: dict[str, Any]) -> str:
         f"Labels:  {cal['observed']} observed / {cal['censored']} censored "
         f"of {cal['total']} computed errors",
         "",
-        "Shadow rows recorded (excluded from any decision):",
-        f"  predictions:       {counts['assessment_predictions']}",
-        f"  prediction_errors: {counts['prediction_errors']}",
-        f"  risk_snapshots:    {counts['risk_snapshots']}",
+        "Learning evidence recorded (excluded from any decision until promoted):",
+        f"  Assessment predictions: {counts['assessment_predictions']}",
+        f"  Predictions checked:    {counts['prediction_errors']}",
+        f"  Learning snapshots:     {counts['risk_snapshots']}",
     ]
     return "\n".join(lines)

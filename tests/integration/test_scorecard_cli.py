@@ -29,7 +29,11 @@ def test_scorecard_pending_on_empty_db(tmp_path) -> None:
     proc = _pebra(tmp_path, "scorecard", "--repo-root", str(tmp_path), "--db", str(tmp_path / "p.db"))
     assert proc.returncode == 0, proc.stderr
     assert "pending_min_n" in proc.stdout
-    assert "Shadow rows recorded" in proc.stdout
+    assert "Learning evidence recorded" in proc.stdout
+    assert "Predictions checked" in proc.stdout
+    assert "Learning snapshots" in proc.stdout
+    assert "prediction_errors" not in proc.stdout
+    assert "risk_snapshots" not in proc.stdout
 
 
 def test_full_shadow_loop(tmp_path) -> None:

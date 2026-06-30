@@ -111,6 +111,34 @@ def test_builder_surfaces_file_operation_axis_in_symbol_scope_audit() -> None:
     assert sse["file_operation_paths"] == ["src/auth.py"]
 
 
+def test_builder_surfaces_file_fanin_rollup_for_human_graph_proof() -> None:
+    inp = replace(
+        _worked_example_input(),
+        symbol_diff_evidence=replace(
+            _worked_example_input().symbol_diff_evidence,
+            file_operation_kind="DELETE",
+            file_operation_paths=("src/auth.py",),
+        ),
+        file_fanin_rollup=m.FileFanInRollup(
+            max_caller_count=7,
+            distinct_caller_count=13,
+            symbol_count=5,
+            file_symbol_fanin_rollup_percentile=1.0,
+            resolution_method="file_location",
+            graph_freshness="fresh",
+        ),
+    )
+
+    sse = ab.build_assessment(inp).scores["symbol_scope_evidence"]
+
+    assert sse["file_fanin_rollup"]["percentile"] == pytest.approx(1.0)
+    assert sse["file_fanin_rollup"]["distinct_caller_count"] == 13
+    assert sse["file_fanin_rollup"]["max_caller_count"] == 7
+    assert sse["file_fanin_rollup"]["symbol_count"] == 5
+    assert sse["file_fanin_rollup"]["resolution_method"] == "file_location"
+    assert sse["file_fanin_rollup"]["graph_freshness"] == "fresh"
+
+
 def test_builder_uses_tighter_c3_threshold_as_effective() -> None:
     a = ab.build_assessment(_worked_example_input())
     assert a.scores["effective_threshold"] == pytest.approx(0.20)

@@ -132,6 +132,20 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         scope_basis = "file_fallback"
     else:
         scope_basis = "unknown_fallback"
+    rollup = inp.file_fanin_rollup
+    file_fanin_rollup = (
+        {
+            "percentile": rollup.file_symbol_fanin_rollup_percentile,
+            "distinct_caller_count": rollup.distinct_caller_count,
+            "max_caller_count": rollup.max_caller_count,
+            "symbol_count": rollup.symbol_count,
+            "resolution_method": rollup.resolution_method,
+            "graph_freshness": rollup.graph_freshness,
+            "fallback_reason": rollup.fallback_reason,
+        }
+        if rollup is not None
+        else None
+    )
     scores: dict[str, Any] = {
         "expected_loss": expected_loss,
         "loss_components": loss_components,
@@ -159,6 +173,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "consequence_reason": list(sde.consequence_reason),
             "file_operation_kind": sde.file_operation_kind,
             "file_operation_paths": list(sde.file_operation_paths),
+            "file_fanin_rollup": file_fanin_rollup,
             "fallback_reason": sde.fallback_reason,
         },
     }

@@ -22,6 +22,8 @@ class FeatureResult:
     transcript: Any | None = None
     screenshot_path: str | None = None
     notes: str = ""
+    graph_evidence: dict[str, Any] | None = None
+    learning_evidence: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.status not in _STATUSES:
@@ -35,6 +37,48 @@ def _overall(results: list[FeatureResult]) -> str:
     if "NEEDS-HUMAN-REVIEW" in statuses:
         return "NEEDS-HUMAN-REVIEW"
     return "PASS"
+
+
+def _fmt_float(value: Any) -> str:
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _evidence_lines(r: FeatureResult) -> list[str]:
+    lines: list[str] = []
+    graph = r.graph_evidence or {}
+    if graph:
+        lines.extend(
+            [
+                f"  - Graph engine: {graph.get('engine', 'unknown')}",
+                f"  - Graph freshness: {graph.get('freshness', 'unknown')}",
+                f"  - Changed operation: {graph.get('operation', 'unknown')}",
+                "  - File fan-in rollup: "
+                f"{_fmt_float(graph.get('file_fanin_percentile'))} percentile",
+                f"  - Graph callers/references: {graph.get('caller_count', 'unknown')}",
+                f"  - Risk event added: {graph.get('risk_event', 'none')}",
+                f"  - Graph risk boost: +{_fmt_float(graph.get('risk_boost'))} p_event",
+                "  - Final dependency-break probability: "
+                f"{_fmt_float(graph.get('final_probability'))}",
+            ]
+        )
+    learning = r.learning_evidence or {}
+    if learning:
+        lines.extend(
+            [
+                f"  - Prior success estimate: {_fmt_float(learning.get('prior_success'))}",
+                f"  - Learned success estimate: {_fmt_float(learning.get('learned_success'))}",
+                f"  - Decision before learning: {learning.get('before_decision', 'unknown')}",
+                f"  - Decision after learning: {learning.get('after_decision', 'unknown')}",
+                "  - Promotion evidence: "
+                f"n={learning.get('promotion_n', 'unknown')} completed outcomes",
+                f"  - Real build outcomes: {learning.get('real_build_cycles', 'unknown')}",
+                f"  - Seeded outcomes: {learning.get('seeded_cycles', 'unknown')}",
+            ]
+        )
+    return lines
 
 
 def render_report(results: list[FeatureResult], *, run_id: str) -> str:
@@ -54,6 +98,10 @@ def render_report(results: list[FeatureResult], *, run_id: str) -> str:
         if r.screenshot_path:
             note = f"{note} · screenshot: `{r.screenshot_path}`".strip(" ·")
         lines.append(f"| {r.feature_name} | {r.lane} | {r.status} | {note} |")
+    evidence = [line for r in results for line in _evidence_lines(r)]
+    if evidence:
+        lines.extend(["", "## Human-readable evidence", ""])
+        lines.extend(evidence)
     return "\n".join(lines) + "\n"
 
 

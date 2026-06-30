@@ -59,6 +59,37 @@ Generated local artifacts go under `e2e/out/` and are ignored by git:
 
 Screenshots are not pixel-diffed. They are human-review artifacts.
 
+## Human Labels
+
+Reports and screenshots must use human labels, not storage-table names:
+
+- `assessments` -> `Assessments run`
+- `outcomes` -> `Completed outcomes`
+- `prediction_errors` -> `Predictions checked`
+- `risk_snapshots` -> `Learning snapshots`
+- `learned_risk_facts` -> `Learned rules`
+
+Graph-backed destructive-op reports should spell out the evidence in plain English:
+
+- `Graph engine`
+- `Graph freshness`
+- `Changed operation`
+- `File fan-in rollup`
+- `Graph callers/references`
+- `Risk event added`
+- `Graph risk boost`
+- `Final dependency-break probability`
+
+Learning reports should spell out:
+
+- `Prior success estimate`
+- `Learned success estimate`
+- `Decision before learning`
+- `Decision after learning`
+- `Promotion evidence`
+- `Real build outcomes`
+- `Seeded outcomes`
+
 ## Machine Assertions
 
 The suite asserts:
