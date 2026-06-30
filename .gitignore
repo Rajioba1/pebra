@@ -17,3 +17,11 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Benchmark private/generated artifacts. Keep benchmark code, docs, small fixtures,
+# and frozen public JSON results tracked.
+benchmarks/flow/e2e/out/
+benchmarks/flow/e2e/runs/
+benchmarks/flow/e2e/tmp/
+benchmarks/flow/corpus/private/
+benchmarks/flow/corpus/jit_szz/raw/

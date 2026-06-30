@@ -1,0 +1,44 @@
+{
+  "fixture_file": "prediction_errors.csv",
+  "n_binary": 13,
+  "n_bins": 10,
+  "n_cont": 4,
+  "passed": true,
+  "pebra_source": "pebra.core",
+  "reference_source": "sklearn/numpy",
+  "results": [
+    {
+      "abs_diff": 0.0,
+      "metric": "brier",
+      "passed": true,
+      "pebra": 0.101769230769,
+      "reference": 0.101769230769,
+      "tolerance": 1e-10
+    },
+    {
+      "abs_diff": 0.0,
+      "metric": "ece",
+      "passed": true,
+      "pebra": 0.14,
+      "reference": 0.14,
+      "tolerance": 1e-10
+    },
+    {
+      "abs_diff": 0.0,
+      "metric": "log_loss",
+      "passed": true,
+      "pebra": 0.346744761012,
+      "reference": 0.346744761012,
+      "tolerance": 1e-09
+    },
+    {
+      "abs_diff": 0.0,
+      "metric": "mse",
+      "passed": true,
+      "pebra": 0.003975,
+      "reference": 0.003975,
+      "tolerance": 1e-10
+    }
+  ],
+  "schema_version": 1
+}

@@ -16,7 +16,7 @@ readme = "README.md"
 # later phases. For Phase 0, install with `pip install -e . --no-deps`.
 dependencies = [
     "numpy",
-    "scikit-learn",
+    "scikit-learn>=1.2",
     "cryptography",
     "mapie",
     "radon",
@@ -51,7 +51,7 @@ dev = [
     # reference implementations (numpy/sklearn/scipy) to machine precision. They are NEVER imported
     # by pebra.core (purity contract) — they exist here purely as test ground-truth.
     "numpy",
-    "scikit-learn",
+    "scikit-learn>=1.2",
     "scipy",
 ]
 

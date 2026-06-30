@@ -1,0 +1,26 @@
+{
+  "fixture_file": "prediction_errors.csv",
+  "metrics": {
+    "brier": {
+      "tolerance": 1e-10,
+      "value": 0.101769230769
+    },
+    "ece": {
+      "tolerance": 1e-10,
+      "value": 0.14
+    },
+    "log_loss": {
+      "tolerance": 1e-09,
+      "value": 0.346744761012
+    },
+    "mse": {
+      "tolerance": 1e-10,
+      "value": 0.003975
+    }
+  },
+  "n_binary": 13,
+  "n_bins": 10,
+  "n_cont": 4,
+  "schema_version": 1,
+  "source": "sklearn/numpy"
+}

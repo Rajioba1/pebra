@@ -9,7 +9,7 @@ DEV = [
     "pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema",
     "pyyaml", "radon", "bandit",
     "fastapi", "uvicorn", "jinja2", "httpx",  # Risk Observatory dashboard surface + test client
-    "numpy", "scikit-learn", "scipy",  # Oracle math references for tests/oracles.
+    "numpy", "scikit-learn>=1.2", "scipy",  # Oracle math references for tests/oracles.
 ]
 
 
@@ -32,8 +32,20 @@ def lint(session: nox.Session) -> None:
 def bench_math(session: nox.Session) -> None:
     """Fast benchmark math/oracle tier: formula references + deterministic report shaping."""
     session.install("-e", ".", "--no-deps")
-    session.install("pytest", "numpy", "scikit-learn", "scipy")
+    session.install("pytest", "numpy", "scikit-learn>=1.2", "scipy")
     session.run("pytest", "benchmarks/math", "-q")
+
+
+@nox.session(name="bench-math-regen")
+def bench_math_regen(session: nox.Session) -> None:
+    """Offline regeneration of the math fixture (the Tauri 'run the reference offline' analog): drives
+    the REAL ignition loop, re-exports the CSV, then writes reference/PEBRA/comparison artifacts.
+    Installs full pebra deps (the adapter stack runs here) + numpy/sklearn for the reference lane.
+    Run manually after a schema/formula change, then COMMIT the regenerated data files."""
+    session.install("-e", ".")  # full runtime deps — the ignition loop touches the adapter stack
+    session.install("numpy", "scikit-learn>=1.2")
+    session.run("python", "-m", "benchmarks.math.export_fixture")
+    session.run("python", "-m", "benchmarks.math.run", "--write")
 
 
 @nox.session(name="bench-flow")

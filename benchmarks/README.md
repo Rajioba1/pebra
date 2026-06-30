@@ -21,7 +21,9 @@ is not shipped — `pyproject` packages only `pebra*`.
 ```
 benchmarks/
   README.md
-  math/                 # formula validation vs numpy/sklearn/scipy + JSON report output
+  math/                 # CSV -> reference artifact + PEBRA artifact -> comparison artifact
+    data/               # committed prediction/outcome fixture CSV
+    results/            # committed reference_metrics, pebra_metrics, comparison JSON
   flow/
     scorecard.py        # normalized, deterministic scorecard JSON (delegates metrics to pebra.core)
     corpus/             # fixture corpus now; JIT/SZZ corpora later
@@ -29,7 +31,71 @@ benchmarks/
 ```
 
 `tests/oracles/` stays the **fast CI subset** (pass/fail, machine-precision). `benchmarks/math/` is the
-**heavier tier** that produces an inspectable, regenerable validation report.
+**heavier tier** that mirrors the Tauri validation style:
+
+```
+data/prediction_errors.csv -> results/reference_metrics.json   # sklearn/numpy lane
+data/prediction_errors.csv -> results/pebra_metrics.json       # pebra.core lane
+reference_metrics + pebra_metrics -> results/comparison.json   # no coercion
+```
+
+Any metric outside tolerance fails `comparison.json`; there is no known-divergence bypass.
+
+## Running Validation
+
+There is currently **no** `pebra --benchmark` or `pebra benchmark` CLI command. The benchmark harness is
+kept outside the production CLI so benchmark-only oracle dependencies and fixtures cannot leak into
+the decision surface. Use the module/nox commands below.
+
+Math validation, Tauri-style:
+
+```powershell
+# Full math benchmark test suite.
+nox -s bench-math
+
+# Regenerate the CSV fixture and all math artifacts.
+nox -s bench-math-regen
+
+# Equivalent manual artifact flow:
+python -m benchmarks.math.export_fixture
+python -m benchmarks.math.reference_metrics
+python -m benchmarks.math.pebra_metrics
+python -m benchmarks.math.compare
+
+# Convenience runner: computes reference + PEBRA + comparison from the CSV.
+python -m benchmarks.math.run
+
+# Convenience runner, also writes results/*.json artifacts.
+python -m benchmarks.math.run --write
+```
+
+Generated math artifacts:
+
+```text
+benchmarks/math/data/prediction_errors.csv
+benchmarks/math/results/reference_metrics.json
+benchmarks/math/results/pebra_metrics.json
+benchmarks/math/results/comparison.json
+```
+
+Flow validation:
+
+```powershell
+nox -s bench-flow
+python -m pytest benchmarks/flow -q
+```
+
+Production CLI loop, for manual end-to-end data creation:
+
+```powershell
+pebra setup-graph --fix
+pebra assess --help
+pebra verify --help
+pebra record-outcome --help
+pebra learn --assessment-id <assessment_id>
+pebra promote --repo-id <repo_id>
+pebra scorecard --repo-id <repo_id>
+```
 
 ## Determinism target
 

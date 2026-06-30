@@ -11,9 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
-from sklearn import metrics as sk
-
+from benchmarks.math import reference_metrics as ref
 from pebra.core import learning_eval as le
 from pebra.core.prediction_error import mean_brier, mean_log_loss, mse
 
@@ -43,34 +41,19 @@ class OracleResult:
 
 
 def _numpy_ece(pairs: list[tuple[float, int]], n_bins: int) -> float:
-    """Independent numpy reference for equal-width ECE (same convention as ``learning_eval.ece``)."""
-    p = np.array([pp for pp, _ in pairs], dtype=float)
-    y = np.array([yy for _, yy in pairs], dtype=float)
-    edges = np.linspace(0.0, 1.0, n_bins + 1)
-    idx = np.clip(np.digitize(p, edges[1:-1], right=False), 0, n_bins - 1)
-    n = len(pairs)
-    ece = 0.0
-    for b in range(n_bins):
-        m = idx == b
-        if not m.any():
-            continue
-        ece += (int(m.sum()) / n) * abs(float(y[m].mean()) - float(p[m].mean()))
-    return float(ece)
+    """Compatibility wrapper around the independent reference lane."""
+    return ref.numpy_ece(pairs, n_bins=n_bins)
 
 
 def validate_brier(pairs: list[tuple[float, int]]) -> OracleResult:
-    y_true = [y for _, y in pairs]
-    y_prob = [p for p, _ in pairs]
     # scale_by_half=True selects the classic binary Brier mean((p-y)^2) PEBRA computes (sklearn's
     # default multiclass form is 2x that — the convention trap the oracle suite documents).
-    reference = float(sk.brier_score_loss(y_true, y_prob, scale_by_half=True))
+    reference = ref.sklearn_brier(pairs)
     return OracleResult("brier", mean_brier(pairs), reference, _TOL_EXACT)
 
 
 def validate_log_loss(pairs: list[tuple[float, int]]) -> OracleResult:
-    y_true = [y for _, y in pairs]
-    y_prob = [p for p, _ in pairs]
-    reference = float(sk.log_loss(y_true, y_prob, labels=[0, 1]))
+    reference = ref.sklearn_log_loss(pairs)
     return OracleResult("log_loss", mean_log_loss(pairs), reference, _TOL_LOG_LOSS)
 
 
@@ -79,5 +62,7 @@ def validate_ece(pairs: list[tuple[float, int]], n_bins: int = 10) -> OracleResu
 
 
 def validate_mse(pairs: list[tuple[float, float]]) -> OracleResult:
-    reference = float(sk.mean_squared_error([a for _, a in pairs], [p for p, _ in pairs]))
+    # pairs are (predicted, actual); sklearn's signature is (y_true, y_pred) -> actuals first. The order
+    # looks reversed at the call site on purpose (MSE is symmetric, so it is also harmless either way).
+    reference = ref.sklearn_mse(pairs)
     return OracleResult("mse", mse(pairs), reference, _TOL_EXACT)

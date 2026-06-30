@@ -1,0 +1,22 @@
+{
+  "fixture_file": "prediction_errors.csv",
+  "metrics": {
+    "brier": {
+      "value": 0.101769230769
+    },
+    "ece": {
+      "value": 0.14
+    },
+    "log_loss": {
+      "value": 0.346744761012
+    },
+    "mse": {
+      "value": 0.003975
+    }
+  },
+  "n_binary": 13,
+  "n_bins": 10,
+  "n_cont": 4,
+  "schema_version": 1,
+  "source": "pebra.core"
+}

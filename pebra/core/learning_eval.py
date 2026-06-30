@@ -16,6 +16,7 @@ Pure stdlib; deterministic. numpy/sklearn are validated against in tests/oracles
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 
 from pebra.core.prediction_error import mean_brier, mean_log_loss
@@ -49,8 +50,14 @@ def ece(pairs: list[tuple[float, int]], n_bins: int = 10) -> float:
     if n_bins <= 0:
         raise ValueError(f"n_bins must be > 0, got {n_bins}")
     bins: list[list[tuple[float, int]]] = [[] for _ in range(n_bins)]
+    # Equal-width bin boundaries are i/n_bins for i in 1..n_bins-1, computed as i*step. bisect_right
+    # places p in [edge[k-1], edge[k]); p == 1.0 lands in the last bin (idx == n_bins-1, never out of
+    # range). This is the canonical partition; numpy.digitize over np.linspace(0,1,n_bins+1) uses the
+    # same float arithmetic, so a float-literal input like 0.6 (== 0.5999…) bins identically either way.
+    step = 1.0 / n_bins
+    edges = [i * step for i in range(1, n_bins)]
     for p, y in pairs:
-        idx = min(int(p * n_bins), n_bins - 1)  # p == 1.0 -> last bin, not out of range
+        idx = bisect.bisect_right(edges, p)
         bins[idx].append((p, y))
     n = len(pairs)
     total = 0.0
