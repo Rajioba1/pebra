@@ -1,4 +1,4 @@
-"""Tier B comparison — reconcile the genesis and learned track results into a verdict.
+"""Learning-loop replay benchmark comparison — reconcile the genesis and learned track results.
 
 NO COERCION. ``passed`` is True only when EVERY wiring invariant holds. Any break is recorded as an
 explicit ``failure_reasons`` entry and ``passed=False`` — never hidden, never a tolerance fudge. The

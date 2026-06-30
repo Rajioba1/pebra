@@ -60,7 +60,7 @@ bench = ["pandas", "scipy", "matplotlib", "seaborn"]
 bench-szz = ["pydriller"]
 bench-agent = ["swebench"]
 bench-external = ["datasets"]
-ui-e2e = ["playwright"]
+ui-e2e = ["playwright", "pytest-playwright"]
 
 [tool.setuptools.packages.find]
 include = ["pebra*"]

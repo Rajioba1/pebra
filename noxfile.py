@@ -3,6 +3,9 @@ engine imports with zero adapters present."""
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import nox
 
 DEV = [
@@ -24,7 +27,7 @@ def tests(session: nox.Session) -> None:
 def lint(session: nox.Session) -> None:
     session.install("-e", ".", "--no-deps")
     session.install("ruff", "import-linter")
-    session.run("ruff", "check", "pebra", "benchmarks")
+    session.run("ruff", "check", "pebra", "benchmarks", "e2e")
     session.run("lint-imports")
 
 
@@ -50,7 +53,8 @@ def bench_math_regen(session: nox.Session) -> None:
 
 @nox.session(name="bench-flow")
 def bench_flow(session: nox.Session) -> None:
-    """Fast benchmark flow tier: deterministic scorecard JSON and fixture-safe comparison logic."""
+    """Learning-loop replay benchmark (wiring proof, NOT an agent/product e2e — that lives in e2e/):
+    deterministic scorecard JSON + fixture-safe comparison over the real promote/apply machinery."""
     session.install("-e", ".")
     session.install("pytest")
     session.run("pytest", "benchmarks/flow", "-q")
@@ -58,11 +62,62 @@ def bench_flow(session: nox.Session) -> None:
 
 @nox.session(name="bench-flow-regen")
 def bench_flow_regen(session: nox.Session) -> None:
-    """Regenerate Tier B flow corpus + frozen scorecard/comparison artifacts."""
+    """Regenerate the learning-loop replay benchmark corpus + frozen scorecard/comparison artifacts."""
     session.install("-e", ".")
     session.run("python", "-m", "benchmarks.flow.corpus.export_fixture")
     session.run("python", "-m", "benchmarks.flow.replay")
     session.run("python", "-m", "benchmarks.flow.compare")
+
+
+@nox.session(name="e2e")
+def e2e(session: nox.Session) -> None:
+    """Full current agent/product e2e. Runs the fast lane plus seeded-learning/dashboard metrics.
+
+    This takes minutes on Windows because the seeded-learning lane runs 100+ real CLI cycles.
+    """
+    session.install("-e", ".")
+    session.install("pytest")
+    targets = [
+        "e2e/utils/tests", "e2e/test_boundary_discipline.py", "e2e/smoke",
+        "e2e/features/agent", "e2e/features/learning", "e2e/features/dashboard",
+    ]
+    graph_path = Path("e2e/features/graph")
+    if os.environ.get("E2E_CODEGRAPH") == "1" and graph_path.exists():
+        targets.append("e2e/features/graph")
+    session.run("pytest", *targets, "-v")
+
+
+@nox.session(name="e2e-fast")
+def e2e_fast(session: nox.Session) -> None:
+    """Fast e2e boundary/smoke lane: no seeded 100-cycle learning, no UI browser."""
+    session.install("-e", ".")
+    session.install("pytest")
+    session.run(
+        "pytest",
+        "e2e/utils/tests",
+        "e2e/test_boundary_discipline.py",
+        "e2e/smoke",
+        "e2e/features/agent",
+        "-v",
+    )
+
+
+@nox.session(name="e2e-learning")
+def e2e_learning(session: nox.Session) -> None:
+    """Seeded-learning e2e lane: 100+ CLI cycles, promotion, future reassess, dashboard metrics."""
+    session.install("-e", ".")
+    session.install("pytest")
+    session.run("pytest", "e2e/features/learning", "e2e/features/dashboard", "-v")
+
+
+@nox.session(name="e2e-ui")
+def e2e_ui(session: nox.Session) -> None:
+    """Dashboard-visual e2e: launch the dashboard on a local port, drive it with Playwright, capture a
+    screenshot for human review. Needs the Chromium browser binary. Set E2E_UI=1."""
+    session.install("-e", ".[ui-e2e]")
+    session.install("pytest", "pytest-playwright")
+    session.run("playwright", "install", "chromium")
+    session.run("pytest", "e2e/features/dashboard", "-v", env={**os.environ, "E2E_UI": "1"})
 
 
 @nox.session(name="mcp-smoke")

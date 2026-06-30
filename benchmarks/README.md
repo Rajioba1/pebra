@@ -27,8 +27,11 @@ benchmarks/
   flow/
     scorecard.py        # normalized, deterministic scorecard JSON (delegates metrics to pebra.core)
     corpus/             # fixture corpus now; JIT/SZZ corpora later
-    e2e/                # real backend-loop wiring proof (later phase)
+    wiring/             # learning-loop replay benchmark (deterministic WIRING proof, NOT agent e2e)
 ```
+
+> The true agent/product e2e (agent edits real code → CLI/MCP → learn → reassess → dashboard) is the
+> repo-root `e2e/` suite, not here. `benchmarks/flow/wiring/` is only a deterministic wiring proof.
 
 `tests/oracles/` stays the **fast CI subset** (pass/fail, machine-precision). `benchmarks/math/` is the
 **heavier tier** that mirrors the Tauri validation style:
@@ -120,9 +123,8 @@ same corpus + same snapshot + same PEBRA commit  ->  same normalized scorecard.j
 ## Build status
 
 - **Phase 1-3 (this slice):** scaffold + import wall · math oracle layer · deterministic scorecard JSON.
-- **Later (deferred):** replay over the fixture corpus · `flow/e2e/` backend-wiring proof ·
-  `bench-math` / `bench-flow` nox sessions · JIT/SZZ corpus (real proof) · Arm 2b agent A/B (needs the
+- **Later (deferred):** JIT/SZZ corpus (real calibration proof) · Arm 2b agent A/B (needs the
   risk-memory layer first).
 
-Guidance isolation (Arm 2a) is proven at runtime in `flow/e2e/test_guidance_isolation.py` (later),
-rather than via a static intra-benchmarks import contract.
+The `flow/wiring/` replay benchmark is the deterministic wiring proof. Agent/product behaviour (and
+guidance isolation on the real path) belongs to the repo-root `e2e/` suite, not here.

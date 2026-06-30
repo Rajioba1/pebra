@@ -1,7 +1,9 @@
-"""Tier B e2e: prove the synthetic corpus drives the real learning cycle.
+"""Learning-loop replay benchmark — prove the synthetic corpus drives the real learning cycle.
 
-This is a wiring proof, not a real-world calibration proof. The cycle starts from authored prediction
-rows, not from ``assess_controller.assess()`` evidence gathering.
+This is a DETERMINISTIC WIRING PROOF, NOT an agent/product e2e: the cycle starts from authored
+prediction rows, not from ``assess_controller.assess()`` evidence gathering, and there is no agent, no
+real repo, and no dashboard. The true agent/product e2e (agent edits real code → CLI/MCP → learn →
+reassess → dashboard) lives at the repo-root ``e2e/`` suite.
 """
 
 from __future__ import annotations

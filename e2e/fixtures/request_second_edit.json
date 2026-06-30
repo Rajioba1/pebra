@@ -1,0 +1,60 @@
+{
+  "schema_version": "0.1",
+  "task": "Follow-up bearer-token validation hardening in auth_service",
+  "repo_id": "repo_e2e_risky",
+  "candidate_actions": [
+    {
+      "id": "a2",
+      "label": "Follow-up edit to validate_token (security-sensitive)",
+      "action_type": "edit",
+      "affected_symbols": ["auth_service.py::validate_token"],
+      "expected_files": ["auth_service.py"]
+    }
+  ],
+  "evidence": {
+    "events": [
+      {"event": "security_sensitive_change", "p_event": 0.10, "elicited_disutility": 0.90},
+      {"event": "test_regression", "p_event": 0.15, "elicited_disutility": 0.40}
+    ],
+    "p_success": 0.70,
+    "immediate_benefit": 0.55,
+    "review_cost": 0.12,
+    "criticality_stage": "C3",
+    "criticality_value": 0.80,
+    "edit_confidence_factors": {
+      "p_success": 0.70,
+      "evidence_quality": 0.72,
+      "testability": 0.70,
+      "reversibility": 0.80,
+      "source_reliability": 0.78,
+      "scope_control": 0.80
+    },
+    "variance_breakdown": {
+      "p_success": 0.0016,
+      "benefit": 0.0004,
+      "event_losses": 0.0009,
+      "review_cost": 0.0004,
+      "scenario_variance": 0.0003
+    },
+    "benefit_delta_evidence": {"source_type": "projected", "future_change_exposure": 0.0, "deltas": {}},
+    "symbol_diff": {
+      "parsed_patch_available": true,
+      "changed_symbols": ["auth_service.py::validate_token"],
+      "max_change_kind": "BEHAVIORAL",
+      "visibility": "internal",
+      "symbol_fan_in_percentile": 0.60,
+      "consequential_symbol_changed": true
+    },
+    "blast": {"direct_count": 5, "transitive_count": 3}
+  },
+  "thresholds": {
+    "max_expected_loss_without_human": 0.45,
+    "c3_max_expected_loss_without_human": 0.20,
+    "max_p_negative_utility": 0.10,
+    "max_utility_sd_without_human": 0.20,
+    "decision_instability_threshold": 0.10,
+    "high_edit_confidence": 0.75,
+    "low_edit_confidence": 0.50,
+    "rau_bands": {"reject_below": 0.0, "borderline_below": 0.15, "strong_at": 0.40}
+  }
+}

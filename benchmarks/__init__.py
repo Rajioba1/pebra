@@ -7,6 +7,6 @@ contract). It is not shipped — ``pyproject`` packages only ``pebra*``.
 Layout (see ``benchmarks/README.md``):
   - ``benchmarks/math/``      formula validation vs numpy/sklearn/scipy + JSON report output
   - ``benchmarks/flow/``      replay + deterministic scorecard
-  - ``benchmarks/flow/e2e/``  real backend-loop wiring proof (later phase)
+  - ``benchmarks/flow/wiring/`` deterministic learning-loop wiring proof, not product e2e
   - ``benchmarks/flow/corpus/`` fixture corpus now; JIT/SZZ corpora later
 """

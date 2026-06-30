@@ -1,4 +1,4 @@
-"""Tier B replay — drive the fixture corpus through the REAL learning loop, two tracks.
+"""Learning-loop replay benchmark — drive the fixture corpus through the REAL learning loop, two tracks.
 
 GENESIS track: a fresh DB, no promotion. It is structurally snapshot-free (zero fact/snapshot rows),
 so it cannot apply a learned override even if asked. Its scorecard is the baseline.

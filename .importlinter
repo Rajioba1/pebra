@@ -55,6 +55,14 @@ source_modules =
 forbidden_modules =
     benchmarks
 
+[importlinter:contract:pebra-no-e2e]
+name = production never imports the e2e suite
+type = forbidden
+source_modules =
+    pebra
+forbidden_modules =
+    e2e
+
 # --- Layer discipline ---
 
 [importlinter:contract:app-no-adapters]

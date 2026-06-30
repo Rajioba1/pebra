@@ -1,0 +1,13 @@
+{
+  "suite": "pebra-true-e2e",
+  "current_scope": "agent_cli_seeded_learning_plus_dashboard_metrics",
+  "seeded_learning_samples": 105,
+  "env_gates": {
+    "E2E_CODEGRAPH": "real CodeGraph graph/fan-in lane",
+    "E2E_ORGANIC": "organic 100+ edit learning lane",
+    "E2E_UI": "Playwright dashboard screenshot lane"
+  },
+  "artifact_dir": "e2e/out",
+  "subprocess_timeout_seconds": 120,
+  "dashboard_startup_timeout_seconds": 30
+}
