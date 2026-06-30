@@ -1,0 +1,47 @@
+{
+  "brier_improved": true,
+  "calibration_quality": {
+    "claim_scope": "synthetic_fixture_only",
+    "genesis": {
+      "brier": 0.154,
+      "ece": 0.14,
+      "log_loss": 0.492242601601
+    },
+    "learned": {
+      "brier": 0.1345,
+      "ece": 0.01,
+      "log_loss": 0.44005509836
+    },
+    "lift": {
+      "brier": 0.0195,
+      "ece": 0.13,
+      "log_loss": 0.052187503241
+    },
+    "note": "synthetic fixture calibration deltas; wiring diagnostic only, not a quality claim",
+    "verdict": "improved_on_fixture"
+  },
+  "chain_valid_genesis": true,
+  "chain_valid_learned": true,
+  "corpus_note": "synthetic fixture corpus \u2014 wiring proof only; not a calibration-quality claim",
+  "cycle_note": "authored assessment predictions -> record_outcome -> measure_learning -> run_promotion -> SnapshotReadStore -> apply_snapshot on disjoint score cases; does not run assess_controller evidence gathering",
+  "deterministic": true,
+  "failure_reasons": [],
+  "genesis_brier": 0.154,
+  "genesis_label": "genesis",
+  "genesis_loaded_snapshot": false,
+  "learned_brier": 0.1345,
+  "learned_label": "learned",
+  "learned_loaded_snapshot": true,
+  "lift": {
+    "brier": 0.0195,
+    "ece": 0.13,
+    "false_block_rate_c0_c2": 0.0,
+    "false_proceed_rate": 0.0,
+    "log_loss": 0.052187503241
+  },
+  "n_promote": 120,
+  "n_score": 50,
+  "passed": true,
+  "promotion_fired": true,
+  "schema_version": 1
+}

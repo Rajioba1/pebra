@@ -51,9 +51,18 @@ def bench_math_regen(session: nox.Session) -> None:
 @nox.session(name="bench-flow")
 def bench_flow(session: nox.Session) -> None:
     """Fast benchmark flow tier: deterministic scorecard JSON and fixture-safe comparison logic."""
-    session.install("-e", ".", "--no-deps")
+    session.install("-e", ".")
     session.install("pytest")
     session.run("pytest", "benchmarks/flow", "-q")
+
+
+@nox.session(name="bench-flow-regen")
+def bench_flow_regen(session: nox.Session) -> None:
+    """Regenerate Tier B flow corpus + frozen scorecard/comparison artifacts."""
+    session.install("-e", ".")
+    session.run("python", "-m", "benchmarks.flow.corpus.export_fixture")
+    session.run("python", "-m", "benchmarks.flow.replay")
+    session.run("python", "-m", "benchmarks.flow.compare")
 
 
 @nox.session(name="mcp-smoke")

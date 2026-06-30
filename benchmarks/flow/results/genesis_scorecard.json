@@ -1,0 +1,12 @@
+{
+  "label": "genesis",
+  "metrics": {
+    "brier": 0.154,
+    "ece": 0.14,
+    "false_block_rate_c0_c2": 0.0,
+    "false_proceed_rate": 1.0,
+    "log_loss": 0.492242601601
+  },
+  "n": 50,
+  "schema_version": 1
+}
