@@ -31,9 +31,9 @@ def test_seeded_learning_shifts_the_decision(seeded_learning_state):
     # 4. future pre-edit assess: a DISTINCT but scoring-equivalent proposal (request_second_edit),
     # clean tree, now with the active learned snapshot. The cross-request comparison is valid only
     # because the two requests are scoring-identical (differ only in task/id/label) — guarded by
-    # test_fixture_equivalence. The proof is necessarily indirect at the CLI boundary:
-    # applied_snapshot_provenance is internal (not in assess --json), so learning is evidenced by
-    # promotion firing + risk_snapshots>=1 (above) + this RAU drop / decision shift.
+    # test_fixture_equivalence. The CLI payload also proves the promoted snapshot was applied.
     learned = seeded_learning_state.learned
+    applied_snapshot_ids = learned["applied_snapshot_provenance"]["snapshot_id"].split("+")
+    assert promo["risk"]["snapshot_id"] in applied_snapshot_ids
     assert learned["scores"]["rau"] < baseline_rau, (learned["scores"]["rau"], baseline_rau)
     assert learned["recommended_decision"] != baseline["recommended_decision"]

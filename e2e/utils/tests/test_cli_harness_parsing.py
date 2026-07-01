@@ -46,3 +46,23 @@ def test_run_uses_a_timeout(monkeypatch):
     ch._run(["assess", "request.json", "--json"])
 
     assert captured["timeout"] == ch.DEFAULT_TIMEOUT_SECONDS
+
+
+def test_assess_forwards_extra_env(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_run_json(args, *, extra_env=None):
+        captured["args"] = args
+        captured["extra_env"] = extra_env
+        return {"ok": True}
+
+    monkeypatch.setattr(ch, "_run_json", fake_run_json)
+
+    assert ch.assess(
+        tmp_path / "request.json",
+        repo_root=tmp_path,
+        db=tmp_path / "p.db",
+        extra_env={"CODEGRAPH_DIR": str(tmp_path / "no-index")},
+    ) == {"ok": True}
+
+    assert captured["extra_env"] == {"CODEGRAPH_DIR": str(tmp_path / "no-index")}

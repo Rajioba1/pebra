@@ -55,10 +55,16 @@ def _run_json(args: list[str], *, extra_env: dict[str, str] | None = None) -> di
     return _parse_json_stdout(proc.stdout, args)
 
 
-def assess(request_path: Path | str, *, repo_root: Path | str, db: Path | str) -> dict:
+def assess(
+    request_path: Path | str,
+    *,
+    repo_root: Path | str,
+    db: Path | str,
+    extra_env: dict[str, str] | None = None,
+) -> dict:
     return _run_json([
         "assess", str(request_path), "--json", "--repo-root", str(repo_root), "--db", str(db),
-    ])
+    ], extra_env=extra_env)
 
 
 def record_outcome(

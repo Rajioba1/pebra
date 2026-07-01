@@ -71,6 +71,7 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         "repository_registry": ctx.registry,
         "store": ctx.store,
         "assessed_commit": git_adapter.head_commit(ctx.repo.repo_root),
+        "worktree_dirty": git_adapter.worktree_dirty(ctx.repo.repo_root),
         # Phase-4 reframe: PEBRA-owned structural feature capture (no external codeindex/sem). Shared
         # by CLI + MCP so both persist the same feature payload with predictions.
         "structural_feature_provider": StructuralFeatureAdapter(),
@@ -112,6 +113,11 @@ def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
     """The canonical assess result (the recommended action). Identical bytes for `assess --json` and
     the pebra_assess MCP tool."""
     r = outcome.recommended_result
+    repo_state = r.provenance.get("repo_state") or {
+        "repo_head_sha": r.assessed_commit,
+        "worktree_dirty": None,
+        "assessed_repo_root": r.repo_root,
+    }
     return {
         "recommended_decision": r.recommended_decision.value,
         "requires_confirmation": r.requires_confirmation,
@@ -124,6 +130,36 @@ def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
         "gates_fired": r.gates_fired,
         "high_risk_triggers": r.high_risk_triggers,
         "model_guidance_packet": r.model_guidance_packet,
+        "applied_snapshot_provenance": r.provenance.get("applied_snapshot_provenance"),
+        "repo_state": repo_state,
+        "graph_provenance": _graph_provenance(r),
+    }
+
+
+def _graph_provenance(r: Any) -> dict[str, Any]:
+    sse = r.scores.get("symbol_scope_evidence", {}) if isinstance(r.scores, dict) else {}
+    symbol = dict(sse["symbol_fanin"]) if isinstance(sse.get("symbol_fanin"), dict) else None
+    if symbol is not None:
+        symbol.pop("provider_version", None)
+        symbol.pop("index_version", None)
+    rollup = sse.get("file_fanin_rollup")
+    freshness_values = [
+        item.get("graph_freshness")
+        for item in (symbol, rollup)
+        if isinstance(item, dict) and item.get("graph_freshness")
+    ]
+    stored = r.provenance.get("graph_provenance") or {}
+    has_graph_evidence = symbol is not None or rollup is not None
+    return {
+        "engine": stored.get("engine") or ("CodeGraph" if has_graph_evidence else None),
+        "graph_freshness": "fresh" if "fresh" in freshness_values else (
+            freshness_values[0] if freshness_values else "unknown"
+        ),
+        "provider_version": stored.get("provider_version"),
+        "index_version": stored.get("index_version"),
+        "symbol_fanin": symbol,
+        "file_fanin_rollup": rollup,
+        "fanin_validity": r.fanin_validity,
     }
 
 

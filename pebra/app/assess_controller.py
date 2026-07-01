@@ -238,7 +238,17 @@ def _score_action(
     assessment = assessment_builder.build_assessment(inp)
     policy_violations = inp.policy_violations
     result = decision_engine.decide(assessment, policy_violations=policy_violations)
+    if inp.applied_snapshot_provenance is not None:
+        result.provenance["applied_snapshot_provenance"] = inp.applied_snapshot_provenance
     result.assessed_commit = ports.get("assessed_commit")
+    result.provenance["repo_state"] = {
+        "repo_head_sha": result.assessed_commit,
+        "worktree_dirty": ports.get("worktree_dirty"),
+        "assessed_repo_root": repo_root,
+    }
+    graph_provenance = _graph_provenance(inp)
+    if graph_provenance:
+        result.provenance["graph_provenance"] = graph_provenance
     explanation = explanation_generator.render(result, inp.thresholds)
     packet = model_guidance.render(result, action, explanation)
     result.model_guidance_packet = packet
@@ -263,6 +273,17 @@ def _score_action(
     )
 
 
+def _graph_provenance(inp: AssessmentInput) -> dict[str, Any]:
+    fanin = inp.fanin_evidence
+    if fanin is None:
+        return {}
+    return {
+        "engine": "CodeGraph",
+        "provider_version": fanin.provider_version,
+        "index_version": fanin.index_version,
+    }
+
+
 def _recommended(scored: list[ScoredAction]) -> ScoredAction:
     """Pick the recommended action: best RAU among non-rejected, else the first."""
     from pebra.core.constants import Decision
@@ -284,6 +305,7 @@ def assess(
     repository_registry: RepositoryRegistryPort,
     store: StorePort,
     assessed_commit: str | None = None,
+    worktree_dirty: bool | None = None,
     structural_feature_provider: StructuralFeatureProvider | None = None,
     snapshot_read_port: SnapshotReadPort | None = None,
     fanin_provider: FanInProvider | None = None,
@@ -305,6 +327,7 @@ def assess(
                 blast_provider=blast_provider,
                 sanction_port=sanction_port,
                 assessed_commit=assessed_commit,
+                worktree_dirty=worktree_dirty,
                 structural_feature_provider=structural_feature_provider,
                 active_snapshot_bundle=active_snapshot_bundle,
                 fanin_provider=fanin_provider,

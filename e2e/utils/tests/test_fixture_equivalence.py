@@ -6,10 +6,9 @@ cross-request comparison is only sound if the two requests are SCORING-IDENTICAL
 ONLY in identity (task / action id / label), never in evidence or thresholds. Otherwise a future edit to
 the second fixture could make the comparison pass (or fail) for reasons unrelated to learning.
 
-We can't instead assert that the snapshot was applied: ``applied_snapshot_provenance`` is internal and is
-NOT emitted in the ``assess --json`` payload (composition.assess_payload), so at the agent/CLI boundary
-the learning proof is necessarily indirect (promotion fired + risk_snapshots>=1 + RAU drop on a
-scoring-equivalent request). This guard keeps that indirect proof honest.
+The CLI now emits ``applied_snapshot_provenance``, so the headline seeded-learning test can assert
+directly that the future assess consumed the promoted snapshot. This fixture guard still matters: it
+keeps the baseline-vs-learned RAU/decision comparison tied to learning rather than fixture drift.
 """
 
 from __future__ import annotations

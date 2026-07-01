@@ -32,6 +32,14 @@ def head_commit(repo_root: str) -> str | None:
     return out.strip() if out else None
 
 
+def worktree_dirty(repo_root: str) -> bool | None:
+    """True when tracked/staged/untracked files differ from HEAD; None when git is unavailable."""
+    out = _run_git(repo_root, ["status", "--porcelain"])
+    if out is None:
+        return None
+    return bool(out.strip())
+
+
 def file_at_rev(repo_root: str, rev: str, path: str) -> str | None:
     """Return file contents at a git rev (e.g. 'HEAD'), or None if absent at that rev."""
     return _run_git(repo_root, ["show", f"{rev}:{path}"])

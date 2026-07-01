@@ -139,6 +139,30 @@ def test_builder_surfaces_file_fanin_rollup_for_human_graph_proof() -> None:
     assert sse["file_fanin_rollup"]["graph_freshness"] == "fresh"
 
 
+def test_builder_surfaces_symbol_fanin_graph_provenance() -> None:
+    inp = replace(
+        _worked_example_input(),
+        fanin_evidence=m.FanInEvidence(
+            symbol_fan_in_percentile=0.95,
+            symbol_caller_count=12,
+            resolution_method="location",
+            graph_freshness="fresh",
+            provider_version="1.1.1",
+            index_version="24",
+            fallback_reason=None,
+        ),
+    )
+
+    sse = ab.build_assessment(inp).scores["symbol_scope_evidence"]
+
+    assert sse["symbol_fanin"]["percentile"] == pytest.approx(0.95)
+    assert sse["symbol_fanin"]["caller_count"] == 12
+    assert sse["symbol_fanin"]["resolution_method"] == "location"
+    assert sse["symbol_fanin"]["graph_freshness"] == "fresh"
+    assert "provider_version" not in sse["symbol_fanin"]
+    assert "index_version" not in sse["symbol_fanin"]
+
+
 def test_builder_uses_tighter_c3_threshold_as_effective() -> None:
     a = ab.build_assessment(_worked_example_input())
     assert a.scores["effective_threshold"] == pytest.approx(0.20)

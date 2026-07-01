@@ -271,6 +271,24 @@ def test_trusted_high_fanin_patches_percentile_and_marks_consequential() -> None
     assert sse["consequential_symbol_changed"] is True  # high fan-in on a BEHAVIORAL change escalates
 
 
+def test_codegraph_versions_are_provenance_not_scores() -> None:
+    ev = m.FanInEvidence(
+        symbol_fan_in_percentile=0.95, symbol_caller_count=12,
+        resolution_method="location", graph_freshness="fresh",
+        provider_version="1.1.1", index_version="24",
+    )
+    result = _run_cg(ev).recommended_result
+
+    assert result.provenance["graph_provenance"] == {
+        "engine": "CodeGraph",
+        "provider_version": "1.1.1",
+        "index_version": "24",
+    }
+    symbol_fanin = result.scores["symbol_scope_evidence"]["symbol_fanin"]
+    assert "provider_version" not in symbol_fanin
+    assert "index_version" not in symbol_fanin
+
+
 def test_trusted_low_fanin_patches_percentile_without_forcing_consequential() -> None:
     ev = m.FanInEvidence(
         symbol_fan_in_percentile=0.10, resolution_method="location", graph_freshness="fresh",

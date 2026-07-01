@@ -110,6 +110,20 @@ def e2e_learning(session: nox.Session) -> None:
     session.run("pytest", "e2e/features/learning", "e2e/features/dashboard", "-v")
 
 
+@nox.session(name="e2e-external")
+def e2e_external(session: nox.Session) -> None:
+    """Heavy gated real-repo proof: index a real external C# repo with CodeGraph and prove graph-backed
+    risk via the graph-vs-no-graph DELETE delta (and later: real dotnet build outcome + agent A/B).
+
+    Requires E2E_EXTERNAL=1 and E2E_TEMPLATE_BLUEPRINT_REPO=<local git checkout>. Clones the source into
+    the gitignored e2e/out/ (never mutates it), runs pebra setup-graph. NOT for per-PR CI."""
+    if os.environ.get("E2E_EXTERNAL") != "1":
+        session.skip("Set E2E_EXTERNAL=1 (+ E2E_TEMPLATE_BLUEPRINT_REPO) to run the external lane.")
+    session.install("-e", ".")
+    session.install("pytest")
+    session.run("pytest", "e2e/external", "-v", env={**os.environ})
+
+
 @nox.session(name="e2e-ui")
 def e2e_ui(session: nox.Session) -> None:
     """Dashboard-visual e2e: launch the dashboard on a local port, drive it with Playwright, capture a

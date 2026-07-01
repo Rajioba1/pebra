@@ -146,6 +146,18 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         if rollup is not None
         else None
     )
+    fanin = inp.fanin_evidence
+    symbol_fanin = (
+        {
+            "percentile": fanin.symbol_fan_in_percentile,
+            "caller_count": fanin.symbol_caller_count,
+            "resolution_method": fanin.resolution_method,
+            "graph_freshness": fanin.graph_freshness,
+            "fallback_reason": fanin.fallback_reason,
+        }
+        if fanin is not None
+        else None
+    )
     scores: dict[str, Any] = {
         "expected_loss": expected_loss,
         "loss_components": loss_components,
@@ -169,6 +181,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "max_change_kind": sde.max_change_kind,
             "visibility": sde.visibility,
             "symbol_fan_in_percentile": sde.symbol_fan_in_percentile,
+            "symbol_fanin": symbol_fanin,
             "consequential_symbol_changed": sde.consequential_symbol_changed,
             "consequence_reason": list(sde.consequence_reason),
             "file_operation_kind": sde.file_operation_kind,
