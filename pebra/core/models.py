@@ -114,6 +114,17 @@ class FanInEvidence:
     resolved_symbol_count: int = 0
     incoming_edge_counts: dict[str, int] = field(default_factory=dict)
     outgoing_edge_counts: dict[str, int] = field(default_factory=dict)
+    modify_impact_count: int = 0
+    modify_impact_percentile: float = 0.0
+    modify_impact_edge_counts: dict[str, int] = field(default_factory=dict)
+    container_hierarchy_kinds: tuple[str, ...] = ()
+    graph_file_size_bytes: int = 0
+    graph_file_node_count: int = 0
+    graph_file_error_count: int = 0
+    contract_surface_kind: str = "unknown"
+    is_exported_contract: bool = False
+    is_abstract_or_interface_contract: bool = False
+    has_signature_metadata: bool = False
 
 
 @dataclass(frozen=True)

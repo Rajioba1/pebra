@@ -142,6 +142,14 @@ GRAPH_UNCERTAINTY_WEIGHTS: dict[str, float] = {
     "repo_wildcard_import": 0.005,
 }
 
+# CodeGraph file metadata confidence penalties. Parse/index errors lower evidence quality; large or
+# dense indexed files lower scope control. These are confidence-only signals, never expected-loss
+# events, and are capped so metadata uncertainty nudges rather than dominates the decision.
+CODEGRAPH_FILE_PARSE_ERROR_PENALTY: float = 0.08
+CODEGRAPH_FILE_METADATA_SCOPE_PENALTY: float = 0.04
+CODEGRAPH_LARGE_FILE_SIZE_BYTES: int = 200_000
+CODEGRAPH_LARGE_FILE_NODE_COUNT: int = 500
+
 # --- Architecture structural metrics (Slice 3f) — uncalibrated, repo-relative defaults. ---
 # A file is a god-node "anchor" only if its fan-in (in-degree) meets BOTH a minimum floor AND ranks
 # in the top fan-in percentile repo-wide. The floor prevents tiny-repo over-anchoring (a file imported

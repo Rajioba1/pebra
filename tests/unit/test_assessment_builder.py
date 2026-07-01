@@ -155,6 +155,17 @@ def test_builder_surfaces_symbol_fanin_graph_provenance() -> None:
             resolved_symbol_count=3,
             incoming_edge_counts={"calls": 12},
             outgoing_edge_counts={"implements": 4, "references": 2},
+            modify_impact_count=14,
+            modify_impact_percentile=0.97,
+            modify_impact_edge_counts={"calls": 12, "implements": 2},
+            container_hierarchy_kinds=("class", "namespace"),
+            graph_file_size_bytes=240_000,
+            graph_file_node_count=750,
+            graph_file_error_count=1,
+            contract_surface_kind="interface_method",
+            is_exported_contract=True,
+            is_abstract_or_interface_contract=True,
+            has_signature_metadata=True,
         ),
     )
 
@@ -169,6 +180,17 @@ def test_builder_surfaces_symbol_fanin_graph_provenance() -> None:
     assert sse["symbol_fanin"]["resolved_symbol_count"] == 3
     assert sse["symbol_fanin"]["incoming_edge_counts"] == {"calls": 12}
     assert sse["symbol_fanin"]["outgoing_edge_counts"] == {"implements": 4, "references": 2}
+    assert sse["symbol_fanin"]["modify_impact_count"] == 14
+    assert sse["symbol_fanin"]["modify_impact_percentile"] == pytest.approx(0.97)
+    assert sse["symbol_fanin"]["modify_impact_edge_counts"] == {"calls": 12, "implements": 2}
+    assert sse["symbol_fanin"]["container_hierarchy_kinds"] == ["class", "namespace"]
+    assert sse["symbol_fanin"]["graph_file_size_bytes"] == 240_000
+    assert sse["symbol_fanin"]["graph_file_node_count"] == 750
+    assert sse["symbol_fanin"]["graph_file_error_count"] == 1
+    assert sse["symbol_fanin"]["contract_surface_kind"] == "interface_method"
+    assert sse["symbol_fanin"]["is_exported_contract"] is True
+    assert sse["symbol_fanin"]["is_abstract_or_interface_contract"] is True
+    assert sse["symbol_fanin"]["has_signature_metadata"] is True
     assert "provider_version" not in sse["symbol_fanin"]
     assert "index_version" not in sse["symbol_fanin"]
 
@@ -201,6 +223,70 @@ def test_builder_applies_architecture_centrality_to_scope_control() -> None:
     assert a.scores["edit_confidence"] < ab.build_assessment(_worked_example_input()).scores[
         "edit_confidence"
     ]
+
+
+def test_builder_applies_codegraph_file_metadata_to_confidence_not_loss() -> None:
+    inp = replace(
+        _worked_example_input(),
+        fanin_evidence=m.FanInEvidence(
+            resolution_method="location",
+            graph_freshness="fresh",
+            graph_file_error_count=1,
+            graph_file_size_bytes=240_000,
+            graph_file_node_count=750,
+        ),
+    )
+
+    a = ab.build_assessment(inp)
+
+    assert a.scores["expected_loss"] == pytest.approx(
+        ab.build_assessment(_worked_example_input()).scores["expected_loss"]
+    )
+    assert a.scores["edit_confidence_factors"]["evidence_quality"] == pytest.approx(0.70)
+    assert a.scores["edit_confidence_factors"]["scope_control"] == pytest.approx(0.84)
+    assert a.scores["edit_confidence"] < ab.build_assessment(_worked_example_input()).scores[
+        "edit_confidence"
+    ]
+
+
+def test_builder_file_metadata_penalties_never_zero_confidence_factors() -> None:
+    factors = dict(_worked_example_input().edit_confidence_factors)
+    factors["evidence_quality"] = 0.15
+    factors["scope_control"] = 0.08
+    inp = replace(
+        _worked_example_input(),
+        edit_confidence_factors=factors,
+        architecture_evidence=m.ArchitectureEvidence(
+            god_node_score=0.95,
+            cycle_participation=True,
+            bridge_centrality=0.8,
+            domain_entrypoint=True,
+        ),
+        fanin_evidence=m.FanInEvidence(
+            resolution_method="location",
+            graph_freshness="fresh",
+            graph_file_error_count=3,
+            graph_file_size_bytes=240_000,
+            graph_file_node_count=750,
+        ),
+    )
+
+    a = ab.build_assessment(inp)
+
+    assert a.scores["edit_confidence_factors"]["evidence_quality"] > 0.0
+    assert a.scores["edit_confidence_factors"]["scope_control"] > 0.0
+
+
+def test_builder_absent_codegraph_file_metadata_leaves_confidence_unchanged() -> None:
+    inp = replace(
+        _worked_example_input(),
+        fanin_evidence=m.FanInEvidence(resolution_method="location", graph_freshness="fresh"),
+    )
+
+    a = ab.build_assessment(inp)
+
+    assert a.scores["edit_confidence_factors"]["evidence_quality"] == pytest.approx(0.78)
+    assert a.scores["edit_confidence_factors"]["scope_control"] == pytest.approx(0.92)
 
 
 def test_builder_carries_symbol_scope_evidence() -> None:

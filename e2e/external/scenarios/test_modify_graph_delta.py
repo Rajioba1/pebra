@@ -39,7 +39,26 @@ def test_codegraph_changes_public_signature_modify_decision(indexed_copy, nograp
     assert "max_owner_span_lines" in g_sse["symbol_fanin"]
     assert isinstance(g_sse["symbol_fanin"]["incoming_edge_counts"], dict)
     assert isinstance(g_sse["symbol_fanin"]["outgoing_edge_counts"], dict)
+    assert g_sse["symbol_fanin"]["modify_impact_count"] > g_sse["symbol_fanin"]["caller_count"]
+    assert g_sse["symbol_fanin"]["modify_impact_percentile"] == 1.0
+    assert g_sse["symbol_fanin"]["modify_impact_edge_counts"]["references"] >= 1
+    assert g_sse["symbol_fanin"]["modify_impact_edge_counts"]["implements"] >= 1
+    assert g_sse["symbol_fanin"]["contract_surface_kind"] == "interface_method"
+    assert g_sse["symbol_fanin"]["is_exported_contract"] is True
+    assert g_sse["symbol_fanin"]["is_abstract_or_interface_contract"] is True
+    assert g_sse["symbol_fanin"]["has_signature_metadata"] is True
     assert n_sse["symbol_fanin"]["resolution_method"] == "unresolved"
+    assert n_sse["symbol_fanin"]["modify_impact_count"] == 0
+    assert n_sse["symbol_fanin"]["modify_impact_percentile"] == 0.0
+    assert n_sse["symbol_fanin"]["modify_impact_edge_counts"] == {}
+    assert n_sse["symbol_fanin"]["container_hierarchy_kinds"] == []
+    assert n_sse["symbol_fanin"]["graph_file_size_bytes"] == 0
+    assert n_sse["symbol_fanin"]["graph_file_node_count"] == 0
+    assert n_sse["symbol_fanin"]["graph_file_error_count"] == 0
+    assert n_sse["symbol_fanin"]["contract_surface_kind"] == "unknown"
+    assert n_sse["symbol_fanin"]["is_exported_contract"] is False
+    assert n_sse["symbol_fanin"]["is_abstract_or_interface_contract"] is False
+    assert n_sse["symbol_fanin"]["has_signature_metadata"] is False
 
     g_pub = _event(graph, "public_api_break")
     n_pub = _event(nograph, "public_api_break")

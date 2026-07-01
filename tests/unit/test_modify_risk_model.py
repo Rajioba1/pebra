@@ -150,6 +150,102 @@ def test_large_owner_contract_modify_injects_dependency_break_even_when_direct_f
     assert dep["p_event"] == pytest.approx(expected)
 
 
+def test_implements_extends_impact_escalates_contract_modify_when_direct_fanin_is_low():
+    events = _events(
+        _sde(
+            max_change_kind="CONTRACT",
+            symbol_fan_in_percentile=0.20,
+            consequential_symbol_changed=False,
+        ),
+        _fanin(
+            symbol_fan_in_percentile=0.20,
+            symbol_caller_count=1,
+            modify_impact_count=13,
+            modify_impact_percentile=0.95,
+            modify_impact_edge_counts={"implements": 9, "extends": 4},
+        ),
+    )
+
+    dep = _by(events, "dependency_break")
+    expected = (
+        mrm._BASELINE_CONTRACT
+        + mrm._C3_C4_BONUS["C3"]
+        + mrm._FANIN_BONUS_MAX
+    )
+    assert dep is not None
+    assert dep["p_event"] == pytest.approx(expected)
+
+
+def test_pure_implementer_impact_escalates_contract_modify_with_zero_direct_callers():
+    events = _events(
+        _sde(
+            max_change_kind="CONTRACT",
+            symbol_fan_in_percentile=0.0,
+            consequential_symbol_changed=False,
+        ),
+        _fanin(
+            symbol_fan_in_percentile=1.0,
+            symbol_caller_count=0,
+            modify_impact_count=5,
+            modify_impact_percentile=0.95,
+            modify_impact_edge_counts={"implements": 5},
+        ),
+    )
+
+    dep = _by(events, "dependency_break")
+    assert dep is not None
+    assert dep["p_event"] == pytest.approx(
+        mrm._BASELINE_CONTRACT + mrm._C3_C4_BONUS["C3"] + mrm._FANIN_BONUS_MAX
+    )
+
+
+def test_graph_contract_surface_adds_public_api_break_even_when_request_visibility_is_internal():
+    events = _events(
+        _sde(
+            max_change_kind="CONTRACT",
+            visibility="internal",
+            symbol_fan_in_percentile=0.20,
+            consequential_symbol_changed=False,
+        ),
+        _fanin(
+            symbol_fan_in_percentile=0.20,
+            symbol_caller_count=1,
+            modify_impact_count=13,
+            modify_impact_percentile=0.95,
+            contract_surface_kind="interface_method",
+            is_exported_contract=True,
+            is_abstract_or_interface_contract=True,
+            has_signature_metadata=True,
+        ),
+    )
+
+    assert _by(events, "dependency_break") is not None
+    assert _by(events, "public_api_break") is not None
+
+
+def test_graph_contract_metadata_alone_does_not_escalate_plain_low_impact_body_edit():
+    events = _events(
+        _sde(
+            max_change_kind="BEHAVIORAL",
+            visibility="internal",
+            symbol_fan_in_percentile=0.20,
+            consequential_symbol_changed=False,
+        ),
+        _fanin(
+            symbol_fan_in_percentile=0.20,
+            symbol_caller_count=1,
+            modify_impact_count=1,
+            modify_impact_percentile=0.20,
+            contract_surface_kind="interface_method",
+            is_exported_contract=True,
+            is_abstract_or_interface_contract=True,
+            has_signature_metadata=True,
+        ),
+    )
+
+    assert events == []
+
+
 def test_large_owner_plain_behavioral_modify_without_consequence_is_not_escalated():
     events = _events(
         _sde(max_change_kind="BEHAVIORAL", symbol_fan_in_percentile=0.25,
@@ -195,6 +291,24 @@ def test_public_unknown_low_graph_context_is_not_escalated():
             symbol_fan_in_percentile=0.50,
         ),
         _fanin(symbol_fan_in_percentile=0.50, symbol_caller_count=2),
+    )
+
+    assert events == []
+
+
+def test_zero_count_percentiles_do_not_fabricate_high_modify_impact():
+    events = _events(
+        _sde(
+            max_change_kind="CONTRACT",
+            symbol_fan_in_percentile=1.0,
+            consequential_symbol_changed=False,
+        ),
+        _fanin(
+            symbol_fan_in_percentile=1.0,
+            symbol_caller_count=0,
+            modify_impact_count=0,
+            modify_impact_percentile=1.0,
+        ),
     )
 
     assert events == []

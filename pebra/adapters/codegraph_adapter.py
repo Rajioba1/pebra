@@ -37,10 +37,15 @@ from pebra.core.score_math import fractional_rank
 
 # Edge kinds that constitute per-symbol fan-in. 'imports' is deliberately excluded (file/module-level).
 _FANIN_EDGE_KINDS = ("calls", "references", "instantiates")
+# Edge kinds that can be impacted by a MODIFY to a contract-bearing symbol. This is a deduped union
+# signal, not an additive bonus: a node that both calls and implements the target counts once.
+_MODIFY_IMPACT_EDGE_KINDS = _FANIN_EDGE_KINDS + ("implements", "extends")
 # The fan-in population (what gets a percentile rank). Mirrors codegraph's callable NodeKinds.
 _CALLABLE_KINDS = ("function", "method", "class", "struct", "interface", "trait", "protocol")
 # Location-resolution owner kinds — broader, so a change always maps to *some* owning scope.
 _OWNER_KINDS = _CALLABLE_KINDS + ("component", "route", "namespace", "module")
+_CONTRACT_CONTAINER_KINDS = ("class", "struct", "interface", "trait", "protocol")
+_CONTAINER_HIERARCHY_KINDS = _CONTRACT_CONTAINER_KINDS + ("namespace", "module", "file", "component", "route")
 _MIN_SCHEMA_VERSION = 5
 
 _INSTALL_HINT = "install with: npm install -g @colbymchenry/codegraph (or run: pebra setup-graph)"
@@ -206,6 +211,7 @@ class CodeGraphAdapter:
     def __init__(self, status_fn: Callable[[str], dict[str, Any] | None] | None = None) -> None:
         self._status_fn = status_fn or _default_status
         self._dist_cache: dict[tuple[str, float], list[int]] = {}
+        self._impact_dist_cache: dict[tuple[str, float], list[int]] = {}
 
     def fanin(self, action: CandidateAction, repo_root: str) -> FanInEvidence:
         status = self._status_fn(repo_root)
@@ -267,7 +273,7 @@ class CodeGraphAdapter:
                     fallback_reason="ambiguous name match; fan-in not trusted (no location resolution)",
                 )
             count, pctl = self._fanin(con, node_ids, db_path)
-            ctx = self._graph_context(con, node_ids)
+            ctx = self._graph_context(con, node_ids, self._impact_distribution(con, db_path))
             return FanInEvidence(
                 symbol_fan_in_percentile=pctl,
                 symbol_caller_count=count,
@@ -281,6 +287,17 @@ class CodeGraphAdapter:
                 resolved_symbol_count=ctx["resolved_symbol_count"],
                 incoming_edge_counts=ctx["incoming_edge_counts"],
                 outgoing_edge_counts=ctx["outgoing_edge_counts"],
+                modify_impact_count=ctx["modify_impact_count"],
+                modify_impact_percentile=ctx["modify_impact_percentile"],
+                modify_impact_edge_counts=ctx["modify_impact_edge_counts"],
+                container_hierarchy_kinds=ctx["container_hierarchy_kinds"],
+                graph_file_size_bytes=ctx["graph_file_size_bytes"],
+                graph_file_node_count=ctx["graph_file_node_count"],
+                graph_file_error_count=ctx["graph_file_error_count"],
+                contract_surface_kind=ctx["contract_surface_kind"],
+                is_exported_contract=ctx["is_exported_contract"],
+                is_abstract_or_interface_contract=ctx["is_abstract_or_interface_contract"],
+                has_signature_metadata=ctx["has_signature_metadata"],
             )
         except (sqlite3.Error, OSError) as exc:
             # never let a corrupt/locked/half-written DB crash the assessment (fail-soft contract)
@@ -510,7 +527,9 @@ class CodeGraphAdapter:
         return caller_count, fractional_rank(caller_count, distribution)
 
     @staticmethod
-    def _graph_context(con: sqlite3.Connection, node_ids: list[str]) -> dict[str, Any]:
+    def _graph_context(
+        con: sqlite3.Connection, node_ids: list[str], impact_distribution: list[int] | None = None
+    ) -> dict[str, Any]:
         """Raw graph facts around the resolved owner node(s).
 
         Edge counts are distinct neighbouring nodes per edge kind, not raw edge rows. This keeps the
@@ -523,10 +542,22 @@ class CodeGraphAdapter:
                 "resolved_symbol_count": 0,
                 "incoming_edge_counts": {},
                 "outgoing_edge_counts": {},
+                "modify_impact_count": 0,
+                "modify_impact_percentile": 0.0,
+                "modify_impact_edge_counts": {},
+                "container_hierarchy_kinds": (),
+                "graph_file_size_bytes": 0,
+                "graph_file_node_count": 0,
+                "graph_file_error_count": 0,
+                "contract_surface_kind": "unknown",
+                "is_exported_contract": False,
+                "is_abstract_or_interface_contract": False,
+                "has_signature_metadata": False,
             }
         id_ph = ",".join("?" * len(node_ids))
         rows = con.execute(
-            f"SELECT id, kind, start_line, end_line FROM nodes WHERE id IN ({id_ph})",
+            f"SELECT id, kind, file_path, start_line, end_line, signature, return_type, type_parameters, "
+            f"visibility, is_exported, is_abstract FROM nodes WHERE id IN ({id_ph})",
             tuple(node_ids),
         ).fetchall()
         by_id = {r["id"]: r for r in rows}
@@ -555,13 +586,188 @@ class CodeGraphAdapter:
                 tuple(node_ids),
             ).fetchall()
         }
+        impact_targets = CodeGraphAdapter._modify_impact_target_ids(con, node_ids)
+        container_rows = CodeGraphAdapter._container_hierarchy_rows(con, node_ids)
+        contract_containers = CodeGraphAdapter._contract_container_rows(con, node_ids)
+        contract_meta = CodeGraphAdapter._contract_metadata(rows, contract_containers)
+        file_meta = CodeGraphAdapter._file_metadata(con, rows)
+        impact_id_ph = ",".join("?" * len(impact_targets))
+        impact_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
+        impact_count = int(con.execute(
+            f"SELECT COUNT(DISTINCT source) AS c FROM edges "
+            f"WHERE target IN ({impact_id_ph}) AND kind IN ({impact_ph})",
+            (*impact_targets, *_MODIFY_IMPACT_EDGE_KINDS),
+        ).fetchone()["c"])
+        impact_edges = {
+            str(r["kind"]): int(r["c"]) for r in con.execute(
+                f"SELECT kind, COUNT(DISTINCT source) AS c FROM edges "
+                f"WHERE target IN ({impact_id_ph}) AND kind IN ({impact_ph}) GROUP BY kind",
+                (*impact_targets, *_MODIFY_IMPACT_EDGE_KINDS),
+            ).fetchall()
+        }
         return {
             "owner_kinds": tuple(kinds),
             "max_owner_span_lines": max_span,
             "resolved_symbol_count": len(node_ids),
             "incoming_edge_counts": incoming,
             "outgoing_edge_counts": outgoing,
+            "modify_impact_count": impact_count,
+            "modify_impact_percentile": (
+                fractional_rank(impact_count, impact_distribution or [0]) if impact_count else 0.0
+            ),
+            "modify_impact_edge_counts": impact_edges,
+            "container_hierarchy_kinds": tuple(
+                sorted({str(r["kind"]) for r in container_rows if r["kind"]})
+            ),
+            **file_meta,
+            **contract_meta,
         }
+
+    @staticmethod
+    def _container_hierarchy_rows(
+        con: sqlite3.Connection, node_ids: list[str]
+    ) -> list[sqlite3.Row]:
+        if not node_ids:
+            return []
+        id_ph = ",".join("?" * len(node_ids))
+        container_ph = ",".join("?" * len(_CONTAINER_HIERARCHY_KINDS))
+        return con.execute(
+            f"WITH RECURSIVE ancestors(id, depth) AS ("
+            f"  SELECT e.source, 1 FROM edges e JOIN nodes n ON n.id = e.source "
+            f"  WHERE e.kind = 'contains' AND e.target IN ({id_ph}) "
+            f"  AND n.kind IN ({container_ph}) "
+            f"  UNION "
+            f"  SELECT e.source, ancestors.depth + 1 FROM ancestors "
+            f"  JOIN edges e ON e.target = ancestors.id "
+            f"  JOIN nodes n ON n.id = e.source "
+            f"  WHERE e.kind = 'contains' AND ancestors.depth < 8 "
+            f"  AND n.kind IN ({container_ph})"
+            f") "
+            f"SELECT DISTINCT n.id, n.kind, n.start_line, n.end_line, n.signature, n.return_type, "
+            f"n.type_parameters, n.visibility, n.is_exported, n.is_abstract "
+            f"FROM ancestors a JOIN nodes n ON n.id = a.id",
+            (*node_ids, *_CONTAINER_HIERARCHY_KINDS, *_CONTAINER_HIERARCHY_KINDS),
+        ).fetchall()
+
+    @staticmethod
+    def _contract_container_rows(
+        con: sqlite3.Connection, node_ids: list[str]
+    ) -> list[sqlite3.Row]:
+        if not node_ids:
+            return []
+        id_ph = ",".join("?" * len(node_ids))
+        container_ph = ",".join("?" * len(_CONTRACT_CONTAINER_KINDS))
+        return con.execute(
+            f"SELECT DISTINCT n.id, n.kind, n.start_line, n.end_line, n.signature, n.return_type, "
+            f"n.type_parameters, n.visibility, n.is_exported, n.is_abstract "
+            f"FROM edges e JOIN nodes n ON n.id = e.source "
+            f"WHERE e.kind = 'contains' AND e.target IN ({id_ph}) "
+            f"AND n.kind IN ({container_ph})",
+            (*node_ids, *_CONTRACT_CONTAINER_KINDS),
+        ).fetchall()
+
+    @staticmethod
+    def _file_metadata(con: sqlite3.Connection, owner_rows: list[sqlite3.Row]) -> dict[str, Any]:
+        paths = sorted({str(r["file_path"]) for r in owner_rows if r["file_path"]})
+        if not paths:
+            return {
+                "graph_file_size_bytes": 0,
+                "graph_file_node_count": 0,
+                "graph_file_error_count": 0,
+            }
+        path_ph = ",".join("?" * len(paths))
+        rows = con.execute(
+            f"SELECT size, node_count, errors FROM files WHERE path IN ({path_ph})",
+            tuple(paths),
+        ).fetchall()
+        return {
+            "graph_file_size_bytes": sum(int(r["size"] or 0) for r in rows),
+            "graph_file_node_count": sum(int(r["node_count"] or 0) for r in rows),
+            "graph_file_error_count": sum(
+                CodeGraphAdapter._file_error_count(r["errors"]) for r in rows
+            ),
+        }
+
+    @staticmethod
+    def _file_error_count(value: Any) -> int:
+        if value is None or str(value).strip() in {"", "[]", "{}"}:
+            return 0
+        try:
+            parsed = json.loads(str(value))
+        except json.JSONDecodeError:
+            return 1
+        if isinstance(parsed, list):
+            return len(parsed)
+        if isinstance(parsed, dict):
+            return len(parsed)
+        return 1
+
+    @staticmethod
+    def _contract_metadata(
+        owner_rows: list[sqlite3.Row], container_rows: list[sqlite3.Row]
+    ) -> dict[str, Any]:
+        owner_kinds = {str(r["kind"]) for r in owner_rows if r["kind"]}
+        container_kinds = {str(r["kind"]) for r in container_rows if r["kind"]}
+        all_rows = list(owner_rows) + list(container_rows)
+        all_kinds = owner_kinds | container_kinds
+
+        if "interface" in container_kinds and "method" in owner_kinds:
+            surface = "interface_method"
+        elif "interface" in all_kinds:
+            surface = "interface"
+        elif "protocol" in all_kinds:
+            surface = "protocol"
+        elif "trait" in all_kinds:
+            surface = "trait"
+        elif owner_kinds and container_kinds:
+            surface = f"{sorted(container_kinds)[0]}_{sorted(owner_kinds)[0]}"
+        elif owner_kinds:
+            surface = sorted(owner_kinds)[0]
+        else:
+            surface = "unknown"
+
+        abstract_or_interface = bool(all_kinds & {"interface", "protocol", "trait"}) or any(
+            CodeGraphAdapter._truthy(r["is_abstract"]) for r in all_rows
+        )
+        exported = abstract_or_interface or any(
+            CodeGraphAdapter._truthy(r["is_exported"])
+            or str(r["visibility"] or "").lower() in {"public", "public_api", "exported"}
+            for r in all_rows
+        )
+        has_signature = any(
+            CodeGraphAdapter._nonempty(r["signature"])
+            or CodeGraphAdapter._nonempty(r["return_type"])
+            or CodeGraphAdapter._nonempty(r["type_parameters"])
+            for r in owner_rows
+        )
+        return {
+            "contract_surface_kind": surface,
+            "is_exported_contract": exported,
+            "is_abstract_or_interface_contract": abstract_or_interface,
+            "has_signature_metadata": has_signature,
+        }
+
+    @staticmethod
+    def _truthy(value: Any) -> bool:
+        if value is None:
+            return False
+        return str(value).strip().lower() not in {"", "0", "false", "none", "null"}
+
+    @staticmethod
+    def _nonempty(value: Any) -> bool:
+        return value is not None and str(value).strip() != ""
+
+    @staticmethod
+    def _modify_impact_target_ids(con: sqlite3.Connection, node_ids: list[str]) -> list[str]:
+        """Resolved nodes plus containment ancestors for graph-wide modify blast."""
+        if not node_ids:
+            return []
+        out = list(node_ids)
+        rows = CodeGraphAdapter._container_hierarchy_rows(con, node_ids)
+        for r in rows:
+            if r["id"] not in out:
+                out.append(r["id"])
+        return out
 
     def _distribution(self, con: sqlite3.Connection, db_path: Path) -> list[int]:
         key = (str(db_path), os.path.getmtime(db_path))
@@ -583,6 +789,29 @@ class CodeGraphAdapter:
         zeros = max(0, int(total) - len(nonzero))
         distribution = sorted([0] * zeros + nonzero)
         self._dist_cache[key] = distribution
+        return distribution
+
+    def _impact_distribution(self, con: sqlite3.Connection, db_path: Path) -> list[int]:
+        key = (str(db_path), os.path.getmtime(db_path))
+        cached = self._impact_dist_cache.get(key)
+        if cached is not None:
+            return cached
+        call_ph = ",".join("?" * len(_CALLABLE_KINDS))
+        container_ph = ",".join("?" * len(_CONTRACT_CONTAINER_KINDS))
+        edge_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
+        distribution = sorted(
+            int(r["c"]) for r in con.execute(
+                f"SELECT n.id, COUNT(DISTINCT e.source) AS c FROM nodes n "
+                f"LEFT JOIN edges cedge ON cedge.kind = 'contains' AND cedge.target = n.id "
+                f"LEFT JOIN nodes parent ON parent.id = cedge.source "
+                f"AND parent.kind IN ({container_ph}) "
+                f"LEFT JOIN edges e ON e.kind IN ({edge_ph}) "
+                f"AND (e.target = n.id OR e.target = parent.id) "
+                f"WHERE n.kind IN ({call_ph}) GROUP BY n.id",
+                (*_CONTRACT_CONTAINER_KINDS, *_MODIFY_IMPACT_EDGE_KINDS, *_CALLABLE_KINDS),
+            ).fetchall()
+        )
+        self._impact_dist_cache[key] = distribution
         return distribution
 
 

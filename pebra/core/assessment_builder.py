@@ -13,8 +13,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pebra.core import benefit_model, confidence_gate, score_math, score_normalizer
-from pebra.core.constants import ActionStatus
+from pebra.core.constants import (
+    CODEGRAPH_FILE_METADATA_SCOPE_PENALTY,
+    CODEGRAPH_FILE_PARSE_ERROR_PENALTY,
+    CODEGRAPH_LARGE_FILE_NODE_COUNT,
+    CODEGRAPH_LARGE_FILE_SIZE_BYTES,
+    ActionStatus,
+)
 from pebra.core.models import AssessmentInput
+
+_MIN_CONFIDENCE_FACTOR = 1e-6
 
 
 @dataclass
@@ -60,6 +68,10 @@ def _architecture_scope_penalty(inp: AssessmentInput) -> float:
     if arch.domain_entrypoint:
         penalty += 0.03
     return min(0.15, penalty)
+
+
+def _penalized_confidence_factor(current: float, penalty: float) -> float:
+    return max(_MIN_CONFIDENCE_FACTOR, current - penalty)
 
 
 def build_assessment(inp: AssessmentInput) -> Assessment:
@@ -115,9 +127,25 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
     confidence_factors = dict(inp.edit_confidence_factors)
     arch_penalty = _architecture_scope_penalty(inp)
     if arch_penalty > 0.0:
-        confidence_factors["scope_control"] = max(
-            0.0, confidence_factors.get("scope_control", 1.0) - arch_penalty
+        confidence_factors["scope_control"] = _penalized_confidence_factor(
+            confidence_factors.get("scope_control", 1.0), arch_penalty
         )
+    fanin = inp.fanin_evidence
+    if fanin is not None:
+        if fanin.graph_file_error_count > 0:
+            confidence_factors["evidence_quality"] = _penalized_confidence_factor(
+                confidence_factors.get("evidence_quality", 1.0),
+                min(0.20, CODEGRAPH_FILE_PARSE_ERROR_PENALTY * fanin.graph_file_error_count),
+            )
+        file_scope_penalty = 0.0
+        if fanin.graph_file_size_bytes >= CODEGRAPH_LARGE_FILE_SIZE_BYTES:
+            file_scope_penalty += CODEGRAPH_FILE_METADATA_SCOPE_PENALTY
+        if fanin.graph_file_node_count >= CODEGRAPH_LARGE_FILE_NODE_COUNT:
+            file_scope_penalty += CODEGRAPH_FILE_METADATA_SCOPE_PENALTY
+        if file_scope_penalty > 0.0:
+            confidence_factors["scope_control"] = _penalized_confidence_factor(
+                confidence_factors.get("scope_control", 1.0), min(0.12, file_scope_penalty)
+            )
     edit_conf = score_math.edit_confidence(confidence_factors)
     band = confidence_gate.evaluate(edit_conf, inp.thresholds).band
 
@@ -146,7 +174,6 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         if rollup is not None
         else None
     )
-    fanin = inp.fanin_evidence
     symbol_fanin = (
         {
             "percentile": fanin.symbol_fan_in_percentile,
@@ -159,6 +186,17 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "resolved_symbol_count": fanin.resolved_symbol_count,
             "incoming_edge_counts": dict(fanin.incoming_edge_counts),
             "outgoing_edge_counts": dict(fanin.outgoing_edge_counts),
+            "modify_impact_count": fanin.modify_impact_count,
+            "modify_impact_percentile": fanin.modify_impact_percentile,
+            "modify_impact_edge_counts": dict(fanin.modify_impact_edge_counts),
+            "container_hierarchy_kinds": sorted(fanin.container_hierarchy_kinds),
+            "graph_file_size_bytes": fanin.graph_file_size_bytes,
+            "graph_file_node_count": fanin.graph_file_node_count,
+            "graph_file_error_count": fanin.graph_file_error_count,
+            "contract_surface_kind": fanin.contract_surface_kind,
+            "is_exported_contract": fanin.is_exported_contract,
+            "is_abstract_or_interface_contract": fanin.is_abstract_or_interface_contract,
+            "has_signature_metadata": fanin.has_signature_metadata,
         }
         if fanin is not None
         else None

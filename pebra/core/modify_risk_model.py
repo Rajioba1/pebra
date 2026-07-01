@@ -62,6 +62,16 @@ def _is_public(sde: SymbolDiffEvidence) -> bool:
     return sde.visibility in {"public", "public_api", "exported"}
 
 
+def _graph_public_contract(fanin: FanInEvidence) -> bool:
+    return fanin.is_exported_contract or fanin.is_abstract_or_interface_contract
+
+
+def _effective_impact_percentile(fanin: FanInEvidence) -> float:
+    direct = fanin.symbol_fan_in_percentile if fanin.symbol_caller_count > 0 else 0.0
+    structural = fanin.modify_impact_percentile if fanin.modify_impact_count > 0 else 0.0
+    return max(direct, structural)
+
+
 def _p_event(
     *,
     sde: SymbolDiffEvidence,
@@ -71,7 +81,7 @@ def _p_event(
     is_schema_change: bool,
     is_migration: bool,
 ) -> float:
-    base = _BASELINE_PUBLIC_API if _is_public(sde) else _BASELINE_CONTRACT
+    base = _BASELINE_PUBLIC_API if (_is_public(sde) or _graph_public_contract(fanin)) else _BASELINE_CONTRACT
     if is_schema_change or is_migration:
         base = max(base, _BASELINE_SCHEMA_OR_MIGRATION)
     if arch.domain_entrypoint or arch.architecture_anchor_score > 0.0:
@@ -88,7 +98,8 @@ def _p_event(
     if outgoing_total:
         base += min(_OUTGOING_EDGE_BONUS_MAX, 0.01 * outgoing_total)
     base += _C3_C4_BONUS.get(criticality_stage, 0.0)
-    fanin_bonus = min(_FANIN_BONUS_MAX, max(0.0, fanin.symbol_fan_in_percentile) *
+    impact_percentile = _effective_impact_percentile(fanin)
+    fanin_bonus = min(_FANIN_BONUS_MAX, max(0.0, impact_percentile) *
                       (_FANIN_BONUS_MAX / _HIGH_FANIN_THRESHOLD))
     return min(_P_EVENT_CAP, base + fanin_bonus)
 
@@ -116,12 +127,13 @@ def events_for_modify_risk(
     assert fanin is not None  # narrowed by _trusted
 
     kind = _kind(symbol_diff)
-    high_fanin = fanin.symbol_fan_in_percentile >= _HIGH_FANIN_THRESHOLD
+    high_fanin = _effective_impact_percentile(fanin) >= _HIGH_FANIN_THRESHOLD
     large_owner = fanin.max_owner_span_lines >= _LARGE_OWNER_SPAN_LINES
     broad_symbol_edit = fanin.resolved_symbol_count > 1
     known_contractish = kind in {ChangeKind.CONTRACT, ChangeKind.SIDE_EFFECT}
     unknown_change = kind is ChangeKind.UNKNOWN
     public_consequential = _is_public(symbol_diff) and symbol_diff.consequential_symbol_changed
+    graph_public_contract = _graph_public_contract(fanin)
     graph_important_modify = (high_fanin or large_owner or broad_symbol_edit) and (
         known_contractish
         or unknown_change
@@ -130,7 +142,13 @@ def events_for_modify_risk(
         or is_migration
     )
     public_known_contract = _is_public(symbol_diff) and known_contractish
-    if not graph_important_modify and not public_consequential and not public_known_contract:
+    graph_public_known_contract = graph_public_contract and known_contractish and high_fanin
+    if (
+        not graph_important_modify
+        and not public_consequential
+        and not public_known_contract
+        and not graph_public_known_contract
+    ):
         return []
 
     p_event = _p_event(
@@ -142,7 +160,7 @@ def events_for_modify_risk(
         is_migration=is_migration,
     )
     events = [_event("dependency_break", p_event, _BASE_DISUTILITY_DEPENDENCY_BREAK)]
-    if _is_public(symbol_diff):
+    if _is_public(symbol_diff) or graph_public_contract:
         events.append(_event("public_api_break", p_event, _BASE_DISUTILITY_PUBLIC_API_BREAK))
     if is_schema_change or is_migration:
         events.append(_event("api_contract_break", p_event, _BASE_DISUTILITY_API_CONTRACT_BREAK))

@@ -33,7 +33,9 @@ def _make_db(path: Path, *, schema_version: int = 5) -> None:
         CREATE TABLE nodes (
             id TEXT PRIMARY KEY, kind TEXT, name TEXT, qualified_name TEXT, file_path TEXT,
             language TEXT, start_line INTEGER, end_line INTEGER, start_column INTEGER,
-            end_column INTEGER, signature TEXT, updated_at INTEGER);
+            end_column INTEGER, docstring TEXT, signature TEXT, visibility TEXT, is_exported INTEGER,
+            is_async INTEGER, is_static INTEGER, is_abstract INTEGER, decorators TEXT,
+            type_parameters TEXT, return_type TEXT, updated_at INTEGER);
         CREATE TABLE edges (
             id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, target TEXT, kind TEXT,
             metadata TEXT, line INTEGER, col INTEGER, provenance TEXT);
@@ -61,6 +63,14 @@ def _edge(con, src, tgt, kind="calls", provenance="tree-sitter"):
     con.execute(
         "INSERT INTO edges (source, target, kind, provenance) VALUES (?,?,?,?)",
         (src, tgt, kind, provenance),
+    )
+
+
+def _file(con, path, *, size=1000, node_count=1, errors=""):
+    con.execute(
+        "INSERT INTO files (path, content_hash, language, size, modified_at, indexed_at, "
+        "node_count, errors) VALUES (?, 'h', 'csharp', ?, 0, 0, ?, ?)",
+        (path, size, node_count, errors),
     )
 
 
@@ -102,6 +112,17 @@ def _assert_empty_graph_context(ev) -> None:
     assert ev.resolved_symbol_count == 0
     assert ev.incoming_edge_counts == {}
     assert ev.outgoing_edge_counts == {}
+    assert ev.modify_impact_count == 0
+    assert ev.modify_impact_percentile == 0.0
+    assert ev.modify_impact_edge_counts == {}
+    assert ev.container_hierarchy_kinds == ()
+    assert ev.graph_file_size_bytes == 0
+    assert ev.graph_file_node_count == 0
+    assert ev.graph_file_error_count == 0
+    assert ev.contract_surface_kind == "unknown"
+    assert ev.is_exported_contract is False
+    assert ev.is_abstract_or_interface_contract is False
+    assert ev.has_signature_metadata is False
 
 
 _PATCH = (
@@ -198,6 +219,145 @@ def test_hunk_spanning_two_symbols_aggregates_graph_context(tmp_path) -> None:
     assert ev.resolved_symbol_count == 2
     assert ev.incoming_edge_counts == {"calls": 1, "references": 1}
     assert ev.outgoing_edge_counts == {"calls": 1, "instantiates": 1}
+
+
+def test_modify_impact_count_dedupes_callers_implementers_and_subclasses(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "method:iface", "method", "CanCloseAsync", "IWorkspace::CanCloseAsync",
+          "src/IWorkspace.cs", 10, 15)
+    _node(con, "class:caller_and_impl", "class", "WorkspaceViewModel", "WorkspaceViewModel",
+          "src/WorkspaceViewModel.cs", 1, 120)
+    _node(con, "class:sub", "class", "DerivedWorkspace", "DerivedWorkspace", "src/Derived.cs", 1, 80)
+    _node(con, "func:other", "function", "Other", "Other", "src/Other.cs", 1, 5)
+    _edge(con, "class:caller_and_impl", "method:iface", "calls")
+    _edge(con, "class:caller_and_impl", "method:iface", "implements")
+    _edge(con, "class:sub", "method:iface", "extends")
+    _edge(con, "func:other", "class:sub", "calls")
+    con.commit()
+    con.close()
+    patch = "--- a/src/IWorkspace.cs\n+++ b/src/IWorkspace.cs\n@@ -12 +12 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert ev.symbol_caller_count == 1
+    assert ev.modify_impact_count == 2
+    assert ev.modify_impact_percentile == pytest.approx(1.0)
+    assert ev.modify_impact_edge_counts == {"calls": 1, "extends": 1, "implements": 1}
+
+
+def test_modify_impact_includes_contract_container_edges_for_method_edits(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "interface:I", "interface", "IWorkspace", "IWorkspace", "src/IWorkspace.cs", 1, 30)
+    _node(con, "method:close", "method", "CanCloseAsync", "IWorkspace::CanCloseAsync",
+          "src/IWorkspace.cs", 28, 28)
+    _node(con, "class:impl", "class", "WorkspaceViewModel", "WorkspaceViewModel",
+          "src/WorkspaceViewModel.cs", 1, 120)
+    _node(con, "class:impl2", "class", "OtherWorkspace", "OtherWorkspace", "src/Other.cs", 1, 90)
+    _node(con, "func:caller", "function", "caller", "caller", "src/Caller.cs", 1, 10)
+    _edge(con, "interface:I", "method:close", "contains")
+    _edge(con, "class:impl", "interface:I", "implements")
+    _edge(con, "class:impl", "method:close", "calls")
+    _edge(con, "class:impl2", "interface:I", "implements")
+    _edge(con, "func:caller", "interface:I", "references")
+    con.commit()
+    con.close()
+    patch = "--- a/src/IWorkspace.cs\n+++ b/src/IWorkspace.cs\n@@ -28 +28 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert ev.symbol_caller_count == 1
+    assert ev.modify_impact_count == 3
+    assert ev.modify_impact_edge_counts == {"calls": 1, "implements": 2, "references": 1}
+
+
+def test_contract_metadata_uses_interface_container_for_method_edits(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "interface:I", "interface", "IWorkspace", "IWorkspace", "src/IWorkspace.cs", 1, 30)
+    _node(con, "method:close", "method", "CanCloseAsync", "IWorkspace::CanCloseAsync",
+          "src/IWorkspace.cs", 28, 28)
+    con.execute(
+        "UPDATE nodes SET return_type = 'Task', signature = 'Task<bool> CanCloseAsync()' "
+        "WHERE id = 'method:close'"
+    )
+    _edge(con, "interface:I", "method:close", "contains")
+    con.commit()
+    con.close()
+    patch = "--- a/src/IWorkspace.cs\n+++ b/src/IWorkspace.cs\n@@ -28 +28 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert ev.contract_surface_kind == "interface_method"
+    assert ev.is_abstract_or_interface_contract is True
+    assert ev.is_exported_contract is True
+    assert ev.has_signature_metadata is True
+
+
+def test_modify_impact_rolls_up_full_container_hierarchy(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "namespace:core", "namespace", "Core", "Core", "src/Core.cs", 1, 200)
+    _node(con, "class:vm", "class", "WorkspaceViewModel", "Core::WorkspaceViewModel",
+          "src/Core.cs", 10, 180)
+    _node(con, "method:close", "method", "CanCloseAsync",
+          "Core::WorkspaceViewModel::CanCloseAsync", "src/Core.cs", 80, 90)
+    _node(con, "func:caller", "function", "Caller", "Caller", "src/Caller.cs", 1, 5)
+    _edge(con, "namespace:core", "class:vm", "contains")
+    _edge(con, "class:vm", "method:close", "contains")
+    _edge(con, "func:caller", "namespace:core", "references")
+    con.commit()
+    con.close()
+    patch = "--- a/src/Core.cs\n+++ b/src/Core.cs\n@@ -84 +84 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert ev.symbol_caller_count == 0
+    assert ev.modify_impact_count == 1
+    assert ev.modify_impact_edge_counts == {"references": 1}
+    assert ev.container_hierarchy_kinds == ("class", "namespace")
+
+
+def test_graph_context_surfaces_file_metadata_and_parse_errors(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "method:close", "method", "CanCloseAsync", "CanCloseAsync", "src/Core.cs", 80, 90)
+    _file(con, "src/Core.cs", size=240_000, node_count=750, errors='["parse error"]')
+    con.commit()
+    con.close()
+    patch = "--- a/src/Core.cs\n+++ b/src/Core.cs\n@@ -84 +84 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert ev.graph_file_size_bytes == 240_000
+    assert ev.graph_file_node_count == 750
+    assert ev.graph_file_error_count == 1
 
 
 def test_imports_edges_excluded_from_fanin(tmp_path) -> None:
