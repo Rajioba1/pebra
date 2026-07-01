@@ -115,6 +115,10 @@ def _assert_empty_graph_context(ev) -> None:
     assert ev.modify_impact_count == 0
     assert ev.modify_impact_percentile == 0.0
     assert ev.modify_impact_edge_counts == {}
+    assert ev.modify_transitive_impact_count == 0
+    assert ev.modify_transitive_impact_percentile == 0.0
+    assert ev.modify_transitive_depth_buckets == {}
+    assert ev.modify_repo_blast_fraction == 0.0
     assert ev.container_hierarchy_kinds == ()
     assert ev.graph_file_size_bytes == 0
     assert ev.graph_file_node_count == 0
@@ -371,6 +375,78 @@ def test_modify_impact_percentile_uses_same_recursive_hierarchy_as_count(tmp_pat
 
     assert ev.modify_impact_count == 5
     assert ev.modify_impact_percentile == pytest.approx(17 / 19)
+
+
+def test_modify_transitive_impact_walks_reverse_codegraph_and_reports_repo_fraction(
+    tmp_path,
+) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "method:target", "method", "Target", "Target", "src/Core.cs", 30, 35)
+    _node(con, "class:impl", "class", "Impl", "Impl", "src/Impl.cs", 1, 80)
+    _node(con, "func:caller", "function", "Caller", "Caller", "src/Caller.cs", 1, 5)
+    _node(con, "func:t1", "function", "T1", "T1", "src/T1.cs", 1, 5)
+    _node(con, "func:t2", "function", "T2", "T2", "src/T2.cs", 1, 5)
+    _node(con, "func:t3", "function", "T3", "T3", "src/T3.cs", 1, 5)
+    _node(con, "func:unrelated", "function", "Other", "Other", "src/Other.cs", 1, 5)
+    _edge(con, "class:impl", "method:target", "implements")
+    _edge(con, "func:caller", "method:target", "calls")
+    _edge(con, "func:t1", "func:caller", "calls")
+    _edge(con, "func:t2", "class:impl", "references")
+    _edge(con, "func:t2", "func:caller", "calls")  # duplicate path, counted once
+    _edge(con, "func:t3", "func:t2", "calls")
+    con.commit()
+    con.close()
+    patch = "--- a/src/Core.cs\n+++ b/src/Core.cs\n@@ -32 +32 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert ev.modify_impact_count == 2
+    assert ev.modify_transitive_impact_count == 5
+    assert ev.modify_transitive_depth_buckets == {1: 2, 2: 2, 3: 1}
+    assert ev.modify_repo_blast_fraction == pytest.approx(5 / 7)
+    assert ev.modify_transitive_impact_percentile == pytest.approx(1.0)
+
+
+def test_modify_transitive_impact_percentile_uses_same_depth_and_edge_set_as_count(
+    tmp_path,
+) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "method:a", "method", "A", "A", "src/A.cs", 10, 12)
+    _node(con, "method:b", "method", "B", "B", "src/B.cs", 10, 12)
+    _node(con, "func:a1", "function", "A1", "A1", "src/A1.cs", 1, 2)
+    _node(con, "func:a2", "function", "A2", "A2", "src/A2.cs", 1, 2)
+    for i in range(5):
+        _node(con, f"func:b{i}", "function", f"B{i}", f"B{i}", f"src/B{i}.cs", 1, 2)
+    _edge(con, "func:a1", "method:a", "calls")
+    _edge(con, "func:a2", "func:a1", "calls")
+    _edge(con, "func:b0", "method:b", "references")
+    _edge(con, "func:b1", "func:b0", "calls")
+    _edge(con, "func:b2", "func:b1", "calls")
+    _edge(con, "func:b3", "func:b2", "calls")
+    _edge(con, "func:b4", "func:b3", "calls")  # depth 4 from B, excluded by the shared cap
+    con.commit()
+    con.close()
+    patch = "--- a/src/A.cs\n+++ b/src/A.cs\n@@ -11 +11 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert ev.modify_transitive_impact_count == 2
+    assert ev.modify_transitive_depth_buckets == {1: 1, 2: 1}
+    # Distribution over 9 callable roots:
+    # A=2, A1=1, A2=0, B=3, B0=3, B1=3, B2=2, B3=1, B4=0. Rank(2)=6/9.
+    assert ev.modify_transitive_impact_percentile == pytest.approx(6 / 9)
 
 
 def test_graph_context_surfaces_file_metadata_and_parse_errors(tmp_path) -> None:

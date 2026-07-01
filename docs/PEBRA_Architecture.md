@@ -344,10 +344,10 @@ matched_domains                         <- coarse top-level directory / package 
 domain_criticality_hint                 <- capability/path tokens such as auth, login, payment, billing, session, crypto
 ```
 
-Future graph evidence additions are tracked separately and are **not** part of the current
-computation-bug fix: transitive symbol blast and repo-relative blast fraction. They should enter as
-additional graph evidence fields interpreted by PEBRA's existing risk/benefit model, not as a raw
-replacement graph risk score.
+CodeGraph-backed MODIFY evidence includes direct impact plus bounded transitive symbol blast and a
+repo-relative blast fraction. These are graph evidence fields interpreted by PEBRA's existing
+risk/benefit model, not a raw replacement graph risk score. Transitive reach can raise the effective
+impact percentile for the single dominant MODIFY event, but it does not emit a second correlated loss.
 
 Blast/architecture graph uncertainty is an evidence-quality signal, not fake reach. Missing expected files, parse-failed expected files, unresolved internal imports, dynamic imports, wildcard imports, and repo-wide dynamic/wildcard import surfaces produce bounded `graph_uncertainty_score` and provenance lists for model guidance. That score lowers `evidence_quality` and therefore `edit_confidence`; it never inflates `direct_count`, `transitive_count`, blast radius, or expected loss. External/stdlib imports are tracked but not penalized.
 

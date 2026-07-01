@@ -86,7 +86,12 @@ def _graph_public_contract(fanin: FanInEvidence) -> bool:
 def _effective_impact_percentile(fanin: FanInEvidence) -> float:
     direct = fanin.symbol_fan_in_percentile if fanin.symbol_caller_count > 0 else 0.0
     structural = fanin.modify_impact_percentile if fanin.modify_impact_count > 0 else 0.0
-    return max(direct, structural)
+    transitive = (
+        fanin.modify_transitive_impact_percentile
+        if fanin.modify_transitive_impact_count > 0
+        else 0.0
+    )
+    return max(direct, structural, transitive)
 
 
 def _p_event(

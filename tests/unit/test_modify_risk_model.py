@@ -177,6 +177,53 @@ def test_implements_extends_impact_escalates_contract_modify_when_direct_fanin_i
     assert dep["p_event"] == pytest.approx(expected)
 
 
+def test_transitive_modify_impact_escalates_contract_modify_when_direct_impact_is_low():
+    events = _events(
+        _sde(
+            max_change_kind="CONTRACT",
+            symbol_fan_in_percentile=0.10,
+            consequential_symbol_changed=False,
+        ),
+        _fanin(
+            symbol_fan_in_percentile=0.10,
+            symbol_caller_count=1,
+            modify_impact_count=1,
+            modify_impact_percentile=0.20,
+            modify_transitive_impact_count=9,
+            modify_transitive_impact_percentile=0.95,
+            modify_transitive_depth_buckets={1: 1, 2: 5, 3: 3},
+            modify_repo_blast_fraction=0.12,
+        ),
+    )
+
+    dep = _by(events, "dependency_break")
+    assert len(events) == 1
+    assert dep is not None
+    assert dep["p_event"] == pytest.approx(
+        mrm._BASELINE_CONTRACT + mrm._C3_C4_BONUS["C3"] + mrm._FANIN_BONUS_MAX
+    )
+
+
+def test_zero_count_transitive_percentile_does_not_fabricate_high_modify_impact():
+    events = _events(
+        _sde(
+            max_change_kind="CONTRACT",
+            symbol_fan_in_percentile=0.0,
+            consequential_symbol_changed=False,
+        ),
+        _fanin(
+            symbol_fan_in_percentile=0.0,
+            symbol_caller_count=0,
+            modify_impact_count=0,
+            modify_impact_percentile=0.0,
+            modify_transitive_impact_count=0,
+            modify_transitive_impact_percentile=0.95,
+        ),
+    )
+
+    assert events == []
+
+
 def test_pure_implementer_impact_escalates_contract_modify_with_zero_direct_callers():
     events = _events(
         _sde(
@@ -198,6 +245,33 @@ def test_pure_implementer_impact_escalates_contract_modify_with_zero_direct_call
     assert dep["p_event"] == pytest.approx(
         mrm._BASELINE_CONTRACT + mrm._C3_C4_BONUS["C3"] + mrm._FANIN_BONUS_MAX
     )
+
+
+def test_zero_direct_callers_ignore_symbol_percentile_when_structural_impact_is_below_cap():
+    events = _events(
+        _sde(
+            max_change_kind="CONTRACT",
+            symbol_fan_in_percentile=1.0,
+            consequential_symbol_changed=False,
+        ),
+        _fanin(
+            symbol_fan_in_percentile=1.0,
+            symbol_caller_count=0,
+            max_owner_span_lines=90,
+            modify_impact_count=4,
+            modify_impact_percentile=0.30,
+        ),
+    )
+
+    dep = _by(events, "dependency_break")
+    assert dep is not None
+    expected = (
+        mrm._BASELINE_CONTRACT
+        + mrm._LARGE_OWNER_BONUS
+        + mrm._C3_C4_BONUS["C3"]
+        + 0.30 * (mrm._FANIN_BONUS_MAX / mrm._HIGH_FANIN_THRESHOLD)
+    )
+    assert dep["p_event"] == pytest.approx(expected)
 
 
 def test_graph_contract_surface_adds_public_api_break_even_when_request_visibility_is_internal():
@@ -313,6 +387,25 @@ def test_zero_count_percentiles_do_not_fabricate_high_modify_impact():
     )
 
     assert events == []
+
+
+def test_repo_blast_fraction_does_not_change_modify_risk_math():
+    base_events = _events(
+        _sde(max_change_kind="CONTRACT", symbol_fan_in_percentile=0.30),
+        _fanin(symbol_fan_in_percentile=0.30, symbol_caller_count=2, max_owner_span_lines=90),
+    )
+    with_fraction = _events(
+        _sde(max_change_kind="CONTRACT", symbol_fan_in_percentile=0.30),
+        _fanin(
+            symbol_fan_in_percentile=0.30,
+            symbol_caller_count=2,
+            max_owner_span_lines=90,
+            modify_repo_blast_fraction=0.95,
+        ),
+    )
+
+    assert len(base_events) == 1
+    assert with_fraction == base_events
 
 
 def test_public_unknown_high_fanin_modify_is_still_escalated():
