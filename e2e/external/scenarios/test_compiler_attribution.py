@@ -3,9 +3,10 @@
 When the scoped IWorkspace.CanCloseAsync signature edit breaks the build, PEBRA resolves the compiler's
 diagnostics to CodeGraph nodes/edges — the primary proof being the class/interface ``implements`` edge
 (WorkspaceViewModel --implements--> IWorkspace) — and records a ``graph_attribution`` blob as outcome
-provenance, plus a LEARNED ``event_outcomes={"public_api_break": true}`` label. The recorded event is the
-one the request actually predicts (public_api_break), so it joins to a real calibration target instead of
-being an orphan detail key — the +1 observed risk row below is that join.
+provenance, plus a LEARNED ``event_outcomes={"public_api_break": true}`` label. Graph-backed MODIFY
+also predicts ``dependency_break`` on this request, but the real compiler outcome records only the
+public API contract break. That one recorded event joins to a real calibration target instead of being
+an orphan detail key — the +1 observed risk row below is that join.
 
 GOVERNING CLAIM (locked): Phase 1 proves outcome-to-graph attribution PLUMBING on real diagnostics; it
 does NOT claim graph-calibrated learning. Attribution is evidence — it never moves a score (asserted by
@@ -71,10 +72,11 @@ def test_event_outcomes_records_the_predicted_event(compiler_attribution_state):
 
 
 def test_recorded_event_is_a_learned_target_not_an_orphan(compiler_attribution_state):
-    # 100 cycles each observe p_success (1 row/cycle); ONLY the real cycle also observes
-    # p_event.public_api_break. So the total observed risk rows are 101 — and that +1 over the 100
-    # p_success rows is the honest proof the event JOINED a real calibration target (prediction_error
-    # ._risk_actual) rather than being dropped as an unpredicted detail key.
+    # 100 cycles each observe p_success (1 row/cycle); only the real cycle also records
+    # p_event.public_api_break as an outcome. Dependency_break may be predicted by the MODIFY graph
+    # model, but it is intentionally uncounted here because no dependency_break outcome was recorded.
+    # So 101 = 100 p_success rows + 1 observed public_api_break row that joined a real calibration
+    # target (prediction_error._risk_actual) rather than being dropped as an unpredicted detail key.
     s = compiler_attribution_state
     assert s.observed_risk_rows == 101
 

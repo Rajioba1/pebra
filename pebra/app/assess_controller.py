@@ -19,12 +19,14 @@ from pebra.core import (
     decision_engine,
     destructive_op_model,
     explanation_generator,
+    modify_risk_model,
     model_guidance,
     prediction_capture,
     request_validator,
 )
 from pebra.core.apply_snapshot import apply_snapshot
 from pebra.core.explanation_generator import Explanation
+from pebra.core.graph_trust import is_trusted_fanin
 from pebra.core.models import (
     AssessmentInput,
     AssessmentRequest,
@@ -120,10 +122,7 @@ def _build_input(
     fanin_ev = None
     if fanin_provider is not None:
         fanin_ev = fanin_provider.fanin(action, repo_root)
-        trusted = (
-            fanin_ev.graph_freshness == "fresh"
-            and fanin_ev.resolution_method in ("location", "name_fallback")
-        )
+        trusted = is_trusted_fanin(fanin_ev)
         if trusted:
             fan_in_threshold = effective_thresholds.get(
                 "consequential_symbol_fan_in_percentile", 0.90
@@ -175,6 +174,25 @@ def _build_input(
                     events_list.append(ev)
                 else:
                     events_list[existing_idx] = _merge_event_max(events_list[existing_idx], ev)
+
+    injected = modify_risk_model.events_for_modify_risk(
+        symbol_diff=symbol_diff,
+        fanin=fanin_ev,
+        arch=evidence.architecture_evidence,
+        criticality_stage=evidence.criticality_stage,
+        is_migration=action.is_migration,
+        is_schema_change=action.is_schema_change,
+    )
+    if injected:
+        events_list = list(events_list)
+        for ev in injected:
+            existing_idx = next(
+                (i for i, e in enumerate(events_list) if e.get("event") == ev["event"]), None
+            )
+            if existing_idx is None:
+                events_list.append(ev)
+            else:
+                events_list[existing_idx] = _merge_event_max(events_list[existing_idx], ev)
 
     return AssessmentInput(
         request=request,

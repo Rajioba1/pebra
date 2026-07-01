@@ -7,8 +7,10 @@ real ``codegraph status/sync`` subprocess path is covered separately behind ``re
 
 from __future__ import annotations
 
+import json as _json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -94,6 +96,14 @@ def _adapter(status=FRESH):
     return cga.CodeGraphAdapter(status_fn=lambda repo_root: status)
 
 
+def _assert_empty_graph_context(ev) -> None:
+    assert ev.owner_kinds == ()
+    assert ev.max_owner_span_lines == 0
+    assert ev.resolved_symbol_count == 0
+    assert ev.incoming_edge_counts == {}
+    assert ev.outgoing_edge_counts == {}
+
+
 _PATCH = (
     "diff --git a/src/auth.py b/src/auth.py\n"
     "--- a/src/auth.py\n"
@@ -153,6 +163,41 @@ def test_location_resolves_tightest_owner_and_counts_callers(tmp_path) -> None:
     assert ev.symbol_fan_in_percentile == pytest.approx(1.0)
     assert ev.provider_version == "1.1.1"
     assert ev.index_version == "24"
+    assert ev.owner_kinds == ("method",)
+    assert ev.max_owner_span_lines == 11
+    assert ev.resolved_symbol_count == 1
+    assert ev.incoming_edge_counts == {"calls": 2, "references": 1, "imports": 1}
+    assert ev.outgoing_edge_counts == {"calls": 5}
+
+
+def test_hunk_spanning_two_symbols_aggregates_graph_context(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "A", "src/multi.py", 10, 25)
+    _node(con, "func:B", "method", "B", "B", "src/multi.py", 30, 90)
+    _node(con, "src:1", "function", "c1", "c1", "src/x.py", 1, 2)
+    _node(con, "src:2", "function", "c2", "c2", "src/y.py", 1, 2)
+    _edge(con, "src:1", "func:A", "calls")
+    _edge(con, "src:2", "func:B", "references")
+    _edge(con, "func:A", "src:2", "calls")
+    _edge(con, "func:B", "src:1", "instantiates")
+    con.commit()
+    con.close()
+    patch = ("--- a/src/multi.py\n+++ b/src/multi.py\n"
+             "@@ -12 +12 @@\n-x\n+y\n"
+             "@@ -35 +35 @@\n-p\n+q\n")
+
+    ev = _adapter().fanin(CandidateAction(id="a1", label="p", action_type="edit",
+                                          proposed_patch=patch), str(tmp_path))
+
+    assert set(ev.node_ids_resolved) == {"func:A", "func:B"}
+    assert ev.owner_kinds == ("function", "method")
+    assert ev.max_owner_span_lines == 61
+    assert ev.resolved_symbol_count == 2
+    assert ev.incoming_edge_counts == {"calls": 1, "references": 1}
+    assert ev.outgoing_edge_counts == {"calls": 1, "instantiates": 1}
 
 
 def test_imports_edges_excluded_from_fanin(tmp_path) -> None:
@@ -170,6 +215,7 @@ def test_stale_index_fails_closed(tmp_path) -> None:
     assert ev.resolution_method == "unresolved"
     assert ev.symbol_fan_in_percentile == 0.0
     assert ev.fallback_reason and "stale" in ev.fallback_reason.lower()
+    _assert_empty_graph_context(ev)
 
 
 def test_reindex_recommended_is_stale(tmp_path) -> None:
@@ -179,6 +225,7 @@ def test_reindex_recommended_is_stale(tmp_path) -> None:
     action = CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=_PATCH)
     ev = _adapter(status=status).fanin(action, str(tmp_path))
     assert ev.graph_freshness == "stale" and ev.resolution_method == "unresolved"
+    _assert_empty_graph_context(ev)
 
 
 def test_worktree_mismatch_is_stale(tmp_path) -> None:
@@ -196,6 +243,7 @@ def test_worktree_mismatch_is_stale(tmp_path) -> None:
     assert ev.fallback_reason and "worktree mismatch" in ev.fallback_reason.lower()
     assert "setup-graph --fix" in ev.fallback_reason
     assert "sync" not in ev.fallback_reason.lower()
+    _assert_empty_graph_context(ev)
 
 
 def test_status_index_path_selects_non_default_codegraph_dir(tmp_path) -> None:
@@ -226,6 +274,7 @@ def test_missing_db_returns_unresolved(tmp_path) -> None:
     assert ev.resolution_method == "unresolved"
     assert ev.graph_freshness == "unknown"
     assert ev.fallback_reason and "setup-graph" in ev.fallback_reason.lower()
+    _assert_empty_graph_context(ev)
 
 
 def test_cli_missing_returns_unresolved_with_install_hint(tmp_path) -> None:
@@ -234,6 +283,7 @@ def test_cli_missing_returns_unresolved_with_install_hint(tmp_path) -> None:
     ev = cga.CodeGraphAdapter(status_fn=lambda r: None).fanin(action, str(tmp_path))
     assert ev.resolution_method == "unresolved"
     assert ev.fallback_reason and "install" in ev.fallback_reason.lower()
+    _assert_empty_graph_context(ev)
 
 
 _OUT_OF_RANGE = {"pendingChanges": {"added": 0, "modified": 0, "removed": 0},
@@ -247,6 +297,7 @@ def test_out_of_range_runtime_version_is_untrusted(tmp_path) -> None:
     assert ev.resolution_method == "unresolved"
     assert ev.fallback_reason and "outside the accepted range" in ev.fallback_reason
     assert "setup-graph --fix" in ev.fallback_reason
+    _assert_empty_graph_context(ev)
 
 
 def test_out_of_range_runtime_version_omits_percentiles(tmp_path) -> None:
@@ -267,6 +318,7 @@ def test_corrupt_db_returns_unresolved_not_raises(tmp_path) -> None:
     assert ev.resolution_method == "unresolved"
     assert ev.symbol_fan_in_percentile == 0.0
     assert ev.fallback_reason and "codegraph DB" in ev.fallback_reason
+    _assert_empty_graph_context(ev)
 
 
 def test_empty_db_file_returns_unresolved_not_raises(tmp_path) -> None:
@@ -276,6 +328,7 @@ def test_empty_db_file_returns_unresolved_not_raises(tmp_path) -> None:
     action = CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=_PATCH)
     ev = _adapter().fanin(action, str(tmp_path))
     assert ev.resolution_method == "unresolved"
+    _assert_empty_graph_context(ev)
 
 
 def test_schema_below_v5_rejected(tmp_path) -> None:
@@ -286,6 +339,7 @@ def test_schema_below_v5_rejected(tmp_path) -> None:
     ev = _adapter().fanin(action, str(tmp_path))
     assert ev.resolution_method == "unresolved"
     assert ev.fallback_reason and "schema" in ev.fallback_reason.lower()
+    _assert_empty_graph_context(ev)
 
 
 def test_name_fallback_single_match(tmp_path) -> None:
@@ -316,6 +370,7 @@ def test_name_fallback_ambiguous(tmp_path) -> None:
     assert ev.symbol_fan_in_percentile == 0.0
     assert ev.symbol_caller_count == 0
     assert ev.fallback_reason and "not trusted" in ev.fallback_reason.lower()
+    _assert_empty_graph_context(ev)
 
 
 def test_hunk_spanning_two_functions_resolves_both_and_unions_fanin(tmp_path) -> None:
@@ -366,6 +421,7 @@ def test_unlocatable_symbol_is_unresolved_but_fresh(tmp_path) -> None:
     assert ev.resolution_method == "unresolved"
     assert ev.graph_freshness == "fresh"
     assert ev.symbol_fan_in_percentile == 0.0
+    _assert_empty_graph_context(ev)
 
 
 def test_windows_path_normalized_to_repo_relative(tmp_path) -> None:
@@ -380,9 +436,6 @@ def test_windows_path_normalized_to_repo_relative(tmp_path) -> None:
 
 
 # --- _default_status sequencing (STATUS-FIRST, conditional repair sync) over mocked subprocess ---
-
-import json as _json
-from types import SimpleNamespace
 
 
 class _Recorder:

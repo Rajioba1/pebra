@@ -154,6 +154,11 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "resolution_method": fanin.resolution_method,
             "graph_freshness": fanin.graph_freshness,
             "fallback_reason": fanin.fallback_reason,
+            "owner_kinds": sorted(fanin.owner_kinds),
+            "max_owner_span_lines": fanin.max_owner_span_lines,
+            "resolved_symbol_count": fanin.resolved_symbol_count,
+            "incoming_edge_counts": dict(fanin.incoming_edge_counts),
+            "outgoing_edge_counts": dict(fanin.outgoing_edge_counts),
         }
         if fanin is not None
         else None

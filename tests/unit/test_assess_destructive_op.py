@@ -37,14 +37,22 @@ class _Ev:
 
 
 class _SD:
-    def __init__(self, kind="NONE", paths=(), visibility="internal", consequential=False):
+    def __init__(
+        self,
+        kind="NONE",
+        paths=(),
+        visibility="internal",
+        consequential=False,
+        max_change_kind="BEHAVIORAL",
+    ):
         self._kind, self._paths = kind, paths
         self._vis, self._cons = visibility, consequential
+        self._max_change_kind = max_change_kind
 
     def symbol_diff(self, action, repo_root):
         return m.SymbolDiffEvidence(
             parsed_patch_available=True, changed_symbols=["src/config.py::x"],
-            max_change_kind="BEHAVIORAL", visibility=self._vis,
+            max_change_kind=self._max_change_kind, visibility=self._vis,
             consequential_symbol_changed=self._cons,
             file_operation_kind=self._kind, file_operation_paths=self._paths,
         )
@@ -58,6 +66,14 @@ class _FFI:
         return self._r
 
 
+class _FI:
+    def __init__(self, ev):
+        self._ev = ev
+
+    def fanin(self, action, repo_root):
+        return self._ev
+
+
 class _Blast:
     def blast(self, action, repo_root):
         return m.BlastEvidence()
@@ -68,14 +84,14 @@ class _Sanction:
         return None
 
 
-def _bi(sd, ev, ffi=None):
+def _bi(sd, ev, ffi=None, fanin=None):
     req = m.AssessmentRequest.single_action(
         task="t", action_id="a1", label="x", action_type="edit", expected_files=["src/config.py"],
     )
     return ac._build_input(
         req, req.candidate_actions[0], "r", "/x", _THRESHOLDS,
         evidence_provider=ev, symbol_diff_provider=sd, blast_provider=_Blast(),
-        sanction_port=_Sanction(), file_fanin_provider=ffi,
+        sanction_port=_Sanction(), fanin_provider=fanin, file_fanin_provider=ffi,
     )
 
 
@@ -165,3 +181,42 @@ def test_existing_weak_dependency_break_is_raised_by_delete_signal():
     assert len(deps) == 1
     assert deps[0]["p_event"] == pytest.approx(0.15)
     assert deps[0]["elicited_disutility"] == pytest.approx(0.60)
+
+
+def test_high_fanin_contract_modify_injects_dependency_break():
+    inp = _bi(
+        _SD(kind="NONE", max_change_kind="CONTRACT", consequential=False),
+        _Ev(_BASE_EVENTS),
+        fanin=_FI(m.FanInEvidence(symbol_fan_in_percentile=0.95, symbol_caller_count=13,
+                                  resolution_method="location", graph_freshness="fresh")),
+    )
+
+    dep = _ev_named(inp.events, "dependency_break")
+
+    assert dep is not None
+    assert dep["p_event"] > 0.20
+    assert inp.file_fanin_rollup is None
+
+
+def test_public_contract_modify_injects_public_api_break():
+    inp = _bi(
+        _SD(kind="NONE", visibility="public_api", max_change_kind="CONTRACT"),
+        _Ev(_BASE_EVENTS),
+        fanin=_FI(m.FanInEvidence(symbol_fan_in_percentile=0.95, symbol_caller_count=13,
+                                  resolution_method="location", graph_freshness="fresh")),
+    )
+
+    assert _ev_named(inp.events, "public_api_break") is not None
+
+
+def test_untrusted_modify_graph_does_not_inject_dependency_break():
+    inp = _bi(
+        _SD(kind="NONE", max_change_kind="CONTRACT"),
+        _Ev(_BASE_EVENTS),
+        fanin=_FI(m.FanInEvidence(symbol_fan_in_percentile=0.95, symbol_caller_count=13,
+                                  resolution_method="unresolved", graph_freshness="unknown")),
+    )
+
+    assert _ev_named(inp.events, "dependency_break") is None
+    assert _ev_named(inp.events, "public_api_break") is None
+    assert _ev_named(inp.events, "api_contract_break") is None

@@ -150,6 +150,11 @@ def test_builder_surfaces_symbol_fanin_graph_provenance() -> None:
             provider_version="1.1.1",
             index_version="24",
             fallback_reason=None,
+            owner_kinds=("method", "interface", "class"),
+            max_owner_span_lines=91,
+            resolved_symbol_count=3,
+            incoming_edge_counts={"calls": 12},
+            outgoing_edge_counts={"implements": 4, "references": 2},
         ),
     )
 
@@ -159,6 +164,11 @@ def test_builder_surfaces_symbol_fanin_graph_provenance() -> None:
     assert sse["symbol_fanin"]["caller_count"] == 12
     assert sse["symbol_fanin"]["resolution_method"] == "location"
     assert sse["symbol_fanin"]["graph_freshness"] == "fresh"
+    assert sse["symbol_fanin"]["owner_kinds"] == ["class", "interface", "method"]
+    assert sse["symbol_fanin"]["max_owner_span_lines"] == 91
+    assert sse["symbol_fanin"]["resolved_symbol_count"] == 3
+    assert sse["symbol_fanin"]["incoming_edge_counts"] == {"calls": 12}
+    assert sse["symbol_fanin"]["outgoing_edge_counts"] == {"implements": 4, "references": 2}
     assert "provider_version" not in sse["symbol_fanin"]
     assert "index_version" not in sse["symbol_fanin"]
 

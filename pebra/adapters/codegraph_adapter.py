@@ -267,6 +267,7 @@ class CodeGraphAdapter:
                     fallback_reason="ambiguous name match; fan-in not trusted (no location resolution)",
                 )
             count, pctl = self._fanin(con, node_ids, db_path)
+            ctx = self._graph_context(con, node_ids)
             return FanInEvidence(
                 symbol_fan_in_percentile=pctl,
                 symbol_caller_count=count,
@@ -275,6 +276,11 @@ class CodeGraphAdapter:
                 provider_version=cg_ver,
                 index_version=ext_ver,
                 graph_freshness="fresh",
+                owner_kinds=ctx["owner_kinds"],
+                max_owner_span_lines=ctx["max_owner_span_lines"],
+                resolved_symbol_count=ctx["resolved_symbol_count"],
+                incoming_edge_counts=ctx["incoming_edge_counts"],
+                outgoing_edge_counts=ctx["outgoing_edge_counts"],
             )
         except (sqlite3.Error, OSError) as exc:
             # never let a corrupt/locked/half-written DB crash the assessment (fail-soft contract)
@@ -502,6 +508,60 @@ class CodeGraphAdapter:
         caller_count = int(row["c"])
         distribution = self._distribution(con, db_path)
         return caller_count, fractional_rank(caller_count, distribution)
+
+    @staticmethod
+    def _graph_context(con: sqlite3.Connection, node_ids: list[str]) -> dict[str, Any]:
+        """Raw graph facts around the resolved owner node(s).
+
+        Edge counts are distinct neighbouring nodes per edge kind, not raw edge rows. This keeps the
+        signal stable if codegraph records multiple references between the same two symbols.
+        """
+        if not node_ids:
+            return {
+                "owner_kinds": (),
+                "max_owner_span_lines": 0,
+                "resolved_symbol_count": 0,
+                "incoming_edge_counts": {},
+                "outgoing_edge_counts": {},
+            }
+        id_ph = ",".join("?" * len(node_ids))
+        rows = con.execute(
+            f"SELECT id, kind, start_line, end_line FROM nodes WHERE id IN ({id_ph})",
+            tuple(node_ids),
+        ).fetchall()
+        by_id = {r["id"]: r for r in rows}
+        kinds: list[str] = []
+        max_span = 0
+        for nid in node_ids:
+            r = by_id.get(nid)
+            if r is None:
+                continue
+            kind = r["kind"]
+            if kind and kind not in kinds:
+                kinds.append(kind)
+            if r["start_line"] is not None and r["end_line"] is not None:
+                max_span = max(max_span, int(r["end_line"]) - int(r["start_line"]) + 1)
+        incoming = {
+            str(r["kind"]): int(r["c"]) for r in con.execute(
+                f"SELECT kind, COUNT(DISTINCT source) AS c FROM edges "
+                f"WHERE target IN ({id_ph}) GROUP BY kind",
+                tuple(node_ids),
+            ).fetchall()
+        }
+        outgoing = {
+            str(r["kind"]): int(r["c"]) for r in con.execute(
+                f"SELECT kind, COUNT(DISTINCT target) AS c FROM edges "
+                f"WHERE source IN ({id_ph}) GROUP BY kind",
+                tuple(node_ids),
+            ).fetchall()
+        }
+        return {
+            "owner_kinds": tuple(kinds),
+            "max_owner_span_lines": max_span,
+            "resolved_symbol_count": len(node_ids),
+            "incoming_edge_counts": incoming,
+            "outgoing_edge_counts": outgoing,
+        }
 
     def _distribution(self, con: sqlite3.Connection, db_path: Path) -> list[int]:
         key = (str(db_path), os.path.getmtime(db_path))

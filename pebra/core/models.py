@@ -107,6 +107,13 @@ class FanInEvidence:
     index_version: str | None = None
     graph_freshness: str = "unknown"  # 'fresh' | 'stale' | 'unknown'
     fallback_reason: str | None = None
+    # Graph-wide context for the resolved owner nodes. These are not additional provider verdicts;
+    # they are raw CodeGraph facts used by MODIFY risk modeling and surfaced for audit.
+    owner_kinds: tuple[str, ...] = ()
+    max_owner_span_lines: int = 0
+    resolved_symbol_count: int = 0
+    incoming_edge_counts: dict[str, int] = field(default_factory=dict)
+    outgoing_edge_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
