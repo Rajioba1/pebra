@@ -49,7 +49,7 @@ def _fmt_float(value: Any) -> str:
 def _evidence_lines(r: FeatureResult) -> list[str]:
     lines: list[str] = []
     graph = r.graph_evidence or {}
-    if graph:
+    if "engine" in graph or "operation" in graph or "file_fanin_percentile" in graph:
         lines.extend(
             [
                 f"  - Graph engine: {graph.get('engine', 'unknown')}",
@@ -62,6 +62,29 @@ def _evidence_lines(r: FeatureResult) -> list[str]:
                 f"  - Graph risk boost: +{_fmt_float(graph.get('risk_boost'))} p_event",
                 "  - Final dependency-break probability: "
                 f"{_fmt_float(graph.get('final_probability'))}",
+            ]
+        )
+    attribution = graph.get("attribution") or {}
+    if attribution:
+        if attribution.get("implements_edge"):
+            impl_line = (
+                f"{attribution.get('broken_symbol', '?')} implements "
+                f"{attribution.get('interface', '?')}"
+            )
+        else:
+            impl_line = "not found in graph"
+        lines.extend(
+            [
+                # callers (fan-in) and broken files are DISTINCT relationships — never a subset match:
+                f"  - Attribution method: {attribution.get('attribution_method', 'unknown')}",
+                f"  - Attribution confidence: {_fmt_float(attribution.get('attribution_confidence'))}",
+                f"  - Implements edge: {impl_line}",
+                f"  - Predicted callers (pre-edit fan-in): {attribution.get('predicted_callers', 'unknown')}",
+                f"  - Materialized breakage: {attribution.get('actual_broken_files', 'unknown')} file(s)",
+                "  - Method-level match (heuristic): "
+                f"{'yes' if attribution.get('method_match') else 'no'}",
+                f"  - Unresolved diagnostics: {attribution.get('unresolved_count', 'unknown')}",
+                f"  - Graph freshness at attribution: {attribution.get('graph_freshness', 'unknown')}",
             ]
         )
     learning = r.learning_evidence or {}

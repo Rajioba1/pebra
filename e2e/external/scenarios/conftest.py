@@ -13,6 +13,7 @@ import pytest
 
 from e2e.external.utils import compiler_scenario
 from e2e.external.utils import dotnet_harness as dn
+from e2e.external.utils import graph_resolver as gr
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness as ch
 
@@ -68,3 +69,27 @@ def compiler_outcome_state(build_copy, tmp_path_factory):
         pytest.skip("dotnet SDK not found — skipping the compiler-outcome lane")
     db = tmp_path_factory.mktemp("compilerdb") / "pebra.db"
     return compiler_scenario.build_compiler_outcome_state(build_copy, db)
+
+
+@pytest.fixture(scope="session")
+def build_indexed_copy(external_repo, tmp_path_factory) -> Path:
+    """A buildable clone WITH a CodeGraph index — for the attribution lane. Kept apart from indexed_copy
+    (graph-delta) and build_copy (learning) so the signature edit + build never disturb those scenarios."""
+    dest = tmp_path_factory.mktemp("buildindexed") / "repo"
+    path = rs.clone_at_recorded_head(external_repo, dest)
+    ch.setup_graph(repo_root=path)
+    return path
+
+
+@pytest.fixture(scope="session")
+def compiler_attribution_state(build_indexed_copy, tmp_path_factory):
+    """Attribution lane: the 99+1 load-bearing flow, plus graph attribution on the real build cycle."""
+    if not dn.dotnet_available():
+        pytest.skip("dotnet SDK not found — skipping the compiler-attribution lane")
+    codegraph_db = gr.find_codegraph_db(build_indexed_copy)
+    if codegraph_db is None:
+        pytest.skip("CodeGraph DB not found on the indexed copy — cannot attribute diagnostics")
+    db = tmp_path_factory.mktemp("attributiondb") / "pebra.db"
+    return compiler_scenario.build_compiler_attribution_state(
+        build_indexed_copy, db, codegraph_db_path=codegraph_db
+    )

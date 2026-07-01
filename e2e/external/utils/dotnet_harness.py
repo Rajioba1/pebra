@@ -9,8 +9,10 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from e2e.external.utils import diagnostic_parser as dp
 
 
 @dataclass
@@ -21,6 +23,9 @@ class DotNetBuildResult:
     exit_code: int | None
     error_summary: str
     duration_seconds: float
+    # Phase 1 attribution (additive; default empty so all existing construction is unaffected):
+    structured_diagnostics: list = field(default_factory=list)  # every parsed CS diagnostic
+    delta_diagnostics: list = field(default_factory=list)  # only diagnostics NEW vs the baseline
 
 
 def dotnet_available() -> bool:
@@ -43,4 +48,36 @@ def run_build(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
     return DotNetBuildResult(
         available=True, ran=True, passed=proc.returncode == 0, exit_code=proc.returncode,
         error_summary="\n".join(errors[:3]), duration_seconds=round(duration, 2),
+    )
+
+
+def augment_with_diagnostics(output: str, repo_root: Path | str, baseline_keys):
+    """Pure: parse combined build output into structured diagnostics and the edit-attributable delta."""
+    structured = dp.parse_diagnostics(output, str(repo_root))
+    delta = dp.compute_delta(structured, baseline_keys or frozenset())
+    return structured, delta
+
+
+def run_build_delta(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
+                    baseline_keys=None, timeout: int = 600) -> DotNetBuildResult:
+    """Like run_build, but also populates structured_diagnostics + delta_diagnostics (vs baseline_keys).
+
+    Additive sibling of run_build — the compiler is run once here and the raw output parsed; run_build
+    itself is untouched. Skips honestly (available=False) when the SDK is absent.
+    """
+    if not dotnet_available():
+        return DotNetBuildResult(False, False, False, None, "dotnet SDK not found", 0.0)
+    start = time.time()
+    proc = subprocess.run(
+        ["dotnet", "build", str(Path(repo_root) / sln), "--nologo", "-v", "q"],
+        cwd=str(repo_root), capture_output=True, text=True, timeout=timeout,
+    )
+    duration = time.time() - start
+    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    errors = [ln.strip() for ln in output.splitlines() if "error CS" in ln]
+    structured, delta = augment_with_diagnostics(output, repo_root, baseline_keys)
+    return DotNetBuildResult(
+        available=True, ran=True, passed=proc.returncode == 0, exit_code=proc.returncode,
+        error_summary="\n".join(errors[:3]), duration_seconds=round(duration, 2),
+        structured_diagnostics=structured, delta_diagnostics=delta,
     )

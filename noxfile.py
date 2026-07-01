@@ -95,6 +95,9 @@ def e2e_fast(session: nox.Session) -> None:
     session.run(
         "pytest",
         "e2e/utils/tests",
+        # pure attribution unit tests (parser/resolver/harness delta) — no dotnet, no external gate, so
+        # the delta-only + implements-edge canaries run in fast CI, not only under gated e2e-external.
+        "e2e/external/utils/tests",
         "e2e/test_boundary_discipline.py",
         "e2e/smoke",
         "e2e/features/agent",

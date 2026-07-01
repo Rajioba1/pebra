@@ -66,6 +66,47 @@ def test_render_includes_human_graph_and_learning_labels():
     assert "Seeded outcomes: 104" in md
 
 
+def test_render_separates_callers_implementers_and_broken_files():
+    # Honest wording (Phase 1): predicted callers (fan-in) and materialized broken files are DISTINCT
+    # relationships — the report must never imply "M of N callers broke".
+    md = rg.render_report(
+        [
+            rg.FeatureResult(
+                "external_compiler_attribution",
+                "PASS",
+                "codegraph",
+                graph_evidence={
+                    "attribution": {
+                        "diagnostic": "CS0535",
+                        "attribution_method": "located_symbol+implements_edge",
+                        "attribution_confidence": 1.0,
+                        "implements_edge": True,
+                        "method_match": True,
+                        "interface": "IWorkspace",
+                        "broken_symbol": "WorkspaceViewModel",
+                        "edited_symbol": "IWorkspace::CanCloseAsync",
+                        "predicted_callers": 13,
+                        "actual_broken_files": 2,
+                        "unresolved_count": 0,
+                        "graph_freshness": "fresh",
+                    }
+                },
+            )
+        ],
+        run_id="r",
+    )
+    assert "Attribution method: located_symbol+implements_edge" in md
+    assert "Attribution confidence: 1.000" in md
+    assert "Implements edge: WorkspaceViewModel implements IWorkspace" in md
+    # callers and broken files are separately labelled, not conflated:
+    assert "Predicted callers (pre-edit fan-in): 13" in md
+    assert "Materialized breakage: 2 file(s)" in md
+    assert "Method-level match (heuristic): yes" in md
+    assert "Unresolved diagnostics: 0" in md
+    # must NOT present a subset framing:
+    assert "of 13" not in md
+
+
 def test_overall_is_fail_if_any_fail():
     md = rg.render_report([rg.FeatureResult("a", "PASS", "x"), rg.FeatureResult("b", "FAIL", "x")],
                           run_id="r")
