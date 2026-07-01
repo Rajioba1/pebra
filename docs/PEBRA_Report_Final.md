@@ -432,6 +432,8 @@ This layer builds from CodeGraph's local SQLite index plus PEBRA's own determini
 
 CodeGraph is a runtime prerequisite for product graph evidence. Before PEBRA trusts graph evidence it runs `codegraph sync --quiet <repo>`, then `codegraph status --json <repo>`. Fresh graph evidence requires initialized status, zero pending added/modified/removed files, `index.reindexRecommended=false`, and no worktree mismatch. Otherwise graph evidence is stale and PEBRA fails closed or routes a would-be proceed to `inspect_first`.
 
+Future graph evidence additions are tracked separately and are **not** part of the current computation-bug fix: transitive symbol blast and repo-relative blast fraction. They should enter as additional graph evidence fields interpreted by PEBRA's existing risk/benefit model, not as a raw replacement graph risk score.
+
 It should produce:
 
 ```text
@@ -1371,8 +1373,8 @@ if expected_loss > max_expected_loss_limit:
     ask_human or reject
 
 if risk_adjusted_utility < 0:
-    reject                                    # default (AD-2)
-    # ask_human instead, if thresholds.ask_on_negative_rau is set
+    ask_human                                 # default (AD-2)
+    # reject instead, if thresholds.ask_on_negative_rau is false
 
 if monte_carlo_gate_available            # v1.5 gate; v1 skips when unavailable
 and P(utility < 0) > thresholds.max_p_negative_utility:
@@ -1400,7 +1402,7 @@ and thresholds.require_user_confirmation_for_low_confidence_upgrade:
 
 if authorized_sanction exists
 and prior gate result is ask_human or reject
-and rejecting gate in {C4 escalation, expected_loss threshold, RAU default reject, Monte Carlo negative-utility}
+and risk gate in {C4 escalation, expected_loss threshold, RAU negative-utility, Monte Carlo negative-utility}
 and pre_edit_authorization_controls are satisfied:
     proceed with risk_mode = controlled_high_risk
     requires_confirmation = true
@@ -2335,7 +2337,7 @@ thresholds:
   max_p_negative_utility: 0.10
   max_utility_sd_without_human: 0.20
   decision_instability_threshold: 0.10
-  ask_on_negative_rau: false           # AD-2: if true, RAU < 0 escalates to ask_human instead of reject
+  ask_on_negative_rau: true            # AD-2: if false, RAU < 0 rejects instead of ask_human
   min_monte_carlo_sample_count: 10000
   high_edit_confidence: 0.75
   low_edit_confidence: 0.50
@@ -3193,7 +3195,7 @@ invalidated_reason
 
 If evidence becomes stale, scope drifts, the actual symbol diff is more severe than the proposed patch, or required controls change, the risk acceptance is invalidated and the action returns to `inspect_first` or `ask_human`.
 
-Default sanction scope is one action. Standing/scoped sanctions are out of the default path and must be narrow: risk class, path glob, short expiry, explicit ratifier, and stronger audit. A sanction may override risk-threshold gates such as C4 escalation, expected-loss threshold, RAU default reject, or Monte Carlo negative-utility gates. It must not silently override a hard project policy violation; policy exceptions require a distinct, higher-scrutiny sanction type.
+Default sanction scope is one action. Standing/scoped sanctions are out of the default path and must be narrow: risk class, path glob, short expiry, explicit ratifier, and stronger audit. A sanction may override risk-threshold gates such as C4 escalation, expected-loss threshold, RAU negative-utility, or Monte Carlo negative-utility gates. It must not silently override a hard project policy violation; policy exceptions require a distinct, higher-scrutiny sanction type.
 
 ### 12.13 Symbol-Level Risk Resolution
 

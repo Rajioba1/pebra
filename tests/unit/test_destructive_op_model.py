@@ -92,7 +92,7 @@ def test_delete_combined_signals_capped():
 def test_delete_public_api_adds_public_api_break():
     events = _events("DELETE", is_public_api=True)
     assert _by(events, "public_api_break") is not None
-    assert _by(events, "dependency_break") is not None
+    assert _by(events, "dependency_break") is None
 
 
 def test_delete_not_public_api_has_no_public_api_break():

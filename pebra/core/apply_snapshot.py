@@ -312,7 +312,11 @@ def _resolve_target(
         winner = _winner(facts, target_name, inp, features)
         if winner is None:
             return None, None
-        new = _clamp(winner.value) if probability else winner.value
+        raw_value = winner.value
+        if probability and target_name.startswith("p_event."):
+            winner = max(_candidates(facts, target_name, inp, features), key=lambda f: f.value)
+            raw_value = winner.value
+        new = _clamp(raw_value) if probability else raw_value
         return new, _provenance(target_name, prior, new, winner)
     new, contributors = _pool_value(prior, _candidates(facts, target_name, inp, features), cfg)
     if new is None:

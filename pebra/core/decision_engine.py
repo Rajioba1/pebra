@@ -181,7 +181,7 @@ def decide(
                             "threshold": s["effective_threshold"]})
     # --- Gate 4: RAU < 0 ---
     elif s["rau"] < 0:
-        if t.get("ask_on_negative_rau", False):
+        if t.get("ask_on_negative_rau", True):
             provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 4
         else:
             provisional, fired_gate = Decision.REJECT, 4

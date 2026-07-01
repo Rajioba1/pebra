@@ -51,6 +51,23 @@ def _event(name: str, p_event: float, disutility: float) -> dict[str, Any]:
     }
 
 
+def _dominant_event(
+    *, p_event: float, public_or_exported: bool, schema_or_migration: bool
+) -> dict[str, Any]:
+    """Return one event for one graph-derived fault.
+
+    ``dependency_break``, ``public_api_break``, and ``api_contract_break`` are nested descriptions of
+    the same underlying MODIFY failure in this model. Emitting several with the same probability makes
+    expected_loss sum correlated harms as if they were independent, so the highest-disutility label is
+    the event that carries the risk.
+    """
+    if schema_or_migration:
+        return _event("api_contract_break", p_event, _BASE_DISUTILITY_API_CONTRACT_BREAK)
+    if public_or_exported:
+        return _event("public_api_break", p_event, _BASE_DISUTILITY_PUBLIC_API_BREAK)
+    return _event("dependency_break", p_event, _BASE_DISUTILITY_DEPENDENCY_BREAK)
+
+
 def _kind(sde: SymbolDiffEvidence) -> ChangeKind:
     try:
         return ChangeKind(sde.max_change_kind)
@@ -159,9 +176,10 @@ def events_for_modify_risk(
         is_schema_change=is_schema_change,
         is_migration=is_migration,
     )
-    events = [_event("dependency_break", p_event, _BASE_DISUTILITY_DEPENDENCY_BREAK)]
-    if _is_public(symbol_diff) or graph_public_contract:
-        events.append(_event("public_api_break", p_event, _BASE_DISUTILITY_PUBLIC_API_BREAK))
-    if is_schema_change or is_migration:
-        events.append(_event("api_contract_break", p_event, _BASE_DISUTILITY_API_CONTRACT_BREAK))
-    return events
+    return [
+        _dominant_event(
+            p_event=p_event,
+            public_or_exported=_is_public(symbol_diff) or graph_public_contract,
+            schema_or_migration=is_schema_change or is_migration,
+        )
+    ]

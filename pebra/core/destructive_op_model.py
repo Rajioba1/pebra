@@ -75,6 +75,18 @@ def _event(name: str, p_event: float, disutility: float) -> dict[str, Any]:
     }
 
 
+def _dominant_event(*, p_event: float, is_public_api: bool) -> dict[str, Any]:
+    """Return one event for one destructive-file fault.
+
+    A public file deletion is both a dependency break and a public API break, but those are correlated
+    labels for the same deletion. Expected-loss summation should see one consequence event, not two
+    independent events with the same probability.
+    """
+    if is_public_api:
+        return _event("public_api_break", p_event, _BASE_DISUTILITY_PUBLIC_API_BREAK)
+    return _event("dependency_break", p_event, _BASE_DISUTILITY_DEPENDENCY_BREAK)
+
+
 def events_for_destructive_op(
     *,
     op_kind: str,
@@ -90,7 +102,4 @@ def events_for_destructive_op(
     p_event = min(
         _P_EVENT_CAP, _baseline_p_event(arch, is_migration, is_schema_change) + _fan_in_bonus(rollup)
     )
-    events = [_event("dependency_break", p_event, _BASE_DISUTILITY_DEPENDENCY_BREAK)]
-    if is_public_api:
-        events.append(_event("public_api_break", p_event, _BASE_DISUTILITY_PUBLIC_API_BREAK))
-    return events
+    return [_dominant_event(p_event=p_event, is_public_api=is_public_api)]

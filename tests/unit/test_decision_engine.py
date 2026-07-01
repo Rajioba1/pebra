@@ -53,14 +53,34 @@ def test_gate3_over_threshold_with_negative_eu_rejects() -> None:
     assert result.recommended_decision is Decision.REJECT
 
 
-def test_gate4_negative_rau_rejects_by_default() -> None:
+def test_gate4_negative_rau_asks_human_by_default() -> None:
     # within loss threshold but RAU < 0 via huge variance
     a = _assess(
         variance_breakdown={"scenario_variance": 1.0},  # utility_sd = 1.0 -> RAU = 0.3868 - 1.28 < 0
     )
     result = de.decide(a)
-    assert result.recommended_decision is Decision.REJECT
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert result.requires_confirmation is True
     assert any(g["gate"] == 4 for g in result.gates_fired)
+
+
+def test_lowering_expected_loss_below_gate3_does_not_escalate_to_reject() -> None:
+    # Above threshold with positive EU -> ask_human from Gate 3. Lowering risk below the threshold may
+    # expose Gate 4, but it must not become stricter than the prior ask_human decision.
+    over = de.decide(_assess(
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        variance_breakdown={"scenario_variance": 0.0},
+    ))
+    under = de.decide(_assess(
+        events=[{"event": "test_regression", "p_event": 0.05, "elicited_disutility": 0.40}],
+        immediate_benefit=0.20,
+        variance_breakdown={"scenario_variance": 0.01},
+    ))
+
+    assert over.recommended_decision is Decision.ASK_HUMAN
+    assert under.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["gate"] == 4 for g in under.gates_fired)
 
 
 def test_gate2_c4_consequential_asks_human() -> None:

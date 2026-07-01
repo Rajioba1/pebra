@@ -212,6 +212,7 @@ class CodeGraphAdapter:
         self._status_fn = status_fn or _default_status
         self._dist_cache: dict[tuple[str, float], list[int]] = {}
         self._impact_dist_cache: dict[tuple[str, float], list[int]] = {}
+        self._file_rollup_dist_cache: dict[tuple[str, float], list[int]] = {}
 
     def fanin(self, action: CandidateAction, repo_root: str) -> FanInEvidence:
         status = self._status_fn(repo_root)
@@ -498,7 +499,7 @@ class CodeGraphAdapter:
                 f"SELECT COUNT(*) AS c FROM nodes WHERE file_path = ? AND kind IN ({call_ph})",
                 (rel, *_CALLABLE_KINDS),
             ).fetchone()["c"])
-            pctl = fractional_rank(distinct, self._distribution(con, db_path))
+            pctl = fractional_rank(distinct, self._file_rollup_distribution(con, db_path))
             return FileFanInRollup(
                 max_caller_count=mx, distinct_caller_count=distinct, symbol_count=sym_count,
                 file_symbol_fanin_rollup_percentile=pctl, resolution_method="file_location",
@@ -797,21 +798,51 @@ class CodeGraphAdapter:
         if cached is not None:
             return cached
         call_ph = ",".join("?" * len(_CALLABLE_KINDS))
-        container_ph = ",".join("?" * len(_CONTRACT_CONTAINER_KINDS))
+        container_ph = ",".join("?" * len(_CONTAINER_HIERARCHY_KINDS))
         edge_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
         distribution = sorted(
             int(r["c"]) for r in con.execute(
-                f"SELECT n.id, COUNT(DISTINCT e.source) AS c FROM nodes n "
-                f"LEFT JOIN edges cedge ON cedge.kind = 'contains' AND cedge.target = n.id "
-                f"LEFT JOIN nodes parent ON parent.id = cedge.source "
-                f"AND parent.kind IN ({container_ph}) "
-                f"LEFT JOIN edges e ON e.kind IN ({edge_ph}) "
-                f"AND (e.target = n.id OR e.target = parent.id) "
-                f"WHERE n.kind IN ({call_ph}) GROUP BY n.id",
-                (*_CONTRACT_CONTAINER_KINDS, *_MODIFY_IMPACT_EDGE_KINDS, *_CALLABLE_KINDS),
+                f"WITH RECURSIVE targets(root_id, target_id, depth) AS ("
+                f"  SELECT n.id, n.id, 0 FROM nodes n WHERE n.kind IN ({call_ph}) "
+                f"  UNION "
+                f"  SELECT targets.root_id, e.source, targets.depth + 1 "
+                f"  FROM targets "
+                f"  JOIN edges e ON e.kind = 'contains' AND e.target = targets.target_id "
+                f"  JOIN nodes parent ON parent.id = e.source "
+                f"  WHERE targets.depth < 8 AND parent.kind IN ({container_ph})"
+                f") "
+                f"SELECT roots.id, COUNT(DISTINCT impact.source) AS c "
+                f"FROM nodes roots "
+                f"LEFT JOIN targets t ON t.root_id = roots.id "
+                f"LEFT JOIN edges impact ON impact.target = t.target_id "
+                f"AND impact.kind IN ({edge_ph}) "
+                f"WHERE roots.kind IN ({call_ph}) GROUP BY roots.id",
+                (*_CALLABLE_KINDS, *_CONTAINER_HIERARCHY_KINDS,
+                 *_MODIFY_IMPACT_EDGE_KINDS, *_CALLABLE_KINDS),
             ).fetchall()
         )
         self._impact_dist_cache[key] = distribution
+        return distribution
+
+    def _file_rollup_distribution(self, con: sqlite3.Connection, db_path: Path) -> list[int]:
+        """Repo-wide distribution of whole-file union fan-in counts."""
+        key = (str(db_path), os.path.getmtime(db_path))
+        cached = self._file_rollup_dist_cache.get(key)
+        if cached is not None:
+            return cached
+        call_ph = ",".join("?" * len(_CALLABLE_KINDS))
+        edge_ph = ",".join("?" * len(_FANIN_EDGE_KINDS))
+        distribution = sorted(
+            int(r["c"]) for r in con.execute(
+                f"SELECT n.file_path, COUNT(DISTINCT e.source) AS c "
+                f"FROM nodes n "
+                f"LEFT JOIN edges e ON e.target = n.id AND e.kind IN ({edge_ph}) "
+                f"WHERE n.kind IN ({call_ph}) AND n.file_path IS NOT NULL "
+                f"GROUP BY n.file_path",
+                (*_FANIN_EDGE_KINDS, *_CALLABLE_KINDS),
+            ).fetchall()
+        )
+        self._file_rollup_dist_cache[key] = distribution
         return distribution
 
 

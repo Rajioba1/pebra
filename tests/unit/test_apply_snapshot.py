@@ -103,6 +103,32 @@ def test_p_event_override_targets_only_that_event() -> None:
     assert out.events[1]["p_event"] == 0.03  # untouched
 
 
+def test_p_event_hard_replace_uses_monotone_risk_envelope_across_matching_scopes() -> None:
+    features = {
+        "symbol": {"symbol_id": "src/payments.py::charge", "change_kind": "CONTRACT"},
+        "structural": {"symbol_fan_in_percentile": 0.95, "is_high_symbol_fan_in": True},
+        "domain": {"matched_domains": ["payments"]},
+    }
+    inp = _inp(
+        events=[{"event": "dependency_break", "p_event": 0.10}],
+        features=features,
+    )
+    out = apply_snapshot(inp, _bundle(
+        _fact(
+            target_name="p_event.dependency_break", scope_kind="domain", scope_value="payments",
+            rank=50, value=0.12, fact_id="lrf_domain",
+        ),
+        _fact(
+            target_name="p_event.dependency_break", scope_kind="high_symbol_fan_in",
+            rank=85, value=0.09, fact_id="lrf_high_fanin",
+        ),
+    ))
+
+    assert out.events[0]["p_event"] == pytest.approx(0.12)
+    (entry,) = out.applied_snapshot_provenance["applied_facts"]
+    assert entry["winning_fact_id"] == "lrf_domain"
+
+
 # --- specificity + tiebreak --------------------------------------------------
 
 

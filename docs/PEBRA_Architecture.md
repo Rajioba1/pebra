@@ -344,6 +344,11 @@ matched_domains                         <- coarse top-level directory / package 
 domain_criticality_hint                 <- capability/path tokens such as auth, login, payment, billing, session, crypto
 ```
 
+Future graph evidence additions are tracked separately and are **not** part of the current
+computation-bug fix: transitive symbol blast and repo-relative blast fraction. They should enter as
+additional graph evidence fields interpreted by PEBRA's existing risk/benefit model, not as a raw
+replacement graph risk score.
+
 Blast/architecture graph uncertainty is an evidence-quality signal, not fake reach. Missing expected files, parse-failed expected files, unresolved internal imports, dynamic imports, wildcard imports, and repo-wide dynamic/wildcard import surfaces produce bounded `graph_uncertainty_score` and provenance lists for model guidance. That score lowers `evidence_quality` and therefore `edit_confidence`; it never inflates `direct_count`, `transitive_count`, blast radius, or expected loss. External/stdlib imports are tracked but not penalized.
 
 **SymbolDiffProvider output contract** (canonical Layer 1 symbol/scope evidence):
@@ -427,7 +432,7 @@ Ordered; the first matching risk gate sets a provisional decision. Sanction reso
 1. policy violation → **reject** with `high_risk_triggers[]` if the violation is risk/control related
 2. `criticality_stage == C4` and `c4_always_ask_human` and the symbol diff is consequential or unknown → **ask_human** (`requires_confirmation=true`) with a C4/consequence trigger. Verified `COSMETIC` / safe `TEST_ONLY` edits in C4 paths remain sensitive-context edits, not controlled-high-risk edits.
 3. `expected_loss > effective_threshold` → **ask_human** (or **reject** if `expected_utility < 0`) with the threshold trigger that fired
-4. **`RAU < 0` → reject** (default) / ask_human if `ask_on_negative_rau` configured  *(AD-2 — now a formal numbered gate in spec §8.2)*
+4. **`RAU < 0` → ask_human** (default) / reject if `ask_on_negative_rau=false` configured  *(AD-2 — now a formal numbered gate in spec §8.2)*
 5. not MC and `utility_sd > max_utility_sd_without_human` and `expected_utility > 0` → **ask_human**  *(AD-3: EU<0 already handled by gate 3/4)*
 6. MC available and `P(utility<0) > max_p_negative_utility` → ask_human/reject *(v1.5)*
 7. `decision_instability > threshold` → **inspect_first** / **test_first**
@@ -1032,7 +1037,7 @@ Benchmark scorecards must record both library versions and dataset/comparator id
 ## 13. Architecture Decisions (resolved)
 
 - **AD-1 — Event-class-aware criticality floor.** Define `CONSEQUENCE_BEARING_EVENTS` in `constants.py`; the floor `max(elicited, STAGE_MAP[stage])` applies only to those events. `test_regression`/`review_burden` keep their elicited disutility. *Reproduces the worked example: `test_regression` stays 0.40, `expected_loss=0.10`, `EU=0.39`.* Enforced in `score_math._apply_floor`. **(Spec updated — §5.5 now states the event-class-aware floor.)**
-- **AD-2 — `RAU < 0` is a formal gate** (not just a band), placed after the expected-loss gate → `reject` by default (`ask_human` if `ask_on_negative_rau`). Enforced in `decision_engine`. **(Spec updated — now a numbered gate in §8.2, with `ask_on_negative_rau` in §12.)**
+- **AD-2 — `RAU < 0` is a formal gate** (not just a band), placed after the expected-loss gate → `ask_human` by default (`reject` only if `ask_on_negative_rau=false`). Enforced in `decision_engine`. **(Spec updated — now a numbered gate in §8.2, with `ask_on_negative_rau` in §12.)**
 - **AD-3 — SD gate keeps `expected_utility > 0`.** The EU<0 case is already covered by gates 3/4, so the SD gate (gate 5) handles only the "positive mean, wide downside" case. Not a bug; documented in code.
 - **AD-4 — `action_status` ownership:** `assessment_builder` writes `pending`; `outcome_logger` writes terminal states via `OutcomePort`. Nothing else writes it.
 - **AD-5 — `utility_sd` inputs:** resolve each input's variance by **precedence** — (1) explicit variance supplied with the input (as the §10 worked example does), (2) confidence-derived `((1−confidence)/2)²`, (3) cold-start `DEFAULT_VARIANCE` in `constants.py`. The §10 example uses explicit variances (breakdown sums to 0.0036 → `SD=0.06`); the confidence mapping and cold-start defaults are fallbacks and are *not* expected to reproduce that exact SD. **(Spec updated — §7.2.)**

@@ -339,6 +339,40 @@ def test_modify_impact_rolls_up_full_container_hierarchy(tmp_path) -> None:
     assert ev.container_hierarchy_kinds == ("class", "namespace")
 
 
+def test_modify_impact_percentile_uses_same_recursive_hierarchy_as_count(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "namespace:a", "namespace", "A", "A", "src/A.cs", 1, 120)
+    _node(con, "class:a", "class", "AClass", "A::AClass", "src/A.cs", 10, 80)
+    _node(con, "method:a", "method", "Target", "A::AClass::Target", "src/A.cs", 30, 35)
+    _node(con, "namespace:b", "namespace", "B", "B", "src/B.cs", 1, 120)
+    _node(con, "class:b", "class", "BClass", "B::BClass", "src/B.cs", 10, 80)
+    _node(con, "method:b", "method", "BTarget", "B::BClass::BTarget", "src/B.cs", 30, 35)
+    _edge(con, "namespace:a", "class:a", "contains")
+    _edge(con, "class:a", "method:a", "contains")
+    _edge(con, "namespace:b", "class:b", "contains")
+    _edge(con, "class:b", "method:b", "contains")
+    for i in range(5):
+        _node(con, f"func:a{i}", "function", f"a{i}", f"a{i}", f"src/A{i}.cs", 1, 2)
+        _edge(con, f"func:a{i}", "namespace:a", "references")
+    for i in range(10):
+        _node(con, f"func:b{i}", "function", f"b{i}", f"b{i}", f"src/B{i}.cs", 1, 2)
+        _edge(con, f"func:b{i}", "namespace:b", "references")
+    con.commit()
+    con.close()
+    patch = "--- a/src/A.cs\n+++ b/src/A.cs\n@@ -32 +32 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert ev.modify_impact_count == 5
+    assert ev.modify_impact_percentile == pytest.approx(17 / 19)
+
+
 def test_graph_context_surfaces_file_metadata_and_parse_errors(tmp_path) -> None:
     cg_dir = tmp_path / ".codegraph"
     cg_dir.mkdir()

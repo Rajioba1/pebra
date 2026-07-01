@@ -63,8 +63,8 @@ def test_high_fanin_internal_contract_modify_injects_dependency_break():
 def test_public_contract_modify_also_injects_public_api_break():
     events = _events(_sde(visibility="public_api"))
 
-    assert _by(events, "dependency_break") is not None
     assert _by(events, "public_api_break") is not None
+    assert _by(events, "dependency_break") is None
 
 
 def test_public_consequential_modify_injects_public_api_break_even_when_direct_fanin_is_low():
@@ -75,6 +75,7 @@ def test_public_consequential_modify_injects_public_api_break_even_when_direct_f
     )
 
     assert _by(events, "public_api_break") is not None
+    assert _by(events, "dependency_break") is None
 
 
 def test_untrusted_graph_does_not_fabricate_modify_risk():
@@ -219,8 +220,8 @@ def test_graph_contract_surface_adds_public_api_break_even_when_request_visibili
         ),
     )
 
-    assert _by(events, "dependency_break") is not None
     assert _by(events, "public_api_break") is not None
+    assert _by(events, "dependency_break") is None
 
 
 def test_graph_contract_metadata_alone_does_not_escalate_plain_low_impact_body_edit():
@@ -272,14 +273,14 @@ def test_schema_modify_gets_domain_event_when_graph_trusted():
     events = _events(is_schema_change=True)
 
     assert _by(events, "api_contract_break") is not None
+    assert _by(events, "dependency_break") is None
 
 
 def test_modify_probability_is_capped():
     events = _events(_sde(visibility="public_api"), _fanin(symbol_fan_in_percentile=1.0),
                      arch=ArchitectureEvidence(domain_entrypoint=True), is_schema_change=True)
 
-    assert _by(events, "dependency_break")["p_event"] <= mrm._P_EVENT_CAP
-    assert _by(events, "public_api_break")["p_event"] <= mrm._P_EVENT_CAP
+    assert _by(events, "api_contract_break")["p_event"] <= mrm._P_EVENT_CAP
 
 
 def test_public_unknown_low_graph_context_is_not_escalated():
@@ -320,8 +321,8 @@ def test_public_unknown_high_fanin_modify_is_still_escalated():
         _fanin(symbol_fan_in_percentile=0.95, symbol_caller_count=13),
     )
 
-    assert _by(events, "dependency_break") is not None
     assert _by(events, "public_api_break") is not None
+    assert _by(events, "dependency_break") is None
 
 
 def test_delete_file_operation_is_excluded_from_modify_risk_even_with_strong_graph():
