@@ -1,5 +1,5 @@
-"""Phase B2 (unit): the pure pieces of the replay — the genesis-vs-learned scoring mechanic and the
-corpus partition join. The full real-loop integration is the e2e test (deferred). No DB here."""
+"""Phase B2 (unit): the pure pieces of replay — genesis-vs-learned scoring mechanics and corpus
+partition joins. The DB-backed loop proof lives in the wiring benchmark; product e2e lives in e2e/."""
 
 from __future__ import annotations
 

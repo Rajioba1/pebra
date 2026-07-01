@@ -1,8 +1,8 @@
-"""LearningPort (Architecture §3, Milestone 4d). Protocol contract only.
+"""LearningPort (Architecture §3). Protocol contract only.
 
 The write surface for shadow learning measurement: computed prediction-error rows and a shadow risk
-snapshot per measurement run. There is NO read-back into the assessment path — reapplying learning to
-decisions is Milestone 5.
+snapshot per measurement run. Promotion/read-back use separate ports so measurement cannot mutate the
+assessment path.
 """
 
 from __future__ import annotations

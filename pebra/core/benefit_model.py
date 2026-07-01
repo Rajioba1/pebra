@@ -4,7 +4,7 @@ Receives already-collected before/after metric deltas and computes directionalit
 weighting, ``benefit``, and ``Var(benefit)``. It never reads files, calls git, runs radon, or
 queries trackers — adapters supply the deltas inside ``BenefitDeltaEvidence``.
 
-Phase 0: in ``projected`` mode (no concrete patch metrics) all deltas are absent/zero, maintainability
+In ``projected`` mode (no concrete patch metrics) all deltas are absent/zero, maintainability
 improvement earns **no** gate-driving credit, ``benefit = immediate_benefit``, and ``Var(benefit)``
 widens to the cold-start/projected variance. A new abstraction is not automatically beneficial: it
 earns value only when measured deltas reduce future change effort.
@@ -52,7 +52,7 @@ BENEFIT_OVERRIDE_MAX: float = 1.0
 
 @dataclass(frozen=True)
 class BenefitBreakdown:
-    """AD-28 benefit output contract (Phase 0 subset)."""
+    """AD-28 benefit output contract."""
 
     immediate_benefit: float
     maintainability_gain: float  # uncredited directional gain (for transparency)

@@ -1,10 +1,10 @@
-"""learning_controller (Milestone 4d) — the SOLE shadow-measurement writer.
+"""learning_controller — the SOLE measurement writer.
 
 Triggered on its own (``pebra learn``), never from ``assess_controller`` — enforced by the
 ``assess-no-learning`` import-linter contract. It reads the captured prediction manifest + the
 recorded outcome labels (+ measured benefit from verify's guardrails), computes calibration errors
-via the pure ``core/prediction_error`` math, and appends shadow ``prediction_errors`` + a shadow
-``risk_snapshot``. It MEASURES; it does not reapply anything to a decision (that is Milestone 5).
+via the pure ``core/prediction_error`` math, and appends ``prediction_errors`` plus a measurement
+``risk_snapshot``. It MEASURES; it does not promote or reapply anything to a decision.
 
 Imports core/ + ports/ only.
 """
@@ -56,11 +56,11 @@ def measure_learning(
         raise OutcomeNotRecordedError(
             f"no terminal outcome recorded for {assessment_id!r} — record one before measuring"
         )
-    # Idempotency (Milestone 4d): measuring twice would append a duplicate error set and double-count
-    # the scorecard. Refuse a re-measure; re-measurement after new labels is a Milestone 5 concern.
+    # Idempotency: measuring twice would append a duplicate error set and double-count the scorecard.
+    # Refuse a re-measure; updated labels require an explicit future reconciliation path.
     if store.prediction_errors_exist(assessment_id):
         raise ValueError(
-            f"{assessment_id!r} has already been measured (re-measurement is Milestone 5)"
+            f"{assessment_id!r} has already been measured"
         )
 
     labels = outcome_labels.extract_labels(outcomes[-1]["detail"])

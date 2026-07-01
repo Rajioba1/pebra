@@ -9,7 +9,7 @@ HONEST SCOPE: this is a SYNTHETIC fixture — a wiring proof, not a calibration-
 partition is authored at the same success rate the model learns, so the learned track beats genesis BY
 CONSTRUCTION. What the gate actually proves is that the loop is WIRED (promotion fires, the fact is
 written, the snapshot reads back, apply_snapshot moves the prediction, chains validate, replay is
-deterministic). The real out-of-sample quality signal lives in the JIT/SZZ tier (deferred).
+deterministic). The real out-of-sample quality signal belongs to the future JIT/SZZ tier.
 
 Regenerate with ``python -m benchmarks.flow.corpus.export_fixture`` (or ``nox -s bench-flow-regen``).
 """

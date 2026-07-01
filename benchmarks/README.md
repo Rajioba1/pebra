@@ -9,7 +9,7 @@ is not shipped — `pyproject` packages only `pebra*`.
 1. **Wiring + determinism** (fixture-fast). A small hand-authored corpus proves the loop is wired
    correctly and reproducible. **A green fixture run does NOT mean "PEBRA learns well"** — the fixture
    is calibrated so promotion provably helps; it proves *machinery*, not real-world quality.
-2. **Real calibration proof** (JIT/SZZ, later phase). Real labeled commits where the learned track must
+2. **Real calibration proof** (JIT/SZZ, future tier). Real labeled commits where the learned track must
    actually beat the genesis track. This is the credible claim, and it is deliberately a later tier so
    the harness can exist and be trusted before the heavy corpus work begins.
 
@@ -96,8 +96,17 @@ pebra assess --help
 pebra verify --help
 pebra record-outcome --help
 pebra learn --assessment-id <assessment_id>
-pebra promote --repo-id <repo_id>
-pebra scorecard --repo-id <repo_id>
+pebra promote --repo-root <repo_root>
+pebra scorecard --repo-root <repo_root>
+```
+
+Real product/e2e proof lives outside `benchmarks/`:
+
+```powershell
+nox -s e2e-fast
+$env:E2E_EXTERNAL='1'
+$env:E2E_TEMPLATE_BLUEPRINT_REPO='C:\Users\RajLord_new\Desktop\avalonia_template'
+nox -s e2e-external
 ```
 
 ## Determinism target
@@ -122,9 +131,12 @@ same corpus + same snapshot + same PEBRA commit  ->  same normalized scorecard.j
 
 ## Build status
 
-- **Phase 1-3 (this slice):** scaffold + import wall · math oracle layer · deterministic scorecard JSON.
-- **Later (deferred):** JIT/SZZ corpus (real calibration proof) · Arm 2b agent A/B (needs the
-  risk-memory layer first).
+- **Built:** scaffold + import wall · math oracle layer · deterministic scorecard JSON · synthetic
+  learning-loop wiring proof.
+- **Built outside this tree:** true CLI-boundary e2e, dashboard metrics, external CodeGraph
+  graph-vs-no-graph DELETE/MODIFY proofs, and compiler-outcome learning.
+- **Future:** JIT/SZZ corpus for real calibration quality · agent A/B efficacy · risk-memory guidance
+  retrieval.
 
 The `flow/wiring/` replay benchmark is the deterministic wiring proof. Agent/product behaviour (and
 guidance isolation on the real path) belongs to the repo-root `e2e/` suite, not here.

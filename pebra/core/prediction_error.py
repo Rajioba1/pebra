@@ -5,7 +5,8 @@ continuous targets use squared error. ``residual`` is signed (``actual - predict
 PEBRA under-predicted). numpy/sklearn are forbidden in ``core`` — these are hand-rolled.
 
 This module only computes numbers from numbers. Which targets get which actual label, and which are
-censored, is decided by the learning controller; reapplying any of this to a decision is Milestone 5.
+censored, is decided by the learning controller; promotion and active-snapshot read-back are separate
+steps outside this module.
 """
 
 from __future__ import annotations

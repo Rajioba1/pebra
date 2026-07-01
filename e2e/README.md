@@ -12,16 +12,24 @@ boundaries, with deterministic JSON assertions plus optional screenshots for hum
 - Promotion runs through `pebra promote`.
 - The future assessment is a fresh pre-edit assessment on a clean tree with the learned snapshot active.
 - The dashboard launches through `pebra dashboard --port 0` and is queried over HTTP.
+- The external lane clones a real local repo into `e2e/out/`, initializes CodeGraph there, and validates
+  graph-backed assessment over real CodeGraph + dotnet surfaces.
 
 ## Current Scope
 
-Current slice: `agent_cli_seeded_learning + dashboard_metrics`.
+Current slices:
+
+- `agent_cli_seeded_learning + dashboard_metrics`;
+- external CodeGraph graph-vs-no-graph DELETE delta;
+- external CodeGraph graph-vs-no-graph MODIFY delta;
+- real compiler-outcome learning on `avalonia_template`;
+- outcome-to-graph diagnostic attribution as provenance.
 
 It is not full Tauri-level coverage yet. Remaining gated lanes:
 
-- `E2E_CODEGRAPH=1`: real CodeGraph graph/fan-in product path.
 - `E2E_ORGANIC=1`: organic 100+ edit learning lane with no seeded-history shortcut.
 - `E2E_UI=1`: Playwright dashboard screenshot for human visual review.
+- agent A/B efficacy: two agents/worktrees, one guided by PEBRA and one unguided.
 
 ## Commands
 
@@ -41,6 +49,14 @@ Full current e2e lane:
 
 ```powershell
 nox -s e2e
+```
+
+External real-repo graph lane. This is gated because it needs a local repo, CodeGraph, and dotnet:
+
+```powershell
+$env:E2E_EXTERNAL='1'
+$env:E2E_TEMPLATE_BLUEPRINT_REPO='C:\Users\RajLord_new\Desktop\avalonia_template'
+nox -s e2e-external
 ```
 
 Dashboard screenshot lane:
@@ -80,6 +96,20 @@ Graph-backed destructive-op reports should spell out the evidence in plain Engli
 - `Graph risk boost`
 - `Final dependency-break probability`
 
+Graph-backed MODIFY reports should spell out:
+
+- `Graph engine`
+- `Graph freshness`
+- `Changed operation`
+- `Symbol fan-in`
+- `Modify impact`
+- `Impacted edge types`
+- `Contract surface`
+- `Container hierarchy`
+- `Indexed file metadata`
+- `Risk event added`
+- `Final dependency-break probability`
+
 Learning reports should spell out:
 
 - `Prior success estimate`
@@ -101,3 +131,7 @@ The suite asserts:
 - Promotion writes at least one active risk snapshot after the seeded history.
 - A future pre-edit assessment shifts decision/math after learning.
 - Dashboard API exposes chain, overview, and assessment history for the learned run.
+- External graph lane proves CodeGraph changed the DELETE and MODIFY assessment by comparing indexed
+  and no-graph copies of the same repo/request.
+- External compiler lane records a real dotnet build failure, then uses honest seeded history to prove
+  promotion and future reassessment consume the learned snapshot.

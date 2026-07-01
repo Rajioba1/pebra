@@ -59,7 +59,7 @@ class AssessmentRequest:
         return cls(task=task, candidate_actions=[action])
 
 
-# --- Port return types (Architecture §3 / §5 contracts). Phase 0 carries the subset used. ---
+# --- Port return types (Architecture §3 / §5 contracts). ---
 
 
 @dataclass(frozen=True)
@@ -234,10 +234,10 @@ class ContractSurfaceFindings:
 
 @dataclass(frozen=True)
 class EvidenceBundle:
-    """What EvidenceProvider returns (Phase 0): the scored inputs the engine needs.
+    """What EvidenceProvider returns: the scored inputs the engine needs.
 
-    In Phase 0 these are read from the request's evidence block (elicited/configured/projected); later
-    phases enrich them from radon/bandit/architecture map. The engine never sees the provider.
+    These may originate from request evidence, config, static analysis, architecture maps, graph
+    adapters, or other outer-layer providers. The engine never sees the provider.
     """
 
     events: list[dict[str, Any]]
@@ -285,9 +285,9 @@ class AssessmentInput:
     file_fanin_rollup: "FileFanInRollup | None" = None
     blast_evidence: BlastEvidence = field(default_factory=BlastEvidence)
     architecture_evidence: ArchitectureEvidence = field(default_factory=ArchitectureEvidence)
-    active_snapshot: Any | None = None  # no learning in Phase 0 (cold start)
+    active_snapshot: Any | None = None  # read-only learned snapshot bundle; None for cold start
     sanction: Any | None = None  # pre-fetched sanction (engine never calls a port)
-    # Phase-4 reframe (M5-prep): structural feature payload attached pre-scoring for CAPTURE only.
+    # Structural feature payload attached pre-scoring for CAPTURE only.
     # assessment_builder/decision_engine MUST ignore it (no score/gate change); persisted with the
     # prediction manifest and consumed by M5 apply_snapshot. None until enrichment is wired.
     structural_features: dict[str, Any] | None = None

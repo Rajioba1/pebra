@@ -12,8 +12,8 @@ readme = "README.md"
 # Python runtime deps per Architecture §12. NOTE: core/ uses none of these (stdlib-only, enforced).
 # Required external runtime graph engine: @colbymchenry/codegraph (npm/binary), checked at runtime
 # by the CodeGraph adapter; it is intentionally not listed here because pip cannot install npm deps.
-# Phase 0 is runnable stdlib-only; the heavy deps below are consumed by adapters/benchmarks in
-# later phases. For Phase 0, install with `pip install -e . --no-deps`.
+# The pure core/import-boundary path remains runnable with `pip install -e . --no-deps`; the runtime
+# deps below are consumed by adapters, CLI surfaces, dashboard, MCP, and validation lanes.
 dependencies = [
     "numpy",
     "scikit-learn>=1.2",

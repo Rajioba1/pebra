@@ -6,8 +6,8 @@ and persisted immutably alongside the assessment. It exists because the persiste
 deltas — so computing calibration later from stored JSON would be reverse-engineering with missing
 targets. The controller hands the in-flight evidence values here; the store writes the manifest.
 
-Pure stdlib + core only. No I/O, no learning reapplied — this is measurement substrate (Milestone 4),
-not decision adjustment (Milestone 5).
+Pure stdlib + core only. No I/O and no learned-fact application here; this is the measurement
+substrate. Active decision adjustment is handled by snapshot read/apply before scoring.
 """
 
 from __future__ import annotations
