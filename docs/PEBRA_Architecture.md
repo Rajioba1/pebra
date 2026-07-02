@@ -348,6 +348,10 @@ CodeGraph-backed MODIFY evidence includes direct impact plus bounded transitive 
 repo-relative blast fraction. These are graph evidence fields interpreted by PEBRA's existing
 risk/benefit model, not a raw replacement graph risk score. Transitive reach can raise the effective
 impact percentile for the single dominant MODIFY event, but it does not emit a second correlated loss.
+The repo-relative blast fraction is the absolute-scale complement to percentile rank: it is surfaced
+in model guidance and can trigger a conservative inspect-only guardrail when a trusted graph reaches
+a large share of a sufficiently large indexed repo. It does not enter `expected_loss` or
+`edit_confidence`.
 
 Blast/architecture graph uncertainty is an evidence-quality signal, not fake reach. Missing expected files, parse-failed expected files, unresolved internal imports, dynamic imports, wildcard imports, and repo-wide dynamic/wildcard import surfaces produce bounded `graph_uncertainty_score` and provenance lists for model guidance. That score lowers `evidence_quality` and therefore `edit_confidence`; it never inflates `direct_count`, `transitive_count`, blast radius, or expected loss. External/stdlib imports are tracked but not penalized.
 
@@ -438,8 +442,10 @@ Ordered; the first matching risk gate sets a provisional decision. Sanction reso
 7. `decision_instability > threshold` → **inspect_first** / **test_first**
 8. `edit_confidence < low_edit_confidence` → inspect_first / test_first / ask_human / reject
 9. confidence-upgrade requested without `evidence_delta` → reject
-10. authorized sanction resolution may convert a risk-threshold `ask_human` / `reject` from gates 2/3/4/6 into **proceed** with `risk_mode=controlled_high_risk`, `requires_confirmation=true`, and binding controls. It never overrides gate 1 policy violations unless a distinct policy-exception sanction type is ratified.
-11. else → **proceed** (set `requires_confirmation=true` if C3 or C4)
+10. invalid/stale required graph evidence or stale architecture map → **inspect_first**
+11. trusted repo-relative CodeGraph blast over the configured guardrail → **inspect_first**
+12. authorized sanction resolution may convert a risk-threshold `ask_human` / `reject` from gates 2/3/4/6 into **proceed** with `risk_mode=controlled_high_risk`, `requires_confirmation=true`, and binding controls. It never overrides gate 1 policy violations unless a distinct policy-exception sanction type is ratified.
+13. else → **proceed** (set `requires_confirmation=true` if C3 or C4)
 
 Sanction controls are split by timing. `pre_edit_authorization_controls` must be satisfied before gate 10 can convert the provisional decision. `pre_commit_required_controls` are bound into the guidance packet and verified later by `pebra_verify`; missing or failed pre-commit controls invalidate the sanction before commit/outcome logging.
 

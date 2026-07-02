@@ -162,6 +162,7 @@ def test_builder_surfaces_symbol_fanin_graph_provenance() -> None:
             modify_transitive_impact_percentile=0.99,
             modify_transitive_depth_buckets={1: 14, 2: 5, 3: 2},
             modify_repo_blast_fraction=0.08,
+            modify_repo_graph_node_count=260,
             container_hierarchy_kinds=("class", "namespace"),
             graph_file_size_bytes=240_000,
             graph_file_node_count=750,
@@ -191,6 +192,7 @@ def test_builder_surfaces_symbol_fanin_graph_provenance() -> None:
     assert sse["symbol_fanin"]["modify_transitive_impact_percentile"] == pytest.approx(0.99)
     assert sse["symbol_fanin"]["modify_transitive_depth_buckets"] == {1: 14, 2: 5, 3: 2}
     assert sse["symbol_fanin"]["modify_repo_blast_fraction"] == pytest.approx(0.08)
+    assert sse["symbol_fanin"]["modify_repo_graph_node_count"] == 260
     assert sse["symbol_fanin"]["container_hierarchy_kinds"] == ["class", "namespace"]
     assert sse["symbol_fanin"]["graph_file_size_bytes"] == 240_000
     assert sse["symbol_fanin"]["graph_file_node_count"] == 750

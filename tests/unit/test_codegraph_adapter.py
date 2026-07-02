@@ -119,6 +119,7 @@ def _assert_empty_graph_context(ev) -> None:
     assert ev.modify_transitive_impact_percentile == 0.0
     assert ev.modify_transitive_depth_buckets == {}
     assert ev.modify_repo_blast_fraction == 0.0
+    assert ev.modify_repo_graph_node_count == 0
     assert ev.container_hierarchy_kinds == ()
     assert ev.graph_file_size_bytes == 0
     assert ev.graph_file_node_count == 0
@@ -410,6 +411,7 @@ def test_modify_transitive_impact_walks_reverse_codegraph_and_reports_repo_fract
     assert ev.modify_transitive_impact_count == 5
     assert ev.modify_transitive_depth_buckets == {1: 2, 2: 2, 3: 1}
     assert ev.modify_repo_blast_fraction == pytest.approx(5 / 7)
+    assert ev.modify_repo_graph_node_count == 7
     assert ev.modify_transitive_impact_percentile == pytest.approx(1.0)
 
 

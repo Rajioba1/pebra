@@ -277,6 +277,85 @@ def test_gate13_recorded_as_advisory_when_a_higher_gate_decides() -> None:
     assert g13.get("advisory") is True
 
 
+# --- Gate 14: large repo-relative CodeGraph blast (conservative inspect guardrail) ---
+
+
+def test_gate14_large_repo_blast_downgrades_proceed_to_inspect_first() -> None:
+    a = _assess(
+        fanin_evidence=_cg(
+            resolution_method="location",
+            graph_freshness="fresh",
+            modify_transitive_impact_count=80,
+            modify_repo_blast_fraction=0.40,
+            modify_repo_graph_node_count=200,
+        ),
+    )
+    result = de.decide(a)
+
+    assert result.recommended_decision is Decision.INSPECT_FIRST
+    g14 = next(g for g in result.gates_fired if g.get("gate") == 14)
+    assert g14["name"] == "large_repo_blast_fraction"
+    assert g14["modify_repo_blast_fraction"] == pytest.approx(0.40)
+    assert g14["repo_node_count"] == 200
+
+
+def test_gate14_requires_min_repo_node_count_and_trusted_graph() -> None:
+    small_repo = de.decide(_assess(
+        fanin_evidence=_cg(
+            resolution_method="location",
+            graph_freshness="fresh",
+            modify_repo_blast_fraction=0.90,
+            modify_repo_graph_node_count=49,
+        ),
+    ))
+    parse_error = de.decide(_assess(
+        fanin_evidence=_cg(
+            resolution_method="location",
+            graph_freshness="fresh",
+            graph_file_error_count=1,
+            modify_repo_blast_fraction=0.90,
+            modify_repo_graph_node_count=200,
+        ),
+    ))
+
+    assert small_repo.recommended_decision is Decision.PROCEED
+    assert parse_error.recommended_decision is Decision.PROCEED
+    assert not any(g.get("gate") == 14 for g in small_repo.gates_fired)
+    assert not any(g.get("gate") == 14 for g in parse_error.gates_fired)
+
+
+def test_gate14_fires_at_exact_min_repo_node_count_boundary() -> None:
+    result = de.decide(_assess(
+        fanin_evidence=_cg(
+            resolution_method="location",
+            graph_freshness="fresh",
+            modify_repo_blast_fraction=0.40,
+            modify_repo_graph_node_count=50,
+        ),
+    ))
+
+    assert result.recommended_decision is Decision.INSPECT_FIRST
+    assert any(g.get("gate") == 14 for g in result.gates_fired)
+
+
+def test_gate14_recorded_as_advisory_when_higher_gate_decides() -> None:
+    a = _assess(
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        fanin_evidence=_cg(
+            resolution_method="location",
+            graph_freshness="fresh",
+            modify_repo_blast_fraction=0.50,
+            modify_repo_graph_node_count=200,
+        ),
+    )
+    result = de.decide(a)
+
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    g14 = next(g for g in result.gates_fired if g.get("gate") == 14)
+    assert g14.get("advisory") is True
+
+
 def test_gate1_policy_violation_rejects_before_threshold() -> None:
     # even with a perfectly safe assessment, a policy violation rejects first
     result = de.decide(_assess(), policy_violations=["forbidden_path_edit"])

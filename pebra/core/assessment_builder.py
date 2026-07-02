@@ -193,6 +193,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "modify_transitive_impact_percentile": fanin.modify_transitive_impact_percentile,
             "modify_transitive_depth_buckets": dict(fanin.modify_transitive_depth_buckets),
             "modify_repo_blast_fraction": fanin.modify_repo_blast_fraction,
+            "modify_repo_graph_node_count": fanin.modify_repo_graph_node_count,
             "container_hierarchy_kinds": sorted(fanin.container_hierarchy_kinds),
             "graph_file_size_bytes": fanin.graph_file_size_bytes,
             "graph_file_node_count": fanin.graph_file_node_count,

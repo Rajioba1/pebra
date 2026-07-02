@@ -17,9 +17,12 @@ from typing import Any
 
 from pebra.core.assessment_builder import Assessment
 from pebra.core.constants import ActionStatus, Decision, GraphFreshness, RiskMode
+from pebra.core.graph_trust import is_trusted_fanin
 from pebra.core.models import AssessmentResult
 
 _SENSITIVE_STAGES = {"C3", "C4"}
+_DEFAULT_REPO_BLAST_FRACTION_INSPECT_THRESHOLD = 0.40
+_DEFAULT_REPO_BLAST_MIN_REPO_NODE_COUNT = 50
 
 
 def _flatten_scores(a: Assessment) -> dict[str, Any]:
@@ -91,13 +94,54 @@ def _fanin_validity(inp: Any) -> dict[str, Any]:
             "graph_freshness": "unknown",
             "reason": "graph engine required but no fan-in evidence was produced; run: pebra setup-graph",
         }
-    trusted = ev.graph_freshness == "fresh" and ev.resolution_method in ("location", "name_fallback")
-    if trusted:
+    if is_trusted_fanin(ev):
         return {}
     return {
         "resolution_method": ev.resolution_method,
         "graph_freshness": ev.graph_freshness,
         "reason": ev.fallback_reason or "graph evidence unavailable",
+    }
+
+
+def _repo_blast_advisory(inp: Any) -> dict[str, Any]:
+    ev = inp.fanin_evidence
+    if not is_trusted_fanin(ev):
+        return {}
+    if ev.modify_repo_blast_fraction <= 0.0 or ev.modify_repo_graph_node_count <= 0:
+        return {}
+    return {
+        "modify_repo_blast_fraction": ev.modify_repo_blast_fraction,
+        "repo_node_count": ev.modify_repo_graph_node_count,
+        "affected_node_count": ev.modify_transitive_impact_count,
+        "depth": 3,
+    }
+
+
+def _repo_blast_gate(inp: Any) -> dict[str, Any]:
+    advisory = _repo_blast_advisory(inp)
+    if not advisory or not inp.thresholds.get("inspect_on_large_repo_blast", True):
+        return {}
+    min_nodes = int(
+        inp.thresholds.get(
+            "repo_blast_min_repo_node_count", _DEFAULT_REPO_BLAST_MIN_REPO_NODE_COUNT
+        )
+    )
+    threshold = float(
+        inp.thresholds.get(
+            "repo_blast_fraction_inspect_threshold",
+            _DEFAULT_REPO_BLAST_FRACTION_INSPECT_THRESHOLD,
+        )
+    )
+    if advisory["repo_node_count"] < min_nodes:
+        return {}
+    if advisory["modify_repo_blast_fraction"] < threshold:
+        return {}
+    return {
+        "gate": 14,
+        "name": "large_repo_blast_fraction",
+        **advisory,
+        "threshold": threshold,
+        "min_repo_node_count": min_nodes,
     }
 
 
@@ -110,6 +154,8 @@ def decide(
     sse = s["symbol_scope_evidence"]
     ge = _graph_evidence(assessment.input.blast_evidence)
     cg = _fanin_validity(assessment.input)
+    repo_blast = _repo_blast_gate(assessment.input)
+    repo_blast_advisory = _repo_blast_advisory(assessment.input)
     flat = _flatten_scores(assessment)
 
     def _result(
@@ -134,7 +180,11 @@ def decide(
             symbol_scope_evidence=sse,
             graph_evidence=ge,
             fanin_validity=cg,
-            provenance={"provider": "pebra", "source_type": "derived"},
+            provenance={
+                "provider": "pebra",
+                "source_type": "derived",
+                **({"repo_blast": repo_blast_advisory} if repo_blast_advisory else {}),
+            },
             decision_reason=decision_reason,
         )
 
@@ -214,6 +264,13 @@ def decide(
     elif cg:
         provisional, fired_gate = Decision.INSPECT_FIRST, 13
         gates_fired.append({"gate": 13, "name": "fanin_evidence_invalid", **cg})
+    # --- Gate 14: large repo-relative CodeGraph blast guardrail ---
+    # This is an uncalibrated absolute-scale guardrail, not expected-loss math. It only downgrades a
+    # would-be proceed to inspect_first when a trusted graph says the edit reaches a very large share
+    # of the indexed repo and the repo is large enough for the fraction to be meaningful.
+    elif repo_blast:
+        provisional, fired_gate = Decision.INSPECT_FIRST, 14
+        gates_fired.append(repo_blast)
     # --- Gate 11: proceed ---
     else:
         provisional, fired_gate = Decision.PROCEED, 11
@@ -233,6 +290,8 @@ def decide(
     # so the audit trail shows the fan-in evidence was untrustworthy, not just the headline gate.
     if cg and not any(g.get("gate") == 13 for g in gates_fired):
         gates_fired.append({"gate": 13, "name": "fanin_evidence_invalid", "advisory": True, **cg})
+    if repo_blast and not any(g.get("gate") == 14 for g in gates_fired):
+        gates_fired.append({"advisory": True, **repo_blast})
 
     # --- Gate 10: authorized sanction resolution (AD-26) ---
     # NOTE: gates 12 (stale arch map) and 13 (codegraph evidence-validity) both yield INSPECT_FIRST,

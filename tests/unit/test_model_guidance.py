@@ -76,3 +76,54 @@ def test_no_high_risk_triggers_for_worked_example() -> None:
     p = _packet()
     assert p["advisory"]["high_risk_triggers"] == []
     assert p["binding"]["required_controls"] == []
+
+
+def test_repo_blast_fraction_reaches_advisory_risk_facts_when_trusted() -> None:
+    from dataclasses import replace
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(),
+        fanin_evidence=m.FanInEvidence(
+            resolution_method="location",
+            graph_freshness="fresh",
+            modify_transitive_impact_count=28,
+            modify_repo_blast_fraction=0.28,
+            modify_repo_graph_node_count=100,
+        ),
+    )
+    result = de.decide(ab.build_assessment(inp))
+    packet = mg.render(result, inp.action, eg.render(result))
+
+    assert packet["advisory"]["risk_facts"]["repo_blast_fraction"] == 0.28
+    assert packet["advisory"]["risk_facts"]["repo_blast_percent"] == 28.0
+    assert packet["advisory"]["risk_facts"]["repo_blast_node_count"] == 28
+    assert packet["advisory"]["risk_facts"]["repo_graph_node_count"] == 100
+
+
+def test_repo_blast_fraction_absent_from_guidance_when_graph_untrusted_or_absent() -> None:
+    from dataclasses import replace
+    from pebra.core import models as m
+
+    absent = de.decide(ab.build_assessment(_worked_example_input()))
+    absent_packet = mg.render(absent, _worked_example_input().action, eg.render(absent))
+
+    untrusted_inp = replace(
+        _worked_example_input(),
+        fanin_evidence=m.FanInEvidence(
+            resolution_method="unresolved",
+            graph_freshness="stale",
+            modify_transitive_impact_count=28,
+            modify_repo_blast_fraction=0.28,
+            modify_repo_graph_node_count=100,
+        ),
+    )
+    untrusted = de.decide(ab.build_assessment(untrusted_inp))
+    untrusted_packet = mg.render(untrusted, untrusted_inp.action, eg.render(untrusted))
+
+    for packet in (absent_packet, untrusted_packet):
+        facts = packet["advisory"]["risk_facts"]
+        assert "repo_blast_fraction" not in facts
+        assert "repo_blast_percent" not in facts
+        assert "repo_blast_node_count" not in facts
+        assert "repo_graph_node_count" not in facts

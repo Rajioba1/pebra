@@ -433,6 +433,7 @@ This layer builds from CodeGraph's local SQLite index plus PEBRA's own determini
 CodeGraph is a runtime prerequisite for product graph evidence. Before PEBRA trusts graph evidence it runs `codegraph sync --quiet <repo>`, then `codegraph status --json <repo>`. Fresh graph evidence requires initialized status, zero pending added/modified/removed files, `index.reindexRecommended=false`, and no worktree mismatch. Otherwise graph evidence is stale and PEBRA fails closed or routes a would-be proceed to `inspect_first`.
 
 CodeGraph-backed MODIFY evidence includes direct impact plus bounded transitive symbol blast and a repo-relative blast fraction. These are graph evidence fields interpreted by PEBRA's existing risk/benefit model, not a raw replacement graph risk score. Transitive reach can raise the effective impact percentile for the single dominant MODIFY event, but it does not emit a second correlated loss.
+The repo-relative blast fraction is surfaced in model guidance and can trigger a conservative inspect-only guardrail when a trusted graph reaches a large share of a sufficiently large indexed repo. It does not enter `expected_loss` or `edit_confidence`.
 
 It should produce:
 
@@ -1399,6 +1400,11 @@ and no evidence_delta exists:
 if low_confidence_upgraded
 and thresholds.require_user_confirmation_for_low_confidence_upgrade:
     proceed only with requires_confirmation = true
+
+if trusted_codegraph
+and repo_graph_node_count >= thresholds.repo_blast_min_repo_node_count
+and modify_repo_blast_fraction >= thresholds.repo_blast_fraction_inspect_threshold:
+    inspect_first
 
 if authorized_sanction exists
 and prior gate result is ask_human or reject

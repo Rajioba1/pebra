@@ -65,6 +65,17 @@ def render(
     fanin_validity = result.fanin_validity or {}
     if fanin_validity.get("reason"):
         suggested_inspection.append(fanin_validity["reason"])
+    repo_blast = result.provenance.get("repo_blast") or {}
+    repo_blast_risk_fact = (
+        {
+            "repo_blast_fraction": repo_blast["modify_repo_blast_fraction"],
+            "repo_blast_percent": round(repo_blast["modify_repo_blast_fraction"] * 100, 2),
+            "repo_blast_node_count": repo_blast["affected_node_count"],
+            "repo_graph_node_count": repo_blast["repo_node_count"],
+        }
+        if repo_blast
+        else {}
+    )
 
     return {
         # Logical placeholder for the pure guidance packet. The store assigns the canonical
@@ -90,6 +101,7 @@ def render(
                 "risk_level": explanation.risk_level_band,
                 "affected_area": explanation.affected_area,
                 "confidence": explanation.confidence_band,
+                **repo_blast_risk_fact,
             },
             "why": list(explanation.why),
             "suggested_inspection": suggested_inspection,

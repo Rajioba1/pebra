@@ -121,6 +121,7 @@ class FanInEvidence:
     modify_transitive_impact_percentile: float = 0.0
     modify_transitive_depth_buckets: dict[int, int] = field(default_factory=dict)
     modify_repo_blast_fraction: float = 0.0
+    modify_repo_graph_node_count: int = 0
     container_hierarchy_kinds: tuple[str, ...] = ()
     graph_file_size_bytes: int = 0
     graph_file_node_count: int = 0

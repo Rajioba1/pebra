@@ -302,6 +302,7 @@ class CodeGraphAdapter:
                 modify_transitive_impact_percentile=ctx["modify_transitive_impact_percentile"],
                 modify_transitive_depth_buckets=ctx["modify_transitive_depth_buckets"],
                 modify_repo_blast_fraction=ctx["modify_repo_blast_fraction"],
+                modify_repo_graph_node_count=ctx["modify_repo_graph_node_count"],
                 container_hierarchy_kinds=ctx["container_hierarchy_kinds"],
                 graph_file_size_bytes=ctx["graph_file_size_bytes"],
                 graph_file_node_count=ctx["graph_file_node_count"],
@@ -564,6 +565,7 @@ class CodeGraphAdapter:
                 "modify_transitive_impact_percentile": 0.0,
                 "modify_transitive_depth_buckets": {},
                 "modify_repo_blast_fraction": 0.0,
+                "modify_repo_graph_node_count": 0,
                 "container_hierarchy_kinds": (),
                 "graph_file_size_bytes": 0,
                 "graph_file_node_count": 0,
@@ -647,6 +649,7 @@ class CodeGraphAdapter:
             "modify_repo_blast_fraction": (
                 min(1.0, transitive_count / repo_node_count) if repo_node_count else 0.0
             ),
+            "modify_repo_graph_node_count": repo_node_count,
             "container_hierarchy_kinds": tuple(
                 sorted({str(r["kind"]) for r in container_rows if r["kind"]})
             ),
