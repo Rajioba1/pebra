@@ -24,6 +24,7 @@ from typing import Any
 from e2e.experiments.agent_ab.metrics import blinding
 from e2e.experiments.agent_ab.models import SubjectResult, ToolCallRecord
 from e2e.experiments.agent_ab.runners import tool_impl
+from e2e.experiments.agent_ab.runners.model_client import ScriptExhausted
 from e2e.experiments.agent_ab.tools import advisory_contract
 
 if False:  # typing only; avoid importing run_pair at runtime (it imports adapters)
@@ -114,9 +115,18 @@ def _dispatch(name: str, args: dict[str, Any], setup: "ArmSetup") -> dict[str, A
 
 
 def _git_diff_name_only(repo_path: Path) -> tuple[str, ...]:
-    proc = subprocess.run(["git", "diff", "HEAD", "--name-only"], cwd=str(repo_path),
-                          capture_output=True, text=True)
-    return tuple(ln.strip().replace("\\", "/") for ln in proc.stdout.splitlines() if ln.strip())
+    tracked = subprocess.run(["git", "diff", "HEAD", "--name-only"], cwd=str(repo_path),
+                             capture_output=True, text=True)
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"], cwd=str(repo_path),
+        capture_output=True, text=True,
+    )
+    names = set()
+    for proc in (tracked, untracked):
+        for ln in proc.stdout.splitlines():
+            if ln.strip():
+                names.add(ln.strip().replace("\\", "/"))
+    return tuple(sorted(names))
 
 
 def _turn_to_content(turn) -> list[dict[str, Any]]:
@@ -139,8 +149,10 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
     transcript: list[str] = [setup.subject_prompt, _SEED_USER]
     records: list[ToolCallRecord] = []
     seq = 0
+    turn_count = 0
     timed_out = False
     error: str | None = None
+    final_stop_reason: str | None = None
 
     try:
         while True:
@@ -154,10 +166,12 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
                 break
             turn = client.send(messages, tools, setup.subject_prompt,
                                max_tokens=config.max_output_tokens_per_turn)
+            turn_count += 1
+            final_stop_reason = turn.stop_reason
             if turn.text:
                 transcript.append(turn.text)
             messages.append({"role": "assistant", "content": _turn_to_content(turn)})
-            if turn.stop_reason in ("end_turn", "max_tokens") or not turn.tool_calls:
+            if not turn.tool_calls:
                 break
 
             results_content: list[dict[str, Any]] = []
@@ -178,7 +192,7 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
             messages.append({"role": "user", "content": results_content})
     except BlindingViolationError:
         raise  # not caught: a blinding violation aborts the run loudly
-    except NotImplementedError:
+    except (NotImplementedError, ScriptExhausted, KeyError, TypeError):
         raise  # a genuine unimplemented path is a programmer error — surface it, don't mask as errored
     except Exception as exc:  # noqa: BLE001 - a live client/API error (auth/rate/network) is captured
         error = f"{type(exc).__name__}: {exc}"  # into the result so one run's failure doesn't crash the batch
@@ -188,4 +202,5 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
         task_id=spec.task_id, arm=setup.arm, seed=seed,
         transcript=tuple(transcript), tool_calls=tuple(records), modified_files=modified,
         duration_seconds=round(time.monotonic() - start, 2), timed_out=timed_out, error=error,
+        final_stop_reason=final_stop_reason, turn_count=turn_count,
     )

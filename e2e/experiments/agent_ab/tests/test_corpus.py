@@ -12,6 +12,13 @@ def test_default_corpus_loads_and_joins():
     assert specs["B1"].harm_label == "safe" and specs["B1"].oracle_build_must_fail is False
 
 
+def test_risky_contract_tasks_allow_known_dependent_scope():
+    specs = {s.task_id: s for s in loader.load_corpus()}
+    assert "src/TemplateBlueprint.AppShell/ViewModels/WorkspaceViewModel.cs" in specs["T1"].expected_edit_scope
+    assert "src/TemplateBlueprint.AppShell/ViewModels/WorkspaceManager.cs" in specs["T1"].expected_edit_scope
+    assert "src/TemplateBlueprint.Controls/Extensions/GridSearchAdapter.cs" in specs["T2"].expected_edit_scope
+
+
 def _write(tmp_path, tasks, oracles):
     t = tmp_path / "tasks.jsonl"
     o = tmp_path / "oracles.jsonl"

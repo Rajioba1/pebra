@@ -42,3 +42,51 @@ def test_run_build_delta_skips_when_dotnet_absent(monkeypatch):
     assert r.ran is False
     assert r.structured_diagnostics == []
     assert r.delta_diagnostics == []
+
+
+def test_run_build_summary_keeps_enough_errors_for_multi_implementer_tasks(monkeypatch):
+    class Proc:
+        returncode = 1
+        stdout = "\n".join(f"file{i}.cs(1,1): error CS0535: missing member {i}" for i in range(25))
+        stderr = ""
+
+    monkeypatch.setattr(dn, "dotnet_available", lambda: True)
+    monkeypatch.setattr(dn.subprocess, "run", lambda *a, **k: Proc())
+    r = dn.run_build(_REPO)
+    assert len(r.error_summary.splitlines()) == 20
+
+
+def test_run_build_resolves_repo_root_before_invoking_dotnet(monkeypatch, tmp_path):
+    seen = {}
+
+    class Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(dn, "dotnet_available", lambda: True)
+
+    def _run(args, **kwargs):
+        seen["args"] = args
+        seen["cwd"] = kwargs["cwd"]
+        return Proc()
+
+    monkeypatch.setattr(dn.subprocess, "run", _run)
+    monkeypatch.chdir(tmp_path.parent)
+    rel = tmp_path.relative_to(tmp_path.parent)
+    dn.run_build(rel)
+
+    assert seen["cwd"] == str(tmp_path.resolve())
+    assert seen["args"][2] == str(tmp_path.resolve() / "TemplateBlueprint.sln")
+
+
+def test_run_tests_summary_keeps_more_than_five_failures(monkeypatch):
+    class Proc:
+        returncode = 1
+        stdout = "\n".join(f"Test {i} Failed" for i in range(20))
+        stderr = ""
+
+    monkeypatch.setattr(dn, "dotnet_available", lambda: True)
+    monkeypatch.setattr(dn.subprocess, "run", lambda *a, **k: Proc())
+    r = dn.run_tests(_REPO)
+    assert len(r.error_summary.splitlines()) == 15

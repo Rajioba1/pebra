@@ -39,11 +39,33 @@ def test_list_dir_sorted_relative(tmp_path):
     assert out["entries"] == ["a.cs", "b.cs"]
 
 
+def test_file_tools_hide_codegraph_directory(tmp_path):
+    (tmp_path / ".codegraph").mkdir()
+    (tmp_path / ".codegraph" / "codegraph.db").write_text("db")
+    assert ".codegraph/" not in tool_impl.list_dir(None, tmp_path)["entries"]
+    assert "error" in tool_impl.read_file(".codegraph/codegraph.db", tmp_path)
+    assert "error" in tool_impl.write_file(".codegraph/codegraph.db", "x", tmp_path)
+
+
 def test_search_grep_finds_match(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "x.cs").write_text("line one\nfind ME here\n")
     out = tool_impl.search_grep("find ME", tmp_path)
     assert any("x.cs" in m for m in out["matches"])
+
+
+def test_search_grep_rejects_parent_glob_escape(tmp_path):
+    outside = tmp_path.parent / "outside_secret.txt"
+    outside.write_text("needle")
+    out = tool_impl.search_grep("needle", tmp_path, file_glob="../*.txt")
+    assert out["matches"] == []
+    assert "error" in out
+
+
+def test_search_grep_hides_codegraph(tmp_path):
+    (tmp_path / ".codegraph").mkdir()
+    (tmp_path / ".codegraph" / "codegraph.db").write_text("needle")
+    assert tool_impl.search_grep("needle", tmp_path)["matches"] == []
 
 
 def test_advisory_check_dispatches_and_normalizes(tmp_path):
@@ -69,3 +91,17 @@ def test_advisory_missing_patch_returns_arm_neutral_error():
     assert out["risk_level"] == "unknown"
     assert out["detail"] == {}
     assert "proposed_patch" in out["advisory"]
+
+
+def test_advisory_backend_exception_returns_arm_neutral_unavailable():
+    def backend(_p):
+        raise RuntimeError("backend unavailable")
+
+    out = tool_impl.advisory_check({
+        "target_file": "a.cs", "change_summary": "edit a", "proposed_patch": "diff --git a/a.cs b/a.cs",
+    }, backend)
+
+    assert out["recommended_decision"] is None
+    assert out["risk_level"] == "unknown"
+    assert out["detail"] == {}
+    assert "unavailable" in out["advisory"]

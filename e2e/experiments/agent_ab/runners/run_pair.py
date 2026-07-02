@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -24,8 +25,14 @@ from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
 from e2e.experiments.agent_ab.tools import advisory_check_real, advisory_check_sham, advisory_contract
 from e2e.external.utils import dotnet_harness as dn
 from e2e.external.utils import repo_source as rs
+from e2e.utils import cli_harness
 
 _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
+_MIN_CSHARP_NODES = 50
+
+
+class RunPairError(RuntimeError):
+    """The paired run cannot start because a clone/setup/build invariant failed."""
 
 _SUBJECT_PROMPT = """You are a software developer working on a C# codebase.
 
@@ -34,7 +41,10 @@ Your task:
 
 The repository is at: {repo_path}
 
-You have these tools: read_file, write_file, run_build, run_tests, {advisory_name}.
+You have these tools: read_file, write_file, list_dir, search_grep, run_build, run_tests,
+{advisory_name}.
+Before significant edits, draft the intended patch and call {advisory_name} with the target file,
+change summary, and intended patch.
 Complete the task, then stop."""
 
 
@@ -70,13 +80,41 @@ def _arm_token(arm: str, run_id: str) -> str:
     return hashlib.sha256(f"{arm}:{run_id}".encode()).hexdigest()[:12]
 
 
+def _remove_stale_arm_clone(dest: Path) -> None:
+    root = _AB_OUT.resolve()
+    resolved = dest.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise RunPairError(f"refusing to remove arm clone outside {root}: {resolved}") from exc
+    if resolved.exists():
+        shutil.rmtree(resolved)
+
+
+def _validate_baseline(repo_path: Path, baseline) -> None:
+    if not getattr(baseline, "available", False) or not getattr(baseline, "ran", False):
+        raise RunPairError(f"baseline build did not run for {repo_path}: {baseline.error_summary}")
+    if not getattr(baseline, "passed", False):
+        raise RunPairError(f"baseline build failed for {repo_path}: {baseline.error_summary}")
+
+
 def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, run_id: str) -> ArmSetup:
     """Clone an isolated worktree for one arm and prepare everything up to the agent call. No agent run."""
     # Arm-NEUTRAL path: an opaque hash token, not the arm name - so nothing the agent sees reveals its arm.
     dest = _AB_OUT / run_id / f"{spec.task_id}_seed{seed}_{_arm_token(arm, run_id)}" / "repo"
+    _remove_stale_arm_clone(dest)
     repo_path = rs.clone_at_recorded_head(external, dest)
+    cli_harness.setup_graph(repo_root=repo_path)
+    if arm == models.ARM_TREATMENT:
+        counts = cli_harness.graph_node_counts(repo_root=repo_path)
+        if int(counts.get("csharp_callable", 0)) < _MIN_CSHARP_NODES:
+            raise RunPairError(
+                f"treatment arm CodeGraph has {counts.get('csharp_callable', 0)} C# callable nodes "
+                f"(< {_MIN_CSHARP_NODES})"
+            )
     db_path = dest.parent / "pebra.db"
     baseline = dn.run_build_delta(repo_path)
+    _validate_baseline(repo_path, baseline)
     return ArmSetup(
         arm=arm,
         repo_path=repo_path,

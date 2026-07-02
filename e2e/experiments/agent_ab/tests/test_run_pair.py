@@ -5,6 +5,8 @@ so this pin is the last line of defence against an accidental live run."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from e2e.experiments.agent_ab.models import TaskSpec
@@ -18,6 +20,11 @@ def _dummy_setup(tmp_path):
         arm="control", repo_path=tmp_path, advisory_backend=lambda payload: {},
         baseline_build=None, subject_prompt="do the task",
     )
+
+
+class _External:
+    source_path = None
+    head_sha = "abc123"
 
 
 def _close_gate(mp):
@@ -41,3 +48,59 @@ def test_run_control_is_gated(monkeypatch, tmp_path):
                         lambda *a, **k: _dummy_setup(tmp_path))
     with pytest.raises(run_gate.RunGateError):
         run_control.run_control(_SPEC, 0, "rid")
+
+
+def test_prepare_arm_replaces_stale_clone_and_indexes_actual_arm(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    calls: list = []
+
+    def _clone(_external, dest):
+        assert not dest.exists()
+        dest.mkdir(parents=True)
+        (dest / "repo.txt").write_text("fresh")
+        return dest
+
+    def _setup_graph(*, repo_root):
+        calls.append(repo_root)
+
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head", _clone)
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", _setup_graph)
+    monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
+                        lambda *, repo_root: {"csharp_callable": 700})
+    monkeypatch.setattr(run_pair.dn, "run_build_delta",
+                        lambda repo: SimpleNamespace(available=True, ran=True, passed=True,
+                                                     error_summary=""))
+    stale = tmp_path / "rid" / f"T1_seed0_{run_pair._arm_token('treatment', 'rid')}" / "repo"
+    stale.mkdir(parents=True)
+    (stale / "old.txt").write_text("stale")
+
+    setup = run_pair.prepare_arm(_External(), _SPEC, "treatment", 0, "rid")
+
+    assert setup.repo_path == stale
+    assert not (stale / "old.txt").exists()
+    assert (stale / "repo.txt").read_text() == "fresh"
+    assert calls == [stale]
+
+
+def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",
+                        lambda _external, dest: (dest.mkdir(parents=True), dest)[1])
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
+    monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
+                        lambda *, repo_root: {"csharp_callable": 700})
+    monkeypatch.setattr(run_pair.dn, "run_build_delta",
+                        lambda repo: SimpleNamespace(available=True, ran=True, passed=False,
+                                                     error_summary="baseline broken"))
+
+    with pytest.raises(run_pair.RunPairError, match="baseline"):
+        run_pair.prepare_arm(_External(), _SPEC, "control", 0, "rid")
+
+
+def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
+    prompt = run_pair._build_subject_prompt(_SPEC, tmp_path)
+    for name in ("read_file", "write_file", "list_dir", "search_grep", "run_build", "run_tests",
+                 "advisory_check"):
+        assert name in prompt
+    assert "before significant edits" in prompt.lower()
+    assert "intended patch" in prompt.lower()

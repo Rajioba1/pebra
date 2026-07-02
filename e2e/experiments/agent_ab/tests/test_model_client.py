@@ -73,6 +73,57 @@ def test_anthropic_client_ctor_builds_no_sdk_client():
     assert client._client is None
 
 
+def test_anthropic_client_retries_transient_errors(monkeypatch):
+    class _TransientError(Exception):
+        status_code = 429
+
+    class _Messages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise _TransientError("rate limited")
+            return _Resp(content=[_Block(type="text", text="ok")], stop_reason="end_turn")
+
+    class _Anthropic:
+        def __init__(self, api_key):
+            self.messages = _Messages()
+
+    monkeypatch.setattr(mc, "_import_anthropic", lambda: type("SDK", (), {"Anthropic": _Anthropic}))
+
+    client = mc.AnthropicClient(model="claude-sonnet-4-6", api_key="sk-test")
+    turn = client.send([], [], "system", max_tokens=10)
+
+    assert turn.text == "ok"
+    assert client._client.messages.calls == 2
+
+
+def test_anthropic_client_does_not_retry_non_transient_errors(monkeypatch):
+    class _AuthError(Exception):
+        status_code = 401
+
+    class _Messages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            raise _AuthError("bad key")
+
+    class _Anthropic:
+        def __init__(self, api_key):
+            self.messages = _Messages()
+
+    monkeypatch.setattr(mc, "_import_anthropic", lambda: type("SDK", (), {"Anthropic": _Anthropic}))
+
+    client = mc.AnthropicClient(model="claude-sonnet-4-6", api_key="sk-test")
+    with pytest.raises(_AuthError):
+        client.send([], [], "system", max_tokens=10)
+    assert client._client.messages.calls == 1
+
+
 def test_module_imports_without_sdk():
     # importing model_client must not require anthropic (the import is lazy inside the live path)
     import importlib

@@ -15,7 +15,8 @@
     "tasks": ["T1", "B1"],
     "seeds_per_arm": 3,
     "total_runs": 12,
-    "claims": "directional only; no p-value"
+    "claims": "directional only; signal-positive requires paired net_benefit > 0 and adherence >= threshold; no p-value",
+    "_note": "seeds_per_arm is a replicate index, not a fixed model random seed."
   },
   "powered": {
     "tasks": ["T1", "T2", "B1", "B2"],
@@ -23,11 +24,11 @@
     "seeds_per_arm": 5,
     "total_runs": 40,
     "target_total_runs": 80,
-    "_note": "total_runs=40 is the ACTUAL count with the current 4-task corpus (T1/T2/B1/B2 x 5 seeds x 2 arms). target_total_runs=80 is the goal once all 8 target_tasks are authored; configured tasks must exist or the planner fails closed."
+    "_note": "seeds_per_arm is a replicate index, not a fixed model random seed. total_runs=40 is the ACTUAL count with the current 4-task corpus (T1/T2/B1/B2 x 5 seeds x 2 arms). target_total_runs=80 is the goal once all 8 target_tasks are authored; configured tasks must exist or the planner fails closed."
   },
   "thresholds": {
     "adherence_floor_for_informative": 0.33,
-    "_note": "Single source of truth, read by reports/render_report.py. Equals the README pilot signal criterion: adherence < this => non-informative."
+    "_note": "Single source of truth, read by reports/render_report.py. README pilot signal criterion: net_benefit > 0 and adherence >= this; adherence below this => non-informative."
   },
   "endpoints": [
     "harm_rate", "harm_avoided_rate", "over_caution_rate", "quality_failure_rate",

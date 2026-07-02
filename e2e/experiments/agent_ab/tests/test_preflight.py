@@ -25,6 +25,44 @@ def test_safe_that_passes_is_ok():
     assert preflight._oracle_failure(_SAFE, _build(passed=True)) is None
 
 
+def test_correct_fix_patch_outside_expected_scope_is_flagged(tmp_path):
+    patch = tmp_path / "T1_correct.patch"
+    patch.write_text(
+        "diff --git a/a.cs b/a.cs\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/a.cs\n"
+        "+++ b/a.cs\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "diff --git a/extra.cs b/extra.cs\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/extra.cs\n"
+        "+++ b/extra.cs\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n",
+        encoding="utf-8",
+    )
+    msg = preflight._correct_fix_scope_failure(_TRAP, patch)
+    assert msg and "extra.cs" in msg
+
+
+def test_correct_fix_patch_inside_expected_scope_is_ok(tmp_path):
+    patch = tmp_path / "T1_correct.patch"
+    patch.write_text(
+        "diff --git a/a.cs b/a.cs\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/a.cs\n"
+        "+++ b/a.cs\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n",
+        encoding="utf-8",
+    )
+    assert preflight._correct_fix_scope_failure(_TRAP, patch) is None
+
+
 def test_trap_that_builds_is_flagged():
     msg = preflight._oracle_failure(_TRAP, _build(passed=True))
     assert msg and "MUST fail" in msg
@@ -43,12 +81,26 @@ def test_build_did_not_run_is_flagged():
 
 def _payload(freshness, resolution):
     return {"scores": {"symbol_scope_evidence": {"symbol_fanin": {
-        "graph_freshness": freshness, "resolution_method": resolution}}}}
+        "graph_freshness": freshness, "resolution_method": resolution,
+        "caller_count": 3, "modify_impact_count": 4}}, "expected_loss": 0.2}}
 
 
 def test_fresh_resolved_graph_is_ok():
     assert preflight._graph_backed_failure(_TRAP, _payload("fresh", "location")) is None
-    assert preflight._graph_backed_failure(_TRAP, _payload("fresh", "name_fallback")) is None
+
+
+def test_name_fallback_is_not_strong_enough_for_ab_preflight():
+    msg = preflight._graph_backed_failure(_TRAP, _payload("fresh", "name_fallback"))
+    assert msg and "location" in msg
+
+
+def test_fresh_resolved_but_zero_impact_graph_is_flagged():
+    payload = {"scores": {"symbol_scope_evidence": {"symbol_fanin": {
+        "graph_freshness": "fresh", "resolution_method": "location",
+        "caller_count": 0, "modify_impact_count": 0, "modify_transitive_impact_count": 0}}},
+        "expected_loss": 0.0}
+    msg = preflight._graph_backed_failure(_TRAP, payload)
+    assert msg and "material" in msg
 
 
 def test_stale_graph_is_flagged():
@@ -79,6 +131,60 @@ def test_oracle_preflight_reports_all_missing_patches(tmp_path):
                                        build_fn=lambda p: _build(), patch_dir=empty_patch_dir)
     msg = str(ei.value)
     assert "T1" in msg and "B1" in msg  # BOTH reported, not first-fail
+
+
+def test_oracle_preflight_requires_correct_fix_patch_for_risky_tasks(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "T1.patch").write_text("diff --git a/a.cs b/a.cs\n", encoding="utf-8")
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
+    monkeypatch.setattr(preflight, "_apply_patch", lambda patch_file, repo_path: None)
+
+    with pytest.raises(preflight.PreflightError) as ei:
+        preflight.run_oracle_preflight([_TRAP], None, out_dir=tmp_path,
+                                       build_fn=lambda p: _build(passed=False),
+                                       patch_dir=patch_dir, correct_patch_dir=correct_dir)
+
+    assert "missing correct-fix patch" in str(ei.value)
+
+
+def test_oracle_preflight_applies_correct_fix_patch_for_risky_tasks(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "T1.patch").write_text(
+        "diff --git a/a.cs b/a.cs\n--- a/a.cs\n+++ b/a.cs\n@@ -1 +1 @@\n-old\n+bad\n",
+        encoding="utf-8",
+    )
+    (correct_dir / "T1.patch").write_text(
+        "diff --git a/a.cs b/a.cs\n--- a/a.cs\n+++ b/a.cs\n@@ -1 +1 @@\n-old\n+good\n",
+        encoding="utf-8",
+    )
+    applied: list[str] = []
+
+    def _clone(_external, dest):
+        dest.mkdir(parents=True)
+        return dest
+
+    def _apply(patch_file, _repo_path):
+        applied.append(patch_file.parent.name)
+
+    def _build(repo_path):
+        return _build_result(passed="T1_correct" in repo_path.as_posix())
+
+    def _build_result(passed):
+        return SimpleNamespace(ran=True, passed=passed, error_summary="")
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _clone)
+    monkeypatch.setattr(preflight, "_apply_patch", _apply)
+
+    preflight.run_oracle_preflight([_TRAP], None, out_dir=tmp_path, build_fn=_build,
+                                   patch_dir=patch_dir, correct_patch_dir=correct_dir)
+
+    assert applied == ["patches", "correct"]
 
 
 def test_oracle_preflight_accumulates_apply_failures(tmp_path, monkeypatch):

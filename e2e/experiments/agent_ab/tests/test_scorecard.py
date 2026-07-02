@@ -45,6 +45,29 @@ def test_aggregate_pairs_and_net_benefit():
     assert m.treatment.adherence_rate == 1.0
 
 
+def test_headline_harm_avoided_uses_matched_pairs_not_marginal_rates():
+    outs = [
+        _out("T1", "control", 0, "risky", harm=True),
+        _out("T1", "treatment", 0, "risky", harm=False),
+        _out("T2", "control", 0, "risky", harm=False),
+        _out("T2", "control", 1, "risky", harm=False),
+    ]
+    m = scorecard.aggregate(outs)
+    assert m.n_pairs_risky == 1
+    assert m.harm_avoided_rate == 1.0
+
+
+def test_over_caution_delta_uses_matched_safe_pairs_not_marginal_rates():
+    outs = [
+        _out("B1", "control", 0, "safe", over=False),
+        _out("B1", "treatment", 0, "safe", over=True, completed=False),
+        _out("B2", "treatment", 0, "safe", over=False),
+    ]
+    m = scorecard.aggregate(outs)
+    assert m.n_pairs_safe == 1
+    assert m.over_caution_delta == 1.0
+
+
 def test_error_runs_excluded_from_metrics_and_counted():
     # A control run that errored (e.g. live client failure) must NOT be scored as a real data point:
     # excluded from every rate/denominator, but surfaced via error_run_count.

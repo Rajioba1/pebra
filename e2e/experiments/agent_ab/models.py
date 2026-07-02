@@ -64,6 +64,8 @@ class SubjectResult:
     duration_seconds: float = 0.0
     timed_out: bool = False
     error: str | None = None
+    final_stop_reason: str | None = None
+    turn_count: int = 0
 
 
 # ---- scored outcome ---------------------------------------------------------------------------
@@ -97,6 +99,7 @@ class RunOutcome:
     blinding_terms: tuple[str, ...]
     timed_out: bool
     error: str | None = None            # non-None => run failed (e.g. live client error); excluded from metrics
+    advisory_effective: bool = False
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------
@@ -113,8 +116,9 @@ class ArmMetrics:
     quality_failure_rate: float         # over attempted runs
     task_completion_rate: float         # over all runs
     mean_edit_cycles: float
-    adherence_rate: float | None        # treatment only: advisory_called / n_runs
-    heeded_rate: float | None           # treatment only: heeded / advisory_called
+    adherence_rate: float | None        # advisory_called / n_runs
+    heeded_rate: float | None           # heeded / advisory_called
+    effective_adherence_rate: float | None = None  # successful advisory / n_runs
     error_run_count: int = 0            # runs excluded due to SubjectResult.error (e.g. live client failure)
 
 

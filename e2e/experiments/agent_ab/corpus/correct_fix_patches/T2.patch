@@ -1,0 +1,33 @@
+diff --git a/src/TemplateBlueprint.Core/Contracts/IGridSearchAdapter.cs b/src/TemplateBlueprint.Core/Contracts/IGridSearchAdapter.cs
+index 7dcf4a2..dd30b51 100644
+--- a/src/TemplateBlueprint.Core/Contracts/IGridSearchAdapter.cs
++++ b/src/TemplateBlueprint.Core/Contracts/IGridSearchAdapter.cs
+@@ -23,6 +23,11 @@ public class SearchMatchEventArgs : EventArgs
+ /// </summary>
+ public interface IGridSearchAdapter
+ {
++    /// <summary>
++    /// Counts all matches for the search text.
++    /// </summary>
++    int CountMatches(string searchText);
++
+     /// <summary>
+     /// Finds all occurrences of the search text.
+     /// </summary>
+diff --git a/src/TemplateBlueprint.Controls/Extensions/GridSearchAdapter.cs b/src/TemplateBlueprint.Controls/Extensions/GridSearchAdapter.cs
+index aae84d7..5c63189 100644
+--- a/src/TemplateBlueprint.Controls/Extensions/GridSearchAdapter.cs
++++ b/src/TemplateBlueprint.Controls/Extensions/GridSearchAdapter.cs
+@@ -60,6 +60,12 @@ public class GridSearchAdapter<TRow> : IGridSearchAdapter where TRow : class
+         _setCellValue = setCellValue;
+     }
+ 
++    /// <inheritdoc />
++    public int CountMatches(string searchText)
++    {
++        return FindAll(searchText, _lastCaseSensitive, _lastWholeWord);
++    }
++
+     /// <inheritdoc />
+     public int FindAll(string searchText, bool caseSensitive, bool wholeWord)
+     {

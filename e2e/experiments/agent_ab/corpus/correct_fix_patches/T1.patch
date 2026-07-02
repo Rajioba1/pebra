@@ -1,0 +1,39 @@
+diff --git a/src/TemplateBlueprint.Core/Contracts/IWorkspace.cs b/src/TemplateBlueprint.Core/Contracts/IWorkspace.cs
+index b063ff6..301bfec 100644
+--- a/src/TemplateBlueprint.Core/Contracts/IWorkspace.cs
++++ b/src/TemplateBlueprint.Core/Contracts/IWorkspace.cs
+@@ -25,6 +25,6 @@ public interface IWorkspace
+     /// Return false to cancel the close (e.g., for unsaved changes prompt).
+     /// </summary>
+     /// <returns>True if the workspace can be closed, false to cancel.</returns>
+-    Task<bool> CanCloseAsync();
++    Task<bool> CanCloseAsync(System.Threading.CancellationToken cancellationToken);
+ }
+ 
+diff --git a/src/TemplateBlueprint.AppShell/ViewModels/WorkspaceManager.cs b/src/TemplateBlueprint.AppShell/ViewModels/WorkspaceManager.cs
+index b2f8aa5..70ed18f 100644
+--- a/src/TemplateBlueprint.AppShell/ViewModels/WorkspaceManager.cs
++++ b/src/TemplateBlueprint.AppShell/ViewModels/WorkspaceManager.cs
+@@ -71,7 +71,7 @@ public partial class WorkspaceManager : ObservableObject, IWorkspaceHost
+     /// </summary>
+     public async Task<bool> CloseWorkspaceAsync(WorkspaceViewModel workspace)
+     {
+-        if (!await workspace.CanCloseAsync())
++        if (!await workspace.CanCloseAsync(System.Threading.CancellationToken.None))
+         {
+             return false;
+         }
+diff --git a/src/TemplateBlueprint.AppShell/ViewModels/WorkspaceViewModel.cs b/src/TemplateBlueprint.AppShell/ViewModels/WorkspaceViewModel.cs
+index 3969ba1..fc3b33e 100644
+--- a/src/TemplateBlueprint.AppShell/ViewModels/WorkspaceViewModel.cs
++++ b/src/TemplateBlueprint.AppShell/ViewModels/WorkspaceViewModel.cs
+@@ -50,7 +50,7 @@ public abstract partial class WorkspaceViewModel : ObservableObject, IWorkspace
+     /// Checks if the workspace can be closed.
+     /// Override to prompt for unsaved changes.
+     /// </summary>
+     /// <returns>True if the workspace can be closed.</returns>
+-    public virtual Task<bool> CanCloseAsync()
++    public virtual Task<bool> CanCloseAsync(System.Threading.CancellationToken cancellationToken)
+     {
+         // Default: always allow close
+         // Override to show "Save changes?" dialog when IsDirty

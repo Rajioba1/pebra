@@ -136,6 +136,7 @@ def e2e_ab(session: nox.Session) -> None:
     ANTHROPIC_API_KEY. Runs pre-flights (oracle labels + graph freshness) then paired trials. Never
     mutates the source (clones into gitignored e2e/out/)."""
     if (os.environ.get("E2E_AB_RUN") != "1" or os.environ.get("E2E_EXTERNAL") != "1"
+            or not os.environ.get("E2E_TEMPLATE_BLUEPRINT_REPO")
             or not os.environ.get("ANTHROPIC_API_KEY")):
         session.skip("Set E2E_AB_RUN=1 E2E_EXTERNAL=1 E2E_TEMPLATE_BLUEPRINT_REPO=<path> "
                      "ANTHROPIC_API_KEY=<key> to run the agent A/B experiment.")

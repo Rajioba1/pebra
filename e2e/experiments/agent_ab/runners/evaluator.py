@@ -36,10 +36,10 @@ def inject_evaluator_tests(
     src = (evaluator_dir or _EVALUATOR_DIR) / task_id
     if not src.is_dir():
         return None
-    shutil.copytree(src, repo_path, dirs_exist_ok=True)
     csprojs = sorted(src.rglob("*.csproj"))
     if not csprojs:
         return None
+    shutil.copytree(src, repo_path, dirs_exist_ok=True)
     return repo_path / csprojs[0].relative_to(src)
 
 

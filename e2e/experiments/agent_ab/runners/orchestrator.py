@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 _PATCH_DIR = Path(__file__).resolve().parents[1] / "corpus" / "oracle_patches"
 _EVAL_DIR = Path(__file__).resolve().parents[1] / "corpus" / "evaluator_tests"
+_ALLOW_UNVERIFIED_ENV = "E2E_AB_ALLOW_UNVERIFIED"
 
 
 class ExperimentRunError(RuntimeError):
@@ -39,10 +41,12 @@ class ExperimentRunError(RuntimeError):
 
 
 def _scoring_mode(corpus: list[TaskSpec]) -> str:
-    """Self-describe the artifact: 'build_test_scope' iff any task ships an evaluator test project,
-    else 'build_break_scope' (build-break + scope only). Honest labelling of what the run measured."""
-    if any((_EVAL_DIR / t.task_id).is_dir() for t in corpus):
+    """Self-describe the artifact from the planned tasks' actual evaluator projects."""
+    has_project = [any(((_EVAL_DIR / t.task_id).rglob("*.csproj"))) for t in corpus]
+    if has_project and all(has_project):
         return "build_test_scope"
+    if any(has_project):
+        return "mixed_build_test_scope"
     return "build_break_scope"
 
 
@@ -129,6 +133,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     run_gate.check_gate()  # fail-closed before ANY clone / model call
+    if (args.skip_oracle_preflight or args.skip_graph_preflight) and os.environ.get(_ALLOW_UNVERIFIED_ENV) != "1":
+        raise ExperimentRunError(
+            f"preflight skip requested; set {_ALLOW_UNVERIFIED_ENV}=1 for an explicitly unverified debug run"
+        )
 
     cfg = _config()
     mode = cfg[args.mode]
@@ -136,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
     corpus = loader.load_corpus()
     external = rs.prepare_external_repo()
 
+    preflight_status = {
+        "oracle": "skipped" if args.skip_oracle_preflight else "passed",
+        "graph": "skipped" if args.skip_graph_preflight else "passed",
+    }
     if not args.skip_oracle_preflight:
         preflight.run_oracle_preflight(corpus, external, out_dir=out_dir)
     if not args.skip_graph_preflight:
@@ -168,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
     ab = scorecard.aggregate(outcomes, bootstrap_seed=cfg.get("bootstrap_seed", 0))
     planned_specs = list({spec.task_id: spec for spec, _seed in plan}.values())
     render_report.write_report(ab, out_dir=out_dir / "reports", run_id=args.run_id,
-                               scoring_mode=_scoring_mode(planned_specs))
+                               scoring_mode=_scoring_mode(planned_specs),
+                               preflight_status=preflight_status)
     return 0
 
 

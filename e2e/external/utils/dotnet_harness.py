@@ -36,10 +36,11 @@ def run_build(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
               timeout: int = 600) -> DotNetBuildResult:
     if not dotnet_available():
         return DotNetBuildResult(False, False, False, None, "dotnet SDK not found", 0.0)
+    root = Path(repo_root).resolve()
     start = time.time()
     proc = subprocess.run(
-        ["dotnet", "build", str(Path(repo_root) / sln), "--nologo", "-v", "q"],
-        cwd=str(repo_root), capture_output=True, text=True, timeout=timeout,
+        ["dotnet", "build", str(root / sln), "--nologo", "-v", "q"],
+        cwd=str(root), capture_output=True, text=True, timeout=timeout,
     )
     duration = time.time() - start
     # CS errors usually land on stdout, but some SDK/MSBuild configs forward them to stderr — scan both.
@@ -47,7 +48,7 @@ def run_build(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
     errors = [ln.strip() for ln in output.splitlines() if "error CS" in ln]
     return DotNetBuildResult(
         available=True, ran=True, passed=proc.returncode == 0, exit_code=proc.returncode,
-        error_summary="\n".join(errors[:3]), duration_seconds=round(duration, 2),
+        error_summary="\n".join(errors[:20]), duration_seconds=round(duration, 2),
     )
 
 
@@ -72,11 +73,12 @@ def run_tests(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
     """
     if not dotnet_available():
         return DotNetTestResult(False, False, False, None, "dotnet SDK not found", 0.0)
-    target = str(project) if project is not None else str(Path(repo_root) / sln)
+    root = Path(repo_root).resolve()
+    target = str(project) if project is not None else str(root / sln)
     start = time.time()
     proc = subprocess.run(
         ["dotnet", "test", target, "--nologo", "-v", "q"],
-        cwd=str(repo_root), capture_output=True, text=True, timeout=timeout,
+        cwd=str(root), capture_output=True, text=True, timeout=timeout,
     )
     duration = time.time() - start
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
@@ -84,7 +86,7 @@ def run_tests(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
               if ("error" in ln.lower() or "failed" in ln.lower())]
     return DotNetTestResult(
         available=True, ran=True, passed=proc.returncode == 0, exit_code=proc.returncode,
-        error_summary="\n".join(errors[:5]), duration_seconds=round(duration, 2),
+        error_summary="\n".join(errors[:15]), duration_seconds=round(duration, 2),
     )
 
 
@@ -104,17 +106,18 @@ def run_build_delta(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *
     """
     if not dotnet_available():
         return DotNetBuildResult(False, False, False, None, "dotnet SDK not found", 0.0)
+    root = Path(repo_root).resolve()
     start = time.time()
     proc = subprocess.run(
-        ["dotnet", "build", str(Path(repo_root) / sln), "--nologo", "-v", "q"],
-        cwd=str(repo_root), capture_output=True, text=True, timeout=timeout,
+        ["dotnet", "build", str(root / sln), "--nologo", "-v", "q"],
+        cwd=str(root), capture_output=True, text=True, timeout=timeout,
     )
     duration = time.time() - start
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
     errors = [ln.strip() for ln in output.splitlines() if "error CS" in ln]
-    structured, delta = augment_with_diagnostics(output, repo_root, baseline_keys)
+    structured, delta = augment_with_diagnostics(output, root, baseline_keys)
     return DotNetBuildResult(
         available=True, ran=True, passed=proc.returncode == 0, exit_code=proc.returncode,
-        error_summary="\n".join(errors[:3]), duration_seconds=round(duration, 2),
+        error_summary="\n".join(errors[:20]), duration_seconds=round(duration, 2),
         structured_diagnostics=structured, delta_diagnostics=delta,
     )

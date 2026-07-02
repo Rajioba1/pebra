@@ -135,3 +135,26 @@ def test_not_implemented_still_surfaces_as_programmer_error(tmp_path, monkeypatc
 
     with pytest.raises(NotImplementedError, match="unfinished path"):
         agent_loop.run(_setup(tmp_path), _SPEC, 0, client=BrokenClient(), config=_CFG)
+
+
+def test_diff_capture_includes_untracked_files(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "new.cs").write_text("new")
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
+                       client=ScriptedClient([ModelTurn(text="done")]), config=_CFG)
+    assert r.modified_files == ("new.cs",)
+
+
+def test_max_tokens_tool_use_is_executed_not_dropped(tmp_path, monkeypatch):
+    _no_git(monkeypatch, files=("a.cs",))
+    turn = ModelTurn(
+        tool_calls=[{"id": "1", "name": "write_file", "input": {"path": "a.cs", "content": "x"}}],
+        stop_reason="max_tokens",
+    )
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
+                       client=ScriptedClient([turn, ModelTurn(text="done")]), config=_CFG)
+    assert (tmp_path / "a.cs").read_text() == "x"
+    assert r.tool_calls[0].name == "write_file"
+    assert r.final_stop_reason == "end_turn"
+    assert r.turn_count == 2

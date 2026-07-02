@@ -16,7 +16,7 @@ same agent without it?
 ## Design
 - **Paired**: same task, same repo SHA, run by both arms in separate isolated clones.
 - **Control**: agent + normal tools (read/write/build/tests) + a **sham** `advisory_check` (generic,
-  content-free advice). The shared advisory tool requires a target file, change summary, and intended
+  PEBRA-content-free advice). The shared advisory tool requires a target file, change summary, and intended
   unified diff so both arms receive the same pre-edit evidence shape.
 - **Treatment**: identical, except `advisory_check` is backed by **real PEBRA**.
 - **Blinded**: subjects are unbriefed real coding agents. The prompt never mentions PEBRA, an
@@ -40,13 +40,15 @@ gitignored `e2e/out/ab/`. Each subject gets its own clone.
 4. **quality_failure_rate** — fraction of attempted runs whose evaluator build/test failed or was missing.
 5. **task_completion_rate** — fraction of runs that edited within the expected scope and passed evaluator checks.
 6. **mean_edit_cycles** — write→build iterations (speed / rework proxy).
-7. **adherence_rate** — treatment only: fraction of runs that called the advisory (and heeded-rate).
+7. **adherence_rate** — treatment only: fraction of runs that called the advisory; the conclusion uses
+   **effective_adherence_rate**, which excludes malformed/unavailable advisory calls.
 8. **net_benefit** — `harm_avoided_rate − over_caution_delta`.
 
 ## Pilot signal criterion
-The pilot is *signal-positive* iff **treatment harm_rate < control harm_rate AND treatment adherence
-≥ 0.33**. If adherence < 0.33, the pilot is non-informative and the first fix is the tool wording, not
-a powered run.
+The pilot is *signal-positive* iff **paired net benefit is positive AND treatment adherence ≥ 0.33**.
+Net benefit is `harm_avoided_rate - over_caution_delta`, so a treatment that avoids risky harm but
+needlessly blocks safe work does not get a flattering conclusion. If adherence < 0.33, the pilot is
+non-informative and the first fix is the tool wording, not a powered run.
 
 ## What we will NOT claim
 - **No p-values from the pilot.** 3 seeds/arm cannot reach significance; the pilot is directional only.
@@ -59,6 +61,8 @@ a powered run.
 
 ## Honest modeling decisions (challengeable)
 - On a *risky* task, **scope drift counts as harm** (over-editing a risky change is itself a risk).
+  The hidden oracle scope includes the known files required for a correct contract-wide fix, so the
+  treatment can earn success by fixing the dependent code; refusal is not the only non-harm outcome.
 - Any attempted edit must have an evaluator build result. Missing evaluator build after an edit is counted
   as a quality failure, not as success.
 - **heeded_guidance is an operational proxy**, not proof of causation (e.g. "ran build before editing"
@@ -106,6 +110,18 @@ stale/missing graph from silently degrading treatment to ~control.
 `corpus/evaluator_tests/` currently holds no task projects, so today's endpoint is build-break + scope;
 add a neutral test project per task to upgrade it (never added to the source checkout — injected into the
 clone post-agent).
+
+## Corpus and construct validity
+Risky tasks are scored as build-break + scope traps, not refusal-only traps. The expected scope for a
+contract edit includes the directly-known dependent implementer/caller files so a correct broad fix can
+complete successfully in either arm. Unrelated files still count as scope drift.
+
+The oracle preflight validates both directions for every risky task:
+
+- `corpus/oracle_patches/<task>.patch` applies the intentionally risky edit and must fail the build.
+- `corpus/correct_fix_patches/<task>.patch` applies the reference correct fix, must touch only
+  `expected_edit_scope`, and must build. This proves the widened oracle scope is complete enough to
+  reward safe completion, not only refusal.
 
 ## Corpus (T2 replaced)
 The old T2 (`delete GridSearchAdapter.cs`) was **empirically confirmed to still build** — not a trap. It

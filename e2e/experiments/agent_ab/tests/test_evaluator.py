@@ -84,6 +84,7 @@ def test_injected_dir_without_project_does_not_fabricate_pass(tmp_path):
         repo, "T1", evaluator_dir=ev_dir, build_fn=_build_pass, test_fn=_must_not_run)
     # A dir with no test project = honest no-signal, NOT test_passed=True.
     assert injected is False and test is None and build.passed is True
+    assert not (repo / "notes.md").exists()
 
 
 def test_injected_but_build_fails_skips_tests(tmp_path):

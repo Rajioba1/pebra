@@ -1,9 +1,9 @@
 """Control-arm placebo backing the ``advisory_check`` tool.
 
-Deterministic and content-free: identical generic advisory for ANY input, no decision, no risk
-quantification, and — critically — none of the words a real graph-backed engine would use. Its only
-job is to give the control arm the SAME pre-edit reasoning affordance as treatment, so the measured
-difference is PEBRA's CONTENT, not "having an extra tool". Never imports pebra.
+Deterministic and PEBRA-content-free: identical generic review/build/test advisory for ANY input, no
+decision, no risk quantification, and — critically — none of the words a real graph-backed engine would
+use. Its only job is to give the control arm the SAME pre-edit reasoning affordance as treatment, so
+the measured difference is PEBRA's CONTENT, not "having an extra tool". Never imports pebra.
 
 Invariant (asserted in tests): the output never contains the strings 'graph', 'fan-in', 'percentile',
 'PEBRA', 'CodeGraph', and recommended_decision is always None, risk_level always 'unknown'.

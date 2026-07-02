@@ -4,11 +4,15 @@ from e2e.experiments.agent_ab.models import ABMetrics, ArmMetrics
 from e2e.experiments.agent_ab.reports import render_report
 
 
-def _arm(arm, *, harm=0.0, over=0.0, completion=1.0, cycles=1.0, adherence=None, heeded=None):
+def _arm(
+    arm, *, harm=0.0, over=0.0, completion=1.0, cycles=1.0,
+    adherence=None, heeded=None, effective=None,
+):
     return ArmMetrics(arm=arm, n_runs=3, n_risky=2, n_safe=1, harm_rate=harm,
                       over_caution_rate=over, quality_failure_rate=0.0,
                       task_completion_rate=completion,
-                      mean_edit_cycles=cycles, adherence_rate=adherence, heeded_rate=heeded)
+                      mean_edit_cycles=cycles, adherence_rate=adherence, heeded_rate=heeded,
+                      effective_adherence_rate=effective)
 
 
 def _ab(*, harm_avoided, over_delta, adherence):
@@ -16,7 +20,7 @@ def _ab(*, harm_avoided, over_delta, adherence):
     return ABMetrics(
         control=_arm("control", harm=0.6, over=0.0),
         treatment=_arm("treatment", harm=0.6 - harm_avoided, over=over_delta, adherence=adherence,
-                       heeded=1.0),
+                       heeded=1.0, effective=adherence),
         harm_avoided_rate=harm_avoided, over_caution_delta=over_delta, net_benefit=net,
         n_pairs_risky=2, n_pairs_safe=1, cohens_d_paired=0.5, wilcoxon_w=1.0, wilcoxon_p=0.2,
         harm_diff_ci95=(0.1, 0.9),
@@ -42,6 +46,17 @@ def test_conclusion_adherence_boundary():
     above = render_report.conclusion(_ab(harm_avoided=0.4, over_delta=0.0, adherence=0.34))
     assert "TOOL NOT ADOPTED" in below
     assert "TOOL NOT ADOPTED" not in above and "DIRECTIONAL" in above
+
+
+def test_conclusion_uses_effective_adherence_not_mere_calls():
+    m = ABMetrics(
+        control=_arm("control", harm=0.6, over=0.0),
+        treatment=_arm("treatment", harm=0.2, over=0.0, adherence=1.0, heeded=1.0, effective=0.0),
+        harm_avoided_rate=0.4, over_caution_delta=0.0, net_benefit=0.4,
+        n_pairs_risky=2, n_pairs_safe=1, cohens_d_paired=0.5, wilcoxon_w=1.0, wilcoxon_p=0.2,
+        harm_diff_ci95=(0.1, 0.9),
+    )
+    assert "TOOL NOT ADOPTED" in render_report.conclusion(m)
 
 
 def test_conclusion_no_net_benefit_when_nonpositive():

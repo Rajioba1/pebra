@@ -29,8 +29,9 @@ from e2e.external.utils import repo_source as rs
 
 _CORPUS_DIR = Path(__file__).resolve().parents[1] / "corpus"
 _PATCH_DIR = _CORPUS_DIR / "oracle_patches"
+_CORRECT_PATCH_DIR = _CORPUS_DIR / "correct_fix_patches"
 
-_TRUSTED_RESOLUTION = {"location", "name_fallback"}
+_TRUSTED_RESOLUTION = {"location"}
 
 # Independent graph-validity floor: a freshly-built index that parsed no C# must NOT pass the graph
 # preflight (self-reported freshness can't catch it). avalonia_template indexes ~700 C# callable nodes;
@@ -70,6 +71,40 @@ def _oracle_failure(spec: TaskSpec, build) -> str | None:
     return None
 
 
+def _patch_touched_files(patch_file: Path) -> set[str]:
+    touched: set[str] = set()
+    for line in patch_file.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        for raw in parts[2:4]:
+            path = raw[2:] if raw.startswith(("a/", "b/")) else raw
+            if path != "/dev/null":
+                touched.add(path.replace("\\", "/"))
+    return touched
+
+
+def _correct_fix_scope_failure(spec: TaskSpec, patch_file: Path) -> str | None:
+    touched = _patch_touched_files(patch_file)
+    expected = {p.replace("\\", "/").lstrip("./") for p in spec.expected_edit_scope}
+    outside = sorted(touched - expected)
+    if outside:
+        return f"{spec.task_id}: correct-fix patch touches files outside expected scope: {', '.join(outside)}"
+    if not touched:
+        return f"{spec.task_id}: correct-fix patch touches no files"
+    return None
+
+
+def _correct_fix_failure(spec: TaskSpec, build) -> str | None:
+    if not build.ran:
+        return f"{spec.task_id}: correct-fix build did not run (dotnet SDK absent?)"
+    if not build.passed:
+        return f"{spec.task_id}: correct-fix patch should build, but FAILED: {build.error_summary[:200]}"
+    return None
+
+
 def run_oracle_preflight(
     corpus: list[TaskSpec],
     external: rs.ExternalRepo,
@@ -77,10 +112,17 @@ def run_oracle_preflight(
     out_dir: Path,
     build_fn: Callable[[Path], Any] | None = None,
     patch_dir: Path | None = None,
+    correct_patch_dir: Path | None = None,
 ) -> None:
-    """Apply each task's oracle patch to a fresh clone and assert the build outcome matches the label."""
+    """Apply each task's oracle patch to a fresh clone and assert the build outcome matches the label.
+
+    Risky tasks also need a correct-fix reference patch. That patch must touch only the hidden
+    expected scope and must build, proving the widened scope is complete enough to reward a safe fix
+    rather than only rewarding refusal.
+    """
     build_fn = build_fn or dn.run_build
     patch_dir = patch_dir or _PATCH_DIR
+    correct_patch_dir = correct_patch_dir or _CORRECT_PATCH_DIR
     failures: list[str] = []
     for spec in corpus:
         # Accumulate ALL failures (missing patch / apply failure / label mismatch / infra) — never
@@ -96,6 +138,21 @@ def run_oracle_preflight(
             msg = _oracle_failure(spec, build_fn(repo_path))
             if msg:
                 failures.append(msg)
+            if spec.harm_label == "risky":
+                correct_patch = correct_patch_dir / f"{spec.task_id}.patch"
+                if not correct_patch.exists():
+                    failures.append(f"{spec.task_id}: missing correct-fix patch at {correct_patch}")
+                    continue
+                scope_msg = _correct_fix_scope_failure(spec, correct_patch)
+                if scope_msg:
+                    failures.append(scope_msg)
+                    continue
+                correct_dest = out_dir / "preflight" / f"{spec.task_id}_correct" / "repo"
+                correct_repo = rs.clone_at_recorded_head(external, correct_dest)
+                _apply_patch(correct_patch, correct_repo)
+                fix_msg = _correct_fix_failure(spec, build_fn(correct_repo))
+                if fix_msg:
+                    failures.append(fix_msg)
         except PreflightError as exc:
             failures.append(f"{spec.task_id}: {exc.args[0] if exc.args else exc}")
         except Exception as exc:  # noqa: BLE001 - infra (clone/build) error, recorded not raised mid-loop
@@ -126,7 +183,21 @@ def _graph_backed_failure(spec: TaskSpec, assess_payload: dict[str, Any]) -> str
     if freshness != "fresh":
         return f"{spec.task_id}: graph not fresh (graph_freshness={freshness!r})"
     if resolution not in _TRUSTED_RESOLUTION:
-        return f"{spec.task_id}: target did not resolve on the graph (resolution_method={resolution!r})"
+        return (
+            f"{spec.task_id}: target did not resolve by location on the graph "
+            f"(resolution_method={resolution!r})"
+        )
+    reach = max(
+        int(fanin.get("caller_count") or 0),
+        int(fanin.get("modify_impact_count") or 0),
+        int(fanin.get("modify_transitive_impact_count") or 0),
+    )
+    expected_loss = scores.get("expected_loss")
+    if reach <= 0 or not isinstance(expected_loss, (int, float)) or expected_loss <= 0.0:
+        return (
+            f"{spec.task_id}: fresh graph resolved but did not produce material graph-backed risk "
+            f"(reach={reach}, expected_loss={expected_loss!r})"
+        )
     return None
 
 
