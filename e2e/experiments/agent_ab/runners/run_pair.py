@@ -2,9 +2,10 @@
 
 It prepares both arms identically and blinded: isolated clones at the same SHA, the SAME
 ``advisory_check`` tool name in both (only the backend differs), an identical task prompt with no arm
-identifier, and a recorded baseline build. ``_invoke_subject_agent`` is still gated and non-live:
-the run gate must be explicitly opened, and ``AnthropicClient.send`` raises ``NotImplementedError``
-until the Phase-G live client is ratified.
+identifier, and a recorded baseline build. ``_invoke_subject_agent`` is GATED: it calls
+``run_gate.check_gate()`` first and only then drives the (now-live, Phase G) ``AnthropicClient``. The
+old ``NotImplementedError`` stop is gone, so the fail-closed run gate is the SOLE guard - nothing
+in-tree sets E2E_AB_RUN, and the gate-pin test asserts it raises when the gate is shut.
 
 Never mutates the source checkout (repo_source clones into gitignored e2e/out/). No ``import pebra``.
 """
@@ -64,14 +65,14 @@ def _build_subject_prompt(spec: TaskSpec, repo_path: Path) -> str:
 
 def _arm_token(arm: str, run_id: str) -> str:
     """Opaque, deterministic per-arm directory token. The arm NAME must never appear in any path or
-    text the subject can see (the prompt interpolates repo_path) — a bare 'treatment'/'control' in the
+    text the subject can see (the prompt interpolates repo_path) - a bare 'treatment'/'control' in the
     path would unblind the trial. The arm is tracked in code (ArmSetup.arm), never on disk."""
     return hashlib.sha256(f"{arm}:{run_id}".encode()).hexdigest()[:12]
 
 
 def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, run_id: str) -> ArmSetup:
     """Clone an isolated worktree for one arm and prepare everything up to the agent call. No agent run."""
-    # Arm-NEUTRAL path: an opaque hash token, not the arm name — so nothing the agent sees reveals its arm.
+    # Arm-NEUTRAL path: an opaque hash token, not the arm name - so nothing the agent sees reveals its arm.
     dest = _AB_OUT / run_id / f"{spec.task_id}_seed{seed}_{_arm_token(arm, run_id)}" / "repo"
     repo_path = rs.clone_at_recorded_head(external, dest)
     db_path = dest.parent / "pebra.db"
@@ -96,10 +97,10 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
     """Drive a real, blinded coding subagent through the instrumented tool boundary, then run the
     HIDDEN evaluator (inject tests post-agent, build + test) to fill the build/test outcome fields.
 
-    Fail-closed: the run gate (E2E_AB_RUN=1 AND E2E_EXTERNAL=1 AND ANTHROPIC_API_KEY) is checked FIRST.
-    ``AnthropicClient.send`` is a Phase-G stop (raises) until the live slice is ratified, so this path
-    cannot actually contact an LLM yet. Imports are inline to keep the foundation importable without
-    the anthropic SDK."""
+    Fail-closed: the run gate (E2E_AB_RUN=1 AND E2E_EXTERNAL=1 AND ANTHROPIC_API_KEY) is checked FIRST,
+    and it is the SOLE guard - ``AnthropicClient.send`` is now live (Phase G), so nothing but the gate
+    stands between this path and a real LLM call. Nothing in-tree opens the gate. Imports are inline to
+    keep the foundation importable without the anthropic SDK."""
     from e2e.experiments.agent_ab.runners import agent_loop, evaluator, run_gate  # noqa: PLC0415
     from e2e.experiments.agent_ab.runners.model_client import AnthropicClient  # noqa: PLC0415
     import os  # noqa: PLC0415
@@ -129,7 +130,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
 
 
 def run_pair(spec: TaskSpec, seed: int, run_id: str) -> tuple[SubjectResult, SubjectResult]:
-    """Prepare both arms and (would) run the paired trial. Raises at the seam until the runner exists."""
+    """Prepare both arms and run the paired trial through the gated subject-agent seam."""
     external = rs.prepare_external_repo()
     control = prepare_arm(external, spec, models.ARM_CONTROL, seed, run_id)
     treatment = prepare_arm(external, spec, models.ARM_TREATMENT, seed, run_id)

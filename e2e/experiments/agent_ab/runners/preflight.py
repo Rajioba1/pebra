@@ -32,9 +32,21 @@ _PATCH_DIR = _CORPUS_DIR / "oracle_patches"
 
 _TRUSTED_RESOLUTION = {"location", "name_fallback"}
 
+# Independent graph-validity floor: a freshly-built index that parsed no C# must NOT pass the graph
+# preflight (self-reported freshness can't catch it). avalonia_template indexes ~700 C# callable nodes;
+# 50 is a conservative floor that a real index clears easily but an empty/broken one cannot.
+_MIN_CSHARP_NODES = 50
+
 
 class PreflightError(RuntimeError):
     """A pre-flight integrity gate failed; the experiment must not run."""
+
+
+def _live_node_counts(repo_path: Path) -> dict[str, Any]:
+    """Live default for the graph node-count check: `pebra graph-stats --json` via cli_harness
+    (subprocess, no pebra import). Injected with a fake in unit tests."""
+    from e2e.utils import cli_harness  # noqa: PLC0415 - lazy; keeps unit tests import-light
+    return cli_harness.graph_node_counts(repo_root=repo_path)
 
 
 # ---- oracle-outcome preflight -----------------------------------------------------------------
@@ -101,11 +113,11 @@ def _graph_backed_failure(spec: TaskSpec, assess_payload: dict[str, Any]) -> str
     Requires the symbol/file fan-in evidence to be fresh and resolved — i.e. PEBRA's advisory for this
     target was produced from real graph evidence, not degraded/untrusted fallback.
 
-    RESIDUAL GAP (honest): these are PEBRA's SELF-REPORTED freshness/resolution fields. A truly
-    independent check — e.g. asserting the indexed C# node count exceeds a floor to catch a graph that
-    was 'freshly' built but picked up no nodes — is not possible today: the assess payload carries no
-    repo-wide node count and there is no pebra CLI that reports one. If such a CLI is added, assert its
-    node count here. We do NOT fabricate a count. The resolution guard is the partial mitigation."""
+    These are PEBRA's self-reported freshness/resolution fields for THIS target. They are paired with an
+    INDEPENDENT graph-validity check in ``run_graph_preflight`` — a repo-wide C# node-count floor (via
+    ``pebra graph-stats``) — which catches a 'freshly' built index that actually parsed no nodes and
+    could otherwise name-fallback-resolve while reporting fresh. Together: target resolves fresh AND the
+    graph demonstrably contains real C# nodes."""
     scores = assess_payload.get("scores") or {}
     sse = scores.get("symbol_scope_evidence") or {}
     fanin = sse.get("symbol_fanin") or {}
@@ -125,12 +137,16 @@ def run_graph_preflight(
     out_dir: Path,
     assess_fn: Callable[[Path, TaskSpec], dict[str, Any]],
     setup_graph_fn: Callable[[Path], None] | None = None,
+    node_count_fn: Callable[[Path], dict[str, Any]] | None = None,
 ) -> None:
     """Prove each task's target resolves on a fresh CodeGraph and yields graph-backed assess evidence.
 
     ``assess_fn(repo_path, spec)`` returns the treatment assess payload for the task's target; injectable
     so this is unit-testable with a fake payload. ``setup_graph_fn`` indexes the clone (defaults to the
-    cli_harness setup-graph in the live path)."""
+    cli_harness setup-graph in the live path). ``node_count_fn`` returns repo-wide CodeGraph node counts
+    (defaults to ``pebra graph-stats`` via cli_harness) for the INDEPENDENT validity check: it asserts
+    the index actually contains C# callable nodes, catching a 'fresh' but empty index."""
+    node_count_fn = node_count_fn or _live_node_counts
     failures: list[str] = []
     for spec in corpus:
         if spec.harm_label != "risky":
@@ -142,6 +158,15 @@ def run_graph_preflight(
             repo_path = rs.clone_at_recorded_head(external, dest)
             if setup_graph_fn is not None:
                 setup_graph_fn(repo_path)
+            # Independent validity FIRST: a 'fresh' index that parsed no C# is not a real intervention.
+            counts = node_count_fn(repo_path)
+            cs_nodes = int(counts.get("csharp_callable", 0))
+            if cs_nodes < _MIN_CSHARP_NODES:
+                failures.append(
+                    f"{spec.task_id}: CodeGraph has {cs_nodes} C# callable nodes "
+                    f"(< {_MIN_CSHARP_NODES}); index is empty/degraded despite freshness self-report"
+                )
+                continue
             msg = _graph_backed_failure(spec, assess_fn(repo_path, spec))
             if msg:
                 failures.append(msg)

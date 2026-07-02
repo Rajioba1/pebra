@@ -96,6 +96,7 @@ class RunOutcome:
     blinding_leak: bool
     blinding_terms: tuple[str, ...]
     timed_out: bool
+    error: str | None = None            # non-None => run failed (e.g. live client error); excluded from metrics
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------
@@ -114,6 +115,7 @@ class ArmMetrics:
     mean_edit_cycles: float
     adherence_rate: float | None        # treatment only: advisory_called / n_runs
     heeded_rate: float | None           # treatment only: heeded / advisory_called
+    error_run_count: int = 0            # runs excluded due to SubjectResult.error (e.g. live client failure)
 
 
 @dataclass(frozen=True)

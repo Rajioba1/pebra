@@ -8,6 +8,7 @@ from typing import Sequence
 from pebra.cli import accept_risk as accept_risk_cmd
 from pebra.cli import assess as assess_cmd
 from pebra.cli import dashboard as dashboard_cmd
+from pebra.cli import graph_stats as graph_stats_cmd
 from pebra.cli import learn as learn_cmd
 from pebra.cli import promote as promote_cmd
 from pebra.cli import record_outcome as record_outcome_cmd
@@ -28,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     scorecard_cmd.register(subparsers)
     dashboard_cmd.register(subparsers)
     setup_graph_cmd.register(subparsers)
+    graph_stats_cmd.register(subparsers)
     return parser
 
 

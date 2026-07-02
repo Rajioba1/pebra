@@ -1,6 +1,7 @@
 """Pin the fail-closed gate INSIDE the agent-invocation path. This guards the safety check across
-refactors: if the check_gate() call at the top of _invoke_subject_agent were removed, these fail — and
-that matters most once Phase G removes the AnthropicClient.send NotImplementedError stop."""
+refactors: if the check_gate() call at the top of _invoke_subject_agent were removed, these fail. Now
+that Phase G has removed the AnthropicClient.send NotImplementedError stop, the gate is the SOLE guard,
+so this pin is the last line of defence against an accidental live run."""
 
 from __future__ import annotations
 

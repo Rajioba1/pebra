@@ -1,8 +1,11 @@
 # PEBRA agent-A/B efficacy experiment (pre-registration)
 
-**STATUS: runner built, live client stopped.** The real coding-agent runner is wired behind a run gate,
-but `AnthropicClient.send` raises `NotImplementedError` until Phase G is ratified. **The experiment is NOT
-yet runnable live.** This directory is a gated/manual/nightly *experiment* — not production, and not a
+**STATUS: run-ready (Phase G), not yet triggered.** The real coding-agent runner is complete and
+`AnthropicClient.send` is now LIVE — the `NotImplementedError` stop is gone. The **only** guard against
+a run is the fail-closed run gate (`E2E_AB_RUN=1` + `E2E_EXTERNAL=1` + `ANTHROPIC_API_KEY`), and nothing
+in-tree opens it, so the experiment does not run under ordinary CI or by accident. Current endpoint is
+**build-break + scope** (`build_break_scope`) until per-task evaluator test projects are authored — see
+below. This directory is a gated/manual/nightly *experiment* — not production, and not a
 settled deterministic benchmark. It is a **paired, blinded pilot trial**, and it is pre-registered
 below so results cannot be reinterpreted after the fact.
 
@@ -69,17 +72,20 @@ a powered run.
 - `metrics/` — `oracle.py`, `adherence.py`, `blinding.py`, `scorecard.py` (all pure; the trusted ruler).
 - `reports/render_report.py` — scorecard markdown/json.
 - `runners/` — `run_gate` (fail-closed gate), `model_client` (Protocol + ScriptedClient + AnthropicClient
-  **Phase-G stop**), `tool_impl` (7 confined tools + path guard), `agent_loop` (turn loop, capture,
+  **live, Phase G**), `tool_impl` (7 confined tools + path guard), `agent_loop` (turn loop, capture,
   limits, blinding pre-send check), `evaluator` (post-agent hidden-test injection + build/test),
   `preflight` (oracle-label + graph-freshness gates), `orchestrator` (gated task×arm×seed loop),
   `run_pair` (arm setup + the loop, run only under the gate).
 - `tests/` — TDD for every deterministic module (all via ScriptedClient/mock; no LLM, no dotnet).
 
 ## Runner status (this slice)
-The real-agent runner is BUILT but **not runnable yet**: `AnthropicClient.send` raises
-`NotImplementedError("Phase G — live client; ratify before enabling")`, and the path is behind a
-fail-closed gate (`E2E_AB_RUN=1` AND `E2E_EXTERNAL=1` AND `ANTHROPIC_API_KEY`). The deterministic loop is
-fully exercised by `ScriptedClient`. Enabling the live client is a separate ratified step.
+The real-agent runner is COMPLETE and `AnthropicClient.send` is LIVE (Phase G). The `NotImplementedError`
+stop is gone, so the **fail-closed run gate** (`E2E_AB_RUN=1` AND `E2E_EXTERNAL=1` AND `ANTHROPIC_API_KEY`)
+is the **sole** guard against a run, and nothing in-tree opens it. The deterministic loop is still fully
+exercised by `ScriptedClient` (tests never call the live API). A bad/absent key is caught two ways: the
+gate requires a non-empty key, and any run that still errors is captured to `SubjectResult.error`,
+**excluded from the scorecard**, and the orchestrator **fails fast** on it (so a misconfigured key can't
+silently produce a null pilot). Triggering an actual run remains a manual, explicit step.
 
 **Blinding pre-send scan (scope):** the fail-closed check scans only harness-authored strings — the
 subject prompt and the advisory tool's OUTPUT — never the agent's file reads/lists/searches. Repo content

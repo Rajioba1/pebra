@@ -179,9 +179,9 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
     except BlindingViolationError:
         raise  # not caught: a blinding violation aborts the run loudly
     except NotImplementedError:
-        raise  # Phase-G live-client stop: do not downgrade into an ordinary errored run
-    except Exception as exc:  # noqa: BLE001 - capture any runtime error into the result, don't crash the batch
-        error = f"{type(exc).__name__}: {exc}"
+        raise  # a genuine unimplemented path is a programmer error — surface it, don't mask as errored
+    except Exception as exc:  # noqa: BLE001 - a live client/API error (auth/rate/network) is captured
+        error = f"{type(exc).__name__}: {exc}"  # into the result so one run's failure doesn't crash the batch
 
     modified = _git_diff_name_only(setup.repo_path)
     return SubjectResult(

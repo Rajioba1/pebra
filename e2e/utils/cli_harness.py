@@ -125,6 +125,12 @@ def setup_graph(*, repo_root: Path | str) -> None:
     _run(["setup-graph", "--fix", "--repo-root", str(repo_root)])
 
 
+def graph_node_counts(*, repo_root: Path | str) -> dict:
+    """`pebra graph-stats --json` → {total, callable, csharp_callable}. Used by the A/B graph preflight
+    for an independent graph-validity check (a 'fresh' index that indexed no nodes is a real failure)."""
+    return _run_json(["graph-stats", "--json", "--repo-root", str(repo_root)])
+
+
 def dashboard_proc(*, repo_root: Path | str, db: Path | str, port: int = 0) -> subprocess.Popen:
     """Start ``pebra dashboard`` as a long-running process. The caller reads stdout for the URL line and
     is responsible for teardown (see dashboard_harness)."""

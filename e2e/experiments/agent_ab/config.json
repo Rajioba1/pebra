@@ -1,5 +1,5 @@
 {
-  "status": "runner built + gated; AnthropicClient.send is a Phase-G stop; NOT runnable until the live client is ratified (needs E2E_AB_RUN=1 + E2E_EXTERNAL=1 + ANTHROPIC_API_KEY)",
+  "status": "runner built + gated; AnthropicClient.send is LIVE (Phase G) - the NotImplementedError stop is gone, so the fail-closed run gate (E2E_AB_RUN=1 + E2E_EXTERNAL=1 + ANTHROPIC_API_KEY) is the SOLE guard and nothing in-tree opens it. Endpoint = build_break_scope until per-task evaluator test projects are authored.",
   "subject": {
     "model": "claude-sonnet-4-6",
     "max_tool_calls_per_run": 50,

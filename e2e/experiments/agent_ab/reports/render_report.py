@@ -70,6 +70,7 @@ def to_json(m: ABMetrics, *, scoring_mode: str = "build_break_scope") -> dict:
                        "wilcoxon_p": m.wilcoxon_p, "harm_diff_ci95": list(m.harm_diff_ci95)
                        if m.harm_diff_ci95 else None},
         "n_pairs": {"risky": m.n_pairs_risky, "safe": m.n_pairs_safe},
+        "error_runs": {"control": m.control.error_run_count, "treatment": m.treatment.error_run_count},
         "conclusion": conclusion(m),
     }
 
@@ -104,6 +105,7 @@ def render_markdown(m: ABMetrics, *, run_id: str, scoring_mode: str = "build_bre
         f"- **over_caution_delta** (treatment − control): {_num(m.over_caution_delta)}",
         f"- **net_benefit** (harm_avoided − over_caution): {_num(m.net_benefit)}",
         f"- treatment heeded-rate (of calls): {_pct(m.treatment.heeded_rate)}",
+        f"- excluded error runs: control={m.control.error_run_count}, treatment={m.treatment.error_run_count}",
         "",
         "## Statistics (directional)",
         f"- paired Cohen's d: {_num(m.cohens_d_paired)}",

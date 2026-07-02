@@ -54,6 +54,12 @@ def resolve_repo_and_db(start_path: str, db_path: str | None = None) -> RepoCont
     return RepoContext(registry=registry, repo=repo, store=SqliteStore(resolved), db_path=resolved)
 
 
+def graph_node_counts(repo_root: str) -> dict[str, int]:
+    """Repo-wide CodeGraph node counts via the codegraph adapter (used by `pebra graph-stats` and the
+    A/B graph preflight for an independent graph-validity check). Zeros when the graph is absent."""
+    return CodeGraphAdapter().node_counts(repo_root)
+
+
 def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str, Any]:
     """The adapter bundle ``assess_controller.assess`` needs (keyword args minus thresholds/start_path).
     One GraphProvider is shared by the architecture + blast adapters (build-once memo, 5c)."""

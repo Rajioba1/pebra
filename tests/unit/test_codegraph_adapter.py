@@ -106,6 +106,38 @@ def _adapter(status=FRESH):
     return cga.CodeGraphAdapter(status_fn=lambda repo_root: status)
 
 
+def test_node_counts_counts_callable_and_csharp(tmp_path):
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir(parents=True)
+    db = cg_dir / "codegraph.db"
+    _make_db(db)
+    con = sqlite3.connect(str(db))
+    _node(con, "cls:A", "class", "A", "A", "src/A.cs", 1, 9)          # C# callable
+    _node(con, "iface:I", "interface", "I", "I", "src/I.cs", 1, 5)    # C# callable
+    _node(con, "fn:p", "function", "p", "p", "src/p.py", 1, 3)        # callable, not C#
+    _node(con, "fld:x", "field", "x", "A::x", "src/A.cs", 2, 2)       # C#, NOT callable
+    con.commit()
+    con.close()
+    counts = _adapter().node_counts(str(tmp_path))
+    assert counts == {"total": 4, "callable": 3, "csharp_callable": 2}
+
+
+def test_node_counts_zero_when_graph_absent(tmp_path):
+    # no codegraph status (CLI/index absent) -> honest zeros, never fabricated
+    counts = cga.CodeGraphAdapter(status_fn=lambda r: None).node_counts(str(tmp_path))
+    assert counts == {"total": 0, "callable": 0, "csharp_callable": 0}
+
+
+def test_node_counts_zero_when_schema_below_v5(tmp_path):
+    # a pre-v5 index must fail-soft to honest zeros (mirror of fanin's schema guard) rather than run
+    # COUNT() against an old/foreign layout and report misleading numbers to the graph preflight.
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir(parents=True)
+    _make_db(cg_dir / "codegraph.db", schema_version=4)
+    counts = _adapter().node_counts(str(tmp_path))
+    assert counts == {"total": 0, "callable": 0, "csharp_callable": 0}
+
+
 def _assert_empty_graph_context(ev) -> None:
     assert ev.owner_kinds == ()
     assert ev.max_owner_span_lines == 0

@@ -1,5 +1,4 @@
-"""Nox sessions (Architecture §4.4). `tests`, `lint`, and a `core-only` session that asserts the
-engine imports with zero adapters present."""
+"""Nox sessions for tests, lint, benchmarks, e2e lanes, MCP smoke, and core-only import checks."""
 
 from __future__ import annotations
 

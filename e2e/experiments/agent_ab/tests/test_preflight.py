@@ -109,6 +109,31 @@ def test_graph_preflight_accumulates_infra_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _boom)
     with pytest.raises(preflight.PreflightError) as ei:
         preflight.run_graph_preflight([_TRAP, trap2], None, out_dir=tmp_path,
-                                      assess_fn=lambda rp, sp: {}, setup_graph_fn=None)
+                                      assess_fn=lambda rp, sp: {}, setup_graph_fn=None,
+                                      node_count_fn=lambda p: {"csharp_callable": 999})
     msg = str(ei.value)
     assert "T1" in msg and "T2" in msg and "infrastructure error" in msg
+
+
+# ---- independent graph-validity (node-count) check ----
+
+def _fresh_payload(rp, sp):
+    return _payload("fresh", "location")
+
+
+def test_graph_preflight_fails_on_low_node_count(tmp_path, monkeypatch):
+    # a 'fresh' index that parsed almost no C# must be flagged even though freshness/resolution pass
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
+    with pytest.raises(preflight.PreflightError) as ei:
+        preflight.run_graph_preflight([_TRAP], None, out_dir=tmp_path,
+                                      assess_fn=_fresh_payload, setup_graph_fn=None,
+                                      node_count_fn=lambda p: {"csharp_callable": 3})
+    assert "C# callable nodes" in str(ei.value) and "T1" in str(ei.value)
+
+
+def test_graph_preflight_passes_with_enough_nodes_and_fresh(tmp_path, monkeypatch):
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
+    # enough C# nodes AND a fresh/resolved target -> no PreflightError raised
+    preflight.run_graph_preflight([_TRAP], None, out_dir=tmp_path,
+                                  assess_fn=_fresh_payload, setup_graph_fn=None,
+                                  node_count_fn=lambda p: {"csharp_callable": 700})

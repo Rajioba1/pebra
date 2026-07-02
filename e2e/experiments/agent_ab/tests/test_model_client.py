@@ -1,4 +1,5 @@
-"""ScriptedClient replays deterministically; AnthropicClient.send is a Phase-G stop; SDK import lazy."""
+"""ScriptedClient replays deterministically; the Anthropic response->ModelTurn mapping is pure and
+unit-tested with a fake response (no network, no SDK); SDK import stays lazy."""
 
 from __future__ import annotations
 
@@ -29,10 +30,47 @@ def test_model_turn_defaults():
     assert t.text is None and t.tool_calls == [] and t.stop_reason == "end_turn"
 
 
-def test_anthropic_send_is_phase_g_stop():
+class _Block:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _Resp:
+    def __init__(self, content, stop_reason):
+        self.content = content
+        self.stop_reason = stop_reason
+
+
+def test_response_to_turn_maps_text_and_tool_use():
+    resp = _Resp(
+        content=[
+            _Block(type="text", text="thinking"),
+            _Block(type="tool_use", id="tu_1", name="advisory_check", input={"target_file": "a.cs"}),
+        ],
+        stop_reason="tool_use",
+    )
+    turn = mc._response_to_turn(resp)
+    assert turn.text == "thinking"
+    assert turn.tool_calls == [{"id": "tu_1", "name": "advisory_check", "input": {"target_file": "a.cs"}}]
+    assert turn.stop_reason == "tool_use"
+
+
+def test_response_to_turn_joins_text_and_defaults_empty():
+    resp = _Resp(content=[_Block(type="text", text="a"), _Block(type="text", text="b")],
+                 stop_reason="end_turn")
+    turn = mc._response_to_turn(resp)
+    assert turn.text == "a\nb" and turn.tool_calls == []
+
+
+def test_response_to_turn_no_content_is_none_text_and_stop_fallback():
+    turn = mc._response_to_turn(_Resp(content=[], stop_reason=None))
+    assert turn.text is None and turn.tool_calls == [] and turn.stop_reason == "end_turn"
+
+
+def test_anthropic_client_ctor_builds_no_sdk_client():
+    # constructing the client must not import the SDK or open a connection (lazy on first send)
     client = mc.AnthropicClient(model="claude-sonnet-4-6", api_key="sk-test")
-    with pytest.raises(NotImplementedError, match="Phase G"):
-        client.send([], [], "sys", max_tokens=10)
+    assert client._client is None
 
 
 def test_module_imports_without_sdk():

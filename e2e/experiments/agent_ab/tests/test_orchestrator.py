@@ -99,6 +99,23 @@ def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):
     assert (tmp_path / "t1" / "reports" / "ab_t1.md").exists()  # still renders from loaded outcomes
 
 
+def test_main_fails_fast_on_errored_run(monkeypatch, tmp_path):
+    # A live-client error captured into SubjectResult.error must abort, not be silently scored.
+    def _erroring_pair(spec, seed, run_id):
+        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed,
+                              error="AuthenticationError: invalid x-api-key"),
+                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+
+    _wire(monkeypatch, tmp_path, [_T1], _erroring_pair)
+    try:
+        orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
+    except orchestrator.ExperimentRunError as exc:
+        assert "invalid x-api-key" in str(exc)
+    else:
+        raise AssertionError("errored run must fail-fast, not be silently scored")
+    assert not (tmp_path / "t1" / "outcomes.json").exists()  # aborted pair not written
+
+
 def test_scoring_mode_build_break_when_no_evaluator_tests():
     # No corpus/evaluator_tests/<id>/ dirs exist for these -> build_break_scope.
     assert orchestrator._scoring_mode([_T1, _B1]) == "build_break_scope"

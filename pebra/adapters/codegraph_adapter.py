@@ -213,6 +213,41 @@ class CodeGraphAdapter:
         self._dist_cache: dict[tuple[str, float], list[int]] = {}
         self._impact_dist_cache: dict[tuple[str, float], list[int]] = {}
 
+    def node_counts(self, repo_root: str) -> dict[str, int]:
+        """Repo-wide CodeGraph node counts for an INDEPENDENT graph-validity check (used by the A/B
+        graph preflight to catch a 'fresh' index that actually picked up no nodes). Returns
+        ``{"total","callable","csharp_callable"}`` — all 0 when the graph is absent / uninitialized /
+        unreadable / below the min schema. Honest zeros, never fabricated. Read-only; never mutates."""
+        zero = {"total": 0, "callable": 0, "csharp_callable": 0}
+        status = self._status_fn(repo_root)
+        if status is None or status.get("initialized") is False:
+            return zero
+        db_path = _db_path_from_status(repo_root, status)
+        if not db_path.is_file():
+            return zero
+        try:
+            con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        except (sqlite3.Error, OSError, ValueError):
+            return zero
+        con.row_factory = sqlite3.Row  # _schema_version reads row["v"]
+        try:
+            if self._schema_version(con) < _MIN_SCHEMA_VERSION:
+                return zero
+            ph = ",".join("?" * len(_CALLABLE_KINDS))
+            total = con.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+            callable_ = con.execute(
+                f"SELECT COUNT(*) FROM nodes WHERE kind IN ({ph})", _CALLABLE_KINDS
+            ).fetchone()[0]
+            csharp = con.execute(
+                f"SELECT COUNT(*) FROM nodes WHERE kind IN ({ph}) AND lower(file_path) LIKE '%.cs'",
+                _CALLABLE_KINDS,
+            ).fetchone()[0]
+            return {"total": int(total), "callable": int(callable_), "csharp_callable": int(csharp)}
+        except sqlite3.Error:
+            return zero
+        finally:
+            con.close()
+
     def fanin(self, action: CandidateAction, repo_root: str) -> FanInEvidence:
         status = self._status_fn(repo_root)
         if status is None:

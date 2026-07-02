@@ -111,12 +111,27 @@ def test_write_traversal_result_is_error_run_continues(tmp_path, monkeypatch):
     assert "error" in r.tool_calls[0].result and r.error is None
 
 
-def test_not_implemented_model_client_is_hard_stop(tmp_path, monkeypatch):
+def test_live_client_error_is_captured_into_result_not_crash(tmp_path, monkeypatch):
+    # a live client/API failure (auth/rate/network) must be captured into SubjectResult.error and the
+    # run returned as errored — NOT crash the batch (one bad run shouldn't abort the whole pilot).
     _no_git(monkeypatch)
 
-    class StoppedClient:
+    class FailingClient:
         def send(self, *_a, **_k):
-            raise NotImplementedError("Phase G")
+            raise RuntimeError("model call failed")
 
-    with pytest.raises(NotImplementedError, match="Phase G"):
-        agent_loop.run(_setup(tmp_path), _SPEC, 0, client=StoppedClient(), config=_CFG)
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0, client=FailingClient(), config=_CFG)
+    assert r.error is not None and "model call failed" in r.error
+
+
+def test_not_implemented_still_surfaces_as_programmer_error(tmp_path, monkeypatch):
+    # NotImplementedError is a programmer error, not a run-time API failure: it must propagate, not be
+    # masked into an errored run.
+    _no_git(monkeypatch)
+
+    class BrokenClient:
+        def send(self, *_a, **_k):
+            raise NotImplementedError("unfinished path")
+
+    with pytest.raises(NotImplementedError, match="unfinished path"):
+        agent_loop.run(_setup(tmp_path), _SPEC, 0, client=BrokenClient(), config=_CFG)

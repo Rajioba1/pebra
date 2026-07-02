@@ -31,6 +31,13 @@ _PATCH_DIR = Path(__file__).resolve().parents[1] / "corpus" / "oracle_patches"
 _EVAL_DIR = Path(__file__).resolve().parents[1] / "corpus" / "evaluator_tests"
 
 
+class ExperimentRunError(RuntimeError):
+    """A subject run returned an error (e.g. a live-client auth/rate failure). We FAIL-FAST rather than
+    score it: a systematic misconfiguration (bad API key) errors on the very first run, so stopping
+    avoids silently scoring a whole batch of no-op error runs as a valid null result. The incremental
+    resume means fixing the cause and re-running only redoes the aborted (and any unstarted) pair."""
+
+
 def _scoring_mode(corpus: list[TaskSpec]) -> str:
     """Self-describe the artifact: 'build_test_scope' iff any task ships an evaluator test project,
     else 'build_break_scope' (build-break + scope only). Honest labelling of what the run measured."""
@@ -134,7 +141,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.skip_graph_preflight:
         preflight.run_graph_preflight(corpus, external, out_dir=out_dir,
                                       assess_fn=_live_assess_fn,
-                                      setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p))
+                                      setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
+                                      node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p))
 
     outcomes_path = out_dir / "outcomes.json"
     completed = _completed_pairs(_load_existing_outcomes(outcomes_path))
@@ -147,6 +155,12 @@ def main(argv: list[str] | None = None) -> int:
         if (spec.task_id, seed) in completed:
             continue  # resume: this pair already has both arms recorded
         control, treatment = run_pair.run_pair(spec, seed, args.run_id)
+        for res in (control, treatment):
+            if res.error:
+                raise ExperimentRunError(
+                    f"{res.arm} run for {spec.task_id} seed {seed} errored: {res.error}. "
+                    "Fix the cause (e.g. ANTHROPIC_API_KEY) and re-run — resume skips completed pairs."
+                )
         outcomes.append(oracle.score_run(control, spec))
         outcomes.append(oracle.score_run(treatment, spec))
         _write_outcomes(outcomes_path, outcomes, args.run_id)  # incremental / crash-survivable
