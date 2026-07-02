@@ -118,3 +118,36 @@ contract-break trap invisible from the interface file alone). Oracle patches for
 ```
 python -m pytest e2e/experiments/agent_ab/tests -q
 ```
+
+## Running the gated pilot (real agents)
+
+This is the live A/B experiment. It runs the gated preflight first (oracle labels +
+fresh graph evidence + C# node-count check), then runs the paired pilot. It needs
+CodeGraph on `PATH`, `dotnet`, a local checkout of the external repo, and a valid
+Anthropic API key.
+
+PowerShell:
+
+```powershell
+$env:E2E_AB_RUN="1"
+$env:E2E_EXTERNAL="1"
+$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\Users\RajLord_new\Desktop\avalonia_template"
+$env:ANTHROPIC_API_KEY="sk-..."
+$env:E2E_AB_MODE="pilot"        # optional; default: pilot
+$env:E2E_AB_RUN_ID="pilot_001"  # optional; default: run_<mode>
+nox -s e2e-ab
+```
+
+Bash:
+
+```bash
+E2E_AB_RUN=1 E2E_EXTERNAL=1 \
+E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/avalonia_template \
+ANTHROPIC_API_KEY=sk-... \
+E2E_AB_MODE=pilot \
+E2E_AB_RUN_ID=pilot_001 \
+nox -s e2e-ab
+```
+
+`E2E_AB_MODE=powered` runs the larger configured mode. The run writes local
+artifacts under `e2e/out/ab/<run-id>/`, which is ignored by git.

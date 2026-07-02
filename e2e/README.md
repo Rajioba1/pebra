@@ -49,6 +49,15 @@ Dashboard screenshot lane:
 nox -s e2e-ui
 ```
 
+Blinded agent A/B experiment (real agents, gated/manual only):
+
+```powershell
+nox -s e2e-ab
+```
+
+See `e2e/experiments/agent_ab/README.md` for the required environment variables
+and the full pilot recipe.
+
 ## Artifacts
 
 Generated local artifacts go under `e2e/out/` and are ignored by git:
