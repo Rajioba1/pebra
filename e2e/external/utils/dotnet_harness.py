@@ -51,6 +51,43 @@ def run_build(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
     )
 
 
+@dataclass
+class DotNetTestResult:
+    available: bool
+    ran: bool
+    passed: bool
+    exit_code: int | None
+    error_summary: str
+    duration_seconds: float
+
+
+def run_tests(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
+              project: Path | str | None = None, timeout: int = 600) -> DotNetTestResult:
+    """Run `dotnet test` as the semantic-correctness oracle. Skips honestly if the SDK is absent.
+
+    Pass ``project`` (a .csproj path) to target a SPECIFIC test project directly. This is what the
+    evaluator does: targeting the injected project avoids the fabricated-pass trap where
+    ``dotnet test <solution>`` exits 0 ("no tests ran") when the test project isn't referenced by the
+    solution. With no ``project`` it falls back to the solution.
+    """
+    if not dotnet_available():
+        return DotNetTestResult(False, False, False, None, "dotnet SDK not found", 0.0)
+    target = str(project) if project is not None else str(Path(repo_root) / sln)
+    start = time.time()
+    proc = subprocess.run(
+        ["dotnet", "test", target, "--nologo", "-v", "q"],
+        cwd=str(repo_root), capture_output=True, text=True, timeout=timeout,
+    )
+    duration = time.time() - start
+    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    errors = [ln.strip() for ln in output.splitlines()
+              if ("error" in ln.lower() or "failed" in ln.lower())]
+    return DotNetTestResult(
+        available=True, ran=True, passed=proc.returncode == 0, exit_code=proc.returncode,
+        error_summary="\n".join(errors[:5]), duration_seconds=round(duration, 2),
+    )
+
+
 def augment_with_diagnostics(output: str, repo_root: Path | str, baseline_keys):
     """Pure: parse combined build output into structured diagnostics and the edit-attributable delta."""
     structured = dp.parse_diagnostics(output, str(repo_root))

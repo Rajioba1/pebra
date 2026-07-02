@@ -1,0 +1,21 @@
+diff --git a/src/TemplateBlueprint.Core/Services/CsvImportService.cs b/src/TemplateBlueprint.Core/Services/CsvImportService.cs
+index 57ee584..cfd3960 100644
+--- a/src/TemplateBlueprint.Core/Services/CsvImportService.cs
++++ b/src/TemplateBlueprint.Core/Services/CsvImportService.cs
+@@ -81,14 +81,14 @@ public class CsvImportService : IDataImportService
+     {
+         if (rows.Count == 0) return ColumnDataType.Text;
+ 
+-        var sampleSize = Math.Min(100, rows.Count);
++        var sampleCount = Math.Min(100, rows.Count);
+         var numericCount = 0;
+         var integerCount = 0;
+         var dateCount = 0;
+         var boolCount = 0;
+         var totalNonEmpty = 0;
+ 
+-        for (var i = 0; i < sampleSize; i++)
++        for (var i = 0; i < sampleCount; i++)
+         {
+             var value = rows[i].GetString(columnId);
+             if (string.IsNullOrWhiteSpace(value)) continue;

@@ -1,0 +1,12 @@
+diff --git a/src/TemplateBlueprint.Core/Services/CsvImportService.cs b/src/TemplateBlueprint.Core/Services/CsvImportService.cs
+index 57ee584..a899f70 100644
+--- a/src/TemplateBlueprint.Core/Services/CsvImportService.cs
++++ b/src/TemplateBlueprint.Core/Services/CsvImportService.cs
+@@ -77,6 +77,7 @@ public class CsvImportService : IDataImportService
+         }
+     }
+ 
++    /// <summary>Returns the inferred data type for the given column based on its sampled values.</summary>
+     private static ColumnDataType DetectColumnType(IReadOnlyList<SpreadsheetRow> rows, string columnId)
+     {
+         if (rows.Count == 0) return ColumnDataType.Text;

@@ -1,2 +1,2 @@
-"""Runner scaffold. Prepares blinded, isolated arms up to the real-agent invocation, then STOPS at an
-explicit unimplemented seam (``_invoke_subject_agent``). The experiment is NOT runnable yet."""
+"""Runner scaffold. Prepares blinded, isolated arms and enters the agent loop only behind the run gate.
+The live model client still hard-stops at ``AnthropicClient.send`` until Phase G is ratified."""

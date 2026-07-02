@@ -98,6 +98,9 @@ def e2e_fast(session: nox.Session) -> None:
         # pure attribution unit tests (parser/resolver/harness delta) — no dotnet, no external gate, so
         # the delta-only + implements-edge canaries run in fast CI, not only under gated e2e-external.
         "e2e/external/utils/tests",
+        # agent-A/B deterministic runner plumbing (gate/client/tools/loop/preflight/evaluator) — all
+        # driven by ScriptedClient/mock, no LLM, no dotnet, no gate: safe for fast CI.
+        "e2e/experiments/agent_ab/tests",
         "e2e/test_boundary_discipline.py",
         "e2e/smoke",
         "e2e/features/agent",
@@ -125,6 +128,24 @@ def e2e_external(session: nox.Session) -> None:
     session.install("-e", ".")
     session.install("pytest")
     session.run("pytest", "e2e/external", "-v", env={**os.environ})
+
+
+@nox.session(name="e2e-ab")
+def e2e_ab(session: nox.Session) -> None:
+    """Blinded agent A/B efficacy experiment (real coding subagent per arm). FAIL-CLOSED and NOT for CI:
+    requires E2E_AB_RUN=1 AND E2E_EXTERNAL=1 AND E2E_TEMPLATE_BLUEPRINT_REPO=<checkout> AND
+    ANTHROPIC_API_KEY. Runs pre-flights (oracle labels + graph freshness) then paired trials. Never
+    mutates the source (clones into gitignored e2e/out/)."""
+    if (os.environ.get("E2E_AB_RUN") != "1" or os.environ.get("E2E_EXTERNAL") != "1"
+            or not os.environ.get("ANTHROPIC_API_KEY")):
+        session.skip("Set E2E_AB_RUN=1 E2E_EXTERNAL=1 E2E_TEMPLATE_BLUEPRINT_REPO=<path> "
+                     "ANTHROPIC_API_KEY=<key> to run the agent A/B experiment.")
+    session.install("-e", ".")
+    session.install("pytest", "anthropic")
+    mode = os.environ.get("E2E_AB_MODE", "pilot")
+    run_id = os.environ.get("E2E_AB_RUN_ID", f"run_{mode}")
+    session.run("python", "-m", "e2e.experiments.agent_ab.runners.orchestrator",
+                "--run-id", run_id, "--mode", mode, env={**os.environ})
 
 
 @nox.session(name="e2e-ui")

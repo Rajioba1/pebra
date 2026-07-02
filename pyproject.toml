@@ -61,6 +61,7 @@ bench-szz = ["pydriller"]
 bench-agent = ["swebench"]
 bench-external = ["datasets"]
 ui-e2e = ["playwright", "pytest-playwright"]
+agent-ab = ["anthropic>=0.30"]
 
 [tool.setuptools.packages.find]
 include = ["pebra*"]

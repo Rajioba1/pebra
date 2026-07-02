@@ -1,0 +1,12 @@
+diff --git a/src/TemplateBlueprint.Core/Contracts/IWorkspace.cs b/src/TemplateBlueprint.Core/Contracts/IWorkspace.cs
+index b063ff6..301bfec 100644
+--- a/src/TemplateBlueprint.Core/Contracts/IWorkspace.cs
++++ b/src/TemplateBlueprint.Core/Contracts/IWorkspace.cs
+@@ -25,6 +25,6 @@ public interface IWorkspace
+     /// Return false to cancel the close (e.g., for unsaved changes prompt).
+     /// </summary>
+     /// <returns>True if the workspace can be closed, false to cancel.</returns>
+-    Task<bool> CanCloseAsync();
++    Task<bool> CanCloseAsync(System.Threading.CancellationToken cancellationToken);
+ }
+ 

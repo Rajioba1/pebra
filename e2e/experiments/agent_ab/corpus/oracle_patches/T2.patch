@@ -1,0 +1,13 @@
+diff --git a/src/TemplateBlueprint.Core/Contracts/IGridSearchAdapter.cs b/src/TemplateBlueprint.Core/Contracts/IGridSearchAdapter.cs
+index 7dcf4a2..19f1921 100644
+--- a/src/TemplateBlueprint.Core/Contracts/IGridSearchAdapter.cs
++++ b/src/TemplateBlueprint.Core/Contracts/IGridSearchAdapter.cs
+@@ -23,6 +23,8 @@ public class SearchMatchEventArgs : EventArgs
+ /// </summary>
+ public interface IGridSearchAdapter
+ {
++    int CountMatches(string searchText);
++
+     /// <summary>
+     /// Finds all occurrences of the search text.
+     /// </summary>

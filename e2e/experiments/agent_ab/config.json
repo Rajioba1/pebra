@@ -1,10 +1,11 @@
 {
-  "status": "deterministic-foundation-only; real-agent runner is an unimplemented seam; NOT runnable",
+  "status": "runner built + gated; AnthropicClient.send is a Phase-G stop; NOT runnable until the live client is ratified (needs E2E_AB_RUN=1 + E2E_EXTERNAL=1 + ANTHROPIC_API_KEY)",
   "subject": {
     "model": "claude-sonnet-4-6",
     "max_tool_calls_per_run": 50,
     "max_wall_seconds_per_run": 600,
-    "tools": ["read_file", "write_file", "run_build", "run_tests", "advisory_check"]
+    "max_output_tokens_per_turn": 4096,
+    "tools": ["read_file", "write_file", "list_dir", "search_grep", "run_build", "run_tests", "advisory_check"]
   },
   "blinding": {
     "advisory_tool_name": "advisory_check",
@@ -17,10 +18,12 @@
     "claims": "directional only; no p-value"
   },
   "powered": {
-    "tasks": ["T1", "T2", "T3", "T4", "B1", "B2", "B3", "B4"],
+    "tasks": ["T1", "T2", "B1", "B2"],
+    "target_tasks": ["T1", "T2", "T3", "T4", "B1", "B2", "B3", "B4"],
     "seeds_per_arm": 5,
-    "total_runs": 80,
-    "_note": "T3/T4/B3/B4 are placeholders for the future powered corpus; the committed pilot corpus currently contains T1/T2/B1/B2."
+    "total_runs": 40,
+    "target_total_runs": 80,
+    "_note": "total_runs=40 is the ACTUAL count with the current 4-task corpus (T1/T2/B1/B2 x 5 seeds x 2 arms). target_total_runs=80 is the goal once all 8 target_tasks are authored; configured tasks must exist or the planner fails closed."
   },
   "thresholds": {
     "adherence_floor_for_informative": 0.33,

@@ -48,8 +48,9 @@ def conclusion(m: ABMetrics) -> str:
             "Pilot result — directional only, no statistical-significance claim.")
 
 
-def to_json(m: ABMetrics) -> dict:
+def to_json(m: ABMetrics, *, scoring_mode: str = "build_break_scope") -> dict:
     return {
+        "scoring_mode": scoring_mode,
         "endpoints": {
             "harm_rate": {"control": m.control.harm_rate, "treatment": m.treatment.harm_rate},
             "harm_avoided_rate": m.harm_avoided_rate,
@@ -73,10 +74,18 @@ def to_json(m: ABMetrics) -> dict:
     }
 
 
-def render_markdown(m: ABMetrics, *, run_id: str) -> str:
+_SCORING_MODE_NOTE = {
+    "build_break_scope": "build-break + scope (no evaluator test projects present)",
+    "build_test_scope": "build + test + scope (evaluator test projects injected)",
+}
+
+
+def render_markdown(m: ABMetrics, *, run_id: str, scoring_mode: str = "build_break_scope") -> str:
     lines = [
         f"# PEBRA agent-A/B experiment — `{run_id}`",
         "",
+        f"> Scoring mode: **{scoring_mode}** — "
+        f"{_SCORING_MODE_NOTE.get(scoring_mode, scoring_mode)}.",
         "> Paired, blinded pilot. Directional evidence only; a pilot makes no statistical-significance",
         "> claim. Null / net-negative outcomes are valid and reported below.",
         "",
@@ -111,12 +120,12 @@ def render_markdown(m: ABMetrics, *, run_id: str) -> str:
     return "\n".join(lines)
 
 
-def write_report(m: ABMetrics, *, out_dir, run_id: str):
+def write_report(m: ABMetrics, *, out_dir, run_id: str, scoring_mode: str = "build_break_scope"):
     from pathlib import Path
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     md_path = out / f"ab_{run_id}.md"
     json_path = out / f"ab_{run_id}.json"
-    md_path.write_text(render_markdown(m, run_id=run_id), encoding="utf-8")
-    json_path.write_text(json.dumps(to_json(m), indent=2), encoding="utf-8")
+    md_path.write_text(render_markdown(m, run_id=run_id, scoring_mode=scoring_mode), encoding="utf-8")
+    json_path.write_text(json.dumps(to_json(m, scoring_mode=scoring_mode), indent=2), encoding="utf-8")
     return md_path, json_path

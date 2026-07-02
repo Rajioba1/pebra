@@ -1,4 +1,4 @@
-"""Thin single-arm wrapper (treatment). Stops at the same unimplemented seam as run_pair."""
+"""Thin single-arm wrapper (treatment). Uses the same gated Phase-G stop as run_pair."""
 
 from __future__ import annotations
 

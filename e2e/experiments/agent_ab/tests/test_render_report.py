@@ -60,3 +60,12 @@ def test_to_json_has_endpoint_block_and_conclusion():
         "harm_rate", "harm_avoided_rate", "quality_failure_rate", "net_benefit", "adherence_rate",
     }
     assert "conclusion" in j
+
+
+def test_scoring_mode_is_self_describing():
+    m = _ab(harm_avoided=0.4, over_delta=0.0, adherence=0.9)
+    assert render_report.to_json(m, scoring_mode="build_test_scope")["scoring_mode"] == "build_test_scope"
+    # default is the honest build-break label; markdown surfaces it too
+    assert render_report.to_json(m)["scoring_mode"] == "build_break_scope"
+    assert "build_test_scope" in render_report.render_markdown(m, run_id="r",
+                                                               scoring_mode="build_test_scope")

@@ -1,16 +1,19 @@
-"""Scaffold one paired trial (control + treatment) for a task/seed — UP TO the real-agent invocation.
+"""Scaffold one paired trial (control + treatment) for a task/seed.
 
 It prepares both arms identically and blinded: isolated clones at the same SHA, the SAME
 ``advisory_check`` tool name in both (only the backend differs), an identical task prompt with no arm
-identifier, and a recorded baseline build. It then calls ``_invoke_subject_agent`` — the UNIMPLEMENTED
-STOP SEAM. Nothing here spawns an agent or calls an LLM.
+identifier, and a recorded baseline build. ``_invoke_subject_agent`` is still gated and non-live:
+the run gate must be explicitly opened, and ``AnthropicClient.send`` raises ``NotImplementedError``
+until the Phase-G live client is ratified.
 
 Never mutates the source checkout (repo_source clones into gitignored e2e/out/). No ``import pebra``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -82,13 +85,46 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
     )
 
 
+_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+
+
+def _load_config() -> dict[str, Any]:
+    return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+
+
 def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> SubjectResult:
-    """STOP SEAM — the ratified NEXT slice. Drives a real, blinded coding subagent through the
-    instrumented tool boundary (read/write/build/tests/advisory_check), capturing transcript, tool
-    calls, and diff into a SubjectResult. Deliberately unimplemented so the foundation can be reviewed
-    before any agent or LLM is ever run."""
-    raise NotImplementedError(
-        "real-agent execution is the ratified next slice — do not run until approved"
+    """Drive a real, blinded coding subagent through the instrumented tool boundary, then run the
+    HIDDEN evaluator (inject tests post-agent, build + test) to fill the build/test outcome fields.
+
+    Fail-closed: the run gate (E2E_AB_RUN=1 AND E2E_EXTERNAL=1 AND ANTHROPIC_API_KEY) is checked FIRST.
+    ``AnthropicClient.send`` is a Phase-G stop (raises) until the live slice is ratified, so this path
+    cannot actually contact an LLM yet. Imports are inline to keep the foundation importable without
+    the anthropic SDK."""
+    from e2e.experiments.agent_ab.runners import agent_loop, evaluator, run_gate  # noqa: PLC0415
+    from e2e.experiments.agent_ab.runners.model_client import AnthropicClient  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    run_gate.check_gate()
+    cfg = _load_config()["subject"]
+    run_cfg = agent_loop.RunConfig(
+        model=cfg["model"],
+        max_tool_calls_per_run=cfg.get("max_tool_calls_per_run", 50),
+        max_wall_seconds_per_run=cfg.get("max_wall_seconds_per_run", 600),
+        max_output_tokens_per_turn=cfg.get("max_output_tokens_per_turn", 4096),
+        tools=tuple(cfg.get("tools", ())),
+    )
+    client = AnthropicClient(model=run_cfg.model, api_key=os.environ["ANTHROPIC_API_KEY"])
+    result = agent_loop.run(setup, spec, seed, client=client, config=run_cfg)
+
+    # HIDDEN oracle: inject evaluator tests post-agent, then build + test.
+    build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec.task_id)
+    return dataclasses.replace(
+        result,
+        build_ran=build.ran,
+        build_passed=(build.passed if build.ran else None),
+        build_error_summary=build.error_summary,
+        test_ran=bool(test and test.ran),
+        test_passed=(test.passed if (test and test.ran) else None),
     )
 
 
