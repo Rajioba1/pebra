@@ -143,15 +143,17 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = _AB_OUT / args.run_id
     corpus = loader.load_corpus()
     external = rs.prepare_external_repo()
+    plan = _plan(corpus, mode["tasks"], mode["seeds_per_arm"])
+    planned_specs = list({spec.task_id: spec for spec, _seed in plan}.values())
 
     preflight_status = {
         "oracle": "skipped" if args.skip_oracle_preflight else "passed",
         "graph": "skipped" if args.skip_graph_preflight else "passed",
     }
     if not args.skip_oracle_preflight:
-        preflight.run_oracle_preflight(corpus, external, out_dir=out_dir)
+        preflight.run_oracle_preflight(planned_specs, external, out_dir=out_dir)
     if not args.skip_graph_preflight:
-        preflight.run_graph_preflight(corpus, external, out_dir=out_dir,
+        preflight.run_graph_preflight(planned_specs, external, out_dir=out_dir,
                                       assess_fn=_live_assess_fn,
                                       setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
                                       node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p))
@@ -162,7 +164,6 @@ def main(argv: list[str] | None = None) -> int:
     outcomes: list[RunOutcome] = [
         o for o in _load_existing_outcomes(outcomes_path) if (o.task_id, o.seed) in completed
     ]
-    plan = _plan(corpus, mode["tasks"], mode["seeds_per_arm"])
     for spec, seed in plan:
         if (spec.task_id, seed) in completed:
             continue  # resume: this pair already has both arms recorded
@@ -178,7 +179,6 @@ def main(argv: list[str] | None = None) -> int:
         _write_outcomes(outcomes_path, outcomes, args.run_id)  # incremental / crash-survivable
 
     ab = scorecard.aggregate(outcomes, bootstrap_seed=cfg.get("bootstrap_seed", 0))
-    planned_specs = list({spec.task_id: spec for spec, _seed in plan}.values())
     render_report.write_report(ab, out_dir=out_dir / "reports", run_id=args.run_id,
                                scoring_mode=_scoring_mode(planned_specs),
                                preflight_status=preflight_status)

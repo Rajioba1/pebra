@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import nox
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 DEV = [
     "pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema",
@@ -132,20 +135,21 @@ def e2e_external(session: nox.Session) -> None:
 @nox.session(name="e2e-ab")
 def e2e_ab(session: nox.Session) -> None:
     """Blinded agent A/B efficacy experiment (real coding subagent per arm). FAIL-CLOSED and NOT for CI:
-    requires E2E_AB_RUN=1 AND E2E_EXTERNAL=1 AND E2E_TEMPLATE_BLUEPRINT_REPO=<checkout> AND
-    ANTHROPIC_API_KEY. Runs pre-flights (oracle labels + graph freshness) then paired trials. Never
-    mutates the source (clones into gitignored e2e/out/)."""
-    if (os.environ.get("E2E_AB_RUN") != "1" or os.environ.get("E2E_EXTERNAL") != "1"
-            or not os.environ.get("E2E_TEMPLATE_BLUEPRINT_REPO")
-            or not os.environ.get("ANTHROPIC_API_KEY")):
-        session.skip("Set E2E_AB_RUN=1 E2E_EXTERNAL=1 E2E_TEMPLATE_BLUEPRINT_REPO=<path> "
-                     "ANTHROPIC_API_KEY=<key> to run the agent A/B experiment.")
+    the nox session is the explicit opt-in and sets the non-secret gates. User must provide
+    ANTHROPIC_API_KEY; E2E_TEMPLATE_BLUEPRINT_REPO defaults to sibling ../avalonia_template when
+    present. Runs pre-flights (oracle labels + graph freshness) then paired trials. Never mutates the
+    source (clones into gitignored e2e/out/)."""
+    from e2e.experiments.agent_ab.runners import run_env
+    env = run_env.live_env(os.environ)
+    missing = run_env.missing_for_live_env(env)
+    if missing:
+        session.skip("Set " + " and ".join(missing) + " to run the agent A/B experiment.")
     session.install("-e", ".")
     session.install("pytest", "anthropic")
     mode = os.environ.get("E2E_AB_MODE", "pilot")
     run_id = os.environ.get("E2E_AB_RUN_ID", f"run_{mode}")
     session.run("python", "-m", "e2e.experiments.agent_ab.runners.orchestrator",
-                "--run-id", run_id, "--mode", mode, env={**os.environ})
+                "--run-id", run_id, "--mode", mode, env=env)
 
 
 @nox.session(name="e2e-ui")

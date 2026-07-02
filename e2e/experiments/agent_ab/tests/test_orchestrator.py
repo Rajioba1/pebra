@@ -156,6 +156,24 @@ def test_main_reports_scoring_mode_for_planned_tasks_only(monkeypatch, tmp_path)
     assert seen["scoring_mode"] == "T1"
 
 
+def test_main_runs_preflights_for_planned_tasks_only(monkeypatch, tmp_path):
+    seen = {}
+
+    def _fake_pair(spec, seed, run_id):
+        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
+                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+
+    _wire(monkeypatch, tmp_path, [_T1, _B1], _fake_pair)
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight",
+                        lambda specs, *_args, **_kwargs: seen.setdefault("oracle", [s.task_id for s in specs]))
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight",
+                        lambda specs, *_args, **_kwargs: seen.setdefault("graph", [s.task_id for s in specs]))
+
+    orchestrator.main(["--run-id", "t1"])
+
+    assert seen == {"oracle": ["T1"], "graph": ["T1"]}
+
+
 def test_skip_preflight_requires_debug_env(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, [_T1], lambda spec, seed, run_id: (_outcome("T1", "control"),
                                                                    _outcome("T1", "treatment")))

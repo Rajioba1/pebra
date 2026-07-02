@@ -206,6 +206,30 @@ def test_oracle_preflight_accumulates_apply_failures(tmp_path, monkeypatch):
     assert "T1" in msg and "B1" in msg  # apply failures accumulated, not short-circuited
 
 
+def test_oracle_preflight_replaces_stale_preflight_clone(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "B1.patch").write_text("diff --git a/a.cs b/a.cs\n", encoding="utf-8")
+    stale_repo = tmp_path / "preflight" / "B1" / "repo"
+    stale_repo.mkdir(parents=True)
+    (stale_repo / "stale.txt").write_text("stale")
+
+    def _clone(_external, dest):
+        assert not dest.exists()
+        dest.mkdir(parents=True)
+        return dest
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _clone)
+    monkeypatch.setattr(preflight, "_apply_patch", lambda patch_file, repo_path: None)
+
+    preflight.run_oracle_preflight([_SAFE], None, out_dir=tmp_path, build_fn=lambda p: _build(),
+                                   patch_dir=patch_dir, correct_patch_dir=correct_dir)
+
+    assert not (stale_repo / "stale.txt").exists()
+
+
 def test_graph_preflight_accumulates_infra_errors(tmp_path, monkeypatch):
     trap2 = TaskSpec("T2", "d", ("b.cs",), "risky", ("b.cs",), "build_failure", True)
 

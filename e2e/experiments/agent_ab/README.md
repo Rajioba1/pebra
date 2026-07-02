@@ -140,30 +140,45 @@ python -m pytest e2e/experiments/agent_ab/tests -q
 This is the live A/B experiment. It runs the gated preflight first (oracle labels +
 fresh graph evidence + C# node-count check), then runs the paired pilot. It needs
 CodeGraph on `PATH`, `dotnet`, a local checkout of the external repo, and a valid
-Anthropic API key.
+Anthropic API key. The `nox -s e2e-ab` session is the explicit run opt-in: it sets
+the non-secret gates (`E2E_AB_RUN=1`, `E2E_EXTERNAL=1`) and defaults
+`E2E_TEMPLATE_BLUEPRINT_REPO` to sibling `..\avalonia_template` when that checkout
+exists. In the normal local setup, you only set `ANTHROPIC_API_KEY`.
 
 PowerShell:
 
 ```powershell
-$env:E2E_AB_RUN="1"
-$env:E2E_EXTERNAL="1"
-$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\Users\RajLord_new\Desktop\avalonia_template"
 $env:ANTHROPIC_API_KEY="sk-..."
 $env:E2E_AB_MODE="pilot"        # optional; default: pilot
 $env:E2E_AB_RUN_ID="pilot_001"  # optional; default: run_<mode>
 nox -s e2e-ab
 ```
 
+Or store the key in the local ignored file once:
+
+```powershell
+New-Item -ItemType Directory -Force .pebra | Out-Null
+Set-Content .pebra\agent_ab.env 'ANTHROPIC_API_KEY=sk-ant-...'
+nox -s e2e-ab
+```
+
+If your external checkout is not at sibling `..\avalonia_template`, set it explicitly:
+
+```powershell
+$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\avalonia_template"
+```
+
 Bash:
 
 ```bash
-E2E_AB_RUN=1 E2E_EXTERNAL=1 \
-E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/avalonia_template \
 ANTHROPIC_API_KEY=sk-... \
 E2E_AB_MODE=pilot \
 E2E_AB_RUN_ID=pilot_001 \
 nox -s e2e-ab
 ```
+
+If your external checkout is not at sibling `../avalonia_template`, add
+`E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/avalonia_template`.
 
 `E2E_AB_MODE=powered` runs the larger configured mode. The run writes local
 artifacts under `e2e/out/ab/<run-id>/`, which is ignored by git.

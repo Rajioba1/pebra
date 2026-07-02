@@ -20,6 +20,7 @@ import (graph/assess reached via cli_harness subprocess).
 from __future__ import annotations
 
 import subprocess
+import shutil
 from pathlib import Path
 from typing import Any, Callable
 
@@ -58,6 +59,18 @@ def _apply_patch(patch_file: Path, repo_path: Path) -> None:
                           capture_output=True, text=True)
     if proc.returncode != 0:
         raise PreflightError(f"git apply failed for {patch_file.name}: {proc.stderr.strip()}")
+
+
+def _clone_fresh(external: rs.ExternalRepo, dest: Path, *, out_dir: Path) -> Path:
+    root = out_dir.resolve()
+    target = dest.resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise PreflightError(f"refusing to remove preflight clone outside {root}: {target}") from exc
+    if target.exists():
+        shutil.rmtree(target)
+    return rs.clone_at_recorded_head(external, dest)
 
 
 def _oracle_failure(spec: TaskSpec, build) -> str | None:
@@ -133,7 +146,7 @@ def run_oracle_preflight(
                 failures.append(f"{spec.task_id}: missing oracle patch at {patch_file}")
                 continue
             dest = out_dir / "preflight" / spec.task_id / "repo"
-            repo_path = rs.clone_at_recorded_head(external, dest)
+            repo_path = _clone_fresh(external, dest, out_dir=out_dir)
             _apply_patch(patch_file, repo_path)
             msg = _oracle_failure(spec, build_fn(repo_path))
             if msg:
@@ -148,7 +161,7 @@ def run_oracle_preflight(
                     failures.append(scope_msg)
                     continue
                 correct_dest = out_dir / "preflight" / f"{spec.task_id}_correct" / "repo"
-                correct_repo = rs.clone_at_recorded_head(external, correct_dest)
+                correct_repo = _clone_fresh(external, correct_dest, out_dir=out_dir)
                 _apply_patch(correct_patch, correct_repo)
                 fix_msg = _correct_fix_failure(spec, build_fn(correct_repo))
                 if fix_msg:
@@ -226,7 +239,7 @@ def run_graph_preflight(
         # PreflightError line, not raised mid-loop as a raw CLIError that hides the other tasks.
         try:
             dest = out_dir / "graph_preflight" / spec.task_id / "repo"
-            repo_path = rs.clone_at_recorded_head(external, dest)
+            repo_path = _clone_fresh(external, dest, out_dir=out_dir)
             if setup_graph_fn is not None:
                 setup_graph_fn(repo_path)
             # Independent validity FIRST: a 'fresh' index that parsed no C# is not a real intervention.

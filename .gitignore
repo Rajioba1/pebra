@@ -4,6 +4,7 @@ docs/
 DEVELOPMENT.md
 
 .pebra/
+.pebra/agent_ab.env
 .venv/
 .nox/
 __pycache__/

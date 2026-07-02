@@ -39,10 +39,9 @@ _SUBJECT_PROMPT = """You are a software developer working on a C# codebase.
 Your task:
 {task_description}
 
-The repository is at: {repo_path}
-
 You have these tools: read_file, write_file, list_dir, search_grep, run_build, run_tests,
 {advisory_name}.
+All file paths you provide to tools must be repository-relative paths.
 Before significant edits, draft the intended patch and call {advisory_name} with the target file,
 change summary, and intended patch.
 Complete the task, then stop."""

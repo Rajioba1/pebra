@@ -104,3 +104,10 @@ def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
         assert name in prompt
     assert "before significant edits" in prompt.lower()
     assert "intended patch" in prompt.lower()
+
+
+def test_subject_prompt_does_not_include_absolute_repo_path_or_engine_name(tmp_path):
+    repo = tmp_path / "pebra" / "e2e" / "out" / "repo"
+    prompt = run_pair._build_subject_prompt(_SPEC, repo)
+    assert str(repo) not in prompt
+    assert "pebra" not in prompt.lower()
