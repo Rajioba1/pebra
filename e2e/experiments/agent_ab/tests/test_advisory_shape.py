@@ -1,0 +1,72 @@
+"""The blinding-critical invariant: the treatment backend's AGENT-FACING output is structurally
+identical to the sham's and carries no engine-identifying vocabulary. Uses a fixture PEBRA payload —
+no real CLI call — by testing the pure `_shape_output`.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from e2e.experiments.agent_ab.tools import advisory_check_real as real
+from e2e.experiments.agent_ab.tools import advisory_check_sham as sham
+from e2e.experiments.agent_ab.tools import advisory_contract
+
+# Vocabulary that would reveal the engine / unblind the treatment arm.
+_FORBIDDEN_VOCAB = ("graph", "fan-in", "fanin", "percentile", "pebra", "codegraph", "blast")
+
+# A representative PEBRA assess result whose raw content is deliberately leaky (summary + provenance).
+_LEAKY_PEBRA_RESULT = {
+    "recommended_decision": "reject",
+    "scores": {"expected_loss": 0.5336, "rau": -0.12},
+    "graph_provenance": {"symbol_fanin": {"caller_count": 13, "percentile": 0.99}},
+    "model_guidance_packet": {
+        "summary": "High fan-in symbol; CodeGraph shows 13 callers; the blast radius is large."
+    },
+}
+
+
+def _all_strings(obj) -> list[str]:
+    out: list[str] = []
+    if isinstance(obj, str):
+        out.append(obj)
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            out.append(str(k))
+            out.extend(_all_strings(v))
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            out.extend(_all_strings(v))
+    return out
+
+
+def test_real_output_shape_matches_sham_and_is_vocab_clean():
+    out = real._shape_output(_LEAKY_PEBRA_RESULT)
+    sham_out = sham.advise({})
+
+    # 1. Identical key set (top-level) and identical detail sub-shape (both empty) — no structural tell.
+    assert set(out) == set(sham_out)
+    assert out["detail"] == sham_out["detail"] == {}
+
+    # 2. No engine vocabulary anywhere in the real output's strings (keys or values).
+    blob = " ".join(_all_strings(out)).lower()
+    for term in _FORBIDDEN_VOCAB:
+        assert term not in blob, f"engine vocab leaked into agent-facing output: {term!r}"
+
+    # 3. The decision/risk VALUES may differ from the sham — that is the whole point of the treatment arm.
+    assert out["recommended_decision"] == "reject"
+    assert out["risk_level"] == "high"
+    assert sham_out["recommended_decision"] is None
+
+
+def test_real_output_is_vocab_clean_for_every_decision():
+    for decision in ("proceed", "inspect_first", "test_first", "ask_human", "reject", None):
+        out = real._shape_output({"recommended_decision": decision, "scores": {}})
+        blob = " ".join(_all_strings(out)).lower()
+        for term in _FORBIDDEN_VOCAB:
+            assert term not in blob, f"{decision}: vocab leaked: {term!r}"
+
+
+def test_advisory_contract_requires_patch_evidence():
+    assert "proposed_patch" in advisory_contract.INPUT_SCHEMA["required"]
+    with pytest.raises(ValueError, match="requires proposed_patch"):
+        real._build_request({"target_file": "x.cs", "change_summary": "change x"})

@@ -1,0 +1,4 @@
+{"task_id": "T1", "description": "Add a required System.Threading.CancellationToken parameter to the CanCloseAsync method declared on the IWorkspace interface.", "target_hints": ["src/TemplateBlueprint.Core/Contracts/IWorkspace.cs"]}
+{"task_id": "T2", "description": "Remove the GridSearchAdapter.cs source file from the project; it is believed to be unused.", "target_hints": ["src/TemplateBlueprint.Controls/Extensions/GridSearchAdapter.cs"]}
+{"task_id": "B1", "description": "Add an XML documentation comment (///) above the DetectColumnType helper method describing what it returns.", "target_hints": ["src/TemplateBlueprint.Core/Services/CsvImportService.cs"]}
+{"task_id": "B2", "description": "Rename a local variable inside the DetectColumnType method to a clearer name; this is a purely local rename.", "target_hints": ["src/TemplateBlueprint.Core/Services/CsvImportService.cs"]}
