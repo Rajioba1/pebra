@@ -96,7 +96,9 @@ def _edit_cycles(result: SubjectResult) -> int:
     cycles = 0
     pending_write = False
     for call in sorted(result.tool_calls, key=lambda c: c.sequence):
-        if call.name == "write_file":
+        # Only a SUCCESSFUL write starts a cycle — a gate-blocked write wrote nothing, so counting it
+        # would inflate treatment's mean_edit_cycles relative to control.
+        if call.name == "write_file" and isinstance(call.result, dict) and call.result.get("ok") is True:
             pending_write = True
         elif call.name == "run_build" and pending_write:
             cycles += 1

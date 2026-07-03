@@ -1,11 +1,11 @@
 """`pebra agent-init` — scaffold the PEBRA safe-edit protocol for a coding-agent host.
 
-Phase 1 is agent-instruction / scaffolding ONLY. It writes the passive ``pebra-safe-edit`` skill and
-host rules that tell an agent to CONSULT PEBRA before edits (assess -> read risk -> edit -> verify ->
-record). It installs NO enforcement hook and imports no ``core``/``app``/``composition`` — enforcement
-(the PreToolUse gate) is a separate, later slice. Templates are inline string constants so nothing
-depends on package-data being shipped. Wording is deliberately "consult", not "blocks edits": Phase 1
-makes no enforcement claim.
+By default this writes the passive ``pebra-safe-edit`` skill and host rules that tell an agent to
+CONSULT PEBRA before edits (assess -> read risk -> edit -> verify -> record). With ``--with-hook`` it
+also writes a host hook config that calls ``pebra gate-hook`` before structured edits. Claude's
+``.claude/settings.json`` hook is the verified enforcement surface; Codex's repo-local
+``.codex/hooks.json`` is best-effort because Codex hook loading differs by host/plugin install.
+Templates are inline string constants so nothing depends on package-data being shipped.
 
 Targets:
 - ``claude`` -> ``.claude/skills/pebra-safe-edit/SKILL.md``
@@ -15,10 +15,14 @@ Targets:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 _SKILL_DIR = "pebra-safe-edit"
+_CLAUDE_HOOK_MATCHER = "Edit|Write|MultiEdit"
+_CODEX_HOOK_MATCHER = "apply_patch"
+_HOOK_COMMAND = "pebra gate-hook"
 _MARK_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MARK_END = "<!-- END pebra-safe-edit -->"
 
@@ -56,24 +60,38 @@ _AGENTS_HEADING = "## PEBRA safe-edit protocol"
 def register(subparsers: Any) -> None:
     p = subparsers.add_parser(
         "agent-init",
-        help="Scaffold the pebra-safe-edit skill / rules for a coding-agent host (Phase 1: instructions only).",
+        help="Scaffold the pebra-safe-edit skill/rules and optionally a host pre-edit gate hook.",
     )
     p.add_argument("--target", choices=("claude", "codex"), required=True)
     p.add_argument("--repo-root", default=".")
+    p.add_argument("--with-hook", action="store_true",
+                   help="Also install a pre-edit gate hook config (Claude verified; Codex repo-local "
+                        ".codex/hooks.json is best-effort and host-dependent). Default: instructions only.")
     p.set_defaults(func=run_agent_init)
 
 
 def run_agent_init(args: Any) -> int:
     repo_root = Path(args.repo_root)
+    with_hook = getattr(args, "with_hook", False)
     if args.target == "claude":
         written = [_write_skill(repo_root, ".claude")]
+        if with_hook:
+            written.append(_install_hook(repo_root, Path(".claude") / "settings.json", _CLAUDE_HOOK_MATCHER))
     else:  # codex
         written = [_merge_agents_md(repo_root), _write_skill(repo_root, ".agents")]
+        if with_hook:
+            written.append(_install_hook(repo_root, Path(".codex") / "hooks.json", _CODEX_HOOK_MATCHER))
     for path in written:
         print(f"wrote {path}")
     if args.target == "codex":
         print("note: AGENTS.md is the reliable Codex surface; .agents/skills is best-effort per Codex docs.")
-    print("Phase 1 is instruction-only: no enforcement hook was installed.")
+    if with_hook:
+        if args.target == "codex":
+            print("installed best-effort Codex hook config; verify your Codex host loads .codex/hooks.json.")
+        else:
+            print("installed the enforcing PreToolUse gate hook (pebra gate-hook) for claude.")
+    else:
+        print("instruction-only: no enforcement hook installed (pass --with-hook to enable).")
     return 0
 
 
@@ -81,6 +99,40 @@ def _write_skill(repo_root: Path, base: str) -> Path:
     path = repo_root / base / "skills" / _SKILL_DIR / "SKILL.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_SKILL_MD, encoding="utf-8")
+    return path
+
+
+def _is_pebra_gate_hook(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return any(isinstance(h, dict) and "gate-hook" in str(h.get("command", ""))
+               for h in entry.get("hooks", []))
+
+
+def _install_hook(repo_root: Path, rel_path: Path, matcher: str) -> Path:
+    """Merge the PreToolUse gate hook into a host hooks file, preserving unrelated settings and other
+    hooks, and idempotently (re-run never duplicates the entry). Malformed JSON is replaced."""
+    path = repo_root / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: Any = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = data["hooks"] = {}
+    pre = hooks.get("PreToolUse")
+    if not isinstance(pre, list):
+        pre = []
+    pre = [e for e in pre if not _is_pebra_gate_hook(e)]  # drop any prior pebra entry -> idempotent
+    pre.append({"matcher": matcher,
+                "hooks": [{"type": "command", "command": _HOOK_COMMAND}]})
+    hooks["PreToolUse"] = pre
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
 
 

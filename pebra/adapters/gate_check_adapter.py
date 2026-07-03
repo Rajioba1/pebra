@@ -79,7 +79,11 @@ def extract_target_paths(event: dict[str, Any]) -> list[str]:
     if name in _EDIT_TOOLS:
         fp = ti.get("file_path")
         return [_abs(fp)] if isinstance(fp, str) and fp else []
-    if name == "MultiEdit":  # Claude: an edits[] array, not a top-level file_path
+    if name == "MultiEdit":
+        fp = ti.get("file_path")
+        if isinstance(fp, str) and fp:
+            return [_abs(fp)]
+        # Legacy/best-effort fallback for synthetic hosts that may attach a file path per edit.
         out: list[str] = []
         for edit in ti.get("edits") or []:
             if not isinstance(edit, dict):

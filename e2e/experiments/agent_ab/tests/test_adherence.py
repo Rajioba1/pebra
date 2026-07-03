@@ -11,8 +11,9 @@ def _adv(decision):
     return ToolCallRecord(0, "advisory_check", {}, {"recommended_decision": decision})
 
 
-def _write(seq, path=PRIMARY):
-    return ToolCallRecord(seq, "write_file", {"path": path}, {})
+def _write(seq, path=PRIMARY, *, ok=True):
+    # realistic normalized write result ({"ok", "blocked"}); a gate-blocked write is ok=False.
+    return ToolCallRecord(seq, "write_file", {"path": path}, {"ok": ok, "blocked": not ok})
 
 
 def _build(seq):

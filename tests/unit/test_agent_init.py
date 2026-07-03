@@ -1,11 +1,11 @@
-"""`pebra agent-init` — Phase 1 scaffolding ONLY: write the passive pebra-safe-edit skill / AGENTS.md
-rules that tell an agent to CONSULT PEBRA before edits. Instruction-only (must-consult wording), installs
-NO enforcement hook, touches no core/app/composition. Tests use temp repos — the real repo's .claude is
-gitignored, so never rely on it.
+"""`pebra agent-init` — write the pebra-safe-edit skill / AGENTS.md rules, and optionally a host hook
+config. Default mode is instruction-only; ``--with-hook`` adds the pre-edit gate config. Tests use temp
+repos — the real repo's .claude/.codex folders are gitignored, so never rely on them.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from pebra.cli import agent_init
@@ -102,9 +102,116 @@ def test_claude_skill_file_is_fully_managed(tmp_path):
 
 
 def test_claude_does_not_touch_existing_settings(tmp_path):
-    # Phase 1 installs NO hook, so an existing .claude/settings.json must be left untouched.
+    # Default (no --with-hook) installs NO hook, so an existing settings.json must be left untouched.
     settings = tmp_path / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text('{"custom": true}\n', encoding="utf-8")
     _run("claude", tmp_path)
     assert settings.read_text(encoding="utf-8") == '{"custom": true}\n'
+
+
+def test_claude_default_creates_no_settings(tmp_path):
+    _run("claude", tmp_path)
+    assert not (tmp_path / ".claude" / "settings.json").exists()  # instruction-only by default
+
+
+def _run_with_hook(target: str, repo_root: Path) -> int:
+    args = build_parser().parse_args(
+        ["agent-init", "--target", target, "--repo-root", str(repo_root), "--with-hook"]
+    )
+    return agent_init.run_agent_init(args)
+
+
+def _pre_tool_use(settings_path: Path) -> list:
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    return data.get("hooks", {}).get("PreToolUse", [])
+
+
+def test_claude_with_hook_installs_pretooluse_gate(tmp_path):
+    assert _run_with_hook("claude", tmp_path) == 0
+    settings = tmp_path / ".claude" / "settings.json"
+    assert settings.is_file()
+    entries = _pre_tool_use(settings)
+    cmds = [h.get("command") for e in entries for h in e.get("hooks", [])]
+    assert any("gate-hook" in (c or "") for c in cmds)
+    assert any("Edit" in e.get("matcher", "") for e in entries)
+
+
+def test_claude_with_hook_preserves_existing_settings(tmp_path):
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({
+        "custom": True,
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}]},
+    }), encoding="utf-8")
+    _run_with_hook("claude", tmp_path)
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["custom"] is True  # unrelated settings preserved
+    cmds = [h.get("command") for e in data["hooks"]["PreToolUse"] for h in e.get("hooks", [])]
+    assert "echo hi" in cmds and any("gate-hook" in (c or "") for c in cmds)  # existing hook kept + gate added
+
+
+def _codex_pre_tool_use(root: Path) -> list:
+    data = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    return data.get("hooks", {}).get("PreToolUse", [])
+
+
+def test_codex_default_creates_no_hooks_json(tmp_path):
+    _run("codex", tmp_path)
+    assert not (tmp_path / ".codex" / "hooks.json").exists()  # instruction-only by default
+
+
+def test_codex_does_not_touch_existing_hooks_json(tmp_path):
+    hooks = tmp_path / ".codex" / "hooks.json"
+    hooks.parent.mkdir(parents=True, exist_ok=True)
+    hooks.write_text('{"existing": true}\n', encoding="utf-8")
+    _run("codex", tmp_path)  # no --with-hook
+    assert hooks.read_text(encoding="utf-8") == '{"existing": true}\n'
+
+
+def test_codex_with_hook_installs_apply_patch_gate(tmp_path):
+    assert _run_with_hook("codex", tmp_path) == 0
+    assert not (tmp_path / ".claude" / "settings.json").exists()  # codex uses .codex, not .claude
+    hooks_json = tmp_path / ".codex" / "hooks.json"
+    assert hooks_json.is_file()
+    entries = _codex_pre_tool_use(tmp_path)
+    cmds = [h.get("command") for e in entries for h in e.get("hooks", [])]
+    assert any("gate-hook" in (c or "") for c in cmds)
+    assert any("apply_patch" in e.get("matcher", "") for e in entries)
+    assert (tmp_path / "AGENTS.md").is_file()  # codex scaffolding still proceeds
+
+
+def test_codex_with_hook_reports_best_effort_surface(tmp_path, capsys):
+    _run_with_hook("codex", tmp_path)
+    out = capsys.readouterr().out.lower()
+    assert "best-effort" in out
+    assert "verify your codex host loads" in out
+
+
+def test_codex_with_hook_preserves_existing_and_is_idempotent(tmp_path):
+    hooks_json = tmp_path / ".codex" / "hooks.json"
+    hooks_json.parent.mkdir(parents=True, exist_ok=True)
+    hooks_json.write_text(json.dumps({
+        "hooks": {"PreToolUse": [{"matcher": "shell", "hooks": [{"type": "command", "command": "echo hi"}]}]},
+    }), encoding="utf-8")
+    _run_with_hook("codex", tmp_path)
+    first = hooks_json.read_text(encoding="utf-8")
+    cmds = [h.get("command") for e in _codex_pre_tool_use(tmp_path) for h in e.get("hooks", [])]
+    assert "echo hi" in cmds and any("gate-hook" in (c or "") for c in cmds)  # existing kept + gate added
+    _run_with_hook("codex", tmp_path)  # idempotent
+    assert hooks_json.read_text(encoding="utf-8") == first
+    gate = [e for e in _codex_pre_tool_use(tmp_path)
+            if any("gate-hook" in (h.get("command") or "") for h in e.get("hooks", []))]
+    assert len(gate) == 1
+
+
+def test_claude_with_hook_is_idempotent(tmp_path):
+    _run_with_hook("claude", tmp_path)
+    first = (tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8")
+    _run_with_hook("claude", tmp_path)
+    second = (tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8")
+    assert first == second  # no duplicate gate-hook entry on re-run
+    entries = _pre_tool_use(tmp_path / ".claude" / "settings.json")
+    gate_entries = [e for e in entries if any("gate-hook" in (h.get("command") or "")
+                                              for h in e.get("hooks", []))]
+    assert len(gate_entries) == 1

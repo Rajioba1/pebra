@@ -97,9 +97,9 @@ def test_missing_evaluator_build_after_edit_is_quality_failure():
 
 
 def test_edit_cycle_count_counts_write_build_iterations():
-    calls = (ToolCallRecord(0, "write_file", {"path": "src/A.cs"}, {}),
+    calls = (ToolCallRecord(0, "write_file", {"path": "src/A.cs"}, {"ok": True, "blocked": False}),
              ToolCallRecord(1, "run_build", {}, {}),
-             ToolCallRecord(2, "write_file", {"path": "src/A.cs"}, {}),
+             ToolCallRecord(2, "write_file", {"path": "src/A.cs"}, {"ok": True, "blocked": False}),
              ToolCallRecord(3, "run_build", {}, {}))
     out = oracle.score_run(_result("T1", tool_calls=calls, modified_files=("src/A.cs",),
                                    build_ran=True, build_passed=True), RISKY)

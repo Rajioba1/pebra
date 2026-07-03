@@ -50,11 +50,17 @@ def classify(
 
 
 def _verified_before_first_write(tool_calls: Sequence[ToolCallRecord]) -> bool:
-    # earliest write by SEQUENCE, not tuple iteration order (records may not be pre-sorted).
-    first_write = min((c.sequence for c in tool_calls if c.name == "write_file"), default=None)
+    # earliest SUCCESSFUL write by SEQUENCE. A gate-BLOCKED write is not a real edit, so it must not
+    # count as the "first write" — else inspecting after a blocked attempt is mis-scored as ignored.
+    first_write = min((c.sequence for c in tool_calls
+                       if c.name == "write_file" and _write_succeeded(c.result)), default=None)
     if first_write is None:
         return True  # never edited -> trivially did not barge past the inspect-first guidance
     return any(c.name in _VERIFY_TOOLS and c.sequence < first_write for c in tool_calls)
+
+
+def _write_succeeded(result: object) -> bool:
+    return isinstance(result, dict) and result.get("ok") is True
 
 
 def _norm(path: str) -> str:

@@ -121,6 +121,19 @@ def scorecard(*, repo_root: Path | str, db: Path | str) -> dict:
     return _run_json(["scorecard", "--json", "--repo-root", str(repo_root), "--db", str(db)])
 
 
+def gate_check(event: dict, *, db: Path | str) -> dict:
+    """`pebra gate-check` — the pure pre-edit gate DECISION for a proposed edit. The host event
+    (``tool_name``/``tool_input``/``cwd``) goes in on STDIN; a ``{permission, tier, reason, warn}`` JSON
+    comes out. gate-check always exits 0 (allow/deny/ask as data) — the caller enforces. The event
+    carries ``cwd=repo_root``; the store is the shared clone db written by ``pebra assess``."""
+    cmd = [_python(), "-m", "pebra", "gate-check", "--db", str(db)]
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    proc = subprocess.run(cmd, input=json.dumps(event), capture_output=True, text=True,
+                          env=env, timeout=DEFAULT_TIMEOUT_SECONDS)
+    _check_exit(proc.returncode, cmd, proc.stderr)
+    return _parse_json_stdout(proc.stdout, cmd)
+
+
 def setup_graph(*, repo_root: Path | str) -> None:
     _run(["setup-graph", "--fix", "--repo-root", str(repo_root)])
 

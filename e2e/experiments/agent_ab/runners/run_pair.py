@@ -57,6 +57,9 @@ class ArmSetup:
     advisory_backend: Callable[..., dict[str, Any]]   # bound to the isolated clone for treatment
     baseline_build: dn.DotNetBuildResult
     subject_prompt: str
+    # SAME write-gate in both arms; only treatment is backed by real PEBRA. Default = sham-allow so any
+    # ArmSetup built without an explicit backend never blocks a write.
+    gate_check_backend: Callable[..., dict[str, Any]] = lambda event: {"permission": "allow", "tier": "pass"}
 
 
 def _advisory_backend(arm: str, repo_path: Path, db_path: Path) -> Callable[..., dict[str, Any]]:
@@ -64,6 +67,15 @@ def _advisory_backend(arm: str, repo_path: Path, db_path: Path) -> Callable[...,
     if arm == models.ARM_TREATMENT:
         return lambda payload: advisory_check_real.advise(payload, repo_root=repo_path, db=db_path)
     return lambda payload: advisory_check_sham.advise(payload)
+
+
+def _gate_check_backend(arm: str, db_path: Path) -> Callable[..., dict[str, Any]]:
+    """Back the SAME write-gate in both arms. Treatment shells the real ``pebra gate-check`` (reads the
+    shared assessment store); control's sham always allows — so a write is never BLOCKED in control, and
+    the only arm difference is the intervention, not the tool shape (blinding preserved)."""
+    if arm == models.ARM_TREATMENT:
+        return lambda event: cli_harness.gate_check(event, db=db_path)
+    return lambda event: {"permission": "allow", "tier": "pass"}
 
 
 def _build_subject_prompt(spec: TaskSpec, repo_path: Path) -> str:
@@ -123,6 +135,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         advisory_backend=_advisory_backend(arm, repo_path, db_path),
         baseline_build=baseline,
         subject_prompt=_build_subject_prompt(spec, repo_path),
+        gate_check_backend=_gate_check_backend(arm, db_path),
     )
 
 

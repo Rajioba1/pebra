@@ -108,7 +108,10 @@ def test_write_traversal_result_is_error_run_continues(tmp_path, monkeypatch):
     client = ScriptedClient([_tool("write_file", {"path": "../../evil", "content": "x"}),
                              ModelTurn(text="done", stop_reason="end_turn")])
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0, client=client, config=_CFG)
-    assert "error" in r.tool_calls[0].result and r.error is None
+    # a blocked/failed write is normalized to ok=False + reason (no arm-distinguishing "error" key);
+    # the run continues (r.error is None).
+    result = r.tool_calls[0].result
+    assert result["ok"] is False and result["reason"] and r.error is None
 
 
 def test_live_client_error_is_captured_into_result_not_crash(tmp_path, monkeypatch):

@@ -101,7 +101,7 @@ def _dispatch(name: str, args: dict[str, Any], setup: "ArmSetup") -> dict[str, A
     if name == "read_file":
         return tool_impl.read_file(args.get("path", ""), repo)
     if name == "write_file":
-        return tool_impl.write_file(args.get("path", ""), args.get("content", ""), repo)
+        return _gated_write(args, setup)
     if name == "list_dir":
         return tool_impl.list_dir(args.get("path"), repo)
     if name == "search_grep":
@@ -114,6 +114,30 @@ def _dispatch(name: str, args: dict[str, Any], setup: "ArmSetup") -> dict[str, A
     if name == advisory_contract.TOOL_NAME:
         return tool_impl.advisory_check(args, setup.advisory_backend)
     return {"error": f"unknown tool {name!r}"}
+
+
+def _gated_write(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
+    """Route a write through the arm's gate-check backend, then normalize to a blinded ``{ok, blocked}``
+    shape — IDENTICAL in both arms; only the value differs (control's sham always allows). A gate
+    ``deny``/``ask`` blocks the write (nothing is written) with an arm-neutral reason; a gate ERROR
+    fails OPEN (the write proceeds) so a broken gate never bricks the run."""
+    path = args.get("path", "")
+    event = {"tool_name": "Write", "tool_input": {"file_path": path}, "cwd": str(setup.repo_path)}
+    try:
+        decision = setup.gate_check_backend(event)
+    except Exception:  # noqa: BLE001 - a gate failure must never block the experiment write (fail-open)
+        decision = {"permission": "allow"}
+    # FIXED schema in every case and BOTH arms: {"ok", "blocked", "reason"}. A per-outcome key set (e.g.
+    # a treatment-only "reason") would let the agent infer its arm from the shape alone, so the key set is
+    # invariant; only the values differ (control's sham never denies, so it only ever sees ok/allow).
+    if isinstance(decision, dict) and decision.get("permission") in ("deny", "ask"):
+        return {"ok": False, "blocked": True,
+                "reason": decision.get("reason")
+                or "A pre-edit check asked you to consult before making this change."}
+    result = tool_impl.write_file(path, args.get("content", ""), setup.repo_path)
+    if "error" in result:
+        return {"ok": False, "blocked": False, "reason": result["error"]}
+    return {"ok": True, "blocked": False, "reason": None}
 
 
 def _git_diff_name_only(repo_path: Path) -> tuple[str, ...]:
@@ -208,8 +232,9 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
                     continue
                 name, args = tc["name"], tc.get("input", {})
                 result = _dispatch(name, args, setup)
-                # Blinding: scan ONLY the advisory tool's output (harness-controlled), never file reads.
-                if name == advisory_contract.TOOL_NAME:
+                # Blinding: scan harness-authored outputs (advisory result AND any write reason — a gate
+                # deny or a write error), never file reads/content. Any reason text reaches the model.
+                if name == advisory_contract.TOOL_NAME or (name == "write_file" and result.get("reason")):
                     blinding_presend_check([json.dumps(result)])
                 records.append(ToolCallRecord(sequence=seq, name=name, arguments=args, result=result))
                 seq += 1

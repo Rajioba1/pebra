@@ -32,14 +32,17 @@ def test_extract_claude_edit(tmp_path):
     assert gca.extract_target_paths(ev) == [fp]
 
 
-def test_extract_claude_multiedit_iterates_edits(tmp_path):
-    a, b = _abs(tmp_path, "src/a.py"), _abs(tmp_path, "src/b.py")
+def test_extract_claude_multiedit_uses_top_level_file_path(tmp_path):
+    # Claude MultiEdit edits[] holds edits for ONE file; the target is the top-level file_path.
+    a = _abs(tmp_path, "src/a.py")
     ev = {"tool_name": "MultiEdit",
-          "tool_input": {"edits": [{"file_path": a}, {"file_path": b}]}, "cwd": str(tmp_path)}
-    assert gca.extract_target_paths(ev) == [a, b]
+          "tool_input": {"file_path": "src/a.py",
+                         "edits": [{"old_string": "x", "new_string": "y"}]},
+          "cwd": str(tmp_path)}
+    assert gca.extract_target_paths(ev) == [a]
 
 
-def test_extract_claude_multiedit_ignores_malformed_entries(tmp_path):
+def test_extract_claude_multiedit_legacy_per_edit_paths_are_best_effort(tmp_path):
     a = _abs(tmp_path, "src/a.py")
     ev = {"tool_name": "MultiEdit",
           "tool_input": {"edits": [None, "bad", {"file_path": a}]}, "cwd": str(tmp_path)}
@@ -177,6 +180,19 @@ def test_decide_deny_must_consult_when_no_fresh_assessment(tmp_path, monkeypatch
     _seed(db, gca._repo_id(str(tmp_path)), "OTHER_HEAD", ["src/a.py"])
     d = gca.decide(_edit_event(tmp_path))
     assert d.permission == "deny" and d.tier == "must_consult" and d.reason
+
+
+def test_decide_deny_for_codex_apply_patch_event(tmp_path, monkeypatch):
+    # Codex's apply_patch event (tool_input.command = patch string) flows through the SAME decide path.
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: True)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    _seed(db, gca._repo_id(str(tmp_path)), "OTHER_HEAD", ["src/a.py"])
+    patch = "*** Begin Patch\n*** Update File: src/a.py\n@@\n-x\n+y\n*** End Patch\n"
+    ev = {"tool_name": "apply_patch", "tool_input": {"command": patch}, "cwd": str(tmp_path)}
+    d = gca.decide(ev)
+    assert d.permission == "deny" and d.tier == "must_consult"
 
 
 def test_decide_allow_consulted_regardless_of_decision(tmp_path, monkeypatch):
