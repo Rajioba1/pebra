@@ -55,7 +55,7 @@ class SubjectResult:
     seed: int
     transcript: tuple[str, ...] = ()            # message texts, for the blinding scan
     tool_calls: tuple[ToolCallRecord, ...] = ()
-    modified_files: tuple[str, ...] = ()        # `git diff HEAD --name-only`, POSIX rel paths
+    modified_files: tuple[str, ...] = ()        # tracked + untracked repo diffs, excluding harness dirs
     build_ran: bool = False
     build_passed: bool | None = None
     build_error_summary: str = ""

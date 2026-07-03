@@ -104,6 +104,9 @@ def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
         assert name in prompt
     assert "before significant edits" in prompt.lower()
     assert "intended patch" in prompt.lower()
+    lower = prompt.lower()
+    assert "if advisory_check returns recommended_decision=reject" in lower
+    assert "do not edit" in lower
 
 
 def test_subject_prompt_does_not_include_absolute_repo_path_or_engine_name(tmp_path):

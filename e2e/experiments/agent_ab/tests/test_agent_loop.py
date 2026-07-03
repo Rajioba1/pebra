@@ -146,6 +146,52 @@ def test_diff_capture_includes_untracked_files(tmp_path):
     assert r.modified_files == ("new.cs",)
 
 
+def test_diff_capture_filters_harness_artifacts(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".codegraph").mkdir()
+    (tmp_path / ".codegraph" / ".gitignore").write_text("*\n!.gitignore\n")
+    (tmp_path / ".pebra").mkdir()
+    (tmp_path / ".pebra" / "state.json").write_text("{}")
+    (tmp_path / "new.cs").write_text("new")
+
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
+                       client=ScriptedClient([ModelTurn(text="done")]), config=_CFG)
+
+    assert r.modified_files == ("new.cs",)
+
+
+def test_diff_capture_filters_pebra_only_gitignore_change(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("bin/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    with (tmp_path / ".gitignore").open("a", encoding="utf-8") as fh:
+        fh.write("\n.pebra/\n")
+    (tmp_path / "new.cs").write_text("new")
+
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
+                       client=ScriptedClient([ModelTurn(text="done")]), config=_CFG)
+
+    assert r.modified_files == ("new.cs",)
+
+
+def test_diff_capture_keeps_real_gitignore_edits(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("bin/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    with (tmp_path / ".gitignore").open("a", encoding="utf-8") as fh:
+        fh.write("\ndist/\n")
+
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
+                       client=ScriptedClient([ModelTurn(text="done")]), config=_CFG)
+
+    assert r.modified_files == (".gitignore",)
+
+
 def test_max_tokens_tool_use_is_executed_not_dropped(tmp_path, monkeypatch):
     _no_git(monkeypatch, files=("a.cs",))
     turn = ModelTurn(

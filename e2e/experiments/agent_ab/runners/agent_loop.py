@@ -46,6 +46,8 @@ class RunConfig:
 
 
 _SEED_USER = "Please complete the task now, using the tools available."
+_HARNESS_PATH_PREFIXES = (".codegraph/", ".pebra/")
+_PEBRA_GITIGNORE_ENTRY = ".pebra/"
 
 # Inline tool schemas (deterministic; advisory_check comes from the shared contract).
 _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -124,9 +126,30 @@ def _git_diff_name_only(repo_path: Path) -> tuple[str, ...]:
     names = set()
     for proc in (tracked, untracked):
         for ln in proc.stdout.splitlines():
-            if ln.strip():
-                names.add(ln.strip().replace("\\", "/"))
+            name = ln.strip().replace("\\", "/")
+            if name and not _is_harness_diff_path(repo_path, name):
+                names.add(name)
     return tuple(sorted(names))
+
+
+def _is_harness_diff_path(repo_path: Path, name: str) -> bool:
+    if any(name.startswith(prefix) for prefix in _HARNESS_PATH_PREFIXES):
+        return True
+    return name == ".gitignore" and _gitignore_diff_is_pebra_only(repo_path)
+
+
+def _gitignore_diff_is_pebra_only(repo_path: Path) -> bool:
+    proc = subprocess.run(["git", "diff", "--unified=0", "--", ".gitignore"],
+                          cwd=str(repo_path), capture_output=True, text=True)
+    changed: list[str] = []
+    for line in proc.stdout.splitlines():
+        if not line or line.startswith(("diff ", "index ", "--- ", "+++ ", "@@")):
+            continue
+        if line[0] in "+-":
+            changed.append(line[1:].strip())
+    return _PEBRA_GITIGNORE_ENTRY in changed and all(
+        entry in {"", _PEBRA_GITIGNORE_ENTRY} for entry in changed
+    )
 
 
 def _turn_to_content(turn) -> list[dict[str, Any]]:

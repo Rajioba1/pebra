@@ -19,6 +19,14 @@ def test_risky_contract_tasks_allow_known_dependent_scope():
     assert "src/TemplateBlueprint.Controls/Extensions/GridSearchAdapter.cs" in specs["T2"].expected_edit_scope
 
 
+def test_safe_tasks_disambiguate_duplicate_helper_name():
+    specs = {s.task_id: s for s in loader.load_corpus()}
+    for task_id in ("B1", "B2"):
+        description = specs[task_id].description
+        assert "CsvImportService.cs" in description
+        assert "Do not modify ExcelImportService" in description
+
+
 def _write(tmp_path, tasks, oracles):
     t = tmp_path / "tasks.jsonl"
     o = tmp_path / "oracles.jsonl"

@@ -71,11 +71,11 @@ def _risk_level(result: dict[str, Any]) -> str:
 # output would unblind the treatment arm. PEBRA's own model_guidance summary is NOT passed through
 # because it can name the engine's internals.
 _ADVISORY_BY_DECISION = {
-    "reject": ("This change looks high-risk: many parts of the codebase may depend on what you are "
-               "changing. Reconsider making it as proposed, and check everything that references your "
-               "target first."),
-    "ask_human": ("This change may have wide impact. Inspect the code that depends on your target and "
-                  "run the build and tests before committing; consider getting a second opinion."),
+    "reject": ("Do not edit. Stop this change as proposed: many parts of the codebase may depend on "
+               "what you are changing. Inspect dependent code and choose a narrower or safer plan "
+               "before trying again."),
+    "ask_human": ("Do not edit yet. This change may have wide impact. Inspect the code that depends on "
+                  "your target, run the build and tests, and get a second opinion before continuing."),
     "inspect_first": ("Before editing, inspect the code that depends on your target so you understand "
                       "the impact, then run the build and tests."),
     "test_first": ("Add or run tests covering your target before making this change, so any breakage "

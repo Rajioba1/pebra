@@ -66,6 +66,13 @@ def test_real_output_is_vocab_clean_for_every_decision():
             assert term not in blob, f"{decision}: vocab leaked: {term!r}"
 
 
+def test_reject_advisory_is_actionable_without_engine_vocab():
+    out = real._shape_output({"recommended_decision": "reject", "scores": {"expected_loss": 1.0}})
+    advisory = out["advisory"].lower()
+    assert "do not edit" in advisory
+    assert "stop" in advisory
+
+
 def test_advisory_contract_requires_patch_evidence():
     assert "proposed_patch" in advisory_contract.INPUT_SCHEMA["required"]
     with pytest.raises(ValueError, match="requires proposed_patch"):

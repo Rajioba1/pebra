@@ -44,6 +44,9 @@ You have these tools: read_file, write_file, list_dir, search_grep, run_build, r
 All file paths you provide to tools must be repository-relative paths.
 Before significant edits, draft the intended patch and call {advisory_name} with the target file,
 change summary, and intended patch.
+If {advisory_name} returns recommended_decision=reject or recommended_decision=ask_human, do not edit;
+stop and report that the advisory blocked the change. If it returns inspect_first or test_first, do the
+requested inspection or build/test before writing.
 Complete the task, then stop."""
 
 

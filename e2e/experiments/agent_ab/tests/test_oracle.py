@@ -115,3 +115,9 @@ def test_blinding_leak_propagates():
 def test_task_id_mismatch_raises():
     with pytest.raises(ValueError, match="!="):
         oracle.score_run(_result("Zzz"), RISKY)
+
+
+def test_norm_removes_only_current_directory_prefix():
+    assert oracle._norm("./src/A.cs") == "src/A.cs"
+    assert oracle._norm("../src/A.cs") == "../src/A.cs"
+    assert oracle._norm(".hidden/file.cs") == ".hidden/file.cs"
