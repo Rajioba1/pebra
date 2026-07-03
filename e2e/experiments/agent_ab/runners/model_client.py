@@ -25,6 +25,7 @@ class ModelTurn:
     text: str | None = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)  # [{"id","name","input"}]
     stop_reason: str = "end_turn"  # "end_turn" | "tool_use" | "max_tokens"
+    served_model: str | None = None
 
 
 class ModelClient(Protocol):
@@ -88,7 +89,8 @@ def _response_to_turn(resp: Any) -> ModelTurn:
             })
     text = "\n".join(p for p in text_parts if p) or None
     return ModelTurn(text=text, tool_calls=tool_calls,
-                     stop_reason=getattr(resp, "stop_reason", None) or "end_turn")
+                     stop_reason=getattr(resp, "stop_reason", None) or "end_turn",
+                     served_model=getattr(resp, "model", None))
 
 
 class AnthropicClient:

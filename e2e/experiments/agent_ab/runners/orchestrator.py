@@ -51,7 +51,10 @@ def _scoring_mode(corpus: list[TaskSpec]) -> str:
 
 
 def _config() -> dict[str, Any]:
-    return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    if os.environ.get("E2E_AB_MODEL"):
+        cfg["subject"]["model"] = os.environ["E2E_AB_MODEL"]
+    return cfg
 
 
 def _plan(corpus: list[TaskSpec], task_ids: list[str], seeds: int) -> list[tuple[TaskSpec, int]]:
@@ -105,7 +108,16 @@ def _outcome_from_dict(d: dict[str, Any]) -> RunOutcome:
     d = dict(d)
     if d.get("blinding_terms") is not None:
         d["blinding_terms"] = tuple(d["blinding_terms"])
+    if d.get("served_models") is not None:
+        d["served_models"] = tuple(d["served_models"])
     return RunOutcome(**d)
+
+
+def _served_models(outcomes: list[RunOutcome]) -> list[str]:
+    models: set[str] = set()
+    for outcome in outcomes:
+        models.update(outcome.served_models)
+    return sorted(models)
 
 
 def _load_existing_outcomes(path: Path) -> list[RunOutcome]:
@@ -127,7 +139,7 @@ def _completed_pairs(outcomes: list[RunOutcome]) -> set[tuple[str, int]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the blinded agent A/B experiment (gated).")
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--mode", choices=["pilot", "powered"], default="pilot")
+    parser.add_argument("--mode", choices=["smoke", "pilot", "powered"], default="pilot")
     parser.add_argument("--skip-oracle-preflight", action="store_true")
     parser.add_argument("--skip-graph-preflight", action="store_true")
     args = parser.parse_args(argv)
@@ -181,7 +193,8 @@ def main(argv: list[str] | None = None) -> int:
     ab = scorecard.aggregate(outcomes, bootstrap_seed=cfg.get("bootstrap_seed", 0))
     render_report.write_report(ab, out_dir=out_dir / "reports", run_id=args.run_id,
                                scoring_mode=_scoring_mode(planned_specs),
-                               preflight_status=preflight_status)
+                               preflight_status=preflight_status,
+                               served_models=_served_models(outcomes))
     return 0
 
 

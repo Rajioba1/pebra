@@ -66,6 +66,7 @@ class SubjectResult:
     error: str | None = None
     final_stop_reason: str | None = None
     turn_count: int = 0
+    served_models: tuple[str, ...] = ()
 
 
 # ---- scored outcome ---------------------------------------------------------------------------
@@ -100,6 +101,7 @@ class RunOutcome:
     timed_out: bool
     error: str | None = None            # non-None => run failed (e.g. live client error); excluded from metrics
     advisory_effective: bool = False
+    served_models: tuple[str, ...] = ()
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------

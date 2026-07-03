@@ -71,6 +71,7 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         blinding_terms=terms,
         timed_out=result.timed_out,
         error=result.error,
+        served_models=result.served_models,
     )
 
 
@@ -86,6 +87,7 @@ def _error_outcome(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         adherence_state=ADH_DID_NOT_CALL, blinding_leak=False, blinding_terms=(),
         timed_out=result.timed_out, error=result.error,
         advisory_effective=False,
+        served_models=result.served_models,
     )
 
 

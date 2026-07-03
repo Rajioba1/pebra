@@ -39,6 +39,7 @@ class _Resp:
     def __init__(self, content, stop_reason):
         self.content = content
         self.stop_reason = stop_reason
+        self.model = "claude-haiku-4-5-20251001"
 
 
 def test_response_to_turn_maps_text_and_tool_use():
@@ -53,6 +54,7 @@ def test_response_to_turn_maps_text_and_tool_use():
     assert turn.text == "thinking"
     assert turn.tool_calls == [{"id": "tu_1", "name": "advisory_check", "input": {"target_file": "a.cs"}}]
     assert turn.stop_reason == "tool_use"
+    assert turn.served_model == "claude-haiku-4-5-20251001"
 
 
 def test_response_to_turn_joins_text_and_defaults_empty():

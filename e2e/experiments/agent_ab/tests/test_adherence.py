@@ -60,3 +60,9 @@ def test_sham_null_decision_is_no_restriction():
     _, decision, heeded, state = adherence.classify([_adv(None), _write(1)], primary_file=PRIMARY,
                                                      modified_files=[PRIMARY])
     assert decision is None and heeded is None and state == models.ADH_NO_RESTRICTION
+
+
+def test_norm_only_removes_explicit_current_dir_prefix():
+    assert adherence._norm("./src/A.cs") == "src/A.cs"  # noqa: SLF001
+    assert adherence._norm("../src/A.cs") == "../src/A.cs"  # noqa: SLF001
+    assert adherence._norm(".hidden/A.cs") == ".hidden/A.cs"  # noqa: SLF001

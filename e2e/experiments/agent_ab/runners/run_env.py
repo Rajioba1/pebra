@@ -12,6 +12,7 @@ from pathlib import Path
 
 _REPO_ENV = "E2E_TEMPLATE_BLUEPRINT_REPO"
 _KEY_ENV = "ANTHROPIC_API_KEY"
+_MODEL_ENV = "E2E_AB_MODEL"
 _LOCAL_ENV = Path(".pebra") / "agent_ab.env"
 
 
@@ -47,6 +48,8 @@ def live_env(base: Mapping[str, str], *, repo_root: Path | None = None) -> dict[
     local = _read_local_env(local_env_file(repo_root))
     if not env.get(_KEY_ENV) and local.get(_KEY_ENV):
         env[_KEY_ENV] = local[_KEY_ENV]
+    if not env.get(_MODEL_ENV) and local.get(_MODEL_ENV):
+        env[_MODEL_ENV] = local[_MODEL_ENV]
     env["E2E_AB_RUN"] = "1"
     env["E2E_EXTERNAL"] = "1"
     if not env.get(_REPO_ENV):

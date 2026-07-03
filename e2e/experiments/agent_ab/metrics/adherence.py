@@ -58,4 +58,7 @@ def _verified_before_first_write(tool_calls: Sequence[ToolCallRecord]) -> bool:
 
 
 def _norm(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized

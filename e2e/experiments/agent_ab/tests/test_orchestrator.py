@@ -3,6 +3,7 @@ SubjectResult -> score -> aggregate -> report path — all with fakes, no LLM / 
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -38,6 +39,19 @@ def test_plan_rejects_missing_tasks():
         raise AssertionError("missing configured task must fail closed")
 
 
+def test_config_applies_model_override(monkeypatch):
+    monkeypatch.setenv("E2E_AB_MODEL", "claude-haiku-4-5-20251001")
+    cfg = orchestrator._config()
+    assert cfg["subject"]["model"] == "claude-haiku-4-5-20251001"
+
+
+def test_config_has_one_pair_smoke_mode():
+    cfg = orchestrator._config()
+    assert cfg["smoke"]["tasks"] == ["T1"]
+    assert cfg["smoke"]["seeds_per_arm"] == 1
+    assert cfg["smoke"]["total_runs"] == 2
+
+
 def test_write_outcomes_atomic(tmp_path):
     path = tmp_path / "outcomes.json"
     orchestrator._write_outcomes(path, [_outcome("T1", models.ARM_CONTROL)], "rid")
@@ -60,6 +74,14 @@ def test_load_existing_outcomes_roundtrip(tmp_path):
     loaded = orchestrator._load_existing_outcomes(path)
     assert len(loaded) == 1 and loaded[0].task_id == "T1"
     assert loaded[0].blinding_terms == ()  # list -> tuple on reload
+
+
+def test_load_existing_outcomes_roundtrip_served_models(tmp_path):
+    path = tmp_path / "outcomes.json"
+    outcome = dataclasses.replace(_outcome("T1", models.ARM_TREATMENT), served_models=("m1", "m2"))
+    orchestrator._write_outcomes(path, [outcome], "rid")
+    loaded = orchestrator._load_existing_outcomes(path)
+    assert loaded[0].served_models == ("m1", "m2")
 
 
 def _wire(monkeypatch, tmp_path, corpus, run_pair_fn):

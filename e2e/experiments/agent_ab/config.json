@@ -1,7 +1,7 @@
 {
   "status": "runner built + gated; AnthropicClient.send is LIVE (Phase G) - the NotImplementedError stop is gone, so the fail-closed run gate (E2E_AB_RUN=1 + E2E_EXTERNAL=1 + ANTHROPIC_API_KEY) is the SOLE guard and nothing in-tree opens it. Endpoint = build_break_scope until per-task evaluator test projects are authored.",
   "subject": {
-    "model": "claude-sonnet-4-6",
+    "model": "claude-haiku-4-5-20251001",
     "max_tool_calls_per_run": 50,
     "max_wall_seconds_per_run": 600,
     "max_output_tokens_per_turn": 4096,
@@ -10,6 +10,12 @@
   "blinding": {
     "advisory_tool_name": "advisory_check",
     "note": "SAME tool name + output shape in both arms; only the backend content differs."
+  },
+  "smoke": {
+    "tasks": ["T1"],
+    "seeds_per_arm": 1,
+    "total_runs": 2,
+    "claims": "plumbing-validation only; not an efficacy result"
   },
   "pilot": {
     "tasks": ["T1", "B1"],

@@ -139,7 +139,7 @@ def _is_harness_diff_path(repo_path: Path, name: str) -> bool:
 
 
 def _gitignore_diff_is_pebra_only(repo_path: Path) -> bool:
-    proc = subprocess.run(["git", "diff", "--unified=0", "--", ".gitignore"],
+    proc = subprocess.run(["git", "diff", "HEAD", "--unified=0", "--", ".gitignore"],
                           cwd=str(repo_path), capture_output=True, text=True)
     changed: list[str] = []
     for line in proc.stdout.splitlines():
@@ -176,6 +176,7 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
     timed_out = False
     error: str | None = None
     final_stop_reason: str | None = None
+    served_models: list[str] = []
 
     try:
         while True:
@@ -191,6 +192,8 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
                                max_tokens=config.max_output_tokens_per_turn)
             turn_count += 1
             final_stop_reason = turn.stop_reason
+            if turn.served_model and turn.served_model not in served_models:
+                served_models.append(turn.served_model)
             if turn.text:
                 transcript.append(turn.text)
             messages.append({"role": "assistant", "content": _turn_to_content(turn)})
@@ -226,4 +229,5 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
         transcript=tuple(transcript), tool_calls=tuple(records), modified_files=modified,
         duration_seconds=round(time.monotonic() - start, 2), timed_out=timed_out, error=error,
         final_stop_reason=final_stop_reason, turn_count=turn_count,
+        served_models=tuple(served_models),
     )

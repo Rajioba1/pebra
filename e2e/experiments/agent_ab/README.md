@@ -145,12 +145,17 @@ the non-secret gates (`E2E_AB_RUN=1`, `E2E_EXTERNAL=1`) and defaults
 `E2E_TEMPLATE_BLUEPRINT_REPO` to sibling `..\avalonia_template` when that checkout
 exists. In the normal local setup, you only set `ANTHROPIC_API_KEY`.
 
+Default subject model: pinned Haiku snapshot `claude-haiku-4-5-20251001`.
+Override with `E2E_AB_MODEL` only when you intentionally want a different model.
+The report records the served model(s) echoed by the API response, not just the
+configured request string.
+
 PowerShell:
 
 ```powershell
 $env:ANTHROPIC_API_KEY="sk-..."
-$env:E2E_AB_MODE="pilot"        # optional; default: pilot
-$env:E2E_AB_RUN_ID="pilot_001"  # optional; default: run_<mode>
+$env:E2E_AB_MODE="smoke"        # smoke|pilot|powered; default: pilot
+$env:E2E_AB_RUN_ID="smoke_001"  # optional; default: run_<mode>
 nox -s e2e-ab
 ```
 
@@ -159,6 +164,8 @@ Or store the key in the local ignored file once:
 ```powershell
 New-Item -ItemType Directory -Force .pebra | Out-Null
 Set-Content .pebra\agent_ab.env 'ANTHROPIC_API_KEY=sk-ant-...'
+# Optional model override, kept local and ignored:
+# Add-Content .pebra\agent_ab.env 'E2E_AB_MODEL=claude-haiku-4-5-20251001'
 nox -s e2e-ab
 ```
 
@@ -172,13 +179,17 @@ Bash:
 
 ```bash
 ANTHROPIC_API_KEY=sk-... \
-E2E_AB_MODE=pilot \
-E2E_AB_RUN_ID=pilot_001 \
+E2E_AB_MODE=smoke \
+E2E_AB_RUN_ID=smoke_001 \
 nox -s e2e-ab
 ```
 
 If your external checkout is not at sibling `../avalonia_template`, add
 `E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/avalonia_template`.
 
-`E2E_AB_MODE=powered` runs the larger configured mode. The run writes local
-artifacts under `e2e/out/ab/<run-id>/`, which is ignored by git.
+`E2E_AB_MODE=smoke` runs one task x one seed x both arms (2 agent runs). Use it as
+a cheap live plumbing validation: harness artifacts should not cause scope drift,
+the advisory should arrive, adherence should be non-degenerate, and outcomes
+should not be another flat tie. It is **not** an efficacy claim. `pilot` runs the
+12-run directional trial; `powered` runs the larger configured mode. The run
+writes local artifacts under `e2e/out/ab/<run-id>/`, which is ignored by git.

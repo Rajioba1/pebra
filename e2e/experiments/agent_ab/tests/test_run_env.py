@@ -43,6 +43,20 @@ def test_live_env_prefers_process_key_over_local_file(tmp_path):
     assert env["ANTHROPIC_API_KEY"] == "sk-test-process"
 
 
+def test_live_env_reads_model_override_from_local_file(tmp_path):
+    repo_root = tmp_path / "pebra"
+    secret_dir = repo_root / ".pebra"
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "agent_ab.env").write_text(
+        "ANTHROPIC_API_KEY=sk-test\nE2E_AB_MODEL=claude-haiku-4-5-20251001\n",
+        encoding="utf-8",
+    )
+
+    env = run_env.live_env({}, repo_root=repo_root)
+
+    assert env["E2E_AB_MODEL"] == "claude-haiku-4-5-20251001"
+
+
 def test_missing_for_live_env_only_requires_secret_and_repo_path():
     missing = run_env.missing_for_live_env({"E2E_AB_RUN": "1", "E2E_EXTERNAL": "1"})
     assert missing == ["ANTHROPIC_API_KEY=<key>", "E2E_TEMPLATE_BLUEPRINT_REPO=<path>"]

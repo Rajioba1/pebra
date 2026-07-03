@@ -177,6 +177,23 @@ def test_diff_capture_filters_pebra_only_gitignore_change(tmp_path):
     assert r.modified_files == ("new.cs",)
 
 
+def test_diff_capture_filters_staged_pebra_only_gitignore_change(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("bin/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    with (tmp_path / ".gitignore").open("a", encoding="utf-8") as fh:
+        fh.write("\n.pebra/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+    (tmp_path / "new.cs").write_text("new")
+
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
+                       client=ScriptedClient([ModelTurn(text="done")]), config=_CFG)
+
+    assert r.modified_files == ("new.cs",)
+
+
 def test_diff_capture_keeps_real_gitignore_edits(tmp_path):
     import subprocess
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)

@@ -27,6 +27,20 @@ def _ab(*, harm_avoided, over_delta, adherence):
     )
 
 
+def test_to_json_records_served_models():
+    m = _ab(harm_avoided=0.4, over_delta=0.0, adherence=0.9)
+    j = render_report.to_json(m, served_models=["claude-haiku-4-5-20251001"])
+    assert j["served_models"] == ["claude-haiku-4-5-20251001"]
+
+
+def test_markdown_records_served_models():
+    m = _ab(harm_avoided=0.4, over_delta=0.0, adherence=0.9)
+    md = render_report.render_markdown(
+        m, run_id="r", served_models=["claude-haiku-4-5-20251001"],
+    )
+    assert "claude-haiku-4-5-20251001" in md
+
+
 def test_markdown_renders_all_endpoints():
     md = render_report.render_markdown(_ab(harm_avoided=0.4, over_delta=0.0, adherence=0.9),
                                        run_id="r")

@@ -53,12 +53,14 @@ def conclusion(m: ABMetrics, *, preflight_status: dict | None = None) -> str:
 
 
 def to_json(
-    m: ABMetrics, *, scoring_mode: str = "build_break_scope", preflight_status: dict | None = None
+    m: ABMetrics, *, scoring_mode: str = "build_break_scope", preflight_status: dict | None = None,
+    served_models: list[str] | None = None,
 ) -> dict:
     preflight_status = preflight_status or {"oracle": "passed", "graph": "passed"}
     return {
         "scoring_mode": scoring_mode,
         "preflight_status": preflight_status,
+        "served_models": served_models or [],
         "endpoints": {
             "harm_rate": {"control": m.control.harm_rate, "treatment": m.treatment.harm_rate},
             "harm_avoided_rate": m.harm_avoided_rate,
@@ -92,7 +94,7 @@ _SCORING_MODE_NOTE = {
 
 def render_markdown(
     m: ABMetrics, *, run_id: str, scoring_mode: str = "build_break_scope",
-    preflight_status: dict | None = None,
+    preflight_status: dict | None = None, served_models: list[str] | None = None,
 ) -> str:
     preflight_status = preflight_status or {"oracle": "passed", "graph": "passed"}
     lines = [
@@ -101,6 +103,7 @@ def render_markdown(
         f"> Scoring mode: **{scoring_mode}** — "
         f"{_SCORING_MODE_NOTE.get(scoring_mode, scoring_mode)}.",
         f"> Preflight: oracle={preflight_status.get('oracle')}, graph={preflight_status.get('graph')}.",
+        f"> Served model(s): {', '.join(served_models or []) or 'n/a'}.",
         "> Paired, blinded pilot. Directional evidence only; a pilot makes no statistical-significance",
         "> claim. Null / net-negative outcomes are valid and reported below.",
         "",
@@ -139,7 +142,7 @@ def render_markdown(
 
 def write_report(
     m: ABMetrics, *, out_dir, run_id: str, scoring_mode: str = "build_break_scope",
-    preflight_status: dict | None = None,
+    preflight_status: dict | None = None, served_models: list[str] | None = None,
 ):
     from pathlib import Path
     out = Path(out_dir)
@@ -149,11 +152,18 @@ def write_report(
     md_path.write_text(
         render_markdown(
             m, run_id=run_id, scoring_mode=scoring_mode, preflight_status=preflight_status,
+            served_models=served_models,
         ),
         encoding="utf-8",
     )
     json_path.write_text(
-        json.dumps(to_json(m, scoring_mode=scoring_mode, preflight_status=preflight_status), indent=2),
+        json.dumps(
+            to_json(
+                m, scoring_mode=scoring_mode, preflight_status=preflight_status,
+                served_models=served_models,
+            ),
+            indent=2,
+        ),
         encoding="utf-8",
     )
     return md_path, json_path
