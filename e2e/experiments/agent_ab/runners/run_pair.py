@@ -147,8 +147,9 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
 
     run_gate.check_gate()
     cfg = _load_config()["subject"]
+    model = os.environ.get("E2E_AB_MODEL") or cfg["model"]
     run_cfg = agent_loop.RunConfig(
-        model=cfg["model"],
+        model=model,
         max_tool_calls_per_run=cfg.get("max_tool_calls_per_run", 50),
         max_wall_seconds_per_run=cfg.get("max_wall_seconds_per_run", 600),
         max_output_tokens_per_turn=cfg.get("max_output_tokens_per_turn", 4096),

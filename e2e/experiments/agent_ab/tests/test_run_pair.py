@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from e2e.experiments.agent_ab.models import TaskSpec
-from e2e.experiments.agent_ab.runners import run_control, run_gate, run_pair
+from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
+from e2e.experiments.agent_ab.runners import agent_loop, evaluator, model_client, run_control, run_gate, run_pair
 
 _SPEC = TaskSpec("T1", "d", ("a.cs",), "risky", ("a.cs",), "build_failure", True)
 
@@ -38,6 +38,42 @@ def test_invoke_subject_agent_gated_fail_closed(monkeypatch, tmp_path):
     # The gate is the FIRST statement; it must raise before any config load / AnthropicClient / clone.
     with pytest.raises(run_gate.RunGateError):
         run_pair._invoke_subject_agent(_dummy_setup(tmp_path), _SPEC, 0)
+
+
+def test_invoke_subject_agent_honors_model_env_override(monkeypatch, tmp_path):
+    created: dict[str, str] = {}
+
+    class CapturingClient:
+        def __init__(self, *, model, api_key):
+            created["model"] = model
+            created["api_key"] = api_key
+
+    monkeypatch.setenv("E2E_AB_RUN", "1")
+    monkeypatch.setenv("E2E_EXTERNAL", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("E2E_AB_MODEL", "override-model")
+    monkeypatch.setattr(run_pair, "_load_config", lambda: {
+        "subject": {
+            "model": "config-model",
+            "max_tool_calls_per_run": 5,
+            "max_wall_seconds_per_run": 10,
+            "max_output_tokens_per_turn": 100,
+            "tools": ["read_file"],
+        }
+    })
+    monkeypatch.setattr(model_client, "AnthropicClient", CapturingClient)
+    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config: SubjectResult(
+        task_id=spec.task_id, arm=setup.arm, seed=seed,
+    ))
+    monkeypatch.setattr(evaluator, "run_evaluator", lambda repo_path, task_id: (
+        SimpleNamespace(ran=True, passed=True, error_summary=""),
+        SimpleNamespace(ran=True, passed=True, error_summary=""),
+        False,
+    ))
+
+    run_pair._invoke_subject_agent(_dummy_setup(tmp_path), _SPEC, 0)
+
+    assert created == {"model": "override-model", "api_key": "sk-test"}
 
 
 def test_run_control_is_gated(monkeypatch, tmp_path):
