@@ -460,6 +460,43 @@ def test_status_index_path_selects_non_default_codegraph_dir(tmp_path) -> None:
     assert ev.symbol_caller_count == 1
 
 
+def test_highest_file_fanin_percentile_zero_fanin_is_no_impact_signal(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "leaf", "function", "leaf", "leaf", "src/leaf.py", 1, 2)
+    for i in range(10):
+        _node(con, f"f{i}", "function", f"f{i}", f"f{i}", f"src/f{i}.py", 1, 2)
+    con.commit()
+    con.close()
+
+    got = cga.CodeGraphAdapter(status_fn=lambda repo_root: FRESH).highest_file_fanin_percentile(
+        str(tmp_path / "src" / "leaf.py"), str(tmp_path)
+    )
+
+    assert got is None
+
+
+def test_highest_file_fanin_percentile_opens_uri_sensitive_index_path(tmp_path) -> None:
+    cg_dir = tmp_path / "index#with-chars"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "target", "function", "target", "target", "src/hot.py", 1, 2)
+    _node(con, "caller", "function", "caller", "caller", "src/caller.py", 1, 2)
+    _edge(con, "caller", "target")
+    con.commit()
+    con.close()
+    status = {**FRESH, "indexPath": str(cg_dir)}
+
+    got = cga.CodeGraphAdapter(status_fn=lambda repo_root: status).highest_file_fanin_percentile(
+        str(tmp_path / "src" / "hot.py"), str(tmp_path)
+    )
+
+    assert got is not None and got > 0.0
+
+
 def test_missing_db_returns_unresolved(tmp_path) -> None:
     action = CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=_PATCH)
     ev = _adapter().fanin(action, str(tmp_path))  # no .codegraph dir

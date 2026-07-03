@@ -6,8 +6,10 @@ import argparse
 from typing import Sequence
 
 from pebra.cli import accept_risk as accept_risk_cmd
+from pebra.cli import agent_init as agent_init_cmd
 from pebra.cli import assess as assess_cmd
 from pebra.cli import dashboard as dashboard_cmd
+from pebra.cli import gate_check as gate_check_cmd
 from pebra.cli import graph_stats as graph_stats_cmd
 from pebra.cli import learn as learn_cmd
 from pebra.cli import promote as promote_cmd
@@ -22,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     assess_cmd.register(subparsers)
     accept_risk_cmd.register(subparsers)
+    agent_init_cmd.register(subparsers)
     verify_cmd.register(subparsers)
     record_outcome_cmd.register(subparsers)
     learn_cmd.register(subparsers)
@@ -30,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_cmd.register(subparsers)
     setup_graph_cmd.register(subparsers)
     graph_stats_cmd.register(subparsers)
+    gate_check_cmd.register(subparsers)
     return parser
 
 

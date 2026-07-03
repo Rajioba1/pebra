@@ -1,0 +1,40 @@
+"""`pebra gate-check` — the universal must-consult gate decision as a stdin/stdout query.
+
+Reads a PreToolUse-style host event as JSON on stdin and prints the decision
+(``{permission, tier, reason, warn}``) as JSON. It is a pure QUERY: it always exits 0 and never blocks
+by itself — the host-specific enforcement wrappers (Claude ``gate-hook``, Codex ``apply_patch`` hook,
+pre-commit, the A/B write dispatch) turn a ``deny``/``ask`` into an actual block. Fail-open: unreadable
+stdin -> allow. No ``core``/``app``/``composition`` import; the decision lives in the adapter.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from typing import Any
+
+from pebra.adapters import gate_check_adapter as gca
+
+
+def register(subparsers: Any) -> None:
+    p = subparsers.add_parser(
+        "gate-check",
+        help="Read a host edit event on stdin; print the pre-edit gate decision (allow/deny/ask) as JSON.",
+    )
+    p.add_argument("--db", default=None, help="Override the assessment store path (default: <repo>/.pebra/pebra.db).")
+    p.set_defaults(func=run_gate_check)
+
+
+def run_gate_check(args: Any) -> int:
+    raw = sys.stdin.read()
+    try:
+        event = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        print(json.dumps(gca.GateDecision("allow", "fail_open", warn="gate: unreadable event").as_dict()))
+        return 0
+    if not isinstance(event, dict):
+        print(json.dumps(gca.GateDecision("allow", "fail_open", warn="gate: event must be a JSON object").as_dict()))
+        return 0
+    decision = gca.decide(event, db_path=getattr(args, "db", None))
+    print(json.dumps(decision.as_dict()))
+    return 0

@@ -544,6 +544,50 @@ class CodeGraphAdapter:
         finally:
             con.close()
 
+    def highest_file_fanin_percentile(self, file_path: str, repo_root: str) -> float | None:
+        """Per-symbol MAX fan-in percentile for a file: fractional_rank(mx, repo distribution) where
+        ``mx`` is the largest per-symbol distinct-caller count in the file. This is DISTINCT from
+        ``file_fanin_rollup``'s ``file_symbol_fanin_rollup_percentile`` (whole-file aggregate); it asks
+        "is the hottest symbol in this file high fan-in?" Returns None when the graph is
+        absent/stale/uninitialized/below-schema (the caller treats None as 'no evidence' -> fail open).
+        """
+        status = self._status_fn(repo_root)
+        if status is None:
+            return None
+        runtime_ver = status.get("version")
+        if runtime_ver and not in_accepted_range(runtime_ver):
+            return None
+        if status.get("initialized") is False or not _is_fresh(status):
+            return None
+        db_path = _db_path_from_status(repo_root, status)
+        if not db_path.is_file():
+            return None
+        try:
+            con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        except (sqlite3.Error, OSError, ValueError):
+            return None
+        con.row_factory = sqlite3.Row
+        try:
+            if self._schema_version(con) < _MIN_SCHEMA_VERSION:
+                return None
+            rel = _repo_relative(file_path, repo_root)
+            edge_ph = ",".join("?" * len(_FANIN_EDGE_KINDS))
+            call_ph = ",".join("?" * len(_CALLABLE_KINDS))
+            mx = int(con.execute(
+                f"SELECT COALESCE(MAX(cnt), 0) AS mx FROM ("
+                f"SELECT COUNT(DISTINCT e.source) AS cnt FROM edges e JOIN nodes n ON n.id = e.target "
+                f"WHERE n.file_path = ? AND n.kind IN ({call_ph}) AND e.kind IN ({edge_ph}) "
+                f"GROUP BY e.target)",
+                (rel, *_CALLABLE_KINDS, *_FANIN_EDGE_KINDS),
+            ).fetchone()["mx"])
+            if mx <= 0:
+                return None
+            return fractional_rank(mx, self._distribution(con, db_path))
+        except (sqlite3.Error, OSError):
+            return None
+        finally:
+            con.close()
+
     def _fanin(
         self, con: sqlite3.Connection, node_ids: list[str], db_path: Path
     ) -> tuple[int, float]:
