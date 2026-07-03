@@ -22,6 +22,8 @@ def register(subparsers: Any) -> None:
         help="Read a host edit event on stdin; print the pre-edit gate decision (allow/deny/ask) as JSON.",
     )
     p.add_argument("--db", default=None, help="Override the assessment store path (default: <repo>/.pebra/pebra.db).")
+    p.add_argument("--consult-only", action="store_true",
+                   help="Stop at must-consult; skip the ask verdict tier (for hosts with no human approver, e.g. the A/B runner).")
     p.set_defaults(func=run_gate_check)
 
 
@@ -35,6 +37,7 @@ def run_gate_check(args: Any) -> int:
     if not isinstance(event, dict):
         print(json.dumps(gca.GateDecision("allow", "fail_open", warn="gate: event must be a JSON object").as_dict()))
         return 0
-    decision = gca.decide(event, db_path=getattr(args, "db", None))
+    decision = gca.decide(event, db_path=getattr(args, "db", None),
+                          consult_only=getattr(args, "consult_only", False))
     print(json.dumps(decision.as_dict()))
     return 0

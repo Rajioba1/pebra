@@ -121,12 +121,17 @@ def scorecard(*, repo_root: Path | str, db: Path | str) -> dict:
     return _run_json(["scorecard", "--json", "--repo-root", str(repo_root), "--db", str(db)])
 
 
-def gate_check(event: dict, *, db: Path | str) -> dict:
+def gate_check(event: dict, *, db: Path | str, consult_only: bool = False) -> dict:
     """`pebra gate-check` — the pure pre-edit gate DECISION for a proposed edit. The host event
     (``tool_name``/``tool_input``/``cwd``) goes in on STDIN; a ``{permission, tier, reason, warn}`` JSON
     comes out. gate-check always exits 0 (allow/deny/ask as data) — the caller enforces. The event
-    carries ``cwd=repo_root``; the store is the shared clone db written by ``pebra assess``."""
+    carries ``cwd=repo_root``; the store is the shared clone db written by ``pebra assess``.
+
+    ``consult_only`` skips the ask verdict tier — the A/B runner has NO human approver, so an ``ask``
+    would be an un-resolvable block that conflates "PEBRA escalated" with "no approver present"."""
     cmd = [_python(), "-m", "pebra", "gate-check", "--db", str(db)]
+    if consult_only:
+        cmd.append("--consult-only")
     env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
     proc = subprocess.run(cmd, input=json.dumps(event), capture_output=True, text=True,
                           env=env, timeout=DEFAULT_TIMEOUT_SECONDS)

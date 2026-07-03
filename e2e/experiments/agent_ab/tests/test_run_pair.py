@@ -118,6 +118,29 @@ def test_prepare_arm_replaces_stale_clone_and_indexes_actual_arm(monkeypatch, tm
     assert calls == [stale]
 
 
+def test_treatment_gate_check_backend_uses_consult_only(monkeypatch, tmp_path):
+    captured = {}
+
+    def _gate_check(event, *, db, consult_only=False):
+        captured["event"] = event
+        captured["db"] = db
+        captured["consult_only"] = consult_only
+        return {"permission": "allow", "tier": "consulted"}
+
+    monkeypatch.setattr(run_pair.cli_harness, "gate_check", _gate_check)
+
+    db = tmp_path / "pebra.db"
+    backend = run_pair._gate_check_backend("treatment", db)
+    result = backend({"tool_name": "Write"})
+
+    assert result == {"permission": "allow", "tier": "consulted"}
+    assert captured == {
+        "event": {"tool_name": "Write"},
+        "db": db,
+        "consult_only": True,
+    }
+
+
 def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):
     monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
     monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",

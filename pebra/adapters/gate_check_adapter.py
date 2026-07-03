@@ -4,11 +4,12 @@ This is the single shared primitive every enforcement adapter (Claude PreToolUse
 apply_patch hook, the A/B experiment's write dispatch, a pre-commit gate) wraps, so production and the
 experiment can never drift. It answers one question for a proposed edit: allow / deny / ask.
 
-Phase 2 = MUST-CONSULT only: a graph-IMPACTFUL target with no fresh assessment for the current
-(repo_id, HEAD, path) is DENIED once (the agent must run ``pebra assess``, then re-issue); once an
-assessment exists it is ALLOWED regardless of that assessment's decision (must-consult, NOT must-obey —
-a hard verdict-block would punish a correct coordinated fix). The narrow ask/hard-deny tiers are a
-later slice.
+Phase 2 = MUST-CONSULT: a graph-IMPACTFUL target with no fresh assessment for the current
+(repo_id, HEAD, path) is DENIED once (the agent must run ``pebra assess``, then re-issue).
+
+Phase 6 = ASK-ONLY verdict tier: once a matching assessment exists, ``reject`` / ``ask_human`` become
+host-overridable ASK, not hard-deny. ``consult_only`` disables that verdict tier for humanless hosts
+such as the A/B runner, keeping the intervention to must-consult only.
 
 Hard invariants:
 - **Read-only**: computes repo_id via ``paths.find_repo_root`` + sha1 directly; it must NEVER call
@@ -43,6 +44,8 @@ _ANCHOR_THRESHOLD = 0.75  # matches destructive_op_model._GOD_NODE_THRESHOLD (im
 _QUERY_LIMIT = 200
 _IMPORT_GRAPH_REL = Path(".pebra") / "import_graph.json"
 
+# Engine verdicts that, once consulted, escalate to a host-approval ASK (Phase 6 verdict tier).
+_REVIEW_DECISIONS = frozenset({"ask_human", "reject"})
 _EDIT_TOOLS = ("Edit", "Write")
 _APPLY_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$", re.MULTILINE)
 
@@ -102,7 +105,7 @@ def extract_target_paths(event: dict[str, Any]) -> list[str]:
 
 # ---- decision ------------------------------------------------------------------------------
 
-def decide(event: dict[str, Any], *, db_path: str | None = None) -> GateDecision:
+def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: bool = False) -> GateDecision:
     targets = extract_target_paths(event)
     if not targets:
         return GateDecision("allow", "pass")
@@ -125,15 +128,27 @@ def decide(event: dict[str, Any], *, db_path: str | None = None) -> GateDecision
     rows = _query_assessments(db, _repo_id(repo_root))
     if rows is None:
         return GateDecision("allow", "fail_open", warn="gate: assessment store unavailable")
-    if _fresh_match(rows, targets, head, repo_root):
-        return GateDecision("allow", "consulted")
-    return GateDecision("deny", "must_consult", reason=_deny_reason(targets, head))
+    matched = _matched_row(rows, targets, head, repo_root)
+    if matched is None:
+        return GateDecision("deny", "must_consult", reason=_deny_reason(targets, head))
+    # Phase 6 verdict tier: once consulted, if the assessment's own decision was ask_human/reject,
+    # escalate to ASK (overridable by a host approval prompt) — never a hard deny, never a blind allow.
+    # ``consult_only`` (the A/B experiment, which has no human approver) keeps the Phase 5 allow.
+    if not consult_only and str(matched.get("decision")) in _REVIEW_DECISIONS:
+        return GateDecision("ask", "consulted_review", reason=_review_reason(targets, head))
+    return GateDecision("allow", "consulted")
 
 
 def _deny_reason(targets: list[str], head: str) -> str:
     names = ", ".join(os.path.basename(t) for t in targets[:3])
     return (f"Consultation required before editing {names} (high-impact at commit {head[:8]}). "
             "Run the pre-edit assessment for the target file(s), then re-issue the edit.")
+
+
+def _review_reason(targets: list[str], head: str) -> str:
+    names = ", ".join(os.path.basename(t) for t in targets[:3])
+    return (f"PEBRA assessed editing {names} as high-risk (commit {head[:8]}). Approve in the host "
+            "prompt to proceed, or reconsider a narrower or safer change.")
 
 
 # ---- impact pre-filter ---------------------------------------------------------------------
@@ -222,9 +237,10 @@ def _query_assessments(db_path: str, repo_id: str) -> list[dict[str, Any]] | Non
         con.close()
 
 
-def _fresh_match(rows: list[dict[str, Any]], targets: list[str], head_sha: str, repo_root: str) -> bool:
-    """True iff some assessment row covers ALL targets: same assessed_commit AND every target path is
-    inside that row's (path-filtered) safe_scope.files."""
+def _matched_row(rows: list[dict[str, Any]], targets: list[str], head_sha: str,
+                 repo_root: str) -> dict[str, Any] | None:
+    """The first assessment row covering ALL targets (same assessed_commit AND every target path inside
+    its path-filtered safe_scope.files), or None. The row carries ``decision`` for the verdict tier."""
     for row in rows:
         # A corrupt/partial row must never crash a host edit — skip it and keep the gate fail-open.
         try:
@@ -235,10 +251,14 @@ def _fresh_match(rows: list[dict[str, Any]], targets: list[str], head_sha: str, 
                      .get("safe_scope") or {}).get("files") or []
             candidates = _filter_path_entries(files)
             if all(_paths_match(t, candidates, repo_root) for t in targets):
-                return True
+                return row
         except (ValueError, TypeError, AttributeError):
             continue
-    return False
+    return None
+
+
+def _fresh_match(rows: list[dict[str, Any]], targets: list[str], head_sha: str, repo_root: str) -> bool:
+    return _matched_row(rows, targets, head_sha, repo_root) is not None
 
 
 def _filter_path_entries(files: list[str]) -> list[str]:
@@ -258,4 +278,7 @@ def _paths_match(target: str, candidates: list[str], repo_root: str) -> bool:
 
 
 def _norm(path: str) -> str:
-    return os.path.normcase(os.path.normpath(path))
+    # realpath (not just normpath) so short-name (Windows 8.3) and symlink/junction forms canonicalize
+    # to the SAME string — else a legitimately-assessed target can miss its assessment and spuriously
+    # re-trigger must_consult. realpath resolves the existing ancestor and keeps a non-existent leaf.
+    return os.path.normcase(os.path.realpath(path))

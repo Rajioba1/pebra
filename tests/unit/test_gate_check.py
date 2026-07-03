@@ -86,6 +86,20 @@ def test_paths_match_is_exact_not_prefix(tmp_path):
     assert not gca._paths_match(_abs(tmp_path, "src/a.py"), ["src/ab.py"], str(tmp_path))
 
 
+def test_paths_match_canonicalizes_symlinked_repo_root(tmp_path):
+    # A target seen through a symlink/junction (or Windows 8.3 short name) must still match a candidate
+    # resolved against the real repo root — else a real assessment is missed and must_consult re-fires.
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    try:
+        os.symlink(real, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        import pytest
+        pytest.skip("symlinks not supported on this platform/privilege")
+    assert gca._paths_match(str(link / "a.py"), ["a.py"], str(real))
+
+
 # ---- store freshness lookup (seeded temp db) ----------------------------------------------
 
 def _seed(db_path: Path, repo_id: str, head: str, files: list[str], decision: str = "inspect_first"):
@@ -195,14 +209,76 @@ def test_decide_deny_for_codex_apply_patch_event(tmp_path, monkeypatch):
     assert d.permission == "deny" and d.tier == "must_consult"
 
 
-def test_decide_allow_consulted_regardless_of_decision(tmp_path, monkeypatch):
+def _consulted(tmp_path, monkeypatch, decision: str):
     monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: True)
     monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
     db = tmp_path / ".pebra" / "pebra.db"
     db.parent.mkdir(parents=True)
-    _seed(db, gca._repo_id(str(tmp_path)), "HEAD1", ["src/a.py"], decision="reject")
-    d = gca.decide(_edit_event(tmp_path))  # must-consult: allow even though decision was 'reject'
+    _seed(db, gca._repo_id(str(tmp_path)), "HEAD1", ["src/a.py"], decision=decision)
+
+
+def test_decide_allow_consulted_when_decision_is_proceed(tmp_path, monkeypatch):
+    _consulted(tmp_path, monkeypatch, "proceed")
+    d = gca.decide(_edit_event(tmp_path))
     assert d.permission == "allow" and d.tier == "consulted"
+
+
+def test_decide_ask_when_matched_assessment_is_reject(tmp_path, monkeypatch):
+    # Phase 6 verdict tier: a fresh assessment whose decision was 'reject' escalates to ASK (overridable
+    # by host approval), NOT a hard deny and NOT a blind allow.
+    _consulted(tmp_path, monkeypatch, "reject")
+    d = gca.decide(_edit_event(tmp_path))
+    assert d.permission == "ask" and d.tier == "consulted_review" and d.reason
+
+
+def test_decide_ask_when_matched_assessment_is_ask_human(tmp_path, monkeypatch):
+    _consulted(tmp_path, monkeypatch, "ask_human")
+    d = gca.decide(_edit_event(tmp_path))
+    assert d.permission == "ask" and d.tier == "consulted_review"
+
+
+def test_deny_reason_is_blinding_neutral():
+    # The must-consult deny reason DOES reach the A/B agent; it must carry no engine/experiment vocab
+    # or the blinding pre-send scan would fail-closed and abort real runs.
+    reason = gca._deny_reason(["src/a.py"], "abcdef1234").lower()
+    for term in ("pebra", "codegraph", "graph", "fan-in", "percentile", "experiment", "oracle",
+                 "evaluation", "trial", "blinded"):
+        assert term not in reason, f"leak term {term!r} in deny reason"
+
+
+def test_decide_consult_only_skips_verdict_tier(tmp_path, monkeypatch):
+    # In the A/B experiment (no human approver), consult_only keeps the Phase 5 must-consult behavior:
+    # a matched reject is ALLOWED (not asked), so 'ask' is never conflated with 'blocked forever'.
+    _consulted(tmp_path, monkeypatch, "reject")
+    d = gca.decide(_edit_event(tmp_path), consult_only=True)
+    assert d.permission == "allow" and d.tier == "consulted"
+
+
+def test_decide_consult_only_allows_ask_human(tmp_path, monkeypatch):
+    _consulted(tmp_path, monkeypatch, "ask_human")
+    d = gca.decide(_edit_event(tmp_path), consult_only=True)
+    assert d.permission == "allow" and d.tier == "consulted"
+
+
+def test_review_reason_offers_host_approval_no_false_accept_risk(tmp_path, monkeypatch):
+    _consulted(tmp_path, monkeypatch, "reject")
+    reason = gca.decide(_edit_event(tmp_path)).reason.lower()
+    assert "approve" in reason  # host-approval override is surfaced
+    assert "accept-risk" not in reason  # not promised while sanction binding is deferred
+
+
+def test_gate_check_cli_passes_consult_only(monkeypatch, capsys):
+    captured = {}
+
+    def fake_decide(event, *, db_path=None, consult_only=False):
+        captured["consult_only"] = consult_only
+        return gca.GateDecision("allow", "pass")
+
+    monkeypatch.setattr(gca, "decide", fake_decide)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"tool_name": "Edit", "tool_input": {"file_path": "a"}, "cwd": "."})))
+    gc_cmd.run_gate_check(build_parser().parse_args(["gate-check", "--consult-only"]))
+    assert captured["consult_only"] is True
 
 
 def test_decide_never_mutates_repo(tmp_path, monkeypatch):

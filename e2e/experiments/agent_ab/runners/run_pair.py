@@ -74,7 +74,9 @@ def _gate_check_backend(arm: str, db_path: Path) -> Callable[..., dict[str, Any]
     shared assessment store); control's sham always allows — so a write is never BLOCKED in control, and
     the only arm difference is the intervention, not the tool shape (blinding preserved)."""
     if arm == models.ARM_TREATMENT:
-        return lambda event: cli_harness.gate_check(event, db=db_path)
+        # consult_only: the A/B has no human approver, so the ask verdict tier is disabled here — the
+        # experiment measures must-consult only; an unresolved 'ask' would bias treatment's completion.
+        return lambda event: cli_harness.gate_check(event, db=db_path, consult_only=True)
     return lambda event: {"permission": "allow", "tier": "pass"}
 
 
