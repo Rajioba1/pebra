@@ -47,6 +47,15 @@ def test_file_tools_hide_codegraph_directory(tmp_path):
     assert "error" in tool_impl.write_file(".codegraph/codegraph.db", "x", tmp_path)
 
 
+def test_file_tools_hide_pebra_directory(tmp_path):
+    (tmp_path / ".pebra").mkdir()
+    (tmp_path / ".pebra" / "pebra.db").write_text("needle")
+    assert ".pebra/" not in tool_impl.list_dir(None, tmp_path)["entries"]
+    assert "error" in tool_impl.read_file(".pebra/pebra.db", tmp_path)
+    assert "error" in tool_impl.write_file(".pebra/pebra.db", "x", tmp_path)
+    assert tool_impl.search_grep("needle", tmp_path)["matches"] == []
+
+
 def test_search_grep_finds_match(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "x.cs").write_text("line one\nfind ME here\n")

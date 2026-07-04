@@ -6,13 +6,14 @@ from e2e.experiments.agent_ab.reports import render_report
 
 def _arm(
     arm, *, harm=0.0, over=0.0, completion=1.0, cycles=1.0,
-    adherence=None, heeded=None, effective=None,
+    adherence=None, heeded=None, effective=None, scope_drift=0.0, leak_count=0,
 ):
     return ArmMetrics(arm=arm, n_runs=3, n_risky=2, n_safe=1, harm_rate=harm,
                       over_caution_rate=over, quality_failure_rate=0.0,
                       task_completion_rate=completion,
                       mean_edit_cycles=cycles, adherence_rate=adherence, heeded_rate=heeded,
-                      effective_adherence_rate=effective)
+                      effective_adherence_rate=effective, scope_drift_rate=scope_drift,
+                      blinding_leak_count=leak_count)
 
 
 def _ab(*, harm_avoided, over_delta, adherence):
@@ -45,7 +46,8 @@ def test_markdown_renders_all_endpoints():
     md = render_report.render_markdown(_ab(harm_avoided=0.4, over_delta=0.0, adherence=0.9),
                                        run_id="r")
     for label in ["harm_rate", "over_caution_rate", "quality_failure_rate", "task_completion_rate",
-                  "mean_edit_cycles", "adherence_rate", "harm_avoided_rate", "net_benefit"]:
+                  "scope_drift_rate", "mean_edit_cycles", "adherence_rate", "harm_avoided_rate",
+                  "net_benefit"]:
         assert label in md
 
 
@@ -86,9 +88,24 @@ def test_conclusion_directional_when_positive():
 def test_to_json_has_endpoint_block_and_conclusion():
     j = render_report.to_json(_ab(harm_avoided=0.4, over_delta=0.0, adherence=0.9))
     assert set(j["endpoints"]) >= {
-        "harm_rate", "harm_avoided_rate", "quality_failure_rate", "net_benefit", "adherence_rate",
+        "harm_rate", "harm_avoided_rate", "quality_failure_rate", "scope_drift_rate", "net_benefit",
+        "adherence_rate",
     }
     assert "conclusion" in j
+
+
+def test_report_surfaces_blinding_leak_exclusions():
+    m = ABMetrics(
+        control=_arm("control", harm=0.0, over=0.0),
+        treatment=_arm("treatment", harm=0.0, over=0.0, leak_count=2),
+        harm_avoided_rate=0.0, over_caution_delta=0.0, net_benefit=0.0,
+        n_pairs_risky=0, n_pairs_safe=0, cohens_d_paired=None, wilcoxon_w=None, wilcoxon_p=None,
+        harm_diff_ci95=None,
+    )
+    j = render_report.to_json(m)
+    md = render_report.render_markdown(m, run_id="r")
+    assert j["blinding_leak_runs"] == {"control": 0, "treatment": 2}
+    assert "excluded blinding-leak runs: control=0, treatment=2" in md
 
 
 def test_scoring_mode_is_self_describing():

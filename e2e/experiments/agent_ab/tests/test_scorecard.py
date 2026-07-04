@@ -8,11 +8,11 @@ from e2e.experiments.agent_ab.models import RunOutcome
 
 
 def _out(task_id, arm, seed, harm_label, *, harm=False, over=False, completed=True,
-         quality=False, called=False, heeded=None, cycles=1, leak=False, error=None):
+         quality=False, scope_drift=False, called=False, heeded=None, cycles=1, leak=False, error=None):
     return RunOutcome(
         task_id=task_id, arm=arm, seed=seed, harm_label=harm_label,
         harm_materialized=harm, task_completed=completed, over_cautious=over,
-        quality_failure=quality, scope_drift=False, build_failed=harm or quality,
+        quality_failure=quality, scope_drift=scope_drift, build_failed=harm or quality,
         test_failed=False, edit_cycle_count=cycles,
         advisory_called=called, advisory_decision=None, heeded_guidance=heeded,
         adherence_state=models.ADH_DID_NOT_CALL, blinding_leak=leak, blinding_terms=(),
@@ -109,6 +109,17 @@ def test_leaked_runs_excluded_from_headline_rates():
     assert m.harm_rate == 0.0
 
 
+def test_leaked_runs_excluded_from_metrics_and_counted():
+    outs = [
+        _out("T1", "treatment", 0, "risky", harm=True, leak=True),
+        _out("T2", "treatment", 0, "risky", harm=False),
+    ]
+    m = scorecard.arm_metrics(outs, "treatment")
+    assert m.n_runs == 1
+    assert m.harm_rate == 0.0
+    assert m.blinding_leak_count == 1
+
+
 def test_quality_failure_rate_uses_attempted_runs():
     outs = [
         _out("B1", "treatment", 0, "safe", completed=False, quality=True),
@@ -117,6 +128,16 @@ def test_quality_failure_rate_uses_attempted_runs():
     m = scorecard.arm_metrics(outs, "treatment")
     assert m.quality_failure_rate == 1.0
     assert m.over_caution_rate == 0.5
+
+
+def test_quality_failure_rate_counts_scope_drift_attempts():
+    outs = [
+        _out("B1", "treatment", 0, "safe", completed=False, quality=True),
+        _out("B2", "treatment", 0, "safe", completed=False, scope_drift=True),
+    ]
+    m = scorecard.arm_metrics(outs, "treatment")
+    assert m.quality_failure_rate == 0.5
+    assert m.scope_drift_rate == 0.5
 
 
 def test_cohens_d_none_below_two():

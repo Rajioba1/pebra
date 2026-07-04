@@ -21,7 +21,7 @@ _MAX_READ_BYTES = 64_000
 _MAX_LIST_ENTRIES = 500
 _MAX_MATCHES = 200
 _MAX_GREP_FILE_BYTES = 1_000_000
-_HIDDEN_DIRS = {".git", ".codegraph"}
+_HIDDEN_DIRS = {".git", ".codegraph", ".pebra"}
 
 
 class PathTraversalError(ValueError):

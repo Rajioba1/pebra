@@ -135,6 +135,8 @@ class ArmMetrics:
     heeded_rate: float | None           # heeded / advisory_called
     effective_adherence_rate: float | None = None  # successful advisory / n_runs
     error_run_count: int = 0            # runs excluded due to SubjectResult.error (e.g. live client failure)
+    blinding_leak_count: int = 0        # runs excluded due to transcript/tool visibility leaks
+    scope_drift_rate: float = 0.0       # over all non-error, non-leaked runs
 
 
 @dataclass(frozen=True)

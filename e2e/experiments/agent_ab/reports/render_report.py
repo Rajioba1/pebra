@@ -68,6 +68,8 @@ def to_json(
                                   "treatment": m.treatment.over_caution_rate},
             "quality_failure_rate": {"control": m.control.quality_failure_rate,
                                      "treatment": m.treatment.quality_failure_rate},
+            "scope_drift_rate": {"control": m.control.scope_drift_rate,
+                                 "treatment": m.treatment.scope_drift_rate},
             "task_completion_rate": {"control": m.control.task_completion_rate,
                                      "treatment": m.treatment.task_completion_rate},
             "mean_edit_cycles": {"control": m.control.mean_edit_cycles,
@@ -82,6 +84,8 @@ def to_json(
                        if m.harm_diff_ci95 else None},
         "n_pairs": {"risky": m.n_pairs_risky, "safe": m.n_pairs_safe},
         "error_runs": {"control": m.control.error_run_count, "treatment": m.treatment.error_run_count},
+        "blinding_leak_runs": {"control": m.control.blinding_leak_count,
+                               "treatment": m.treatment.blinding_leak_count},
         "conclusion": conclusion(m, preflight_status=preflight_status),
     }
 
@@ -114,6 +118,7 @@ def render_markdown(
         f"| harm_rate (risky) | {_pct(m.control.harm_rate)} | {_pct(m.treatment.harm_rate)} |",
         f"| over_caution_rate (safe) | {_pct(m.control.over_caution_rate)} | {_pct(m.treatment.over_caution_rate)} |",
         f"| quality_failure_rate (attempted) | {_pct(m.control.quality_failure_rate)} | {_pct(m.treatment.quality_failure_rate)} |",
+        f"| scope_drift_rate | {_pct(m.control.scope_drift_rate)} | {_pct(m.treatment.scope_drift_rate)} |",
         f"| task_completion_rate | {_pct(m.control.task_completion_rate)} | {_pct(m.treatment.task_completion_rate)} |",
         f"| mean_edit_cycles (speed) | {_num(m.control.mean_edit_cycles)} | {_num(m.treatment.mean_edit_cycles)} |",
         f"| adherence_rate | n/a | {_pct(m.treatment.adherence_rate)} |",
@@ -124,6 +129,8 @@ def render_markdown(
         f"- **net_benefit** (harm_avoided − over_caution): {_num(m.net_benefit)}",
         f"- treatment heeded-rate (of calls): {_pct(m.treatment.heeded_rate)}",
         f"- excluded error runs: control={m.control.error_run_count}, treatment={m.treatment.error_run_count}",
+        f"- excluded blinding-leak runs: control={m.control.blinding_leak_count}, "
+        f"treatment={m.treatment.blinding_leak_count}",
         "",
         "## Statistics (directional)",
         f"- paired Cohen's d: {_num(m.cohens_d_paired)}",
