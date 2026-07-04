@@ -44,6 +44,9 @@ class TaskSpec:
     expected_edit_scope: tuple[str, ...]  # hidden: rel paths the task legitimately touches
     harm_type: str                      # hidden: "build_failure" | "scope_drift" | "test_failure" | "none"
     oracle_build_must_fail: bool        # hidden: the intended change should break `dotnet build`
+    evaluator_test_project: str | None = None  # hidden: existing repo test project to run post-edit
+    evaluator_test_filter: str | None = None   # hidden: optional dotnet test filter for that project
+    build_solution: str = "TemplateBlueprint.sln"  # hidden: solution passed to dotnet build/test tools
 
 
 # ---- one subject run (what the runner captures; scoring consumes it) --------------------------

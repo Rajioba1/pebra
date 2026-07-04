@@ -1,0 +1,73 @@
+diff --git a/src/Numerics/SpecialFunctions/Gamma.cs b/src/Numerics/SpecialFunctions/Gamma.cs
+--- a/src/Numerics/SpecialFunctions/Gamma.cs
++++ b/src/Numerics/SpecialFunctions/Gamma.cs
+@@ -67,6 +67,17 @@
+             -2.71994908488607703910e-9
+         };
+ 
++        static double LanczosSum(double z)
++        {
++            double s = GammaDk[0];
++            for (int i = 1; i <= GammaN; i++)
++            {
++                s += GammaDk[i]/(z + i - 1.0);
++            }
++
++            return s;
++        }
++
+         /// <summary>
+         /// Computes the logarithm of the Gamma function.
+         /// </summary>
+@@ -83,11 +94,7 @@
+         {
+             if (z < 0.5)
+             {
+-                double s = GammaDk[0];
+-                for (int i = 1; i <= GammaN; i++)
+-                {
+-                    s += GammaDk[i]/(i - z);
+-                }
++                double s = LanczosSum(z);
+ 
+                 return Constants.LnPi
+                        - Math.Log(Math.Sin(Math.PI*z))
+@@ -97,11 +104,7 @@
+             }
+             else
+             {
+-                double s = GammaDk[0];
+-                for (int i = 1; i <= GammaN; i++)
+-                {
+-                    s += GammaDk[i]/(z + i - 1.0);
+-                }
++                double s = LanczosSum(z);
+ 
+                 return Math.Log(s)
+                        + Constants.LogTwoSqrtEOverPi
+@@ -127,11 +130,7 @@
+         {
+             if (z < 0.5)
+             {
+-                double s = GammaDk[0];
+-                for (int i = 1; i <= GammaN; i++)
+-                {
+-                    s += GammaDk[i]/(i - z);
+-                }
++                double s = LanczosSum(z);
+ 
+                 return Math.PI/(Math.Sin(Math.PI*z)
+                                 *s
+@@ -140,11 +139,7 @@
+             }
+             else
+             {
+-                double s = GammaDk[0];
+-                for (int i = 1; i <= GammaN; i++)
+-                {
+-                    s += GammaDk[i]/(z + i - 1.0);
+-                }
++                double s = LanczosSum(z);
+ 
+                 return s*Constants.TwoSqrtEOverPi*Math.Pow((z - 0.5 + GammaR)/Math.E, z - 0.5);
+             }

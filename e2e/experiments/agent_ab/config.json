@@ -1,5 +1,5 @@
 {
-  "status": "runner built + gated; AnthropicClient.send is LIVE (Phase G) - the NotImplementedError stop is gone, so the fail-closed run gate (E2E_AB_RUN=1 + E2E_EXTERNAL=1 + ANTHROPIC_API_KEY) is the SOLE guard and nothing in-tree opens it. Endpoint = build_break_scope until per-task evaluator test projects are authored.",
+  "status": "runner built + gated; AnthropicClient.send is LIVE (Phase G) - the NotImplementedError stop is gone, so the fail-closed run gate (E2E_AB_RUN=1 + E2E_EXTERNAL=1 + ANTHROPIC_API_KEY) is the SOLE guard and nothing in-tree opens it. Assay mode uses Math.NET's existing filtered Gamma tests as the hidden semantic oracle.",
   "subject": {
     "model": "claude-haiku-4-5-20251001",
     "max_tool_calls_per_run": 50,
@@ -25,10 +25,10 @@
     "_note": "seeds_per_arm is a replicate index, not a fixed model random seed."
   },
   "assay": {
-    "tasks": ["T1", "B1"],
+    "tasks": ["MNGAMMA"],
     "seeds_per_arm": 1,
     "claims": "assay-VALIDITY read via pre-registered verdict (see metrics/assay_interpret.py); NOT an efficacy claim on its own",
-    "_note": "4-arm assay. Risky tasks run all 4 (oracle_positive needs a correct_fix_patch — only T1/T2 have one); safe tasks run 3 (no oracle). Oracle=endpoint floor, blast_radius=CTXO-style positive control (PEBRA graph, not literal CTXO). seeds_per_arm=1 is a plumbing smoke; bump to >=3 for a real assay-validation run. HARM-HEADROOM prerequisite: sham must FAIL at nonzero rate (T1 has none) before the verdict is trustworthy."
+    "_note": "4-arm assay. Risky tasks run all 4. Oracle=endpoint floor, blast_radius=CTXO-style positive control (PEBRA graph, not literal CTXO). seeds_per_arm=1 is a cheap first assay pass; bump to >=3 for a real assay-validation run. Current MNGAMMA substrate has scout evidence of sham headroom; over-caution is not measured until safe Math.NET tasks are added."
   },
   "powered": {
     "tasks": ["T1", "T2", "B1", "B2"],

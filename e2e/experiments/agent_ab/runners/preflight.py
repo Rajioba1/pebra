@@ -118,12 +118,48 @@ def _correct_fix_failure(spec: TaskSpec, build) -> str | None:
     return None
 
 
+def _run_spec_test(spec: TaskSpec, repo_path: Path, test_fn: Callable[..., Any]):
+    if not spec.evaluator_test_project:
+        return None
+    project = (repo_path / spec.evaluator_test_project).resolve()
+    if spec.evaluator_test_filter:
+        return test_fn(repo_path, project=project, test_filter=spec.evaluator_test_filter)
+    return test_fn(repo_path, project=project)
+
+
+def _run_spec_build(spec: TaskSpec, repo_path: Path, build_fn: Callable[[Path], Any] | None):
+    if build_fn is not None:
+        return build_fn(repo_path)
+    return dn.run_build(repo_path, sln=spec.build_solution)
+
+
+def _oracle_test_failure(spec: TaskSpec, test) -> str | None:
+    if spec.harm_type != "test_failure":
+        return None
+    if test is None or not test.ran:
+        return f"{spec.task_id}: oracle test did not run (dotnet SDK absent?)"
+    if test.passed:
+        return f"{spec.task_id}: oracle says filtered test MUST fail, but it PASSED"
+    return None
+
+
+def _correct_fix_test_failure(spec: TaskSpec, test) -> str | None:
+    if spec.harm_type != "test_failure":
+        return None
+    if test is None or not test.ran:
+        return f"{spec.task_id}: correct-fix test did not run (dotnet SDK absent?)"
+    if not test.passed:
+        return f"{spec.task_id}: correct-fix filtered test should pass, but FAILED: {test.error_summary[:200]}"
+    return None
+
+
 def run_oracle_preflight(
     corpus: list[TaskSpec],
     external: rs.ExternalRepo,
     *,
     out_dir: Path,
     build_fn: Callable[[Path], Any] | None = None,
+    test_fn: Callable[..., Any] | None = None,
     patch_dir: Path | None = None,
     correct_patch_dir: Path | None = None,
 ) -> None:
@@ -133,7 +169,7 @@ def run_oracle_preflight(
     expected scope and must build, proving the widened scope is complete enough to reward a safe fix
     rather than only rewarding refusal.
     """
-    build_fn = build_fn or dn.run_build
+    test_fn = test_fn or dn.run_tests
     patch_dir = patch_dir or _PATCH_DIR
     correct_patch_dir = correct_patch_dir or _CORRECT_PATCH_DIR
     failures: list[str] = []
@@ -148,9 +184,14 @@ def run_oracle_preflight(
             dest = out_dir / "preflight" / spec.task_id / "repo"
             repo_path = _clone_fresh(external, dest, out_dir=out_dir)
             _apply_patch(patch_file, repo_path)
-            msg = _oracle_failure(spec, build_fn(repo_path))
+            build = _run_spec_build(spec, repo_path, build_fn)
+            msg = _oracle_failure(spec, build)
             if msg:
                 failures.append(msg)
+            elif spec.harm_type == "test_failure":
+                test_msg = _oracle_test_failure(spec, _run_spec_test(spec, repo_path, test_fn))
+                if test_msg:
+                    failures.append(test_msg)
             if spec.harm_label == "risky":
                 correct_patch = correct_patch_dir / f"{spec.task_id}.patch"
                 if not correct_patch.exists():
@@ -163,9 +204,16 @@ def run_oracle_preflight(
                 correct_dest = out_dir / "preflight" / f"{spec.task_id}_correct" / "repo"
                 correct_repo = _clone_fresh(external, correct_dest, out_dir=out_dir)
                 _apply_patch(correct_patch, correct_repo)
-                fix_msg = _correct_fix_failure(spec, build_fn(correct_repo))
+                fix_build = _run_spec_build(spec, correct_repo, build_fn)
+                fix_msg = _correct_fix_failure(spec, fix_build)
                 if fix_msg:
                     failures.append(fix_msg)
+                elif spec.harm_type == "test_failure":
+                    fix_test_msg = _correct_fix_test_failure(
+                        spec, _run_spec_test(spec, correct_repo, test_fn)
+                    )
+                    if fix_test_msg:
+                        failures.append(fix_test_msg)
         except PreflightError as exc:
             failures.append(f"{spec.task_id}: {exc.args[0] if exc.args else exc}")
         except Exception as exc:  # noqa: BLE001 - infra (clone/build) error, recorded not raised mid-loop

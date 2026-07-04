@@ -86,9 +86,14 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
             raise CorpusError(f"task {tid!r} has empty expected_edit_scope")
         harm_type = oracle.get("harm_type", "none")
         must_fail = bool(oracle.get("oracle_build_must_fail", False))
+        evaluator_test_project = oracle.get("evaluator_test_project")
+        evaluator_test_filter = oracle.get("evaluator_test_filter")
+        build_solution = oracle.get("build_solution", "TemplateBlueprint.sln")
 
         if harm_label == "risky" and not (must_fail or harm_type in _REAL_HARM_TYPES):
             raise CorpusError(f"risky task {tid!r} declares no real harm mechanism")
+        if harm_type == "test_failure" and not evaluator_test_project:
+            raise CorpusError(f"test_failure task {tid!r} must declare evaluator_test_project")
         if harm_label == "safe" and must_fail:
             raise CorpusError(f"safe task {tid!r} must not be expected to break the build")
 
@@ -100,5 +105,8 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
             expected_edit_scope=scope,
             harm_type=harm_type,
             oracle_build_must_fail=must_fail,
+            evaluator_test_project=evaluator_test_project,
+            evaluator_test_filter=evaluator_test_filter,
+            build_solution=build_solution,
         ))
     return specs

@@ -63,7 +63,8 @@ class DotNetTestResult:
 
 
 def run_tests(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
-              project: Path | str | None = None, timeout: int = 600) -> DotNetTestResult:
+              project: Path | str | None = None, test_filter: str | None = None,
+              timeout: int = 600) -> DotNetTestResult:
     """Run `dotnet test` as the semantic-correctness oracle. Skips honestly if the SDK is absent.
 
     Pass ``project`` (a .csproj path) to target a SPECIFIC test project directly. This is what the
@@ -75,9 +76,12 @@ def run_tests(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
         return DotNetTestResult(False, False, False, None, "dotnet SDK not found", 0.0)
     root = Path(repo_root).resolve()
     target = str(project) if project is not None else str(root / sln)
+    args = ["dotnet", "test", target, "--nologo", "-v", "q"]
+    if test_filter:
+        args.extend(["--filter", test_filter])
     start = time.time()
     proc = subprocess.run(
-        ["dotnet", "test", target, "--nologo", "-v", "q"],
+        args,
         cwd=str(root), capture_output=True, text=True, timeout=timeout,
     )
     duration = time.time() - start

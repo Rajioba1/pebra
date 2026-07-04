@@ -17,6 +17,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
+from e2e.experiments.agent_ab.models import TaskSpec
 from e2e.external.utils import dotnet_harness as dn
 
 _EVALUATOR_DIR = Path(__file__).resolve().parents[1] / "corpus" / "evaluator_tests"
@@ -43,9 +44,26 @@ def inject_evaluator_tests(
     return repo_path / csprojs[0].relative_to(src)
 
 
+def _task_id(task: str | TaskSpec) -> str:
+    return task.task_id if isinstance(task, TaskSpec) else task
+
+
+def _existing_test_project(repo_path: Path, task: str | TaskSpec) -> tuple[Path | None, str | None]:
+    if not isinstance(task, TaskSpec) or not task.evaluator_test_project:
+        return None, None
+    return (repo_path / task.evaluator_test_project).resolve(), task.evaluator_test_filter
+
+
+def _run_build(repo_path: Path, task: str | TaskSpec, build_fn: Callable[[Path], Any] | None):
+    if build_fn is not None:
+        return build_fn(repo_path)
+    sln = task.build_solution if isinstance(task, TaskSpec) else "TemplateBlueprint.sln"
+    return dn.run_build(repo_path, sln=sln)
+
+
 def run_evaluator(
     repo_path: Path,
-    task_id: str,
+    task: str | TaskSpec,
     *,
     evaluator_dir: Path | None = None,
     build_fn: Callable[[Path], Any] | None = None,
@@ -55,10 +73,16 @@ def run_evaluator(
     passed, run ``dotnet test`` against THAT project (not the solution).
 
     Returns (build_result, test_result_or_None, injected)."""
-    build_fn = build_fn or dn.run_build
     test_fn = test_fn or dn.run_tests
-    project = inject_evaluator_tests(repo_path, task_id, evaluator_dir=evaluator_dir)
-    build = build_fn(repo_path)
-    test = (test_fn(repo_path, project=project)
-            if (project is not None and build.ran and build.passed) else None)
-    return build, test, (project is not None)
+    project, test_filter = _existing_test_project(repo_path, task)
+    injected = False
+    if project is None:
+        project = inject_evaluator_tests(repo_path, _task_id(task), evaluator_dir=evaluator_dir)
+        injected = project is not None
+    build = _run_build(repo_path, task, build_fn)
+    if project is not None and build.ran and build.passed:
+        test = (test_fn(repo_path, project=project, test_filter=test_filter)
+                if test_filter else test_fn(repo_path, project=project))
+    else:
+        test = None
+    return build, test, injected

@@ -9,6 +9,10 @@ from e2e.experiments.agent_ab.runners import preflight
 
 _TRAP = TaskSpec("T1", "d", ("a.cs",), "risky", ("a.cs",), "build_failure", True)
 _SAFE = TaskSpec("B1", "d", ("a.cs",), "safe", ("a.cs",), "none", False)
+_TEST_TRAP = TaskSpec(
+    "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",), "test_failure", False,
+    evaluator_test_project="tests/Tests.csproj", evaluator_test_filter="FullyQualifiedName~GammaTests",
+)
 
 
 def _build(ran=True, passed=True, err=""):
@@ -185,6 +189,73 @@ def test_oracle_preflight_applies_correct_fix_patch_for_risky_tasks(tmp_path, mo
                                    patch_dir=patch_dir, correct_patch_dir=correct_dir)
 
     assert applied == ["patches", "correct"]
+
+
+def test_oracle_preflight_validates_test_failure_and_correct_fix_test_pass(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "MNGAMMA.patch").write_text(
+        "diff --git a/src/Gamma.cs b/src/Gamma.cs\n--- a/src/Gamma.cs\n+++ b/src/Gamma.cs\n"
+        "@@ -1 +1 @@\n-old\n+bad\n",
+        encoding="utf-8",
+    )
+    (correct_dir / "MNGAMMA.patch").write_text(
+        "diff --git a/src/Gamma.cs b/src/Gamma.cs\n--- a/src/Gamma.cs\n+++ b/src/Gamma.cs\n"
+        "@@ -1 +1 @@\n-old\n+good\n",
+        encoding="utf-8",
+    )
+
+    def _clone(_external, dest):
+        dest.mkdir(parents=True)
+        (dest / "tests").mkdir()
+        (dest / "tests" / "Tests.csproj").write_text("<Project />")
+        return dest
+
+    calls: list[tuple[str, str]] = []
+
+    def _test(repo_path, *, project=None, test_filter=None):
+        assert project.is_absolute()
+        calls.append((project.relative_to(repo_path).as_posix(), test_filter))
+        return SimpleNamespace(ran=True, passed="correct" in repo_path.as_posix(), error_summary="")
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _clone)
+    monkeypatch.setattr(preflight, "_apply_patch", lambda patch_file, repo_path: None)
+
+    preflight.run_oracle_preflight([_TEST_TRAP], None, out_dir=tmp_path,
+                                   build_fn=lambda p: _build(passed=True), test_fn=_test,
+                                   patch_dir=patch_dir, correct_patch_dir=correct_dir)
+
+    assert calls == [
+        ("tests/Tests.csproj", "FullyQualifiedName~GammaTests"),
+        ("tests/Tests.csproj", "FullyQualifiedName~GammaTests"),
+    ]
+
+
+def test_oracle_preflight_flags_test_failure_oracle_that_passes(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "MNGAMMA.patch").write_text("diff --git a/src/Gamma.cs b/src/Gamma.cs\n")
+    (correct_dir / "MNGAMMA.patch").write_text("diff --git a/src/Gamma.cs b/src/Gamma.cs\n")
+
+    def _clone(_external, dest):
+        dest.mkdir(parents=True)
+        (dest / "tests").mkdir()
+        (dest / "tests" / "Tests.csproj").write_text("<Project />")
+        return dest
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _clone)
+    monkeypatch.setattr(preflight, "_apply_patch", lambda patch_file, repo_path: None)
+
+    with pytest.raises(preflight.PreflightError, match="test MUST fail"):
+        preflight.run_oracle_preflight([_TEST_TRAP], None, out_dir=tmp_path,
+                                       build_fn=lambda p: _build(passed=True),
+                                       test_fn=lambda *a, **k: SimpleNamespace(
+                                           ran=True, passed=True, error_summary=""),
+                                       patch_dir=patch_dir, correct_patch_dir=correct_dir)
 
 
 def test_oracle_preflight_accumulates_apply_failures(tmp_path, monkeypatch):

@@ -42,7 +42,10 @@ class ExperimentRunError(RuntimeError):
 
 def _scoring_mode(corpus: list[TaskSpec]) -> str:
     """Self-describe the artifact from the planned tasks' actual evaluator projects."""
-    has_project = [any(((_EVAL_DIR / t.task_id).rglob("*.csproj"))) for t in corpus]
+    has_project = [
+        bool(t.evaluator_test_project) or any(((_EVAL_DIR / t.task_id).rglob("*.csproj")))
+        for t in corpus
+    ]
     if has_project and all(has_project):
         return "build_test_scope"
     if any(has_project):

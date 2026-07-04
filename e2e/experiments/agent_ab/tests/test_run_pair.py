@@ -106,8 +106,8 @@ def test_prepare_arm_replaces_stale_clone_and_indexes_actual_arm(monkeypatch, tm
     monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
                         lambda *, repo_root: {"csharp_callable": 700})
     monkeypatch.setattr(run_pair.dn, "run_build_delta",
-                        lambda repo: SimpleNamespace(available=True, ran=True, passed=True,
-                                                     error_summary=""))
+                        lambda repo, *, sln="TemplateBlueprint.sln": SimpleNamespace(
+                            available=True, ran=True, passed=True, error_summary=""))
     stale = tmp_path / "rid" / f"T1_seed0_{run_pair._arm_token('treatment', 'rid')}" / "repo"
     stale.mkdir(parents=True)
     (stale / "old.txt").write_text("stale")
@@ -151,8 +151,8 @@ def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):
     monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
                         lambda *, repo_root: {"csharp_callable": 700})
     monkeypatch.setattr(run_pair.dn, "run_build_delta",
-                        lambda repo: SimpleNamespace(available=True, ran=True, passed=False,
-                                                     error_summary="baseline broken"))
+                        lambda repo, *, sln="TemplateBlueprint.sln": SimpleNamespace(
+                            available=True, ran=True, passed=False, error_summary="baseline broken"))
 
     with pytest.raises(run_pair.RunPairError, match="baseline"):
         run_pair.prepare_arm(_External(), _SPEC, "control", 0, "rid")
@@ -170,8 +170,8 @@ def test_oracle_positive_pre_patch_happens_before_baseline_build(monkeypatch, tm
         calls.append(f"patch:{task_id}:{repo_path.name}")
         return repo_path / "patch.diff"
 
-    def _build(repo_path):
-        calls.append(f"build:{repo_path.name}")
+    def _build(repo_path, *, sln="TemplateBlueprint.sln"):
+        calls.append(f"build:{repo_path.name}:{sln}")
         return SimpleNamespace(available=True, ran=True, passed=True, error_summary="")
 
     monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head", _clone)
@@ -182,7 +182,32 @@ def test_oracle_positive_pre_patch_happens_before_baseline_build(monkeypatch, tm
     setup = run_pair.prepare_arm(_External(), _SPEC, "oracle_positive", 0, "rid")
 
     assert setup.arm == "oracle_positive"
-    assert calls == ["patch:T1:repo", "build:repo"]
+    assert calls == ["patch:T1:repo", "build:repo:TemplateBlueprint.sln"]
+
+
+def test_prepare_arm_passes_task_build_solution_to_baseline(monkeypatch, tmp_path):
+    spec = TaskSpec(
+        "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",), "test_failure", False,
+        build_solution="MathNet.Numerics.sln",
+    )
+    seen = {}
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",
+                        lambda _external, dest: (dest.mkdir(parents=True), dest)[1])
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
+    monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
+                        lambda *, repo_root: {"csharp_callable": 700})
+
+    def _build(repo_path, *, sln="TemplateBlueprint.sln"):
+        seen["sln"] = sln
+        return SimpleNamespace(available=True, ran=True, passed=True, error_summary="")
+
+    monkeypatch.setattr(run_pair.dn, "run_build_delta", _build)
+
+    setup = run_pair.prepare_arm(_External(), spec, "sham", 0, "rid")
+
+    assert setup.build_solution == "MathNet.Numerics.sln"
+    assert seen["sln"] == "MathNet.Numerics.sln"
 
 
 def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):

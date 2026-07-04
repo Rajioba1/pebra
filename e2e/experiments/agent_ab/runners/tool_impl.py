@@ -35,7 +35,7 @@ def _resolve_guarded(path: str, repo_root: Path) -> Path:
     try:
         target.relative_to(root)
     except ValueError as exc:
-        raise PathTraversalError(f"path {path!r} escapes repo boundary {root}") from exc
+        raise PathTraversalError(f"path {path!r} escapes repo boundary") from exc
     return target
 
 
@@ -130,13 +130,13 @@ def search_grep(pattern: str, repo_root: Path, *, path: str | None = None,
     return {"matches": matches}
 
 
-def run_build(repo_root: Path) -> dict[str, Any]:
-    r = dn.run_build(repo_root)
+def run_build(repo_root: Path, *, sln: str = "TemplateBlueprint.sln") -> dict[str, Any]:
+    r = dn.run_build(repo_root, sln=sln)
     return {"available": r.available, "passed": r.passed, "error_summary": r.error_summary}
 
 
-def run_tests(repo_root: Path) -> dict[str, Any]:
-    r = dn.run_tests(repo_root)
+def run_tests(repo_root: Path, *, sln: str = "TemplateBlueprint.sln") -> dict[str, Any]:
+    r = dn.run_tests(repo_root, sln=sln)
     return {"available": r.available, "passed": r.passed, "error_summary": r.error_summary}
 
 

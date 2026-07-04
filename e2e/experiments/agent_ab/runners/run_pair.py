@@ -72,6 +72,7 @@ class ArmSetup:
     advisory_backend: Callable[..., dict[str, Any]]   # bound to the isolated clone for treatment
     baseline_build: dn.DotNetBuildResult
     subject_prompt: str
+    build_solution: str = "TemplateBlueprint.sln"
     # SAME write-gate in both arms; only treatment is backed by real PEBRA. Default = sham-allow so any
     # ArmSetup built without an explicit backend never blocks a write.
     gate_check_backend: Callable[..., dict[str, Any]] = lambda event: {"permission": "allow", "tier": "pass"}
@@ -152,7 +153,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         from e2e.experiments.agent_ab.runners import arm_prep  # noqa: PLC0415
         arm_prep.prepare_oracle_patch(repo_path, spec.task_id)
     db_path = dest.parent / "pebra.db"
-    baseline = dn.run_build_delta(repo_path)
+    baseline = dn.run_build_delta(repo_path, sln=spec.build_solution)
     _validate_baseline(repo_path, baseline)
     return ArmSetup(
         arm=arm,
@@ -160,6 +161,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         advisory_backend=_advisory_backend(arm, repo_path, db_path),
         baseline_build=baseline,
         subject_prompt=_build_subject_prompt(spec, repo_path),
+        build_solution=spec.build_solution,
         gate_check_backend=_gate_check_backend(arm, db_path),
     )
 
@@ -197,7 +199,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
     result = agent_loop.run(setup, spec, seed, client=client, config=run_cfg)
 
     # HIDDEN oracle: inject evaluator tests post-agent, then build + test.
-    build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec.task_id)
+    build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec)
     return dataclasses.replace(
         result,
         build_ran=build.ran,

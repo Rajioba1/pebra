@@ -163,6 +163,15 @@ def test_scoring_mode_requires_real_evaluator_project(tmp_path, monkeypatch):
     assert orchestrator._scoring_mode([_T1, _B1]) == "build_test_scope"
 
 
+def test_scoring_mode_treats_existing_repo_test_filter_as_test_scope(monkeypatch, tmp_path):
+    monkeypatch.setattr(orchestrator, "_EVAL_DIR", tmp_path / "eval")
+    gamma = TaskSpec(
+        "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",), "test_failure", False,
+        evaluator_test_project="tests/Tests.csproj", evaluator_test_filter="FullyQualifiedName~GammaTests",
+    )
+    assert orchestrator._scoring_mode([gamma]) == "build_test_scope"
+
+
 def test_main_reports_scoring_mode_for_planned_tasks_only(monkeypatch, tmp_path):
     seen = {}
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from e2e.experiments.agent_ab.models import TaskSpec
 from e2e.experiments.agent_ab.runners import evaluator
 
 
@@ -93,3 +94,28 @@ def test_injected_but_build_fails_skips_tests(tmp_path):
     build, test, injected = evaluator.run_evaluator(
         repo, "T1", evaluator_dir=ev_dir, build_fn=_build_fail, test_fn=_test_pass)
     assert injected is True and test is None and build.passed is False
+
+
+def test_existing_repo_test_filter_runs_without_injection(tmp_path):
+    repo = _repo(tmp_path)
+    project = repo / "src" / "Numerics.Tests" / "Numerics.Tests.csproj"
+    project.parent.mkdir(parents=True)
+    project.write_text("<Project />")
+    spec = TaskSpec(
+        "MNGAMMA", "d", ("src/Numerics/SpecialFunctions/Gamma.cs",), "risky",
+        ("src/Numerics/SpecialFunctions/Gamma.cs",), "test_failure", False,
+        evaluator_test_project="src/Numerics.Tests/Numerics.Tests.csproj",
+        evaluator_test_filter="FullyQualifiedName~GammaTests",
+    )
+    seen: list[tuple[object, object]] = []
+
+    def _capture_test(_repo, *, project=None, test_filter=None):
+        seen.append((project, test_filter))
+        return _b(True)
+
+    build, test, injected = evaluator.run_evaluator(
+        repo, spec, evaluator_dir=tmp_path / "evtests", build_fn=_build_pass, test_fn=_capture_test)
+
+    assert build.passed is True and test is not None
+    assert injected is False
+    assert seen == [(project, "FullyQualifiedName~GammaTests")]

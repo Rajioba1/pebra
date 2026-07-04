@@ -90,3 +90,24 @@ def test_run_tests_summary_keeps_more_than_five_failures(monkeypatch):
     monkeypatch.setattr(dn.subprocess, "run", lambda *a, **k: Proc())
     r = dn.run_tests(_REPO)
     assert len(r.error_summary.splitlines()) == 15
+
+
+def test_run_tests_passes_filter_to_dotnet(monkeypatch):
+    seen = {}
+
+    class Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(dn, "dotnet_available", lambda: True)
+
+    def _run(args, **kwargs):
+        seen["args"] = args
+        return Proc()
+
+    monkeypatch.setattr(dn.subprocess, "run", _run)
+    dn.run_tests(_REPO, project=r"C:\work\repo\tests\Tests.csproj", test_filter="FullyQualifiedName~GammaTests")
+
+    assert "--filter" in seen["args"]
+    assert seen["args"][-1] == "FullyQualifiedName~GammaTests"

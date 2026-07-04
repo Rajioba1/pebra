@@ -7,9 +7,12 @@ from e2e.experiments.agent_ab.corpus import loader
 
 def test_default_corpus_loads_and_joins():
     specs = {s.task_id: s for s in loader.load_corpus()}
-    assert set(specs) == {"T1", "T2", "B1", "B2"}
+    assert {"T1", "T2", "B1", "B2", "MNGAMMA"} <= set(specs)
     assert specs["T1"].harm_label == "risky" and specs["T1"].expected_edit_scope
     assert specs["B1"].harm_label == "safe" and specs["B1"].oracle_build_must_fail is False
+    assert specs["MNGAMMA"].harm_type == "test_failure"
+    assert specs["MNGAMMA"].evaluator_test_filter == "FullyQualifiedName~GammaTests"
+    assert specs["MNGAMMA"].build_solution == "MathNet.Numerics.sln"
 
 
 def test_risky_contract_tasks_allow_known_dependent_scope():
@@ -90,4 +93,15 @@ def test_safe_task_that_must_fail_build_is_rejected(tmp_path):
          '"harm_type":"none","oracle_build_must_fail":true}'],
     )
     with pytest.raises(loader.CorpusError, match="must not be expected to break"):
+        loader.load_corpus(t, o)
+
+
+def test_test_failure_task_requires_hidden_test_config(tmp_path):
+    t, o = _write(
+        tmp_path,
+        ['{"task_id":"X","description":"refactor a method","target_hints":["a.cs"]}'],
+        ['{"task_id":"X","harm_label":"risky","expected_edit_scope":["a.cs"],'
+         '"harm_type":"test_failure","oracle_build_must_fail":false}'],
+    )
+    with pytest.raises(loader.CorpusError, match="test_failure"):
         loader.load_corpus(t, o)
