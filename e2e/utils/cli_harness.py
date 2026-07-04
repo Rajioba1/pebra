@@ -149,6 +149,19 @@ def graph_node_counts(*, repo_root: Path | str) -> dict:
     return _run_json(["graph-stats", "--json", "--repo-root", str(repo_root)])
 
 
+def dependents(target: str, *, repo_root: Path | str) -> list[str]:
+    """`pebra dependents --json` → the list of files that depend on ``target`` (file-level blast radius).
+    Backs the blast_radius positive-control advisory. Empty list when the graph is absent."""
+    result = dependents_result(target, repo_root=repo_root)
+    files = result.get("dependent_files", [])
+    return list(files) if isinstance(files, list) else []
+
+
+def dependents_result(target: str, *, repo_root: Path | str) -> dict:
+    """Structured `pebra dependents --json` payload, including graph availability metadata."""
+    return _run_json(["dependents", "--target", str(target), "--repo-root", str(repo_root), "--json"])
+
+
 def dashboard_proc(*, repo_root: Path | str, db: Path | str, port: int = 0) -> subprocess.Popen:
     """Start ``pebra dashboard`` as a long-running process. The caller reads stdout for the URL line and
     is responsible for teardown (see dashboard_harness)."""

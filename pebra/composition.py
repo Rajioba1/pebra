@@ -60,6 +60,17 @@ def graph_node_counts(repo_root: str) -> dict[str, int]:
     return CodeGraphAdapter().node_counts(repo_root)
 
 
+def dependent_files(repo_root: str, target: str) -> list[str]:
+    """Repo-relative files that depend on ``target`` (the file-level blast radius), via the codegraph
+    adapter. Empty when the graph is absent. Used by `pebra dependents`."""
+    return CodeGraphAdapter().dependent_files(target, repo_root)
+
+
+def dependent_files_result(repo_root: str, target: str) -> dict[str, Any]:
+    """Structured file-level blast radius with graph availability/fallback metadata."""
+    return CodeGraphAdapter().dependent_files_result(target, repo_root)
+
+
 def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str, Any]:
     """The adapter bundle ``assess_controller.assess`` needs (keyword args minus thresholds/start_path).
     One GraphProvider is shared by the architecture + blast adapters (build-once memo, 5c)."""

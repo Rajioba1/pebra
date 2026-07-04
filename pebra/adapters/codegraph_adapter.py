@@ -248,6 +248,70 @@ class CodeGraphAdapter:
         finally:
             con.close()
 
+    def dependent_files_result(self, file_path: str, repo_root: str) -> dict[str, Any]:
+        """Structured file-level blast-radius result.
+
+        ``available=False`` means the graph could not be trusted/read, which is distinct from
+        ``available=True`` with an empty ``dependent_files`` list (a real zero-dependent result).
+        """
+        status = self._status_fn(repo_root)
+        if status is None:
+            return _dependents_unavailable("unknown", "codegraph CLI not found")
+        runtime_ver = status.get("version")
+        if runtime_ver and not in_accepted_range(runtime_ver):
+            return _dependents_unavailable(
+                "unknown", f"codegraph version {runtime_ver} out of range"
+            )
+        if status.get("initialized") is False:
+            return _dependents_unavailable("unknown", "codegraph index not initialized")
+        if not _is_fresh(status):
+            return _dependents_unavailable("stale", "codegraph index stale or worktree-mismatched")
+        db_path = _db_path_from_status(repo_root, status)
+        if not db_path.is_file():
+            return _dependents_unavailable("unknown", "codegraph DB not found")
+        try:
+            con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        except (sqlite3.Error, OSError, ValueError):
+            return _dependents_unavailable("unknown", "codegraph DB could not be opened")
+        con.row_factory = sqlite3.Row
+        try:
+            if self._schema_version(con) < _MIN_SCHEMA_VERSION:
+                return _dependents_unavailable(
+                    "fresh", f"codegraph schema below v{_MIN_SCHEMA_VERSION}"
+                )
+            rel = _repo_relative(file_path, repo_root)
+            call_ph = ",".join("?" * len(_CALLABLE_KINDS))
+            edge_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
+            rows = con.execute(
+                f"SELECT DISTINCT src.file_path AS f FROM edges e "
+                f"JOIN nodes tgt ON tgt.id = e.target JOIN nodes src ON src.id = e.source "
+                f"WHERE tgt.file_path = ? AND tgt.kind IN ({call_ph}) AND e.kind IN ({edge_ph}) "
+                f"AND src.file_path IS NOT NULL AND src.file_path != ? ORDER BY src.file_path",
+                (rel, *_CALLABLE_KINDS, *_MODIFY_IMPACT_EDGE_KINDS, rel),
+            ).fetchall()
+            files = [r["f"] for r in rows if r["f"]]
+            return {
+                "available": True,
+                "graph_freshness": "fresh",
+                "dependent_files": files,
+                "count": len(files),
+                "fallback_reason": None,
+            }
+        except sqlite3.Error:
+            return _dependents_unavailable("unknown", "codegraph DB query failed")
+        finally:
+            con.close()
+
+    def dependent_files(self, file_path: str, repo_root: str) -> list[str]:
+        """Compatibility wrapper returning only dependent paths.
+
+        Prefer ``dependent_files_result`` for agent-facing guidance so graph-unavailable and real-zero
+        cases remain distinguishable.
+        """
+        result = self.dependent_files_result(file_path, repo_root)
+        files = result.get("dependent_files", [])
+        return list(files) if isinstance(files, list) else []
+
     def fanin(self, action: CandidateAction, repo_root: str) -> FanInEvidence:
         status = self._status_fn(repo_root)
         if status is None:
@@ -909,3 +973,13 @@ def _unresolved(freshness: str, reason: str) -> FanInEvidence:
     return FanInEvidence(
         resolution_method="unresolved", graph_freshness=freshness, fallback_reason=reason
     )
+
+
+def _dependents_unavailable(freshness: str, reason: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "graph_freshness": freshness,
+        "dependent_files": [],
+        "count": 0,
+        "fallback_reason": reason,
+    }
