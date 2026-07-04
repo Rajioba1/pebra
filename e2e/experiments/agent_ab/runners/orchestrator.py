@@ -136,10 +136,25 @@ def _completed_pairs(outcomes: list[RunOutcome]) -> set[tuple[str, int]]:
     return {k for k, a in arms.items() if {ARM_CONTROL, ARM_TREATMENT} <= a}
 
 
+def _completed_units(outcomes: list[RunOutcome], specs_by_id: dict[str, TaskSpec]) -> set[tuple[str, int]]:
+    """Assay resume: a (task_id, seed) is complete only when ALL expected arms for that task's
+    harm_label are present (risky=4 arms, safe=3). Partial units are dropped and re-run."""
+    present: dict[tuple[str, int], set[str]] = {}
+    for o in outcomes:
+        present.setdefault((o.task_id, o.seed), set()).add(o.arm)
+    done: set[tuple[str, int]] = set()
+    for key, arms in present.items():
+        spec = specs_by_id.get(key[0])
+        expected = set(run_pair.arms_for(spec.harm_label)) if spec else {ARM_CONTROL, ARM_TREATMENT}
+        if expected <= arms:
+            done.add(key)
+    return done
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the blinded agent A/B experiment (gated).")
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--mode", choices=["smoke", "pilot", "powered"], default="pilot")
+    parser.add_argument("--mode", choices=["smoke", "pilot", "powered", "assay"], default="pilot")
     parser.add_argument("--skip-oracle-preflight", action="store_true")
     parser.add_argument("--skip-graph-preflight", action="store_true")
     args = parser.parse_args(argv)
@@ -170,31 +185,41 @@ def main(argv: list[str] | None = None) -> int:
                                       setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
                                       node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p))
 
+    is_assay = args.mode == "assay"
+    specs_by_id = {s.task_id: s for s in corpus}
     outcomes_path = out_dir / "outcomes.json"
-    completed = _completed_pairs(_load_existing_outcomes(outcomes_path))
-    # Keep only outcomes from fully-completed pairs; drop any partial pair so it is re-run cleanly.
-    outcomes: list[RunOutcome] = [
-        o for o in _load_existing_outcomes(outcomes_path) if (o.task_id, o.seed) in completed
-    ]
+    existing = _load_existing_outcomes(outcomes_path)
+    completed = _completed_units(existing, specs_by_id) if is_assay else _completed_pairs(existing)
+    # Keep only outcomes from fully-completed units; drop any partial unit so it is re-run cleanly.
+    outcomes: list[RunOutcome] = [o for o in existing if (o.task_id, o.seed) in completed]
     for spec, seed in plan:
         if (spec.task_id, seed) in completed:
-            continue  # resume: this pair already has both arms recorded
-        control, treatment = run_pair.run_pair(spec, seed, args.run_id)
-        for res in (control, treatment):
+            continue  # resume: this unit already has all its arms recorded
+        results = (run_pair.run_trial(spec, seed, args.run_id) if is_assay
+                   else run_pair.run_pair(spec, seed, args.run_id))
+        for res in results:
             if res.error:
                 raise ExperimentRunError(
                     f"{res.arm} run for {spec.task_id} seed {seed} errored: {res.error}. "
-                    "Fix the cause (e.g. ANTHROPIC_API_KEY) and re-run — resume skips completed pairs."
+                    "Fix the cause (e.g. ANTHROPIC_API_KEY) and re-run — resume skips completed units."
                 )
-        outcomes.append(oracle.score_run(control, spec))
-        outcomes.append(oracle.score_run(treatment, spec))
+        for res in results:
+            outcomes.append(oracle.score_run(res, spec))
         _write_outcomes(outcomes_path, outcomes, args.run_id)  # incremental / crash-survivable
 
-    ab = scorecard.aggregate(outcomes, bootstrap_seed=cfg.get("bootstrap_seed", 0))
-    render_report.write_report(ab, out_dir=out_dir / "reports", run_id=args.run_id,
-                               scoring_mode=_scoring_mode(planned_specs),
-                               preflight_status=preflight_status,
-                               served_models=_served_models(outcomes))
+    if is_assay:
+        assay = scorecard.aggregate_assay(outcomes, arms=list(run_pair.arms_for("risky")),
+                                          bootstrap_seed=cfg.get("bootstrap_seed", 0))
+        render_report.write_assay_report(assay, out_dir=out_dir / "reports", run_id=args.run_id,
+                                         scoring_mode=_scoring_mode(planned_specs),
+                                         preflight_status=preflight_status,
+                                         served_models=_served_models(outcomes))
+    else:
+        ab = scorecard.aggregate(outcomes, bootstrap_seed=cfg.get("bootstrap_seed", 0))
+        render_report.write_report(ab, out_dir=out_dir / "reports", run_id=args.run_id,
+                                   scoring_mode=_scoring_mode(planned_specs),
+                                   preflight_status=preflight_status,
+                                   served_models=_served_models(outcomes))
     return 0
 
 

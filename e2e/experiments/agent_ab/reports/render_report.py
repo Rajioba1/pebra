@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from e2e.experiments.agent_ab.models import ABMetrics
+from e2e.experiments.agent_ab.models import ABMetrics, AssayMetrics
 
 _CONFIG = Path(__file__).resolve().parents[1] / "config.json"
 _DEFAULT_ADHERENCE_FLOOR = 0.33
@@ -32,6 +32,10 @@ def _pct(x: float | None) -> str:
 
 def _num(x: float | None) -> str:
     return "n/a" if x is None else f"{x:.3f}"
+
+
+def _preflight_passed(preflight_status: dict) -> bool:
+    return all(v == "passed" for v in preflight_status.values())
 
 
 def conclusion(m: ABMetrics, *, preflight_status: dict | None = None) -> str:
@@ -173,4 +177,105 @@ def write_report(
         ),
         encoding="utf-8",
     )
+    return md_path, json_path
+
+
+# ---- multi-arm ASSAY report -------------------------------------------------------------------
+
+_VERDICT_NOTE = {
+    "INVALID_DEBUG_RUN": "INVALID DEBUG RUN: preflight was not fully passed; do NOT use the assay "
+                         "verdict for validity or efficacy claims.",
+    "INVALID_NO_HEADROOM": "Oracle did not beat sham → the task cannot register improvement (no harm "
+                           "headroom). Fix the corpus; do NOT interpret any other arm.",
+    "INVALID_ASSAY_INSENSITIVE": "Blast-radius did not beat sham → the assay cannot detect a realistic "
+                                 "graph-guidance intervention. PEBRA's result is uninterpretable.",
+    "PEBRA_INFERIOR": "PEBRA did not beat sham (net benefit) → weaker than baseline.",
+    "PEBRA_EFFICACY_PARTIAL": "PEBRA beat sham but not blast-radius → helps, but not beyond generic "
+                              "dependent-file discipline.",
+    "PEBRA_SUPERIOR": "PEBRA beat both sham and blast-radius → evidence of value beyond generic "
+                      "blast-radius discipline.",
+}
+
+
+def assay_to_json(m: AssayMetrics, *, scoring_mode: str = "build_break_scope",
+                  preflight_status: dict | None = None, served_models: list[str] | None = None) -> dict:
+    preflight_status = preflight_status or {"oracle": "passed", "graph": "passed"}
+    i = m.interpretation
+    claim_valid = _preflight_passed(preflight_status)
+    verdict = i.verdict if claim_valid else "INVALID_DEBUG_RUN"
+    return {
+        "scoring_mode": scoring_mode, "preflight_status": preflight_status,
+        "served_models": served_models or [], "n_arms": m.n_arms, "verdict": verdict,
+        "raw_verdict": i.verdict, "claim_valid": claim_valid,
+        "gate_trace": {"task_has_headroom": i.task_has_headroom,
+                       "assay_detects_realistic": i.assay_detects_realistic,
+                       "pebra_has_efficacy": i.pebra_has_efficacy,
+                       "pebra_exceeds_blast": i.pebra_exceeds_blast},
+        "arms": {arm: {"n_runs": a.n_runs, "harm_rate": a.harm_rate,
+                       "over_caution_rate": a.over_caution_rate, "quality_failure_rate": a.quality_failure_rate,
+                       "scope_drift_rate": a.scope_drift_rate, "task_completion_rate": a.task_completion_rate,
+                       "adherence_rate": a.adherence_rate, "error_run_count": a.error_run_count,
+                       "blinding_leak_count": a.blinding_leak_count}
+                 for arm, a in m.arm_metrics.items()},
+        "pairwise": [{"intervention": p.intervention_arm, "baseline": p.baseline_arm,
+                      "harm_avoided_rate": p.harm_avoided_rate, "over_caution_delta": p.over_caution_delta,
+                      "net_benefit": p.net_benefit, "n_pairs_risky": p.n_pairs_risky,
+                      "n_pairs_safe": p.n_pairs_safe,
+                      "cohens_d_paired": p.cohens_d_paired, "wilcoxon_p": p.wilcoxon_p,
+                      "harm_diff_ci95": list(p.harm_diff_ci95) if p.harm_diff_ci95 else None}
+                     for p in m.pairwise],
+        "conclusion": (_VERDICT_NOTE[verdict] if not claim_valid else _VERDICT_NOTE.get(verdict, "")),
+    }
+
+
+def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "build_break_scope",
+                          preflight_status: dict | None = None, served_models: list[str] | None = None) -> str:
+    preflight_status = preflight_status or {"oracle": "passed", "graph": "passed"}
+    i = m.interpretation
+    claim_valid = _preflight_passed(preflight_status)
+    verdict = i.verdict if claim_valid else "INVALID_DEBUG_RUN"
+    lines = [
+        f"# PEBRA agent ASSAY — `{run_id}`", "",
+        f"> Scoring mode: **{scoring_mode}**. Preflight: oracle={preflight_status.get('oracle')}, "
+        f"graph={preflight_status.get('graph')}. Served model(s): {', '.join(served_models or []) or 'n/a'}.",
+        "> 4-arm assay (sham / oracle_positive / blast_radius / pebra). Validity gates on harm_avoided; "
+        "efficacy gates on net_benefit.", "",
+        f"## VERDICT: {verdict}", "", _VERDICT_NOTE.get(verdict, ""), "",
+        f"Gate trace: headroom={i.task_has_headroom}, assay_sensitive={i.assay_detects_realistic}, "
+        f"pebra_efficacy={i.pebra_has_efficacy}, pebra_exceeds_blast={i.pebra_exceeds_blast}", "",
+        "## Per-arm endpoints", "",
+        "| arm | n | harm_rate | over_caution | quality_fail | scope_drift | completion | adherence |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for arm in sorted(m.arm_metrics):
+        a = m.arm_metrics[arm]
+        lines.append(f"| {arm} | {a.n_runs} | {_pct(a.harm_rate)} | {_pct(a.over_caution_rate)} | "
+                     f"{_pct(a.quality_failure_rate)} | {_pct(a.scope_drift_rate)} | "
+                     f"{_pct(a.task_completion_rate)} | {_pct(a.adherence_rate)} |")
+    lines += ["", "## Pairwise (intervention vs baseline)", "",
+              "| intervention | baseline | harm_avoided | over_caution_delta | net_benefit | risky_pairs | "
+              "safe_pairs | Cohen's d | Wilcoxon p |", "|---|---|---|---|---|---|---|---|---|"]
+    for p in m.pairwise:
+        lines.append(f"| {p.intervention_arm} | {p.baseline_arm} | {_num(p.harm_avoided_rate)} | "
+                     f"{_num(p.over_caution_delta)} | {_num(p.net_benefit)} | {p.n_pairs_risky} | "
+                     f"{p.n_pairs_safe} | {_num(p.cohens_d_paired)} | {_num(p.wilcoxon_p)} |")
+    if not claim_valid:
+        lines += ["", f"Raw assay verdict: {i.verdict}"]
+    errs = sum(a.error_run_count for a in m.arm_metrics.values())
+    leaks = sum(a.blinding_leak_count for a in m.arm_metrics.values())
+    lines += ["", f"- excluded error runs: {errs}; excluded blinding-leak runs: {leaks}", ""]
+    return "\n".join(lines)
+
+
+def write_assay_report(m: AssayMetrics, *, out_dir, run_id: str, scoring_mode: str = "build_break_scope",
+                       preflight_status: dict | None = None, served_models: list[str] | None = None):
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    md_path = out / f"assay_{run_id}.md"
+    json_path = out / f"assay_{run_id}.json"
+    md_path.write_text(render_assay_markdown(m, run_id=run_id, scoring_mode=scoring_mode,
+                       preflight_status=preflight_status, served_models=served_models), encoding="utf-8")
+    json_path.write_text(json.dumps(assay_to_json(m, scoring_mode=scoring_mode,
+                         preflight_status=preflight_status, served_models=served_models), indent=2),
+                         encoding="utf-8")
     return md_path, json_path

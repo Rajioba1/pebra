@@ -10,7 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
-from e2e.experiments.agent_ab.runners import agent_loop, evaluator, model_client, run_control, run_gate, run_pair
+from e2e.experiments.agent_ab.runners import (
+    agent_loop, arm_prep, evaluator, model_client, run_control, run_gate, run_pair,
+)
 
 _SPEC = TaskSpec("T1", "d", ("a.cs",), "risky", ("a.cs",), "build_failure", True)
 
@@ -154,6 +156,33 @@ def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):
 
     with pytest.raises(run_pair.RunPairError, match="baseline"):
         run_pair.prepare_arm(_External(), _SPEC, "control", 0, "rid")
+
+
+def test_oracle_positive_pre_patch_happens_before_baseline_build(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    calls: list[str] = []
+
+    def _clone(_external, dest):
+        dest.mkdir(parents=True)
+        return dest
+
+    def _patch(repo_path, task_id):
+        calls.append(f"patch:{task_id}:{repo_path.name}")
+        return repo_path / "patch.diff"
+
+    def _build(repo_path):
+        calls.append(f"build:{repo_path.name}")
+        return SimpleNamespace(available=True, ran=True, passed=True, error_summary="")
+
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head", _clone)
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
+    monkeypatch.setattr(arm_prep, "prepare_oracle_patch", _patch)
+    monkeypatch.setattr(run_pair.dn, "run_build_delta", _build)
+
+    setup = run_pair.prepare_arm(_External(), _SPEC, "oracle_positive", 0, "rid")
+
+    assert setup.arm == "oracle_positive"
+    assert calls == ["patch:T1:repo", "build:repo"]
 
 
 def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):

@@ -24,6 +24,12 @@
     "claims": "directional only; signal-positive requires paired net_benefit > 0 and adherence >= threshold; no p-value",
     "_note": "seeds_per_arm is a replicate index, not a fixed model random seed."
   },
+  "assay": {
+    "tasks": ["T1", "B1"],
+    "seeds_per_arm": 1,
+    "claims": "assay-VALIDITY read via pre-registered verdict (see metrics/assay_interpret.py); NOT an efficacy claim on its own",
+    "_note": "4-arm assay. Risky tasks run all 4 (oracle_positive needs a correct_fix_patch — only T1/T2 have one); safe tasks run 3 (no oracle). Oracle=endpoint floor, blast_radius=CTXO-style positive control (PEBRA graph, not literal CTXO). seeds_per_arm=1 is a plumbing smoke; bump to >=3 for a real assay-validation run. HARM-HEADROOM prerequisite: sham must FAIL at nonzero rate (T1 has none) before the verdict is trustworthy."
+  },
   "powered": {
     "tasks": ["T1", "T2", "B1", "B2"],
     "target_tasks": ["T1", "T2", "T3", "T4", "B1", "B2", "B3", "B4"],

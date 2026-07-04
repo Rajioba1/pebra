@@ -22,13 +22,28 @@ from typing import Any, Callable
 
 from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
-from e2e.experiments.agent_ab.tools import advisory_check_real, advisory_check_sham, advisory_contract
+from e2e.experiments.agent_ab.tools import (
+    advisory_blast_radius, advisory_check_real, advisory_check_sham, advisory_contract,
+)
 from e2e.external.utils import dotnet_harness as dn
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness
 
 _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _MIN_CSHARP_NODES = 50
+
+# ---- assay arm sets (legacy 2-arm control/treatment map onto sham/pebra behavior) ---------------
+_RISKY_ARMS = (models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_BLAST_RADIUS, models.ARM_PEBRA)
+_SAFE_ARMS = (models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA)  # oracle N/A on safe tasks
+_REAL_ADVISORY_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA})
+_BLAST_ADVISORY_ARMS = frozenset({models.ARM_BLAST_RADIUS})
+_GATE_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA})  # only PEBRA enforces the write-gate
+_GRAPH_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_BLAST_RADIUS})
+
+
+def arms_for(harm_label: str) -> tuple[str, ...]:
+    """The arm set for a task: risky gets the oracle endpoint-floor; safe does not (no harm to fix)."""
+    return _RISKY_ARMS if harm_label == "risky" else _SAFE_ARMS
 
 
 class RunPairError(RuntimeError):
@@ -63,17 +78,20 @@ class ArmSetup:
 
 
 def _advisory_backend(arm: str, repo_path: Path, db_path: Path) -> Callable[..., dict[str, Any]]:
-    """Return the callable backing the SAME 'advisory_check' tool. Only the content differs by arm."""
-    if arm == models.ARM_TREATMENT:
+    """Return the callable backing the SAME 'advisory_check' tool. Only the CONTENT differs by arm:
+    pebra/treatment -> real PEBRA; blast_radius -> dependent-file list (no verdict); everyone else
+    (sham/control/oracle_positive) -> the content-free sham. Output SHAPE is identical across arms."""
+    if arm in _REAL_ADVISORY_ARMS:
         return lambda payload: advisory_check_real.advise(payload, repo_root=repo_path, db=db_path)
+    if arm in _BLAST_ADVISORY_ARMS:
+        return lambda payload: advisory_blast_radius.advise(payload, repo_root=repo_path, db=db_path)
     return lambda payload: advisory_check_sham.advise(payload)
 
 
 def _gate_check_backend(arm: str, db_path: Path) -> Callable[..., dict[str, Any]]:
-    """Back the SAME write-gate in both arms. Treatment shells the real ``pebra gate-check`` (reads the
-    shared assessment store); control's sham always allows — so a write is never BLOCKED in control, and
-    the only arm difference is the intervention, not the tool shape (blinding preserved)."""
-    if arm == models.ARM_TREATMENT:
+    """Only PEBRA enforces the write-gate; every other arm always allows — so a write is never BLOCKED
+    outside the PEBRA arm, and the only arm difference is the intervention, not the tool shape."""
+    if arm in _GATE_ARMS:
         # consult_only: the A/B has no human approver, so the ask verdict tier is disabled here — the
         # experiment measures must-consult only; an unresolved 'ask' would bias treatment's completion.
         return lambda event: cli_harness.gate_check(event, db=db_path, consult_only=True)
@@ -121,13 +139,18 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
     _remove_stale_arm_clone(dest)
     repo_path = rs.clone_at_recorded_head(external, dest)
     cli_harness.setup_graph(repo_root=repo_path)
-    if arm == models.ARM_TREATMENT:
+    if arm in _GRAPH_ARMS:
         counts = cli_harness.graph_node_counts(repo_root=repo_path)
         if int(counts.get("csharp_callable", 0)) < _MIN_CSHARP_NODES:
             raise RunPairError(
-                f"treatment arm CodeGraph has {counts.get('csharp_callable', 0)} C# callable nodes "
+                f"{arm} arm CodeGraph has {counts.get('csharp_callable', 0)} C# callable nodes "
                 f"(< {_MIN_CSHARP_NODES})"
             )
+    if arm == models.ARM_ORACLE_POSITIVE:
+        # Endpoint floor: pre-apply the known correct fix BEFORE the baseline build, so the (correct)
+        # baseline passes. Lazy import: arm_prep imports RunPairError from this module (avoid a cycle).
+        from e2e.experiments.agent_ab.runners import arm_prep  # noqa: PLC0415
+        arm_prep.prepare_oracle_patch(repo_path, spec.task_id)
     db_path = dest.parent / "pebra.db"
     baseline = dn.run_build_delta(repo_path)
     _validate_baseline(repo_path, baseline)
@@ -186,7 +209,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
 
 
 def run_pair(spec: TaskSpec, seed: int, run_id: str) -> tuple[SubjectResult, SubjectResult]:
-    """Prepare both arms and run the paired trial through the gated subject-agent seam."""
+    """Legacy 2-arm (control/treatment) trial — unchanged; kept for the pilot/smoke/powered modes."""
     external = rs.prepare_external_repo()
     control = prepare_arm(external, spec, models.ARM_CONTROL, seed, run_id)
     treatment = prepare_arm(external, spec, models.ARM_TREATMENT, seed, run_id)
@@ -194,3 +217,14 @@ def run_pair(spec: TaskSpec, seed: int, run_id: str) -> tuple[SubjectResult, Sub
         _invoke_subject_agent(control, spec, seed),
         _invoke_subject_agent(treatment, spec, seed),
     )
+
+
+def run_trial(spec: TaskSpec, seed: int, run_id: str, *, arms: tuple[str, ...] | None = None,
+              ) -> tuple[SubjectResult, ...]:
+    """Prepare and run the N assay arms for one (task, seed). Arms default by harm_label
+    (risky: sham/oracle_positive/blast_radius/pebra; safe: sham/blast_radius/pebra). Each arm is an
+    isolated clone under its own opaque token; results carry ``result.arm`` for scoring."""
+    external = rs.prepare_external_repo()
+    arm_list = arms if arms is not None else arms_for(spec.harm_label)
+    setups = [prepare_arm(external, spec, arm, seed, run_id) for arm in arm_list]
+    return tuple(_invoke_subject_agent(setup, spec, seed) for setup in setups)

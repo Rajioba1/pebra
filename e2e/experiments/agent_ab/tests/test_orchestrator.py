@@ -52,6 +52,11 @@ def test_config_has_one_pair_smoke_mode():
     assert cfg["smoke"]["total_runs"] == 2
 
 
+def test_assay_config_does_not_expose_dead_arm_list():
+    cfg = orchestrator._config()
+    assert "arms" not in cfg["assay"]
+
+
 def test_write_outcomes_atomic(tmp_path):
     path = tmp_path / "outcomes.json"
     orchestrator._write_outcomes(path, [_outcome("T1", models.ARM_CONTROL)], "rid")
