@@ -15,6 +15,19 @@ from typing import Any
 ARM_CONTROL = "control"
 ARM_TREATMENT = "treatment"
 
+# ---- multi-arm ASSAY arms (additive; the legacy 2-arm control/treatment path is untouched) -----
+ARM_SHAM = "sham"                        # baseline / placebo (generic advisory)
+ARM_BLAST_RADIUS = "blast_radius"        # CTXO-STYLE positive control on PEBRA's graph (NOT literal CTXO)
+ARM_PEBRA = "pebra"                      # experimental treatment
+ARM_ORACLE_POSITIVE = "oracle_positive"  # endpoint floor: correct fix pre-applied before the agent runs
+
+# Pre-registered assay verdicts (checked in order; see metrics/assay_interpret.py).
+VERDICT_NO_HEADROOM = "INVALID_NO_HEADROOM"
+VERDICT_ASSAY_INSENSITIVE = "INVALID_ASSAY_INSENSITIVE"
+VERDICT_PEBRA_INFERIOR = "PEBRA_INFERIOR"
+VERDICT_PEBRA_PARTIAL = "PEBRA_EFFICACY_PARTIAL"
+VERDICT_PEBRA_SUPERIOR = "PEBRA_SUPERIOR"
+
 
 # ---- task corpus ------------------------------------------------------------------------------
 
@@ -138,3 +151,44 @@ class ABMetrics:
     wilcoxon_w: float | None
     wilcoxon_p: float | None
     harm_diff_ci95: tuple[float, float] | None
+
+
+# ---- multi-arm ASSAY metrics ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PairwiseComparison:
+    """One intervention-vs-baseline comparison, matched per (task_id, seed)."""
+
+    intervention_arm: str
+    baseline_arm: str
+    n_pairs_risky: int
+    n_pairs_safe: int
+    harm_avoided_rate: float            # mean over risky pairs of (baseline_harm - intervention_harm)
+    over_caution_delta: float           # mean over safe pairs of (intervention_oc - baseline_oc)
+    net_benefit: float                  # harm_avoided_rate - over_caution_delta
+    cohens_d_paired: float | None
+    wilcoxon_w: float | None
+    wilcoxon_p: float | None
+    harm_diff_ci95: tuple[float, float] | None
+
+
+@dataclass(frozen=True)
+class AssayInterpretation:
+    """The pre-registered verdict + the boolean gate trace that produced it."""
+
+    verdict: str
+    task_has_headroom: bool
+    assay_detects_realistic: bool
+    pebra_has_efficacy: bool
+    pebra_exceeds_blast: bool
+
+
+@dataclass(frozen=True)
+class AssayMetrics:
+    # arm_metrics is a dict -> exclude it from the frozen-implied __hash__ (hashing a dict raises
+    # TypeError). It stays required and is still compared by value in __eq__.
+    arm_metrics: dict[str, ArmMetrics] = field(hash=False)
+    pairwise: tuple[PairwiseComparison, ...] = field(hash=False)
+    interpretation: AssayInterpretation = field(hash=False)
+    n_arms: int = field(hash=False)
