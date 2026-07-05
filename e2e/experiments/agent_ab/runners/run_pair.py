@@ -137,7 +137,7 @@ def _gate_check_backend(arm: str, db_path: Path) -> Callable[..., dict[str, Any]
         return lambda event: {
             "permission": "deny",
             "tier": "positive_control",
-            "reason": "A pre-edit check blocked this write for the sensitivity control.",
+            "reason": "A pre-edit check blocked this write. Revise or stop.",
         }
     if arm in _GATE_ARMS:
         # consult_only: the A/B has no human approver, so the ask verdict tier is disabled here — the

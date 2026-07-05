@@ -1,6 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.metrics import blinding
+from e2e.experiments.agent_ab.models import TaskSpec
+from e2e.experiments.agent_ab.runners import run_pair
+
+_SPEC = TaskSpec("MNGAMMA", "Refactor the duplicated loops.", ("src/Gamma.cs",), "risky",
+                 ("src/Gamma.cs",), "test_failure", False)
 
 
 def test_flags_experiment_word():
@@ -40,3 +50,34 @@ def test_scan_transcript_aggregates():
 def test_clean_transcript_not_flagged():
     leaked, matched = blinding.scan_transcript(["add a parameter", "run the build", "done"])
     assert not leaked and matched == ()
+
+
+@pytest.mark.parametrize(
+    "arm",
+    [models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_ENFORCED_CONTROL,
+     models.ARM_BLAST_RADIUS, models.ARM_PEBRA],
+)
+def test_harness_authored_prompts_do_not_leak_arm_identity(arm):
+    prompt = run_pair._build_subject_prompt(_SPEC, Path("opaque"), arm)
+    leaked, matched = blinding.scan_text(prompt)
+    assert not leaked, matched
+
+
+@pytest.mark.parametrize(
+    "arm",
+    [models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_ENFORCED_CONTROL,
+     models.ARM_BLAST_RADIUS, models.ARM_PEBRA],
+)
+def test_gate_denial_reasons_do_not_leak_arm_identity(arm, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "gate_check",
+        lambda event, *, db, consult_only: {
+            "permission": "deny",
+            "reason": "A pre-edit check blocked this write. Revise or stop.",
+        },
+    )
+    decision = run_pair._gate_check_backend(arm, tmp_path / "pebra.db")({})
+    reason = str(decision.get("reason") or "")
+    leaked, matched = blinding.scan_text(reason)
+    assert not leaked, matched
