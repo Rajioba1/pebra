@@ -10,6 +10,7 @@ from pebra.core import assessment_builder as ab
 from pebra.core import decision_engine as de
 from pebra.core import explanation_generator as eg
 from pebra.core import model_guidance as mg
+from pebra.core import models as m
 from tests.unit.test_assessment_builder import _worked_example_input
 
 
@@ -76,3 +77,31 @@ def test_no_high_risk_triggers_for_worked_example() -> None:
     p = _packet()
     assert p["advisory"]["high_risk_triggers"] == []
     assert p["binding"]["required_controls"] == []
+
+
+def test_revise_safer_guidance_is_structural_not_generic() -> None:
+    from dataclasses import replace
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::PublicContract", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+    )
+    result = de.decide(ab.build_assessment(inp))
+    packet = mg.render(result, inp.action, eg.render(result))
+    safer_route = packet["advisory"]["safer_route"]
+
+    assert packet["decision"] == "revise_safer"
+    assert packet["advisory"]["safer_alternative"] == safer_route["summary"]
+    assert "resubmit" in safer_route["summary"].lower()
+    assert any("public" in c.lower() for c in safer_route["constraints"])
+    assert any("src/auth.py" in c for c in safer_route["constraints"])
+    assert packet["provenance"]["safer_route"] == "decision + symbol scope evidence + candidate envelope"

@@ -76,6 +76,8 @@ _ADVISORY_BY_DECISION = {
                "before trying again."),
     "ask_human": ("Do not edit yet. This change may have wide impact. Inspect the code that depends on "
                   "your target, run the build and tests, and get a second opinion before continuing."),
+    "revise_safer": ("Do not apply this patch. Keep the goal, but choose a narrower or safer edit that "
+                     "preserves existing public behavior, then call the advisory again before writing."),
     "inspect_first": ("Before editing, inspect the code that depends on your target so you understand "
                       "the impact, then run the build and tests."),
     "test_first": ("Add or run tests covering your target before making this change, so any breakage "

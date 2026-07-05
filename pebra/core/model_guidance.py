@@ -32,11 +32,48 @@ def _safe_scope_files(action: CandidateAction) -> list[str]:
     return files
 
 
+def _safer_route(result: AssessmentResult, action: CandidateAction) -> dict[str, Any] | None:
+    if result.recommended_decision.value != "revise_safer":
+        return None
+    sse = result.symbol_scope_evidence or {}
+    constraints = [
+        "Do not apply the current patch as-is; propose a narrower candidate and resubmit assessment.",
+    ]
+    if str(sse.get("file_operation_kind", "NONE")) in {"DELETE", "RENAME", "MOVE"}:
+        constraints.append("Avoid deleting or relocating the target; prefer an in-place edit or wrapper.")
+    if sse.get("visibility") in {"public", "public_api", "exported"} or (
+        str(sse.get("max_change_kind", "")) == "CONTRACT"
+    ):
+        constraints.append("Preserve the public surface and existing public signatures unless explicitly authorized.")
+    files: list[str] = []
+    for entry in _safe_scope_files(action):
+        file_part = entry.split("::", 1)[0]
+        if file_part and file_part not in files:
+            files.append(file_part)
+    if files:
+        constraints.append(f"Keep the next candidate inside the assessed file scope: {', '.join(files)}.")
+    rollup = sse.get("file_fanin_rollup") or {}
+    callers = rollup.get("distinct_caller_count")
+    if isinstance(callers, int) and callers > 0:
+        constraints.append(f"Inspect dependent code before changing this route ({callers} dependent callers).")
+    symbol_fanin = sse.get("symbol_fanin") or {}
+    symbol_callers = symbol_fanin.get("caller_count")
+    if isinstance(symbol_callers, int) and symbol_callers > 0:
+        constraints.append(
+            f"Inspect direct symbol dependents before revising this route ({symbol_callers} callers)."
+        )
+    return {
+        "summary": "Revise to a safer, narrower route and resubmit before editing.",
+        "constraints": constraints,
+    }
+
+
 def render(
     result: AssessmentResult, action: CandidateAction, explanation: Explanation
 ) -> dict[str, Any]:
     selection = high_risk_controls.select_controls(result.high_risk_triggers)
     decision = result.recommended_decision.value
+    safer_route = _safer_route(result, action)
 
     required_checks: list[str] = []
     if decision in {"test_first", "proceed"} and action.expected_files:
@@ -95,10 +132,13 @@ def render(
             "suggested_inspection": suggested_inspection,
             "graph_evidence": graph_evidence,
             "fanin_validity": fanin_validity,
+            "safer_route": safer_route,
             "safer_alternative": (
-                "make a targeted patch instead of a broad refactor"
-                if decision != "proceed"
-                else None
+                safer_route["summary"] if safer_route else (
+                    "make a targeted patch instead of a broad refactor"
+                    if decision != "proceed"
+                    else None
+                )
             ),
         },
         "provenance": {
@@ -110,5 +150,6 @@ def render(
             "risk_facts": "risk_report + evidence discovery",
             "why": "explanation_generator",
             "graph_evidence": "blast-radius graph resolution (3c/3d)",
+            "safer_route": "decision + symbol scope evidence + candidate envelope",
         },
     }

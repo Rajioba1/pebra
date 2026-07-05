@@ -44,6 +44,73 @@ def test_gate3_expected_loss_over_threshold_with_positive_eu_asks_human() -> Non
     assert any(g["gate"] == 3 for g in result.gates_fired)
 
 
+def test_gate3_structural_dependency_risk_requests_safer_revision() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+    )
+    result = de.decide(ab.build_assessment(inp))
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
+def test_gate3_revision_cap_exhaustion_escalates_to_ask_human() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        thresholds={**inp.thresholds, "revise_safer_attempt": 2, "max_revise_safer_attempts": 2},
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+    )
+    result = de.decide(ab.build_assessment(inp))
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
+def test_hard_terminal_event_does_not_revise_even_with_structural_event() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        events=[
+            {"event": "security_sensitive_change", "p_event": 0.60, "elicited_disutility": 0.40},
+            {"event": "dependency_break", "p_event": 0.10, "elicited_disutility": 0.40},
+        ],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+    )
+    result = de.decide(ab.build_assessment(inp))
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
 def test_gate3_over_threshold_with_negative_eu_rejects() -> None:
     a = _assess(
         events=[{"event": "test_regression", "p_event": 0.90, "elicited_disutility": 0.90}],

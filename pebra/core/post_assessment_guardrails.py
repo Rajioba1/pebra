@@ -7,8 +7,8 @@ current diff/HEAD, reclassified actual symbol diff, contract-surface findings, c
 returns a ``GuardrailResult``. It must NOT call git, read the filesystem, import sqlite3, or inspect
 the repo — that I/O belongs in adapters behind ChangeVerifier / ContractSurfaceProvider / StorePort.
 
-Hard failures map to the existing five decisions only (no new enum). When several rules fire, the most
-severe decision wins (reject > ask_human > test_first > inspect_first > proceed).
+Hard failures map to the decision enum. When several rules fire, the most severe decision wins
+(reject > ask_human > revise_safer > test_first > inspect_first > proceed).
 """
 
 from __future__ import annotations
@@ -32,8 +32,9 @@ _DECISION_RANK = {
     Decision.PROCEED: 0,
     Decision.INSPECT_FIRST: 1,
     Decision.TEST_FIRST: 2,
-    Decision.ASK_HUMAN: 3,
-    Decision.REJECT: 4,
+    Decision.REVISE_SAFER: 3,
+    Decision.ASK_HUMAN: 4,
+    Decision.REJECT: 5,
 }
 
 

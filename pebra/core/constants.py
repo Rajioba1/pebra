@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from enum import Enum
 
-# --- Decision vocabulary (exactly 5 decisions; companions are NOT decisions) ---
+# --- Decision vocabulary (companions are NOT decisions) ---
 
 
 class Decision(Enum):
     PROCEED = "proceed"
     INSPECT_FIRST = "inspect_first"
     TEST_FIRST = "test_first"
+    REVISE_SAFER = "revise_safer"
     ASK_HUMAN = "ask_human"
     REJECT = "reject"
 

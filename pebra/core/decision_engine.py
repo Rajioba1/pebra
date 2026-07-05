@@ -20,6 +20,20 @@ from pebra.core.constants import ActionStatus, Decision, GraphFreshness, RiskMod
 from pebra.core.models import AssessmentResult
 
 _SENSITIVE_STAGES = {"C3", "C4"}
+_HARD_TERMINAL_EVENTS = frozenset(
+    {"security_sensitive_change", "external_state_damage", "migration_failure"}
+)
+_STRUCTURAL_RISK_EVENTS = frozenset(
+    {
+        "public_api_break",
+        "dependency_break",
+        "api_contract_break",
+        "route_behavior_break",
+        "tool_schema_break",
+        "response_shape_mismatch",
+        "consumer_shape_mismatch",
+    }
+)
 
 
 def _flatten_scores(a: Assessment) -> dict[str, Any]:
@@ -51,6 +65,50 @@ def _risk_mode(decision: Decision, stage: str, *, controlled: bool, elevated: bo
     if stage in _SENSITIVE_STAGES:
         return RiskMode.SENSITIVE_CONTEXT
     return RiskMode.NORMAL
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _revision_exhausted(thresholds: dict[str, Any]) -> bool:
+    attempt = _as_int(thresholds.get("revise_safer_attempt", 0), 0)
+    cap = _as_int(thresholds.get("max_revise_safer_attempts", 1), 1)
+    return cap <= 0 or attempt >= cap
+
+
+def _has_narrowing_headroom(assessment: Assessment) -> bool:
+    action = assessment.input.action
+    sse = assessment.scores["symbol_scope_evidence"]
+    file_op = str(sse.get("file_operation_kind", "NONE"))
+    changed_symbols = sse.get("changed_symbols") or []
+    expected_files = action.expected_files or []
+    if file_op in {"DELETE", "RENAME", "MOVE"}:
+        return True
+    return len(changed_symbols) > 1 or len(expected_files) > 1
+
+
+def _should_revise_safer(assessment: Assessment) -> bool:
+    """True when a risky route is plausibly narrowable before human escalation.
+
+    This is deliberately structural, not semantic: PEBRA does not invent the safer patch. It only
+    detects that the current patch has scope to narrow (multi-symbol/file or destructive operation)
+    and that the risk is dependency/API/contract shaped rather than a hard terminal class.
+    """
+    thresholds = assessment.input.thresholds
+    if not thresholds.get("revise_safer_enabled", True):
+        return False
+    if _revision_exhausted(thresholds):
+        return False
+    events = {str(c.get("event")) for c in assessment.scores["loss_components"]}
+    if events & _HARD_TERMINAL_EVENTS:
+        return False
+    if not (events & _STRUCTURAL_RISK_EVENTS):
+        return False
+    return _has_narrowing_headroom(assessment)
 
 
 def _graph_evidence(blast: Any) -> dict[str, Any]:
@@ -172,20 +230,28 @@ def decide(
         gates_fired.append({"gate": 2, "name": "c4_consequential_ask_human"})
     # --- Gate 3: expected_loss over effective threshold ---
     elif s["expected_loss"] > s["effective_threshold"]:
-        if s["expected_utility"] < 0:
+        if _should_revise_safer(assessment):
+            provisional, fired_gate = Decision.REVISE_SAFER, 3
+        elif s["expected_utility"] < 0:
             provisional, fired_gate = Decision.REJECT, 3
         else:
             provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 3
         gates_fired.append({"gate": 3, "name": "expected_loss_over_threshold",
                             "expected_loss": s["expected_loss"],
                             "threshold": s["effective_threshold"]})
+        if provisional is Decision.REVISE_SAFER:
+            gates_fired.append({"gate": 6, "name": "revise_safer"})
     # --- Gate 4: RAU < 0 ---
     elif s["rau"] < 0:
-        if t.get("ask_on_negative_rau", False):
+        if _should_revise_safer(assessment):
+            provisional, fired_gate = Decision.REVISE_SAFER, 4
+        elif t.get("ask_on_negative_rau", False):
             provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 4
         else:
             provisional, fired_gate = Decision.REJECT, 4
         gates_fired.append({"gate": 4, "name": "negative_rau", "rau": s["rau"]})
+        if provisional is Decision.REVISE_SAFER:
+            gates_fired.append({"gate": 6, "name": "revise_safer"})
     # --- Gate 5: utility_sd too wide while EU positive ---
     elif (
         s["utility_sd"] > t.get("max_utility_sd_without_human", 0.20)
@@ -239,7 +305,7 @@ def decide(
     # never ASK_HUMAN/REJECT, so the provisional guard below already excludes them — a sanction can
     # never convert an evidence-validity gate.
     sanction = assessment.input.sanction
-    elevated = provisional in {Decision.INSPECT_FIRST, Decision.TEST_FIRST} and stage in _SENSITIVE_STAGES
+    elevated = provisional in {Decision.INSPECT_FIRST, Decision.TEST_FIRST, Decision.REVISE_SAFER} and stage in _SENSITIVE_STAGES
     if (
         sanction
         and provisional in {Decision.ASK_HUMAN, Decision.REJECT}

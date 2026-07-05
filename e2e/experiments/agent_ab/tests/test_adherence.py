@@ -39,6 +39,18 @@ def test_reject_but_modified_is_ignored():
     assert heeded is False and state == models.ADH_IGNORED
 
 
+def test_revise_safer_not_modified_is_heeded():
+    calls = [_adv("revise_safer")]
+    _, _, heeded, state = adherence.classify(calls, primary_file=PRIMARY, modified_files=[])
+    assert heeded is True and state == models.ADH_HEEDED
+
+
+def test_revise_safer_but_modified_is_ignored():
+    calls = [_adv("revise_safer"), _write(1)]
+    _, _, heeded, state = adherence.classify(calls, primary_file=PRIMARY, modified_files=[PRIMARY])
+    assert heeded is False and state == models.ADH_IGNORED
+
+
 def test_inspect_first_build_before_write_is_heeded():
     calls = [_adv("inspect_first"), _build(1), _write(2)]
     _, _, heeded, state = adherence.classify(calls, primary_file=PRIMARY, modified_files=[PRIMARY])

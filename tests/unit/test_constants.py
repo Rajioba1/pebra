@@ -40,11 +40,12 @@ def test_z_alpha_90_is_the_90pct_lower_bound_multiplier() -> None:
     assert C.Z_ALPHA_90 == 1.28
 
 
-def test_decision_enum_is_exactly_the_five_decisions() -> None:
+def test_decision_enum_is_the_canonical_decision_set() -> None:
     assert {d.value for d in C.Decision} == {
         "proceed",
         "inspect_first",
         "test_first",
+        "revise_safer",
         "ask_human",
         "reject",
     }

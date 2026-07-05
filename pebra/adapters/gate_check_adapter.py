@@ -9,7 +9,9 @@ Phase 2 = MUST-CONSULT: a graph-IMPACTFUL target with no fresh assessment for th
 
 Phase 6 = ASK-ONLY verdict tier: once a matching assessment exists, ``reject`` / ``ask_human`` become
 host-overridable ASK, not hard-deny. ``consult_only`` disables that verdict tier for humanless hosts
-such as the A/B runner, keeping the intervention to must-consult only.
+such as the A/B runner, keeping the intervention to must-consult only. ``revise_safer`` is different:
+it blocks the current write and asks the agent to resubmit a narrower candidate, so it remains active
+even in consult-only hosts.
 
 Hard invariants:
 - **Read-only**: computes repo_id via ``paths.find_repo_root`` + sha1 directly; it must NEVER call
@@ -46,6 +48,7 @@ _IMPORT_GRAPH_REL = Path(".pebra") / "import_graph.json"
 
 # Engine verdicts that, once consulted, escalate to a host-approval ASK (Phase 6 verdict tier).
 _REVIEW_DECISIONS = frozenset({"ask_human", "reject"})
+_REVISE_DECISIONS = frozenset({"revise_safer"})
 _EDIT_TOOLS = ("Edit", "Write")
 _APPLY_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$", re.MULTILINE)
 
@@ -131,6 +134,8 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
     matched = _matched_row(rows, targets, head, repo_root)
     if matched is None:
         return GateDecision("deny", "must_consult", reason=_deny_reason(targets, head))
+    if str(matched.get("decision")) in _REVISE_DECISIONS:
+        return GateDecision("deny", "consulted_revise", reason=_revise_reason(targets, head))
     # Phase 6 verdict tier: once consulted, if the assessment's own decision was ask_human/reject,
     # escalate to ASK (overridable by a host approval prompt) — never a hard deny, never a blind allow.
     # ``consult_only`` (the A/B experiment, which has no human approver) keeps the Phase 5 allow.
@@ -149,6 +154,12 @@ def _review_reason(targets: list[str], head: str) -> str:
     names = ", ".join(os.path.basename(t) for t in targets[:3])
     return (f"PEBRA assessed editing {names} as high-risk (commit {head[:8]}). Approve in the host "
             "prompt to proceed, or reconsider a narrower or safer change.")
+
+
+def _revise_reason(targets: list[str], head: str) -> str:
+    names = ", ".join(os.path.basename(t) for t in targets[:3])
+    return (f"Do not apply this patch to {names} at commit {head[:8]}. Submit a narrower or safer "
+            "candidate that preserves the existing public surface, then assess again.")
 
 
 # ---- impact pre-filter ---------------------------------------------------------------------

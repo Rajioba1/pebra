@@ -254,6 +254,15 @@ def test_decide_consult_only_skips_verdict_tier(tmp_path, monkeypatch):
     assert d.permission == "allow" and d.tier == "consulted"
 
 
+def test_decide_revise_safer_blocks_even_in_consult_only(tmp_path, monkeypatch):
+    # revise_safer is not a human approval prompt; it blocks the current write and asks the agent to
+    # resubmit a narrower candidate, so consult_only must not silently allow it.
+    _consulted(tmp_path, monkeypatch, "revise_safer")
+    d = gca.decide(_edit_event(tmp_path), consult_only=True)
+    assert d.permission == "deny" and d.tier == "consulted_revise"
+    assert "narrower" in d.reason.lower()
+
+
 def test_decide_consult_only_allows_ask_human(tmp_path, monkeypatch):
     _consulted(tmp_path, monkeypatch, "ask_human")
     d = gca.decide(_edit_event(tmp_path), consult_only=True)

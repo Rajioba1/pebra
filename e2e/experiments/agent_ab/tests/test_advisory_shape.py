@@ -59,7 +59,8 @@ def test_real_output_shape_matches_sham_and_is_vocab_clean():
 
 
 def test_real_output_is_vocab_clean_for_every_decision():
-    for decision in ("proceed", "inspect_first", "test_first", "ask_human", "reject", None):
+    for decision in ("proceed", "inspect_first", "test_first", "revise_safer",
+                     "ask_human", "reject", None):
         out = real._shape_output({"recommended_decision": decision, "scores": {}})
         blob = " ".join(_all_strings(out)).lower()
         for term in _FORBIDDEN_VOCAB:
@@ -71,6 +72,13 @@ def test_reject_advisory_is_actionable_without_engine_vocab():
     advisory = out["advisory"].lower()
     assert "do not edit" in advisory
     assert "stop" in advisory
+
+
+def test_revise_safer_advisory_blocks_current_patch_with_forward_path():
+    out = real._shape_output({"recommended_decision": "revise_safer", "scores": {"expected_loss": 1.0}})
+    advisory = out["advisory"].lower()
+    assert "do not apply" in advisory
+    assert "narrower" in advisory
 
 
 def test_advisory_contract_requires_patch_evidence():
