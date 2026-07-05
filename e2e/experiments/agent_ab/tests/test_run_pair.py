@@ -143,6 +143,32 @@ def test_treatment_gate_check_backend_uses_consult_only(monkeypatch, tmp_path):
     }
 
 
+def test_real_advisory_backend_threads_revise_attempts(monkeypatch, tmp_path):
+    attempts: list[int] = []
+
+    def _advise(payload, *, repo_root, db, revise_safer_attempt=0):
+        attempts.append(revise_safer_attempt)
+        return {
+            "recommended_decision": "revise_safer" if revise_safer_attempt == 0 else "reject",
+            "risk_level": "high",
+            "advisory": "x",
+            "detail": {},
+        }
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+
+    backend = run_pair._advisory_backend("pebra", tmp_path, tmp_path / "pebra.db")
+    payload = {
+        "target_file": "src/A.cs",
+        "change_summary": "edit",
+        "proposed_patch": "diff --git a/src/A.cs b/src/A.cs",
+    }
+    backend(payload)
+    backend(payload)
+
+    assert attempts == [0, 1]
+
+
 def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):
     monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
     monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",
@@ -211,7 +237,7 @@ def test_prepare_arm_passes_task_build_solution_to_baseline(monkeypatch, tmp_pat
 
 
 def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
-    prompt = run_pair._build_subject_prompt(_SPEC, tmp_path)
+    prompt = run_pair._build_subject_prompt(_SPEC, tmp_path, "sham")
     for name in ("read_file", "write_file", "list_dir", "search_grep", "run_build", "run_tests",
                  "advisory_check"):
         assert name in prompt
@@ -222,8 +248,22 @@ def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
     assert "do not edit" in lower
 
 
+def test_pebra_arm_prompt_includes_blinded_safe_edit_skill(tmp_path):
+    prompt = run_pair._build_subject_prompt(_SPEC, tmp_path, "pebra")
+
+    assert "Safe-edit protocol" in prompt
+    assert "resubmit a narrower candidate" in prompt
+    assert "write only after" in prompt.lower()
+
+
+def test_non_pebra_arm_prompt_does_not_include_safe_edit_skill(tmp_path):
+    prompt = run_pair._build_subject_prompt(_SPEC, tmp_path, "sham")
+
+    assert "Safe-edit protocol" not in prompt
+
+
 def test_subject_prompt_does_not_include_absolute_repo_path_or_engine_name(tmp_path):
     repo = tmp_path / "pebra" / "e2e" / "out" / "repo"
-    prompt = run_pair._build_subject_prompt(_SPEC, repo)
+    prompt = run_pair._build_subject_prompt(_SPEC, repo, "pebra")
     assert str(repo) not in prompt
     assert "pebra" not in prompt.lower()

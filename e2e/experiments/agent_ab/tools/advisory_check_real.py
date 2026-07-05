@@ -25,15 +25,17 @@ _THRESHOLDS = {
     "max_p_negative_utility": 0.10, "max_utility_sd_without_human": 0.20,
     "decision_instability_threshold": 0.10, "high_edit_confidence": 0.75, "low_edit_confidence": 0.50,
     "rau_bands": {"reject_below": 0.0, "borderline_below": 0.15, "strong_at": 0.40},
+    "revise_safer_enabled": True, "max_revise_safer_attempts": 1,
 }
 
 
-def _build_request(payload: dict[str, Any]) -> dict[str, Any]:
+def _build_request(payload: dict[str, Any], *, revise_safer_attempt: int = 0) -> dict[str, Any]:
     target = payload.get("target_file", "")
     summary = payload.get("change_summary", "proposed change")
     patch = payload.get("proposed_patch", "")
     if not patch:
         raise ValueError("advisory_check requires proposed_patch so PEBRA can assess the intended edit")
+    thresholds = {**_THRESHOLDS, "revise_safer_attempt": max(0, int(revise_safer_attempt))}
     return {
         "schema_version": "0.1", "task": summary, "repo_id": "ab_experiment",
         "candidate_actions": [{
@@ -50,7 +52,7 @@ def _build_request(payload: dict[str, Any]) -> dict[str, Any]:
             "benefit_delta_evidence": {"source_type": "projected", "future_change_exposure": 0.0,
                                        "deltas": {}},
         },
-        "thresholds": _THRESHOLDS,
+        "thresholds": thresholds,
     }
 
 
@@ -105,9 +107,11 @@ def _shape_output(result: dict[str, Any]) -> dict[str, Any]:
     })
 
 
-def advise(payload: dict[str, Any], *, repo_root: Path | str, db: Path | str) -> dict[str, Any]:
+def advise(
+    payload: dict[str, Any], *, repo_root: Path | str, db: Path | str, revise_safer_attempt: int = 0
+) -> dict[str, Any]:
     """Run PEBRA on the proposed change and return the shared, arm-neutral advisory shape."""
-    request = _build_request(payload)
+    request = _build_request(payload, revise_safer_attempt=revise_safer_attempt)
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
         json.dump(request, fh)
         req_path = fh.name

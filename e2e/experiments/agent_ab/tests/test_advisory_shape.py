@@ -85,3 +85,14 @@ def test_advisory_contract_requires_patch_evidence():
     assert "proposed_patch" in advisory_contract.INPUT_SCHEMA["required"]
     with pytest.raises(ValueError, match="requires proposed_patch"):
         real._build_request({"target_file": "x.cs", "change_summary": "change x"})
+
+
+def test_build_request_carries_revise_safer_attempt():
+    req = real._build_request({
+        "target_file": "x.cs",
+        "change_summary": "change x",
+        "proposed_patch": "diff --git a/x.cs b/x.cs",
+    }, revise_safer_attempt=2)
+
+    assert req["thresholds"]["revise_safer_attempt"] == 2
+    assert req["thresholds"]["max_revise_safer_attempts"] == 1
