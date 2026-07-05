@@ -16,7 +16,8 @@ from e2e.utils import cli_harness
 
 def test_arms_for_risky_and_safe():
     assert run_pair.arms_for("risky") == (
-        models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_BLAST_RADIUS, models.ARM_PEBRA)
+        models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_ENFORCED_CONTROL,
+        models.ARM_BLAST_RADIUS, models.ARM_PEBRA)
     assert run_pair.arms_for("safe") == (models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA)
     assert models.ARM_ORACLE_POSITIVE not in run_pair.arms_for("safe")  # no harm to fix on safe tasks
 
@@ -37,6 +38,7 @@ def test_advisory_backend_dispatch(monkeypatch):
     assert which(models.ARM_TREATMENT) == "real"          # legacy treatment maps to real
     assert which(models.ARM_BLAST_RADIUS) == "blast"
     assert which(models.ARM_SHAM) == "sham"
+    assert which(models.ARM_ENFORCED_CONTROL) == "sham"
     assert which(models.ARM_ORACLE_POSITIVE) == "sham"    # oracle uses sham advisory (mechanism = pre-patch)
     assert which(models.ARM_CONTROL) == "sham"
 
@@ -49,6 +51,7 @@ def test_gate_backend_only_pebra_enforces(monkeypatch):
         return run_pair._gate_check_backend(arm, Path("/d"))({})["permission"]
 
     assert perm(models.ARM_PEBRA) == "deny" and perm(models.ARM_TREATMENT) == "deny"
+    assert perm(models.ARM_ENFORCED_CONTROL) == "deny"
     for arm in (models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_ORACLE_POSITIVE):
         assert perm(arm) == "allow"  # non-PEBRA arms never block a write
 

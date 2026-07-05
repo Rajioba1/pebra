@@ -10,7 +10,13 @@ from e2e.experiments.agent_ab.metrics import scorecard
 from e2e.experiments.agent_ab.reports import render_report
 from e2e.experiments.agent_ab.runners import orchestrator
 
-_ARMS = [models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_BLAST_RADIUS, models.ARM_PEBRA]
+_ARMS = [
+    models.ARM_SHAM,
+    models.ARM_ORACLE_POSITIVE,
+    models.ARM_ENFORCED_CONTROL,
+    models.ARM_BLAST_RADIUS,
+    models.ARM_PEBRA,
+]
 
 
 def _o(task, arm, seed, harm_label, harm):
@@ -73,15 +79,16 @@ def test_assay_pairwise_reports_safe_pair_count():
 def test_write_assay_report_writes_both_files(tmp_path):
     md_path, json_path = render_report.write_assay_report(_assay_metrics(), out_dir=tmp_path, run_id="r1")
     assert md_path.is_file() and json_path.is_file()
-    assert json.loads(json_path.read_text(encoding="utf-8"))["n_arms"] == 4
+    assert json.loads(json_path.read_text(encoding="utf-8"))["n_arms"] == 5
 
 
-def test_completed_units_risky_needs_all_four_arms():
+def test_completed_units_risky_needs_all_five_arms():
     specs = {"T1": SimpleNamespace(task_id="T1", harm_label="risky")}
     partial = [_o("T1", a, 0, "risky", False)
-               for a in (models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA)]  # missing oracle
+               for a in (models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_BLAST_RADIUS,
+                         models.ARM_PEBRA)]  # missing enforced_control
     assert orchestrator._completed_units(partial, specs) == set()
-    full = partial + [_o("T1", models.ARM_ORACLE_POSITIVE, 0, "risky", False)]
+    full = partial + [_o("T1", models.ARM_ENFORCED_CONTROL, 0, "risky", False)]
     assert ("T1", 0) in orchestrator._completed_units(full, specs)
 
 

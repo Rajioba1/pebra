@@ -52,32 +52,53 @@ def _full_4arm(harm_by_arm):
 
 
 def test_aggregate_assay_builds_comparisons_and_interprets_superior():
-    arms = [models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_BLAST_RADIUS, models.ARM_PEBRA]
-    # sham harms; oracle avoids; blast avoids on 1/3; pebra avoids on 3/3 -> pebra beats sham AND blast
+    arms = [
+        models.ARM_SHAM,
+        models.ARM_ORACLE_POSITIVE,
+        models.ARM_ENFORCED_CONTROL,
+        models.ARM_BLAST_RADIUS,
+        models.ARM_PEBRA,
+    ]
+    # sham harms; oracle/enforced avoid; blast avoids on 1/3; pebra avoids on 3/3 -> pebra beats both.
     outs = []
     for seed in (0, 1, 2):
         outs.append(_o("T1", models.ARM_SHAM, seed, "risky", harm=True))
         outs.append(_o("T1", models.ARM_ORACLE_POSITIVE, seed, "risky", harm=False))
+        outs.append(_o("T1", models.ARM_ENFORCED_CONTROL, seed, "risky", harm=False))
         outs.append(_o("T1", models.ARM_BLAST_RADIUS, seed, "risky", harm=(seed != 0)))  # avoids only seed0
         outs.append(_o("T1", models.ARM_PEBRA, seed, "risky", harm=False))
     am = scorecard.aggregate_assay(outs, arms=arms)
-    assert am.n_arms == 4 and set(am.arm_metrics) == set(arms)
+    assert am.n_arms == 5 and set(am.arm_metrics) == set(arms)
     assert am.interpretation.verdict == models.VERDICT_PEBRA_SUPERIOR
 
 
 def test_aggregate_assay_no_headroom_when_oracle_equals_sham():
-    arms = [models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_BLAST_RADIUS, models.ARM_PEBRA]
+    arms = [
+        models.ARM_SHAM,
+        models.ARM_ORACLE_POSITIVE,
+        models.ARM_ENFORCED_CONTROL,
+        models.ARM_BLAST_RADIUS,
+        models.ARM_PEBRA,
+    ]
     outs = _full_4arm({models.ARM_SHAM: False, models.ARM_ORACLE_POSITIVE: False,
-                       models.ARM_BLAST_RADIUS: False, models.ARM_PEBRA: False})  # nobody harms -> no headroom
+                       models.ARM_ENFORCED_CONTROL: False, models.ARM_BLAST_RADIUS: False,
+                       models.ARM_PEBRA: False})  # nobody harms -> no headroom
     am = scorecard.aggregate_assay(outs, arms=arms)
     assert am.interpretation.verdict == models.VERDICT_NO_HEADROOM
 
 
 def test_assay_metrics_is_hashable():
     # frozen=True implies hashability; a plain dict field would make hash() raise TypeError.
-    arms = [models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_BLAST_RADIUS, models.ARM_PEBRA]
+    arms = [
+        models.ARM_SHAM,
+        models.ARM_ORACLE_POSITIVE,
+        models.ARM_ENFORCED_CONTROL,
+        models.ARM_BLAST_RADIUS,
+        models.ARM_PEBRA,
+    ]
     outs = _full_4arm({models.ARM_SHAM: True, models.ARM_ORACLE_POSITIVE: False,
-                       models.ARM_BLAST_RADIUS: False, models.ARM_PEBRA: False})
+                       models.ARM_ENFORCED_CONTROL: False, models.ARM_BLAST_RADIUS: False,
+                       models.ARM_PEBRA: False})
     hash(scorecard.aggregate_assay(outs, arms=arms))
 
 
@@ -85,7 +106,7 @@ def test_aggregate_assay_requires_oracle_arm():
     import pytest
 
     from e2e.experiments.agent_ab.metrics import assay_interpret
-    arms = [models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA]  # no oracle_positive
+    arms = [models.ARM_SHAM, models.ARM_ENFORCED_CONTROL, models.ARM_BLAST_RADIUS, models.ARM_PEBRA]
     outs = [_o("T1", a, 0, "risky", False) for a in arms]
     with pytest.raises(assay_interpret.AssayInterpretError):  # headroom floor is required, not optional
         scorecard.aggregate_assay(outs, arms=arms)

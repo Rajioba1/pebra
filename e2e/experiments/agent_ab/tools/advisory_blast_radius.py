@@ -1,11 +1,11 @@
-"""Positive-control ("blast-radius") backend for the shared ``advisory_check`` tool — a CTXO-STYLE analog.
+"""Blast-radius backend for the shared ``advisory_check`` tool — a CTXO-STYLE graph diagnostic.
 
-The assay's ACTIVE positive control: it hands the agent the FILES that depend on its target (from
-``pebra dependents`` — PEBRA's own graph) as a pre-edit advisory WITH NO RISK VERDICT. The information
-(which files reference what you're changing) is the intervention; there is NO PEBRA decision or score —
-``recommended_decision`` stays None, ``risk_level`` "unknown". It answers the assay-sensitivity question
-"can a realistic graph-guidance intervention help?". This is NOT literal CTXO (that's a deferred, gated
-external comparator); it's a mechanism analog on PEBRA's graph.
+It hands the agent the FILES that depend on its target (from ``pebra dependents`` — PEBRA's own graph)
+as a pre-edit advisory WITH NO RISK VERDICT. The information (which files reference what you're
+changing) is the intervention; there is NO PEBRA decision or score — ``recommended_decision`` stays
+None, ``risk_level`` "unknown". It is diagnostic only; the assay sensitivity positive control is the
+separate enforced_control arm. This is NOT literal CTXO (that's a deferred, gated external comparator);
+it's a mechanism analog on PEBRA's graph.
 
 Blinding: output is byte-shape-identical to sham/pebra (``detail={}``); only the advisory TEXT differs,
 and it uses "files that reference/depend on your target" wording — never engine/experiment vocabulary.

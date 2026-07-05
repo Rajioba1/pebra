@@ -256,10 +256,13 @@ def test_pebra_arm_prompt_includes_blinded_safe_edit_skill(tmp_path):
     assert "write only after" in prompt.lower()
 
 
-def test_non_pebra_arm_prompt_does_not_include_safe_edit_skill(tmp_path):
+def test_non_pebra_arm_prompt_gets_placebo_protocol(tmp_path):
     prompt = run_pair._build_subject_prompt(_SPEC, tmp_path, "sham")
 
     assert "Safe-edit protocol" not in prompt
+    assert "Edit protocol" in prompt
+    assert "Draft the intended patch" in prompt
+    assert "resubmit a narrower candidate" not in prompt
 
 
 def test_subject_prompt_does_not_include_absolute_repo_path_or_engine_name(tmp_path):

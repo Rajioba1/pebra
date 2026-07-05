@@ -28,7 +28,7 @@
     "tasks": ["MNGAMMA"],
     "seeds_per_arm": 1,
     "claims": "assay-VALIDITY read via pre-registered verdict (see metrics/assay_interpret.py); NOT an efficacy claim on its own",
-    "_note": "4-arm assay. Risky tasks run all 4. Oracle=endpoint floor, blast_radius=CTXO-style positive control (PEBRA graph, not literal CTXO). seeds_per_arm=1 is a cheap first assay pass; bump to >=3 for a real assay-validation run. Current MNGAMMA substrate has scout evidence of sham headroom; over-caution is not measured until safe Math.NET tasks are added."
+    "_note": "5-arm assay. Risky tasks run all 5. Oracle=endpoint floor, enforced_control=mechanical sensitivity positive control, blast_radius=CTXO-style graph-guidance diagnostic (PEBRA graph, not literal CTXO). seeds_per_arm=1 is a cheap first assay pass; bump to >=3 for a real assay-validation run. Current MNGAMMA substrate has scout evidence of sham headroom; over-caution is not measured until safe Math.NET tasks are added."
   },
   "powered": {
     "tasks": ["T1", "T2", "B1", "B2"],

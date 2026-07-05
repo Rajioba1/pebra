@@ -17,7 +17,8 @@ ARM_TREATMENT = "treatment"
 
 # ---- multi-arm ASSAY arms (additive; the legacy 2-arm control/treatment path is untouched) -----
 ARM_SHAM = "sham"                        # baseline / placebo (generic advisory)
-ARM_BLAST_RADIUS = "blast_radius"        # CTXO-STYLE positive control on PEBRA's graph (NOT literal CTXO)
+ARM_BLAST_RADIUS = "blast_radius"        # CTXO-style graph-guidance diagnostic (NOT literal CTXO)
+ARM_ENFORCED_CONTROL = "enforced_control"  # sensitivity control: write gate blocks known-risky edits
 ARM_PEBRA = "pebra"                      # experimental treatment
 ARM_ORACLE_POSITIVE = "oracle_positive"  # endpoint floor: correct fix pre-applied before the agent runs
 

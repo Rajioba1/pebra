@@ -4,8 +4,8 @@ Pure (stdlib + sibling models only). The gates run in sequence; each is only mea
 passed, so a failing early gate SHORT-CIRCUITS and the later booleans stay False:
 
   1. oracle_positive ≤ sham  -> INVALID_NO_HEADROOM       (endpoint can't register improvement; fix corpus)
-  2. blast_radius   ≤ sham    -> INVALID_ASSAY_INSENSITIVE (can't detect a realistic graph-guidance
-                                                            intervention; a PEBRA null is uninterpretable)
+  2. enforced_control ≤ sham  -> INVALID_ASSAY_INSENSITIVE (can't detect enforced harm prevention;
+                                                            a PEBRA null is uninterpretable)
   3. pebra net      ≤ sham    -> PEBRA_INFERIOR            (harm avoided does not offset over-caution)
   4. pebra net      ≤ blast   -> PEBRA_EFFICACY_PARTIAL    (helps, but not beyond generic blast-radius)
   5. all pass                 -> PEBRA_SUPERIOR
@@ -36,13 +36,13 @@ def _find(pairwise: Sequence[PairwiseComparison], intervention: str, baseline: s
 
 def interpret(pairwise: Sequence[PairwiseComparison]) -> AssayInterpretation:
     oracle = _find(pairwise, models.ARM_ORACLE_POSITIVE, models.ARM_SHAM)
-    blast = _find(pairwise, models.ARM_BLAST_RADIUS, models.ARM_SHAM)
+    enforced = _find(pairwise, models.ARM_ENFORCED_CONTROL, models.ARM_SHAM)
     pebra_vs_sham = _find(pairwise, models.ARM_PEBRA, models.ARM_SHAM)
     pebra_vs_blast = _find(pairwise, models.ARM_PEBRA, models.ARM_BLAST_RADIUS)
 
     if oracle.harm_avoided_rate <= 0.0:
         return AssayInterpretation(models.VERDICT_NO_HEADROOM, False, False, False, False)
-    if blast.harm_avoided_rate <= 0.0:
+    if enforced.harm_avoided_rate <= 0.0:
         return AssayInterpretation(models.VERDICT_ASSAY_INSENSITIVE, True, False, False, False)
     if pebra_vs_sham.net_benefit <= 0.0:
         return AssayInterpretation(models.VERDICT_PEBRA_INFERIOR, True, True, False, False)

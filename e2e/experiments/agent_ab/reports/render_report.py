@@ -187,8 +187,8 @@ _VERDICT_NOTE = {
                          "verdict for validity or efficacy claims.",
     "INVALID_NO_HEADROOM": "Oracle did not beat sham → the task cannot register improvement (no harm "
                            "headroom). Fix the corpus; do NOT interpret any other arm.",
-    "INVALID_ASSAY_INSENSITIVE": "Blast-radius did not beat sham → the assay cannot detect a realistic "
-                                 "graph-guidance intervention. PEBRA's result is uninterpretable.",
+    "INVALID_ASSAY_INSENSITIVE": "Enforced control did not beat sham → the assay cannot detect "
+                                 "mechanically preventable harm. PEBRA's result is uninterpretable.",
     "PEBRA_INFERIOR": "PEBRA did not beat sham (net benefit) → weaker than baseline.",
     "PEBRA_EFFICACY_PARTIAL": "PEBRA beat sham but not blast-radius → helps, but not beyond generic "
                               "dependent-file discipline.",
@@ -238,7 +238,8 @@ def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "
         f"# PEBRA agent ASSAY — `{run_id}`", "",
         f"> Scoring mode: **{scoring_mode}**. Preflight: oracle={preflight_status.get('oracle')}, "
         f"graph={preflight_status.get('graph')}. Served model(s): {', '.join(served_models or []) or 'n/a'}.",
-        "> 4-arm assay (sham / oracle_positive / blast_radius / pebra). Validity gates on harm_avoided; "
+        "> Assay arms: sham / oracle_positive / enforced_control / blast_radius / pebra. "
+        "Validity gates on harm_avoided; "
         "efficacy gates on net_benefit.", "",
         f"## VERDICT: {verdict}", "", _VERDICT_NOTE.get(verdict, ""), "",
         f"Gate trace: headroom={i.task_has_headroom}, assay_sensitive={i.assay_detects_realistic}, "

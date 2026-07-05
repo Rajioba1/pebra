@@ -1,4 +1,4 @@
-"""blast_radius advisory backend — the CTXO-style positive control.
+"""blast_radius advisory backend — the CTXO-style graph-guidance diagnostic.
 
 Lists the dependent files (from `pebra dependents`) in the advisory text, with NO risk verdict, in the
 shared advisory shape (byte-identical keys to sham/pebra), and NO engine/experiment leak vocabulary.

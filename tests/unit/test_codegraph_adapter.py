@@ -7,6 +7,7 @@ real ``codegraph status/sync`` subprocess path is covered separately behind ``re
 
 from __future__ import annotations
 
+import dataclasses
 import json as _json
 import sqlite3
 from pathlib import Path
@@ -15,7 +16,12 @@ from types import SimpleNamespace
 import pytest
 
 from pebra.adapters import codegraph_adapter as cga
+from pebra.core import assessment_builder as ab
+from pebra.core import decision_engine as de
+from pebra.core import models as m
+from pebra.core.constants import Decision
 from pebra.core.models import CandidateAction
+from tests.unit.test_assessment_builder import _worked_example_input
 
 # NB: the real `codegraph status --json` emits INTEGER counts for pendingChanges (changes.*.length),
 # not file lists (references/codegraph/src/bin/codegraph.ts:818-822) — fixtures mirror that shape.
@@ -623,6 +629,57 @@ def test_hunk_spanning_two_functions_resolves_both_and_unions_fanin(tmp_path) ->
     assert ev.resolution_method == "location"
     assert set(ev.node_ids_resolved) == {"func:A", "func:B"}
     assert ev.symbol_caller_count == 2  # union of distinct callers across both changed functions
+
+
+def test_gamma_style_multisymbol_graph_scope_routes_to_revise_safer(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    path = "src/Numerics/SpecialFunctions/Gamma.cs"
+    _node(con, "method:GammaLn", "method", "GammaLn", "SpecialFunctions::GammaLn", path, 24, 80)
+    _node(con, "method:Gamma", "method", "Gamma", "SpecialFunctions::Gamma", path, 88, 145)
+    _node(con, "caller:pdf", "function", "Pdf", "GammaDistribution::Pdf", "src/Distribution/Gamma.cs", 1, 9)
+    _node(con, "caller:cdf", "function", "Cdf", "GammaDistribution::Cdf", "src/Distribution/Gamma.cs", 10, 20)
+    _edge(con, "caller:pdf", "method:Gamma", "calls")
+    _edge(con, "caller:cdf", "method:GammaLn", "calls")
+    con.commit()
+    con.close()
+    patch = (
+        "diff --git a/src/Numerics/SpecialFunctions/Gamma.cs b/src/Numerics/SpecialFunctions/Gamma.cs\n"
+        "--- a/src/Numerics/SpecialFunctions/Gamma.cs\n"
+        "+++ b/src/Numerics/SpecialFunctions/Gamma.cs\n"
+        "@@ -45 +45 @@\n"
+        "-                double s = GammaDk[0];\n"
+        "+                double s = LanczosSum(z);\n"
+        "@@ -110 +110 @@\n"
+        "-                double s = GammaDk[0];\n"
+        "+                double s = LanczosSum(z);\n"
+    )
+    action = CandidateAction(
+        id="a1", label="gamma refactor", action_type="edit", proposed_patch=patch, expected_files=[path],
+    )
+    fanin = _adapter().fanin(action, str(tmp_path))
+    inp = _worked_example_input()
+    result = de.decide(ab.build_assessment(dataclasses.replace(
+        inp,
+        action=action,
+        events=[{"event": "dependency_break", "p_event": 0.45, "elicited_disutility": 0.80}],
+        immediate_benefit=0.5,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=False,
+            changed_symbols=[],
+            max_change_kind="UNKNOWN",
+            consequential_symbol_changed=True,
+            fallback_reason="no symbol diff supplied; C# file-level risk",
+        ),
+        fanin_evidence=fanin,
+    )))
+
+    assert fanin.resolution_method == "location"
+    assert set(fanin.node_ids_resolved) == {"method:GammaLn", "method:Gamma"}
+    assert fanin.resolved_symbol_count == 2
+    assert result.recommended_decision is Decision.REVISE_SAFER
 
 
 def test_context_bleed_does_not_grab_neighbor(tmp_path) -> None:
