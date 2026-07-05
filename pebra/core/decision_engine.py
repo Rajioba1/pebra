@@ -88,6 +88,11 @@ def _has_narrowing_headroom(assessment: Assessment) -> bool:
     expected_files = action.expected_files or []
     if file_op in {"DELETE", "RENAME", "MOVE"}:
         return True
+    # C#/other non-Python hosts may supply a real proposed patch but no parsed symbol diff yet. If the
+    # existing score already found structural/API dependency risk, a one-file UNKNOWN edit still has a
+    # meaningful safer route: keep the goal, narrow the patch, and resubmit for assessment.
+    if action.proposed_patch and file_op == "NONE" and not changed_symbols and sse.get("max_change_kind") == "UNKNOWN":
+        return bool(expected_files)
     return len(changed_symbols) > 1 or len(expected_files) > 1
 
 

@@ -65,6 +65,46 @@ def test_gate3_structural_dependency_risk_requests_safer_revision() -> None:
     assert any(g["name"] == "revise_safer" for g in result.gates_fired)
 
 
+def test_gate3_unparsed_single_file_structural_risk_requests_safer_revision() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    action = replace(
+        inp.action,
+        expected_files=["src/Numerics/SpecialFunctions/Gamma.cs"],
+        proposed_patch=(
+            "diff --git a/src/Numerics/SpecialFunctions/Gamma.cs "
+            "b/src/Numerics/SpecialFunctions/Gamma.cs\n"
+            "--- a/src/Numerics/SpecialFunctions/Gamma.cs\n"
+            "+++ b/src/Numerics/SpecialFunctions/Gamma.cs\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-old\n"
+            "+new\n"
+        ),
+    )
+    inp = replace(
+        inp,
+        action=action,
+        events=[
+            {"event": "dependency_break", "p_event": 0.45, "elicited_disutility": 0.80},
+            {"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80},
+        ],
+        immediate_benefit=0.5,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=False,
+            changed_symbols=[],
+            max_change_kind="UNKNOWN",
+            consequential_symbol_changed=True,
+            fallback_reason="no symbol diff supplied; C# file-level risk",
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
 def test_gate3_revision_cap_exhaustion_escalates_to_ask_human() -> None:
     from pebra.core import models as m
 
