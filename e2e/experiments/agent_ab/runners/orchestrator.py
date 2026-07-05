@@ -172,9 +172,10 @@ def main(argv: list[str] | None = None) -> int:
     mode = cfg[args.mode]
     out_dir = _AB_OUT / args.run_id
     corpus = loader.load_corpus()
-    external = rs.prepare_external_repo()
     plan = _plan(corpus, mode["tasks"], mode["seeds_per_arm"])
     planned_specs = list({spec.task_id: spec for spec, _seed in plan}.values())
+    preflight.run_repo_identity_preflight(planned_specs, rs.source_repo_path())
+    external = rs.prepare_external_repo()
 
     preflight_status = {
         "oracle": "skipped" if args.skip_oracle_preflight else "passed",

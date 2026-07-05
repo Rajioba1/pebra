@@ -290,6 +290,20 @@ def _guidance_matches_content(content_json: str, packet_json: str | None) -> boo
     return json.dumps(embedded, sort_keys=True) == packet_json
 
 
+def _norm_scope_path(path: str) -> str:
+    return path.replace("\\", "/").removeprefix("./")
+
+
+def _path_scope_entries(files: Any) -> set[str]:
+    if not isinstance(files, list):
+        return set()
+    return {
+        _norm_scope_path(f)
+        for f in files
+        if isinstance(f, str) and "::" not in f
+    }
+
+
 class SqliteStore:
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
@@ -637,6 +651,35 @@ class SqliteStore:
     def _guidance_packet_uid(row_id: int, packet: dict[str, Any]) -> str:
         logical = str(packet.get("guidance_packet_id") or "packet")
         return f"gp_{row_id}_{logical}"
+
+    def revise_safer_attempt_count(
+        self, repo_id: str, assessed_commit: str | None, target_files: list[str]
+    ) -> int:
+        if assessed_commit is None or not target_files:
+            return 0
+        required = {_norm_scope_path(f) for f in target_files if isinstance(f, str) and f}
+        if not required:
+            return 0
+        rows = self._con.execute(
+            "SELECT content_json FROM assessments "
+            "WHERE repo_id = ? AND decision = 'revise_safer' ORDER BY id DESC",
+            (repo_id,),
+        ).fetchall()
+        count = 0
+        for (content_json,) in rows:
+            try:
+                content = json.loads(content_json)
+                if content.get("assessed_commit") != assessed_commit:
+                    continue
+                files = (
+                    ((content.get("model_guidance_packet") or {}).get("binding") or {})
+                    .get("safe_scope") or {}
+                ).get("files")
+                if required <= _path_scope_entries(files):
+                    count += 1
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return count
 
     def guidance_packet_id_for_assessment(self, assessment_id: str) -> str | None:
         row_id = self._row_id(assessment_id)

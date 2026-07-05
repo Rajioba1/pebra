@@ -362,3 +362,68 @@ def test_policy_violations_come_from_evidence_provider_not_request() -> None:
     )
     assert outcome.recommended_result.recommended_decision is Decision.REJECT
     assert outcome.recommended_result.gates_fired[0]["detail"] == ["configured_forbidden_path"]
+
+
+class FakeRevisionEvidence:
+    def gather_evidence(self, request, action, repo_root):
+        return m.EvidenceBundle(
+            events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+            p_success=0.74,
+            immediate_benefit=2.0,
+            review_cost=0.12,
+            criticality_stage="C3",
+            criticality_value=0.80,
+            edit_confidence_factors={
+                "p_success": 0.74, "evidence_quality": 0.78, "testability": 0.80,
+                "reversibility": 0.92, "source_reliability": 0.86, "scope_control": 0.92,
+            },
+            thresholds=_THRESHOLDS,
+            variance_breakdown={
+                "p_success": 0.0016, "benefit": 0.0004, "event_losses": 0.0009,
+                "review_cost": 0.0004, "scenario_variance": 0.0003,
+            },
+            benefit_delta_evidence=m.BenefitDeltaEvidence(source_type="projected"),
+        )
+
+
+class FakeRevisionSymbolDiff:
+    def symbol_diff(self, action, repo_root):
+        return m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            symbol_fan_in_percentile=0.95,
+            consequential_symbol_changed=True,
+        )
+
+
+class FakeRevisionAttemptStore(FakeStore):
+    def __init__(self, count: int):
+        super().__init__()
+        self.count = count
+        self.count_calls = []
+
+    def revise_safer_attempt_count(self, repo_id, assessed_commit, target_files):
+        self.count_calls.append((repo_id, assessed_commit, tuple(target_files)))
+        return self.count
+
+
+def test_assess_injects_persisted_revise_safer_attempt_count() -> None:
+    store = FakeRevisionAttemptStore(count=1)
+    outcome = ac.assess(
+        _request(),
+        thresholds={**_THRESHOLDS, "revise_safer_enabled": True, "max_revise_safer_attempts": 1},
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeRevisionEvidence(),
+        symbol_diff_provider=FakeRevisionSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        assessed_commit="abc123",
+    )
+
+    assert store.count_calls == [("repo_local_example", "abc123", ("src/auth.py",))]
+    assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN
+    assert not any(g.get("name") == "revise_safer" for g in outcome.recommended_result.gates_fired)

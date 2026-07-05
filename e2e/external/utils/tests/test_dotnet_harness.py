@@ -111,3 +111,54 @@ def test_run_tests_passes_filter_to_dotnet(monkeypatch):
 
     assert "--filter" in seen["args"]
     assert seen["args"][-1] == "FullyQualifiedName~GammaTests"
+
+
+def test_targeted_run_tests_marks_zero_selected_tests_as_failed(monkeypatch):
+    class Proc:
+        returncode = 0
+        stdout = "Passed!  - Failed: 0, Passed: 0, Skipped: 0, Total: 0, Duration: 1 ms"
+        stderr = ""
+
+    monkeypatch.setattr(dn, "dotnet_available", lambda: True)
+    monkeypatch.setattr(dn.subprocess, "run", lambda *a, **k: Proc())
+
+    r = dn.run_tests(
+        _REPO,
+        project=r"C:\work\repo\tests\Tests.csproj",
+        test_filter="FullyQualifiedName~MissingTests",
+    )
+
+    assert r.tests_selected == 0
+    assert r.passed is False
+
+
+def test_untargeted_run_tests_keeps_exit_code_semantics_for_zero_tests(monkeypatch):
+    class Proc:
+        returncode = 0
+        stdout = "Passed!  - Failed: 0, Passed: 0, Skipped: 0, Total: 0, Duration: 1 ms"
+        stderr = ""
+
+    monkeypatch.setattr(dn, "dotnet_available", lambda: True)
+    monkeypatch.setattr(dn.subprocess, "run", lambda *a, **k: Proc())
+
+    r = dn.run_tests(_REPO)
+
+    assert r.tests_selected == 0
+    assert r.passed is True
+
+
+def test_run_tests_sums_all_vstest_total_summaries(monkeypatch):
+    class Proc:
+        returncode = 0
+        stdout = "\n".join([
+            "Passed!  - Failed: 0, Passed: 3, Skipped: 0, Total: 3, Duration: 1 ms",
+            "Passed!  - Failed: 0, Passed: 4, Skipped: 0, Total: 4, Duration: 1 ms",
+        ])
+        stderr = ""
+
+    monkeypatch.setattr(dn, "dotnet_available", lambda: True)
+    monkeypatch.setattr(dn.subprocess, "run", lambda *a, **k: Proc())
+
+    r = dn.run_tests(_REPO, project=r"C:\work\repo\tests\Tests.csproj")
+
+    assert r.tests_selected == 7

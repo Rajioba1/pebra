@@ -29,6 +29,12 @@ class StorePort(Protocol):
         """Return the stored assessment content (decision, scores, guidance packet, assessed_commit)."""
         ...
 
+    def revise_safer_attempt_count(
+        self, repo_id: str, assessed_commit: str | None, target_files: list[str]
+    ) -> int:
+        """Count prior revise_safer assessments at the same repo HEAD covering all target files."""
+        ...
+
     def load_predictions(self, assessment_id: str) -> list[dict[str, Any]]:
         """Return the captured prediction manifest for an assessment (Milestone 4a)."""
         ...

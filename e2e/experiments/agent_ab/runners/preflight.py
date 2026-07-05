@@ -38,6 +38,7 @@ _TRUSTED_RESOLUTION = {"location"}
 # preflight (self-reported freshness can't catch it). avalonia_template indexes ~700 C# callable nodes;
 # 50 is a conservative floor that a real index clears easily but an empty/broken one cannot.
 _MIN_CSHARP_NODES = 50
+_REPO_ENV_VAR = "E2E_TEMPLATE_BLUEPRINT_REPO"
 
 
 class PreflightError(RuntimeError):
@@ -118,6 +119,29 @@ def _correct_fix_failure(spec: TaskSpec, build) -> str | None:
     return None
 
 
+def run_repo_identity_preflight(planned_specs: list[TaskSpec], source_root: Path | str | None) -> None:
+    """Fail before cloning if the configured source checkout is not the specimen required by the plan."""
+    root = Path(source_root).resolve() if source_root is not None else None
+    if root is None:
+        raise PreflightError(f"repo identity pre-flight failed: set {_REPO_ENV_VAR}=<source repo>")
+    solutions = {spec.build_solution for spec in planned_specs}
+    if len(solutions) > 1:
+        raise PreflightError(
+            "repo identity pre-flight failed: plan spans multiple repositories/build solutions "
+            f"({', '.join(sorted(solutions))}); split the run by specimen"
+        )
+    failures: list[str] = []
+    for spec in planned_specs:
+        required = [spec.build_solution, *spec.expected_edit_scope]
+        for rel in required:
+            if not (root / rel).exists():
+                failures.append(
+                    f"{spec.task_id}: missing {rel!r} under {_REPO_ENV_VAR}={root}"
+                )
+    if failures:
+        raise PreflightError("repo identity pre-flight failed:\n" + "\n".join(failures))
+
+
 def _run_spec_test(spec: TaskSpec, repo_path: Path, test_fn: Callable[..., Any]):
     if not spec.evaluator_test_project:
         return None
@@ -133,11 +157,22 @@ def _run_spec_build(spec: TaskSpec, repo_path: Path, build_fn: Callable[[Path], 
     return dn.run_build(repo_path, sln=spec.build_solution)
 
 
+def _zero_selected_tests_failure(spec: TaskSpec, test, label: str) -> str | None:
+    if spec.harm_type != "test_failure":
+        return None
+    if getattr(test, "tests_selected", None) == 0:
+        return f"{spec.task_id}: {label} selected zero tests"
+    return None
+
+
 def _oracle_test_failure(spec: TaskSpec, test) -> str | None:
     if spec.harm_type != "test_failure":
         return None
     if test is None or not test.ran:
         return f"{spec.task_id}: oracle test did not run (dotnet SDK absent?)"
+    zero_msg = _zero_selected_tests_failure(spec, test, "oracle filtered test")
+    if zero_msg:
+        return zero_msg
     if test.passed:
         return f"{spec.task_id}: oracle says filtered test MUST fail, but it PASSED"
     return None
@@ -148,6 +183,9 @@ def _correct_fix_test_failure(spec: TaskSpec, test) -> str | None:
         return None
     if test is None or not test.ran:
         return f"{spec.task_id}: correct-fix test did not run (dotnet SDK absent?)"
+    zero_msg = _zero_selected_tests_failure(spec, test, "correct-fix filtered test")
+    if zero_msg:
+        return zero_msg
     if not test.passed:
         return f"{spec.task_id}: correct-fix filtered test should pass, but FAILED: {test.error_summary[:200]}"
     return None

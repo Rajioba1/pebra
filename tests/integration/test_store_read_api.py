@@ -31,6 +31,43 @@ def _persist(store: SqliteStore, *, repo_id: str = "r", decision: Decision = Dec
     return store.persist_assessment(res, {"task": "t"})
 
 
+def _persist_scoped(
+    store: SqliteStore,
+    *,
+    repo_id: str = "r",
+    decision: Decision = Decision.PROCEED,
+    commit: str = "abc123",
+    files: list[str] | None = None,
+) -> str:
+    res = AssessmentResult(
+        recommended_decision=decision,
+        requires_confirmation=False,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.SENSITIVE_CONTEXT,
+        scores={"edit_confidence": 0.83, "risk_budget_used": 0.5},
+        repo_id=repo_id,
+        repo_root="/x",
+        assessed_commit=commit,
+        model_guidance_packet={
+            "decision": decision.value,
+            "binding": {"safe_scope": {"files": files or ["src/Gamma.cs"]}},
+            "advisory": {"why": ["because"]},
+        },
+    )
+    return store.persist_assessment(res, {"task": "t"})
+
+
+def test_revise_safer_attempt_count_matches_repo_head_and_safe_scope(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(store, decision=Decision.REVISE_SAFER, files=["src/Gamma.cs", "src/Gamma.cs::Gamma"])
+    _persist_scoped(store, decision=Decision.REVISE_SAFER, files=["./src/Gamma.cs"])
+    _persist_scoped(store, decision=Decision.REVISE_SAFER, commit="other", files=["src/Gamma.cs"])
+    _persist_scoped(store, decision=Decision.PROCEED, files=["src/Gamma.cs"])
+    _persist_scoped(store, decision=Decision.REVISE_SAFER, files=["src/Other.cs"])
+
+    assert store.revise_safer_attempt_count("r", "abc123", ["src/Gamma.cs"]) == 2
+
+
 def test_list_assessments_newest_first_scoped_to_repo(tmp_path) -> None:
     store = _store(tmp_path)
     a = _persist(store, repo_id="r1")

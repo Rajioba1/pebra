@@ -302,6 +302,28 @@ def _graph_provenance(inp: AssessmentInput) -> dict[str, Any]:
     }
 
 
+def _thresholds_with_revise_attempt(
+    thresholds: dict[str, Any],
+    *,
+    store: StorePort,
+    repo_id: str,
+    assessed_commit: str | None,
+    action: CandidateAction,
+) -> dict[str, Any]:
+    if "revise_safer_attempt" in thresholds:
+        return thresholds
+    counter = getattr(store, "revise_safer_attempt_count", None)
+    if counter is None:
+        return thresholds
+    try:
+        attempt = counter(repo_id, assessed_commit, list(action.expected_files or []))
+    except Exception:  # noqa: BLE001 - attempt tracking must not make assess unavailable
+        return thresholds
+    if attempt <= 0:
+        return thresholds
+    return {**thresholds, "revise_safer_attempt": int(attempt)}
+
+
 def _recommended(scored: list[ScoredAction]) -> ScoredAction:
     """Pick the recommended action: best RAU among non-rejected, else the first."""
     from pebra.core.constants import Decision
@@ -337,9 +359,16 @@ def assess(
 
     scored: list[ScoredAction] = []
     for action in request.candidate_actions:
+        action_thresholds = _thresholds_with_revise_attempt(
+            thresholds,
+            store=store,
+            repo_id=repo.repo_id,
+            assessed_commit=assessed_commit,
+            action=action,
+        )
         scored.append(
             _score_action(
-                request, action, repo.repo_id, repo.repo_root, thresholds,
+                request, action, repo.repo_id, repo.repo_root, action_thresholds,
                 evidence_provider=evidence_provider,
                 symbol_diff_provider=symbol_diff_provider,
                 blast_provider=blast_provider,

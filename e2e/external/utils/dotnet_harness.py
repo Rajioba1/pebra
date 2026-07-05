@@ -6,6 +6,7 @@ PEBRA assessed pre-edit. Gated on the SDK being present (skips honestly if absen
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import time
@@ -60,6 +61,12 @@ class DotNetTestResult:
     exit_code: int | None
     error_summary: str
     duration_seconds: float
+    tests_selected: int | None = None
+
+
+def _selected_test_count(output: str) -> int | None:
+    totals = [int(m.group(1)) for m in re.finditer(r"\bTotal(?: tests)?:\s*(\d+)", output)]
+    return sum(totals) if totals else None
 
 
 def run_tests(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
@@ -88,9 +95,13 @@ def run_tests(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
     errors = [ln.strip() for ln in output.splitlines()
               if ("error" in ln.lower() or "failed" in ln.lower())]
+    selected = _selected_test_count(output)
+    targeted = project is not None or test_filter is not None
+    passed = proc.returncode == 0 and not (targeted and selected == 0)
     return DotNetTestResult(
-        available=True, ran=True, passed=proc.returncode == 0, exit_code=proc.returncode,
+        available=True, ran=True, passed=passed, exit_code=proc.returncode,
         error_summary="\n".join(errors[:15]), duration_seconds=round(duration, 2),
+        tests_selected=selected,
     )
 
 

@@ -258,6 +258,76 @@ def test_oracle_preflight_flags_test_failure_oracle_that_passes(tmp_path, monkey
                                        patch_dir=patch_dir, correct_patch_dir=correct_dir)
 
 
+def test_oracle_preflight_flags_filtered_test_that_selects_zero_tests(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "MNGAMMA.patch").write_text("diff --git a/src/Gamma.cs b/src/Gamma.cs\n")
+    (correct_dir / "MNGAMMA.patch").write_text("diff --git a/src/Gamma.cs b/src/Gamma.cs\n")
+
+    def _clone(_external, dest):
+        dest.mkdir(parents=True)
+        (dest / "tests").mkdir()
+        (dest / "tests" / "Tests.csproj").write_text("<Project />")
+        return dest
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _clone)
+    monkeypatch.setattr(preflight, "_apply_patch", lambda patch_file, repo_path: None)
+
+    with pytest.raises(preflight.PreflightError, match="selected zero tests"):
+        preflight.run_oracle_preflight(
+            [_TEST_TRAP],
+            None,
+            out_dir=tmp_path,
+            build_fn=lambda p: _build(passed=True),
+            test_fn=lambda *a, **k: SimpleNamespace(
+                ran=True, passed=False, error_summary="", tests_selected=0),
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )
+
+
+def test_repo_identity_preflight_passes_for_planned_specimen(tmp_path):
+    (tmp_path / "MathNet.Numerics.sln").write_text("", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Gamma.cs").write_text("", encoding="utf-8")
+
+    preflight.run_repo_identity_preflight([
+        TaskSpec(
+            "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",),
+            "test_failure", False, build_solution="MathNet.Numerics.sln",
+        )
+    ], tmp_path)
+
+
+def test_repo_identity_preflight_fails_wrong_repo_with_task_and_env_var(tmp_path):
+    (tmp_path / "TemplateBlueprint.sln").write_text("", encoding="utf-8")
+    with pytest.raises(preflight.PreflightError) as ei:
+        preflight.run_repo_identity_preflight([
+            TaskSpec(
+                "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",),
+                "test_failure", False, build_solution="MathNet.Numerics.sln",
+            )
+        ], tmp_path)
+
+    msg = str(ei.value)
+    assert "MNGAMMA" in msg
+    assert "E2E_TEMPLATE_BLUEPRINT_REPO" in msg
+    assert "MathNet.Numerics.sln" in msg
+
+
+def test_repo_identity_preflight_fails_mixed_specimen_plan(tmp_path):
+    with pytest.raises(preflight.PreflightError, match="spans multiple repositories"):
+        preflight.run_repo_identity_preflight([
+            TaskSpec("T1", "d", ("a.cs",), "risky", ("a.cs",), "build_failure", True),
+            TaskSpec(
+                "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",),
+                "test_failure", False, build_solution="MathNet.Numerics.sln",
+            ),
+        ], tmp_path)
+
+
 def test_oracle_preflight_accumulates_apply_failures(tmp_path, monkeypatch):
     corpus = [_TRAP, _SAFE]
     patch_dir = tmp_path / "patches"

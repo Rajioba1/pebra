@@ -93,6 +93,8 @@ def _wire(monkeypatch, tmp_path, corpus, run_pair_fn):
     monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
     monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
     monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
+    monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
+    monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
     monkeypatch.setattr(orchestrator.loader, "load_corpus", lambda: corpus)
     monkeypatch.setattr(orchestrator, "_config",
                         lambda: {"pilot": {"tasks": ["T1"], "seeds_per_arm": 1}, "bootstrap_seed": 0})
@@ -208,6 +210,37 @@ def test_main_runs_preflights_for_planned_tasks_only(monkeypatch, tmp_path):
     orchestrator.main(["--run-id", "t1"])
 
     assert seen == {"oracle": ["T1"], "graph": ["T1"]}
+
+
+def test_main_runs_repo_identity_preflight_before_external_clone(monkeypatch, tmp_path):
+    calls: list[str] = []
+
+    def _fake_pair(spec, seed, run_id):
+        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
+                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+
+    _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: source)
+
+    def _identity(specs, source_root):
+        calls.append("identity")
+        assert source_root == source
+        assert [s.task_id for s in specs] == ["T1"]
+
+    def _prepare():
+        calls.append("prepare")
+        return object()
+
+    monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", _identity)
+    monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", _prepare)
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", lambda *a, **k: None)
+
+    orchestrator.main(["--run-id", "t1"])
+
+    assert calls[:2] == ["identity", "prepare"]
 
 
 def test_skip_preflight_requires_debug_env(monkeypatch, tmp_path):
