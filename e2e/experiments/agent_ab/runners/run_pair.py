@@ -16,6 +16,7 @@ import dataclasses
 import hashlib
 import json
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -137,13 +138,39 @@ def _gate_check_backend(arm: str, db_path: Path) -> Callable[..., dict[str, Any]
         return lambda event: {
             "permission": "deny",
             "tier": "positive_control",
-            "reason": "A pre-edit check blocked this write. Revise or stop.",
+            "reason": _positive_control_reason(event),
         }
     if arm in _GATE_ARMS:
         # consult_only: the A/B has no human approver, so the ask verdict tier is disabled here — the
         # experiment measures must-consult only; an unresolved 'ask' would bias treatment's completion.
         return lambda event: cli_harness.gate_check(event, db=db_path, consult_only=True)
     return lambda event: {"permission": "allow", "tier": "pass"}
+
+
+def _positive_control_reason(event: dict[str, Any]) -> str:
+    ti = event.get("tool_input") if isinstance(event, dict) else {}
+    path = ti.get("file_path") if isinstance(ti, dict) else None
+    name = Path(path).name if isinstance(path, str) and path else "this file"
+    head = _event_head_short(event)
+    return f"A pre-edit check blocked editing {name} at commit {head}. Revise or stop."
+
+
+def _event_head_short(event: dict[str, Any]) -> str:
+    cwd = event.get("cwd") if isinstance(event, dict) else None
+    if not isinstance(cwd, str) or not cwd:
+        return "unknown"
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    head = proc.stdout.strip()
+    return head[:8] if head else "unknown"
 
 
 def _build_subject_prompt(spec: TaskSpec, repo_path: Path, arm: str) -> str:

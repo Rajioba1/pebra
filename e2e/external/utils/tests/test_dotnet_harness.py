@@ -104,6 +104,7 @@ def test_run_tests_passes_filter_to_dotnet(monkeypatch):
 
     def _run(args, **kwargs):
         seen["args"] = args
+        seen["env"] = kwargs["env"]
         return Proc()
 
     monkeypatch.setattr(dn.subprocess, "run", _run)
@@ -111,6 +112,7 @@ def test_run_tests_passes_filter_to_dotnet(monkeypatch):
 
     assert "--filter" in seen["args"]
     assert seen["args"][-1] == "FullyQualifiedName~GammaTests"
+    assert seen["env"]["DOTNET_CLI_UI_LANGUAGE"] == "en"
 
 
 def test_targeted_run_tests_marks_zero_selected_tests_as_failed(monkeypatch):
@@ -162,3 +164,22 @@ def test_run_tests_sums_all_vstest_total_summaries(monkeypatch):
     r = dn.run_tests(_REPO, project=r"C:\work\repo\tests\Tests.csproj")
 
     assert r.tests_selected == 7
+
+
+def test_targeted_run_tests_no_summary_is_not_treated_as_zero(monkeypatch):
+    class Proc:
+        returncode = 0
+        stdout = "Build succeeded."
+        stderr = ""
+
+    monkeypatch.setattr(dn, "dotnet_available", lambda: True)
+    monkeypatch.setattr(dn.subprocess, "run", lambda *a, **k: Proc())
+
+    r = dn.run_tests(
+        _REPO,
+        project=r"C:\work\repo\tests\Tests.csproj",
+        test_filter="FullyQualifiedName~GammaTests",
+    )
+
+    assert r.tests_selected is None
+    assert r.passed is True

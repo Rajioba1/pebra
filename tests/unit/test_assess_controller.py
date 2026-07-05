@@ -409,11 +409,16 @@ class FakeRevisionAttemptStore(FakeStore):
         return self.count
 
 
-def test_assess_injects_persisted_revise_safer_attempt_count() -> None:
+def test_assess_uses_persisted_revise_safer_attempt_when_caller_is_lower() -> None:
     store = FakeRevisionAttemptStore(count=1)
     outcome = ac.assess(
         _request(),
-        thresholds={**_THRESHOLDS, "revise_safer_enabled": True, "max_revise_safer_attempts": 1},
+        thresholds={
+            **_THRESHOLDS,
+            "revise_safer_enabled": True,
+            "revise_safer_attempt": 0,
+            "max_revise_safer_attempts": 1,
+        },
         start_path="/abs/path/to/example-repo/src",
         evidence_provider=FakeRevisionEvidence(),
         symbol_diff_provider=FakeRevisionSymbolDiff(),
@@ -427,3 +432,27 @@ def test_assess_injects_persisted_revise_safer_attempt_count() -> None:
     assert store.count_calls == [("repo_local_example", "abc123", ("src/auth.py",))]
     assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN
     assert not any(g.get("name") == "revise_safer" for g in outcome.recommended_result.gates_fired)
+
+
+def test_assess_keeps_caller_revise_safer_attempt_when_caller_is_higher() -> None:
+    store = FakeRevisionAttemptStore(count=0)
+    outcome = ac.assess(
+        _request(),
+        thresholds={
+            **_THRESHOLDS,
+            "revise_safer_enabled": True,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 1,
+        },
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeRevisionEvidence(),
+        symbol_diff_provider=FakeRevisionSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        assessed_commit="abc123",
+    )
+
+    assert store.count_calls == [("repo_local_example", "abc123", ("src/auth.py",))]
+    assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN

@@ -8,6 +8,7 @@ from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.metrics import blinding
 from e2e.experiments.agent_ab.models import TaskSpec
 from e2e.experiments.agent_ab.runners import run_pair
+from pebra.adapters import gate_check_adapter as gca
 
 _SPEC = TaskSpec("MNGAMMA", "Refactor the duplicated loops.", ("src/Gamma.cs",), "risky",
                  ("src/Gamma.cs",), "test_failure", False)
@@ -79,5 +80,46 @@ def test_gate_denial_reasons_do_not_leak_arm_identity(arm, tmp_path, monkeypatch
     )
     decision = run_pair._gate_check_backend(arm, tmp_path / "pebra.db")({})
     reason = str(decision.get("reason") or "")
+    leaked, matched = blinding.scan_text(reason)
+    assert not leaked, matched
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        gca._deny_reason([r"C:\repo\src\Gamma.cs"], "abcdef1234567890"),
+        gca._review_reason([r"C:\repo\src\Gamma.cs"], "abcdef1234567890"),
+        gca._revise_reason([r"C:\repo\src\Gamma.cs"], "abcdef1234567890"),
+    ],
+)
+def test_real_gate_reason_generators_do_not_leak_arm_identity(reason):
+    leaked, matched = blinding.scan_text(reason)
+    assert not leaked, matched
+
+
+def test_enforced_control_reason_matches_real_gate_shape(tmp_path, monkeypatch):
+    seen = {}
+
+    class Proc:
+        returncode = 0
+        stdout = "abcdef1234567890\n"
+        stderr = ""
+
+    def _run(args, **kwargs):
+        seen["args"] = args
+        seen["cwd"] = kwargs["cwd"]
+        return Proc()
+
+    monkeypatch.setattr(run_pair.subprocess, "run", _run)
+    backend = run_pair._gate_check_backend(models.ARM_ENFORCED_CONTROL, tmp_path / "pebra.db")
+    decision = backend({
+        "tool_name": "Write",
+        "tool_input": {"file_path": "src/Gamma.cs"},
+        "cwd": str(tmp_path),
+    })
+
+    reason = str(decision.get("reason") or "")
+    assert "Gamma.cs" in reason
+    assert "abcdef12" in reason
     leaked, matched = blinding.scan_text(reason)
     assert not leaked, matched

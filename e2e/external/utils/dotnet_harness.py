@@ -6,6 +6,7 @@ PEBRA assessed pre-edit. Gated on the SDK being present (skips honestly if absen
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -87,9 +88,10 @@ def run_tests(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
     if test_filter:
         args.extend(["--filter", test_filter])
     start = time.time()
+    env = {**os.environ, "DOTNET_CLI_UI_LANGUAGE": "en"}
     proc = subprocess.run(
         args,
-        cwd=str(root), capture_output=True, text=True, timeout=timeout,
+        cwd=str(root), capture_output=True, text=True, timeout=timeout, env=env,
     )
     duration = time.time() - start
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")

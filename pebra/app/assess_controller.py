@@ -310,18 +310,28 @@ def _thresholds_with_revise_attempt(
     assessed_commit: str | None,
     action: CandidateAction,
 ) -> dict[str, Any]:
-    if "revise_safer_attempt" in thresholds:
-        return thresholds
+    caller_attempt = 0
+    caller_supplied = "revise_safer_attempt" in thresholds
+    if caller_supplied:
+        try:
+            caller_attempt = int(thresholds["revise_safer_attempt"])
+        except (TypeError, ValueError):
+            caller_attempt = 0
     counter = getattr(store, "revise_safer_attempt_count", None)
-    if counter is None:
+    if counter is None and caller_attempt <= 0:
         return thresholds
+    store_attempt = 0
     try:
-        attempt = counter(repo_id, assessed_commit, list(action.expected_files or []))
+        if counter is not None:
+            store_attempt = counter(repo_id, assessed_commit, list(action.expected_files or []))
     except Exception:  # noqa: BLE001 - attempt tracking must not make assess unavailable
+        store_attempt = 0
+    attempt = max(caller_attempt, int(store_attempt or 0))
+    if caller_supplied and attempt == caller_attempt:
         return thresholds
     if attempt <= 0:
         return thresholds
-    return {**thresholds, "revise_safer_attempt": int(attempt)}
+    return {**thresholds, "revise_safer_attempt": attempt}
 
 
 def _recommended(scored: list[ScoredAction]) -> ScoredAction:

@@ -152,7 +152,7 @@ def _deny_reason(targets: list[str], head: str) -> str:
 
 def _review_reason(targets: list[str], head: str) -> str:
     names = ", ".join(os.path.basename(t) for t in targets[:3])
-    return (f"PEBRA assessed editing {names} as high-risk (commit {head[:8]}). Approve in the host "
+    return (f"A pre-edit check assessed editing {names} as high-risk (commit {head[:8]}). Approve in the host "
             "prompt to proceed, or reconsider a narrower or safer change.")
 
 
