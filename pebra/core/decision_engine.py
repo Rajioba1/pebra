@@ -88,11 +88,13 @@ def _has_narrowing_headroom(assessment: Assessment) -> bool:
     expected_files = action.expected_files or []
     if file_op in {"DELETE", "RENAME", "MOVE"}:
         return True
-    # C#/other non-Python hosts may supply a real proposed patch but no parsed symbol diff yet. If the
-    # existing score already found structural/API dependency risk, a one-file UNKNOWN edit still has a
-    # meaningful safer route: keep the goal, narrow the patch, and resubmit for assessment.
+    # Non-Python hosts may not provide semantic SymbolDiff rows on the assess path, but CodeGraph still
+    # parses the unified diff hunks and resolves the touched old-side line ranges to owner nodes. Treat
+    # that parsed, multi-owner graph scope as narrowing headroom; do not revise every UNKNOWN one-file
+    # edit just because it has an expected file.
     if action.proposed_patch and file_op == "NONE" and not changed_symbols and sse.get("max_change_kind") == "UNKNOWN":
-        return bool(expected_files)
+        fanin = sse.get("symbol_fanin") if isinstance(sse.get("symbol_fanin"), dict) else {}
+        return int(fanin.get("resolved_symbol_count") or 0) > 1
     return len(changed_symbols) > 1 or len(expected_files) > 1
 
 

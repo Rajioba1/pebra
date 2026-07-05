@@ -97,12 +97,62 @@ def test_gate3_unparsed_single_file_structural_risk_requests_safer_revision() ->
             consequential_symbol_changed=True,
             fallback_reason="no symbol diff supplied; C# file-level risk",
         ),
+        fanin_evidence=m.FanInEvidence(
+            symbol_fan_in_percentile=0.99,
+            symbol_caller_count=47,
+            resolution_method="location",
+            graph_freshness="fresh",
+            resolved_symbol_count=3,
+        ),
     )
 
     result = de.decide(ab.build_assessment(inp))
 
     assert result.recommended_decision is Decision.REVISE_SAFER
     assert any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
+def test_gate3_unparsed_single_file_without_resolved_scope_does_not_revise() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    action = replace(
+        inp.action,
+        expected_files=["src/api.py"],
+        proposed_patch=(
+            "diff --git a/src/api.py b/src/api.py\n"
+            "--- a/src/api.py\n"
+            "+++ b/src/api.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-old\n"
+            "+new\n"
+        ),
+    )
+    inp = replace(
+        inp,
+        action=action,
+        events=[{"event": "dependency_break", "p_event": 0.45, "elicited_disutility": 0.80}],
+        immediate_benefit=0.5,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=False,
+            changed_symbols=[],
+            max_change_kind="UNKNOWN",
+            consequential_symbol_changed=True,
+            fallback_reason="no symbol diff supplied",
+        ),
+        fanin_evidence=m.FanInEvidence(
+            symbol_fan_in_percentile=0.99,
+            symbol_caller_count=47,
+            resolution_method="location",
+            graph_freshness="fresh",
+            resolved_symbol_count=1,
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.REJECT
+    assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
 
 
 def test_gate3_revision_cap_exhaustion_escalates_to_ask_human() -> None:
