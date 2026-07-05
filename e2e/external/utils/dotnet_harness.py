@@ -34,6 +34,10 @@ def dotnet_available() -> bool:
     return shutil.which("dotnet") is not None
 
 
+def _dotnet_env() -> dict[str, str]:
+    return {**os.environ, "DOTNET_CLI_UI_LANGUAGE": "en"}
+
+
 def run_build(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
               timeout: int = 600) -> DotNetBuildResult:
     if not dotnet_available():
@@ -42,7 +46,7 @@ def run_build(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
     start = time.time()
     proc = subprocess.run(
         ["dotnet", "build", str(root / sln), "--nologo", "-v", "q"],
-        cwd=str(root), capture_output=True, text=True, timeout=timeout,
+        cwd=str(root), capture_output=True, text=True, timeout=timeout, env=_dotnet_env(),
     )
     duration = time.time() - start
     # CS errors usually land on stdout, but some SDK/MSBuild configs forward them to stderr — scan both.
@@ -88,10 +92,9 @@ def run_tests(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *,
     if test_filter:
         args.extend(["--filter", test_filter])
     start = time.time()
-    env = {**os.environ, "DOTNET_CLI_UI_LANGUAGE": "en"}
     proc = subprocess.run(
         args,
-        cwd=str(root), capture_output=True, text=True, timeout=timeout, env=env,
+        cwd=str(root), capture_output=True, text=True, timeout=timeout, env=_dotnet_env(),
     )
     duration = time.time() - start
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
@@ -127,7 +130,7 @@ def run_build_delta(repo_root: Path | str, sln: str = "TemplateBlueprint.sln", *
     start = time.time()
     proc = subprocess.run(
         ["dotnet", "build", str(root / sln), "--nologo", "-v", "q"],
-        cwd=str(root), capture_output=True, text=True, timeout=timeout,
+        cwd=str(root), capture_output=True, text=True, timeout=timeout, env=_dotnet_env(),
     )
     duration = time.time() - start
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")

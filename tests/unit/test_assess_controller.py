@@ -409,6 +409,11 @@ class FakeRevisionAttemptStore(FakeStore):
         return self.count
 
 
+class FakeFailingRevisionAttemptStore(FakeStore):
+    def revise_safer_attempt_count(self, repo_id, assessed_commit, target_files):
+        raise RuntimeError("store unavailable")
+
+
 def test_assess_uses_persisted_revise_safer_attempt_when_caller_is_lower() -> None:
     store = FakeRevisionAttemptStore(count=1)
     outcome = ac.assess(
@@ -455,4 +460,26 @@ def test_assess_keeps_caller_revise_safer_attempt_when_caller_is_higher() -> Non
     )
 
     assert store.count_calls == [("repo_local_example", "abc123", ("src/auth.py",))]
+    assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN
+
+
+def test_assess_store_attempt_error_fails_open_to_caller_attempt() -> None:
+    outcome = ac.assess(
+        _request(),
+        thresholds={
+            **_THRESHOLDS,
+            "revise_safer_enabled": True,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 1,
+        },
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeRevisionEvidence(),
+        symbol_diff_provider=FakeRevisionSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=FakeFailingRevisionAttemptStore(),
+        assessed_commit="abc123",
+    )
+
     assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN

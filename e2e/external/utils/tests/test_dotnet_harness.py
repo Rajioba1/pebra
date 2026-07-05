@@ -69,6 +69,7 @@ def test_run_build_resolves_repo_root_before_invoking_dotnet(monkeypatch, tmp_pa
     def _run(args, **kwargs):
         seen["args"] = args
         seen["cwd"] = kwargs["cwd"]
+        seen["env"] = kwargs["env"]
         return Proc()
 
     monkeypatch.setattr(dn.subprocess, "run", _run)
@@ -78,6 +79,28 @@ def test_run_build_resolves_repo_root_before_invoking_dotnet(monkeypatch, tmp_pa
 
     assert seen["cwd"] == str(tmp_path.resolve())
     assert seen["args"][2] == str(tmp_path.resolve() / "TemplateBlueprint.sln")
+    assert seen["env"]["DOTNET_CLI_UI_LANGUAGE"] == "en"
+
+
+def test_run_build_delta_pins_dotnet_output_language(monkeypatch):
+    seen = {}
+
+    class Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(dn, "dotnet_available", lambda: True)
+
+    def _run(args, **kwargs):
+        seen["env"] = kwargs["env"]
+        return Proc()
+
+    monkeypatch.setattr(dn.subprocess, "run", _run)
+
+    dn.run_build_delta(_REPO)
+
+    assert seen["env"]["DOTNET_CLI_UI_LANGUAGE"] == "en"
 
 
 def test_run_tests_summary_keeps_more_than_five_failures(monkeypatch):
