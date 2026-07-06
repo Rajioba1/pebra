@@ -11,7 +11,9 @@ from collections.abc import Mapping
 from pathlib import Path
 
 _REPO_ENV = "E2E_TEMPLATE_BLUEPRINT_REPO"
-_KEY_ENV = "ANTHROPIC_API_KEY"
+_ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
+_DEEPSEEK_KEY_ENV = "DEEPSEEK_API_KEY"
+_PROVIDER_ENV = "E2E_AB_PROVIDER"
 _MODEL_ENV = "E2E_AB_MODEL"
 _LOCAL_ENV = Path(".pebra") / "agent_ab.env"
 
@@ -43,11 +45,22 @@ def _read_local_env(path: Path) -> dict[str, str]:
     return values
 
 
+def _provider(env: Mapping[str, str]) -> str:
+    return env.get(_PROVIDER_ENV, "anthropic").strip().lower() or "anthropic"
+
+
+def _key_env(env: Mapping[str, str]) -> str:
+    return _DEEPSEEK_KEY_ENV if _provider(env) == "deepseek" else _ANTHROPIC_KEY_ENV
+
+
 def live_env(base: Mapping[str, str], *, repo_root: Path | None = None) -> dict[str, str]:
     env = dict(base)
     local = _read_local_env(local_env_file(repo_root))
-    if not env.get(_KEY_ENV) and local.get(_KEY_ENV):
-        env[_KEY_ENV] = local[_KEY_ENV]
+    if not env.get(_PROVIDER_ENV) and local.get(_PROVIDER_ENV):
+        env[_PROVIDER_ENV] = local[_PROVIDER_ENV]
+    for key_env in (_ANTHROPIC_KEY_ENV, _DEEPSEEK_KEY_ENV):
+        if not env.get(key_env) and local.get(key_env):
+            env[key_env] = local[key_env]
     if not env.get(_MODEL_ENV) and local.get(_MODEL_ENV):
         env[_MODEL_ENV] = local[_MODEL_ENV]
     env["E2E_AB_RUN"] = "1"
@@ -61,8 +74,9 @@ def live_env(base: Mapping[str, str], *, repo_root: Path | None = None) -> dict[
 
 def missing_for_live_env(env: Mapping[str, str]) -> list[str]:
     missing: list[str] = []
-    if not env.get(_KEY_ENV):
-        missing.append(f"{_KEY_ENV}=<key>")
+    key_env = _key_env(env)
+    if not env.get(key_env):
+        missing.append(f"{key_env}=<key>")
     if not env.get(_REPO_ENV):
         missing.append(f"{_REPO_ENV}=<path>")
     return missing

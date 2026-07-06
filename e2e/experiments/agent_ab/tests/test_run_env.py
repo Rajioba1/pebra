@@ -57,6 +57,45 @@ def test_live_env_reads_model_override_from_local_file(tmp_path):
     assert env["E2E_AB_MODEL"] == "claude-haiku-4-5-20251001"
 
 
+def test_live_env_reads_deepseek_provider_and_key_from_local_file(tmp_path):
+    repo_root = tmp_path / "pebra"
+    secret_dir = repo_root / ".pebra"
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "agent_ab.env").write_text(
+        "E2E_AB_PROVIDER=deepseek\nDEEPSEEK_API_KEY=sk-deepseek\n",
+        encoding="utf-8",
+    )
+
+    env = run_env.live_env({}, repo_root=repo_root)
+
+    assert env["E2E_AB_PROVIDER"] == "deepseek"
+    assert env["DEEPSEEK_API_KEY"] == "sk-deepseek"
+
+
+def test_live_env_deepseek_provider_does_not_require_anthropic_key(tmp_path):
+    repo = tmp_path / "avalonia_template"
+    repo.mkdir()
+    env = run_env.live_env(
+        {"E2E_AB_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": "sk-deepseek"},
+        repo_root=tmp_path / "pebra",
+    )
+
+    assert run_env.missing_for_live_env(env) == []
+
+
 def test_missing_for_live_env_only_requires_secret_and_repo_path():
     missing = run_env.missing_for_live_env({"E2E_AB_RUN": "1", "E2E_EXTERNAL": "1"})
     assert missing == ["ANTHROPIC_API_KEY=<key>", "E2E_TEMPLATE_BLUEPRINT_REPO=<path>"]
+
+
+def test_missing_for_live_env_reports_deepseek_key_when_provider_is_deepseek():
+    missing = run_env.missing_for_live_env(
+        {
+            "E2E_AB_RUN": "1",
+            "E2E_EXTERNAL": "1",
+            "E2E_AB_PROVIDER": "deepseek",
+            "E2E_TEMPLATE_BLUEPRINT_REPO": "repo",
+        }
+    )
+
+    assert missing == ["DEEPSEEK_API_KEY=<key>"]
