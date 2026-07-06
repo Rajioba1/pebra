@@ -19,8 +19,10 @@ import (graph/assess reached via cli_harness subprocess).
 
 from __future__ import annotations
 
+import json
 import subprocess
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,6 +41,7 @@ _TRUSTED_RESOLUTION = {"location"}
 # 50 is a conservative floor that a real index clears easily but an empty/broken one cannot.
 _MIN_CSHARP_NODES = 50
 _REPO_ENV_VAR = "E2E_TEMPLATE_BLUEPRINT_REPO"
+_BLOCKING_DECISIONS = {"reject", "ask_human", "revise_safer"}
 
 
 class PreflightError(RuntimeError):
@@ -347,3 +350,115 @@ def run_graph_preflight(
     if failures:
         raise PreflightError("graph pre-flight failed (treatment intervention not proven):\n"
                              + "\n".join(failures))
+
+
+# ---- revise-safer route calibration -----------------------------------------------------------
+
+
+def _expected_loss(payload: dict[str, Any]) -> float | None:
+    value = (payload.get("scores") or {}).get("expected_loss")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _live_revise_safer_assess(
+    repo_path: Path,
+    spec: TaskSpec,
+    proposed_patch: str,
+    db: Path,
+    *,
+    revise_safer_attempt: int = 0,
+) -> dict[str, Any]:
+    """Live revise-route calibration assess via the same CLI boundary as the treatment advisory."""
+    from e2e.experiments.agent_ab.tools import advisory_check_real  # noqa: PLC0415
+    from e2e.utils import cli_harness  # noqa: PLC0415
+
+    target = spec.expected_edit_scope[0] if spec.expected_edit_scope else ""
+    request = advisory_check_real._build_request({  # noqa: SLF001 - shared e2e request builder
+        "target_file": target,
+        "change_summary": spec.description,
+        "proposed_patch": proposed_patch,
+    }, revise_safer_attempt=revise_safer_attempt)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+        json.dump(request, fh)
+        req_path = fh.name
+    try:
+        return cli_harness.assess(req_path, repo_root=repo_path, db=db)
+    finally:
+        Path(req_path).unlink(missing_ok=True)
+
+
+def run_revise_safer_calibration(
+    corpus: list[TaskSpec],
+    external: rs.ExternalRepo,
+    *,
+    out_dir: Path,
+    assess_fn: Callable[..., dict[str, Any]] | None = None,
+    setup_graph_fn: Callable[[Path], None] | None = None,
+    patch_dir: Path | None = None,
+    correct_patch_dir: Path | None = None,
+) -> None:
+    """Assert the MNGAMMA-style route distinction before spending live agent calls.
+
+    For each risky task with a reference correct-fix patch, the intentional bad route must produce
+    ``revise_safer``. The reference route must then be non-blocking and lower expected loss using the
+    same persisted assessment store. This proves the assay has a real "revise to safer route" pathway,
+    rather than only a stop/block pathway.
+    """
+    assess_fn = assess_fn or _live_revise_safer_assess
+    patch_dir = patch_dir or _PATCH_DIR
+    correct_patch_dir = correct_patch_dir or _CORRECT_PATCH_DIR
+    failures: list[str] = []
+    for spec in corpus:
+        if spec.harm_label != "risky":
+            continue
+        patch_file = patch_dir / f"{spec.task_id}.patch"
+        correct_patch = correct_patch_dir / f"{spec.task_id}.patch"
+        if not patch_file.exists() or not correct_patch.exists():
+            continue
+        try:
+            dest = out_dir / "revise_calibration" / spec.task_id / "repo"
+            repo_path = _clone_fresh(external, dest, out_dir=out_dir)
+            if setup_graph_fn is not None:
+                setup_graph_fn(repo_path)
+            db = dest.parent / "revise_calibration.db"
+            bad = assess_fn(
+                repo_path,
+                spec,
+                patch_file.read_text(encoding="utf-8"),
+                db,
+                revise_safer_attempt=0,
+            )
+            bad_decision = bad.get("recommended_decision")
+            if bad_decision != "revise_safer":
+                failures.append(
+                    f"{spec.task_id}: expected bad route to return revise_safer, got {bad_decision!r}"
+                )
+                continue
+            fixed = assess_fn(
+                repo_path,
+                spec,
+                correct_patch.read_text(encoding="utf-8"),
+                db,
+                revise_safer_attempt=0,
+            )
+            fixed_decision = fixed.get("recommended_decision")
+            if fixed_decision in _BLOCKING_DECISIONS:
+                failures.append(
+                    f"{spec.task_id}: reference route remained blocked ({fixed_decision!r})"
+                )
+                continue
+            bad_loss = _expected_loss(bad)
+            fixed_loss = _expected_loss(fixed)
+            if bad_loss is None or fixed_loss is None:
+                failures.append(f"{spec.task_id}: calibration missing expected_loss")
+            elif fixed_loss >= bad_loss:
+                failures.append(
+                    f"{spec.task_id}: reference route did not lower expected_loss "
+                    f"({fixed_loss} >= {bad_loss})"
+                )
+        except PreflightError as exc:
+            failures.append(f"{spec.task_id}: {exc.args[0] if exc.args else exc}")
+        except Exception as exc:  # noqa: BLE001 - infra error recorded with the task id
+            failures.append(f"{spec.task_id}: infrastructure error: {type(exc).__name__}: {exc}")
+    if failures:
+        raise PreflightError("revise-safer calibration failed:\n" + "\n".join(failures))

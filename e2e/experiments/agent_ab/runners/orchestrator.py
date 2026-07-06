@@ -170,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = _config()
     mode = cfg[args.mode]
+    is_assay = args.mode == "assay"
     out_dir = _AB_OUT / args.run_id
     corpus = loader.load_corpus()
     plan = _plan(corpus, mode["tasks"], mode["seeds_per_arm"])
@@ -180,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     preflight_status = {
         "oracle": "skipped" if args.skip_oracle_preflight else "passed",
         "graph": "skipped" if args.skip_graph_preflight else "passed",
+        "revise_safer": "skipped" if (args.skip_graph_preflight or not is_assay) else "passed",
     }
     if not args.skip_oracle_preflight:
         preflight.run_oracle_preflight(planned_specs, external, out_dir=out_dir)
@@ -188,8 +190,14 @@ def main(argv: list[str] | None = None) -> int:
                                       assess_fn=_live_assess_fn,
                                       setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
                                       node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p))
+        if is_assay:
+            preflight.run_revise_safer_calibration(
+                planned_specs,
+                external,
+                out_dir=out_dir,
+                setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
+            )
 
-    is_assay = args.mode == "assay"
     specs_by_id = {s.task_id: s for s in corpus}
     outcomes_path = out_dir / "outcomes.json"
     existing = _load_existing_outcomes(outcomes_path)

@@ -408,3 +408,117 @@ def test_graph_preflight_passes_with_enough_nodes_and_fresh(tmp_path, monkeypatc
     preflight.run_graph_preflight([_TRAP], None, out_dir=tmp_path,
                                   assess_fn=_fresh_payload, setup_graph_fn=None,
                                   node_count_fn=lambda p: {"csharp_callable": 700})
+
+
+# ---- revise-safer route calibration -----------------------------------------------------------
+
+
+def test_revise_safer_calibration_accepts_bad_revise_then_lower_risk_reference(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "MNGAMMA.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "MNGAMMA.patch").write_text("reference route", encoding="utf-8")
+
+    def _clone(_external, dest):
+        dest.mkdir(parents=True)
+        return dest
+
+    calls: list[tuple[str, int]] = []
+
+    def _assess(_repo_path, _spec, proposed_patch, _db, *, revise_safer_attempt=0):
+        calls.append((proposed_patch, revise_safer_attempt))
+        if proposed_patch == "bad route":
+            return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
+        return {"recommended_decision": "proceed", "scores": {"expected_loss": 0.1}}
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _clone)
+
+    preflight.run_revise_safer_calibration(
+        [_TEST_TRAP],
+        None,
+        out_dir=tmp_path,
+        assess_fn=_assess,
+        setup_graph_fn=lambda _repo: None,
+        patch_dir=patch_dir,
+        correct_patch_dir=correct_dir,
+    )
+
+    assert calls == [("bad route", 0), ("reference route", 0)]
+
+
+def test_revise_safer_calibration_flags_non_revisable_bad_route(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "MNGAMMA.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "MNGAMMA.patch").write_text("reference route", encoding="utf-8")
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    with pytest.raises(preflight.PreflightError, match="expected bad route to return revise_safer"):
+        preflight.run_revise_safer_calibration(
+            [_TEST_TRAP],
+            None,
+            out_dir=tmp_path,
+            assess_fn=lambda *a, **k: {
+                "recommended_decision": "reject",
+                "scores": {"expected_loss": 0.8},
+            },
+            setup_graph_fn=lambda _repo: None,
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )
+
+
+def test_revise_safer_calibration_flags_blocked_reference_fix(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "MNGAMMA.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "MNGAMMA.patch").write_text("reference route", encoding="utf-8")
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    def _assess(_repo_path, _spec, proposed_patch, _db, *, revise_safer_attempt=0):
+        if proposed_patch == "bad route":
+            return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
+        return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.2}}
+
+    with pytest.raises(preflight.PreflightError, match="reference route remained blocked"):
+        preflight.run_revise_safer_calibration(
+            [_TEST_TRAP],
+            None,
+            out_dir=tmp_path,
+            assess_fn=_assess,
+            setup_graph_fn=lambda _repo: None,
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )
+
+
+def test_revise_safer_calibration_flags_reference_that_does_not_lower_loss(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "MNGAMMA.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "MNGAMMA.patch").write_text("reference route", encoding="utf-8")
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    def _assess(_repo_path, _spec, proposed_patch, _db, *, revise_safer_attempt=0):
+        if proposed_patch == "bad route":
+            return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
+        return {"recommended_decision": "proceed", "scores": {"expected_loss": 0.9}}
+
+    with pytest.raises(preflight.PreflightError, match="reference route did not lower expected_loss"):
+        preflight.run_revise_safer_calibration(
+            [_TEST_TRAP],
+            None,
+            out_dir=tmp_path,
+            assess_fn=_assess,
+            setup_graph_fn=lambda _repo: None,
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )

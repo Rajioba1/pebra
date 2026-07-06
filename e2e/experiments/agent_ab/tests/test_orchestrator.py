@@ -212,6 +212,44 @@ def test_main_runs_preflights_for_planned_tasks_only(monkeypatch, tmp_path):
     assert seen == {"oracle": ["T1"], "graph": ["T1"]}
 
 
+def test_main_runs_revise_safer_calibration_for_assay(monkeypatch, tmp_path):
+    gamma = TaskSpec(
+        "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",), "test_failure", False,
+        evaluator_test_project="tests/Tests.csproj", evaluator_test_filter="FullyQualifiedName~GammaTests",
+        build_solution="MathNet.Numerics.sln",
+    )
+    calls: list[str] = []
+    seen = {}
+
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(orchestrator.loader, "load_corpus", lambda: [gamma])
+    monkeypatch.setattr(orchestrator, "_config",
+                        lambda: {"assay": {"tasks": ["MNGAMMA"], "seeds_per_arm": 1},
+                                 "bootstrap_seed": 0})
+    monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
+    monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
+    monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight",
+                        lambda *a, **k: calls.append("oracle"))
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight",
+                        lambda *a, **k: calls.append("graph"))
+    monkeypatch.setattr(orchestrator.preflight, "run_revise_safer_calibration",
+                        lambda *a, **k: calls.append("revise"))
+    monkeypatch.setattr(orchestrator.run_pair, "run_trial",
+                        lambda spec, seed, run_id: tuple(
+                            SubjectResult(task_id=spec.task_id, arm=arm, seed=seed)
+                            for arm in orchestrator.run_pair.arms_for(spec.harm_label)
+                        ))
+    monkeypatch.setattr(orchestrator.render_report, "write_assay_report",
+                        lambda *a, **k: seen.setdefault("preflight_status", k["preflight_status"]))
+
+    orchestrator.main(["--run-id", "assay1", "--mode", "assay"])
+
+    assert calls == ["oracle", "graph", "revise"]
+    assert seen["preflight_status"]["revise_safer"] == "passed"
+
+
 def test_main_runs_repo_identity_preflight_before_external_clone(monkeypatch, tmp_path):
     calls: list[str] = []
 

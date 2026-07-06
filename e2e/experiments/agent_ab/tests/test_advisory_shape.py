@@ -81,6 +81,32 @@ def test_revise_safer_advisory_blocks_current_patch_with_forward_path():
     assert "narrower" in advisory
 
 
+def test_revise_safer_advisory_surfaces_blinded_safer_route_constraints():
+    out = real._shape_output({
+        "recommended_decision": "revise_safer",
+        "scores": {"expected_loss": 1.0},
+        "model_guidance_packet": {
+            "advisory": {
+                "safer_route": {
+                    "summary": "Revise to a safer, narrower route and resubmit before editing.",
+                    "constraints": [
+                        "Keep the next candidate inside the assessed file scope: src/Numerics/SpecialFunctions/Gamma.cs.",
+                        "Inspect dependent code before changing this route (28 dependent callers).",
+                    ],
+                }
+            }
+        },
+    })
+
+    advisory = out["advisory"]
+    assert "src/Numerics/SpecialFunctions/Gamma.cs" in advisory
+    assert "28 dependent callers" in advisory
+    assert out["detail"] == {}
+    blob = " ".join(_all_strings(out)).lower()
+    for term in _FORBIDDEN_VOCAB:
+        assert term not in blob, f"engine vocab leaked into agent-facing output: {term!r}"
+
+
 def test_advisory_contract_requires_patch_evidence():
     assert "proposed_patch" in advisory_contract.INPUT_SCHEMA["required"]
     with pytest.raises(ValueError, match="requires proposed_patch"):

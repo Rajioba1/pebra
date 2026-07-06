@@ -28,6 +28,17 @@ this setup, but it is not yet a powered efficacy claim: PEBRA avoided harm by
 blocking/stopping, not by completing the safer refactor, and the Math.NET corpus
 does not yet include a safe task to measure over-caution cost.
 
+Reviewer follow-up tightened the next-run standard. The assay now has a
+no-agent `revise_safer` calibration preflight: the harmful MNGAMMA patch must
+route to `revise_safer`, the reference correct-fix patch must be non-blocking,
+and its expected loss must be lower. The PEBRA arm also surfaces the production
+`safer_route` constraints as blinded advisory text, so the next run tests the
+deployed safe-edit loop rather than only a generic "narrow it" warning.
+That calibration currently blocks the Math.NET task: live C# assess still scores
+the harmful and reference Gamma patches at the same file-level risk. Until PEBRA
+can distinguish the safer route or the claim is narrowed to stop/block behavior,
+another paid live-agent assay is not the right next step.
+
 It is not full Tauri-level coverage yet. Remaining gated lanes:
 
 - `E2E_CODEGRAPH=1`: real CodeGraph graph/fan-in product path.

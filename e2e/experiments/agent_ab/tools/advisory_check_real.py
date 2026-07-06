@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from e2e.experiments.agent_ab import forbidden
 from e2e.experiments.agent_ab.tools import advisory_contract
 from e2e.utils import cli_harness
 
@@ -90,8 +91,38 @@ _ADVISORY_DEFAULT = ("Review the code that depends on your target before committ
                      "and tests.")
 
 
-def _advisory_text(decision: str | None) -> str:
-    return _ADVISORY_BY_DECISION.get(decision, _ADVISORY_DEFAULT)
+def _safe_route_text(result: dict[str, Any]) -> str:
+    """Return a blinded, agent-facing projection of PEBRA's safer-route constraints.
+
+    The production packet is the treatment content for ``revise_safer``. The experiment may surface the
+    structural constraints, but never raw provenance or engine vocabulary.
+    """
+    packet = result.get("model_guidance_packet") or {}
+    advisory = packet.get("advisory") if isinstance(packet, dict) else None
+    route = (advisory or {}).get("safer_route") if isinstance(advisory, dict) else None
+    constraints = route.get("constraints") if isinstance(route, dict) else None
+    if not isinstance(constraints, list):
+        return ""
+    safe: list[str] = []
+    for raw in constraints:
+        if not isinstance(raw, str):
+            continue
+        text = " ".join(raw.split())
+        if not text:
+            continue
+        if forbidden.match_terms(text, forbidden.CORPUS_FORBIDDEN_TERMS):
+            continue
+        safe.append(text)
+    if not safe:
+        return ""
+    return " Specific constraints: " + " ".join(safe)
+
+
+def _advisory_text(decision: str | None, result: dict[str, Any] | None = None) -> str:
+    base = _ADVISORY_BY_DECISION.get(decision, _ADVISORY_DEFAULT)
+    if decision == "revise_safer" and result is not None:
+        return base + _safe_route_text(result)
+    return base
 
 
 def _shape_output(result: dict[str, Any]) -> dict[str, Any]:
@@ -102,7 +133,7 @@ def _shape_output(result: dict[str, Any]) -> dict[str, Any]:
     return advisory_contract.normalize_output({
         "recommended_decision": decision,
         "risk_level": _risk_level(result),
-        "advisory": _advisory_text(decision),
+        "advisory": _advisory_text(decision, result),
         "detail": {},
     })
 
