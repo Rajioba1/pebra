@@ -105,3 +105,52 @@ def test_revise_safer_guidance_is_structural_not_generic() -> None:
     assert any("public" in c.lower() for c in safer_route["constraints"])
     assert any("src/auth.py" in c for c in safer_route["constraints"])
     assert packet["provenance"]["safer_route"] == "decision + symbol scope evidence + candidate envelope"
+
+
+def test_revise_safer_guidance_stays_domain_agnostic_for_gamma_paths() -> None:
+    from dataclasses import replace
+    from pebra.core.constants import Decision
+
+    inp = _worked_example_input()
+    action = replace(
+        inp.action,
+        expected_files=["src/Numerics/SpecialFunctions/Gamma.cs"],
+        proposed_patch=(
+            "diff --git a/src/Numerics/SpecialFunctions/Gamma.cs "
+            "b/src/Numerics/SpecialFunctions/Gamma.cs\n"
+            "--- a/src/Numerics/SpecialFunctions/Gamma.cs\n"
+            "+++ b/src/Numerics/SpecialFunctions/Gamma.cs\n"
+            "@@ -86,7 +86,7 @@\n"
+            "-                    s += GammaDk[i]/(i - z);\n"
+            "+                    s += LanczosSum(z, i);\n"
+        ),
+    )
+    inp = replace(
+        inp,
+        action=action,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=False,
+            changed_symbols=[],
+            max_change_kind="UNKNOWN",
+            consequential_symbol_changed=True,
+        ),
+        fanin_evidence=m.FanInEvidence(
+            resolution_method="location",
+            graph_freshness="fresh",
+            resolved_symbol_count=3,
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+    packet = mg.render(result, action, eg.render(result))
+    safer_route = packet["advisory"]["safer_route"]
+
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    rendered = str(safer_route).lower()
+    assert "candidate_verification" not in safer_route
+    assert "gammaln" not in rendered
+    assert "gammadk" not in rendered
+    assert "lanczos" not in rendered
+    assert "denominator" not in rendered

@@ -62,10 +62,11 @@ def _safer_route(result: AssessmentResult, action: CandidateAction) -> dict[str,
         constraints.append(
             f"Inspect direct symbol dependents before revising this route ({symbol_callers} callers)."
         )
-    return {
+    route: dict[str, Any] = {
         "summary": "Revise to a safer, narrower route and resubmit before editing.",
         "constraints": constraints,
     }
+    return route
 
 
 def render(

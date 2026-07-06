@@ -112,6 +112,128 @@ def test_gate3_unparsed_single_file_structural_risk_requests_safer_revision() ->
     assert any(g["name"] == "revise_safer" for g in result.gates_fired)
 
 
+def test_gate3_verified_safer_candidate_can_proceed_pre_edit() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"GammaTests": "passed", "numeric_equivalence_gamma": "passed"},
+            required_checks=["GammaTests", "numeric_equivalence_gamma"],
+            domain="numeric_equivalence",
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.PROCEED
+    assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
+    assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
+@pytest.mark.parametrize("status", ["failed", "unavailable"])
+def test_gate3_bad_or_unavailable_candidate_verification_stays_blocking(status: str) -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status=status,
+            checks={"GammaTests": status},
+            required_checks=["GammaTests"],
+            domain="numeric_equivalence",
+            reason="candidate check did not pass",
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert result.requires_confirmation is False
+    assert any(g["name"] == "candidate_verification_not_passed" for g in result.gates_fired)
+
+
+def test_gate3_passed_candidate_verification_requires_declared_checks() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={},
+            required_checks=["targeted_tests"],
+            domain="covering_tests",
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert any(g["name"] == "candidate_verification_not_passed" for g in result.gates_fired)
+    assert not any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
+
+
+def test_sensitive_verified_candidate_still_requires_confirmation() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"targeted_tests": "passed"},
+            required_checks=["targeted_tests"],
+            domain="covering_tests",
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.PROCEED
+    assert result.requires_confirmation is True
+    assert result.risk_mode is RiskMode.SENSITIVE_CONTEXT
+
+
 def test_gate3_unparsed_single_file_without_resolved_scope_does_not_revise() -> None:
     from pebra.core import models as m
 

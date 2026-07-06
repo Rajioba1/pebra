@@ -13,6 +13,7 @@ from pebra.core.models import (
     AssessmentRequest,
     BenefitDeltaEvidence,
     CandidateAction,
+    CandidateVerificationEvidence,
     EvidenceBundle,
 )
 
@@ -32,6 +33,22 @@ class RequestEvidenceProvider:
             deltas=dict(bde_raw.get("deltas", {})),
             future_change_exposure=bde_raw.get("future_change_exposure", 0.0),
         )
+        verification_raw = ev.get("candidate_verification", {})
+        verification = (
+            CandidateVerificationEvidence(
+                status=str(verification_raw.get("status", "not_applicable")),
+                checks=dict(verification_raw.get("checks", {})),
+                required_checks=[
+                    str(check)
+                    for check in verification_raw.get("required_checks", [])
+                    if isinstance(check, str)
+                ],
+                domain=verification_raw.get("domain"),
+                reason=verification_raw.get("reason"),
+            )
+            if isinstance(verification_raw, dict)
+            else CandidateVerificationEvidence()
+        )
         return EvidenceBundle(
             events=list(ev.get("events", [])),
             p_success=ev.get("p_success", COLD_START_PRIORS["p_success"]),
@@ -47,4 +64,5 @@ class RequestEvidenceProvider:
             p_success_variance=ev.get("p_success_variance", 0.0),
             review_cost_variance=ev.get("review_cost_variance", 0.0),
             benefit_delta_evidence=benefit_delta,
+            candidate_verification=verification,
         )

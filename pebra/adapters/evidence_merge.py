@@ -106,4 +106,5 @@ def merge_evidence(
             base.benefit_delta_evidence, radon_benefit
         ),
         architecture_evidence=architecture_evidence,
+        candidate_verification=base.candidate_verification,
     )

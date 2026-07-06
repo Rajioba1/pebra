@@ -204,6 +204,23 @@ class BenefitDeltaEvidence:
 
 
 @dataclass(frozen=True)
+class CandidateVerificationEvidence:
+    """Pre-edit verification result for a revised candidate patch.
+
+    This is distinct from post-edit ``pebra verify``: the candidate is checked before it is applied to
+    the real worktree, usually in a scratch clone/worktree. It lets ``revise_safer`` become a real
+    repair-and-verify loop: a verified safer candidate may proceed; failed or unavailable verification
+    keeps the current write blocked.
+    """
+
+    status: str = "not_applicable"  # not_applicable | passed | failed | unavailable
+    checks: dict[str, str] = field(default_factory=dict)
+    required_checks: list[str] = field(default_factory=list)
+    domain: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class ActualDiffSummary:
     """What ChangeVerifier returns about the *actual* post-edit diff (Architecture §9)."""
 
@@ -254,6 +271,9 @@ class EvidenceBundle:
     review_cost_variance: float = 0.0
     benefit_delta_evidence: "BenefitDeltaEvidence" = field(default_factory=lambda: BenefitDeltaEvidence())
     architecture_evidence: "ArchitectureEvidence" = field(default_factory=lambda: ArchitectureEvidence())
+    candidate_verification: "CandidateVerificationEvidence" = field(
+        default_factory=lambda: CandidateVerificationEvidence()
+    )
 
 
 @dataclass
@@ -285,6 +305,9 @@ class AssessmentInput:
     file_fanin_rollup: "FileFanInRollup | None" = None
     blast_evidence: BlastEvidence = field(default_factory=BlastEvidence)
     architecture_evidence: ArchitectureEvidence = field(default_factory=ArchitectureEvidence)
+    candidate_verification: CandidateVerificationEvidence = field(
+        default_factory=CandidateVerificationEvidence
+    )
     active_snapshot: Any | None = None  # no learning in Phase 0 (cold start)
     sanction: Any | None = None  # pre-fetched sanction (engine never calls a port)
     # Phase-4 reframe (M5-prep): structural feature payload attached pre-scoring for CAPTURE only.

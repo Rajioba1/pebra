@@ -122,3 +122,22 @@ def test_build_request_carries_revise_safer_attempt():
 
     assert req["thresholds"]["revise_safer_attempt"] == 2
     assert req["thresholds"]["max_revise_safer_attempts"] == 1
+
+
+def test_build_request_carries_candidate_verification_evidence():
+    req = real._build_request({
+        "target_file": "src/Numerics/SpecialFunctions/Gamma.cs",
+        "change_summary": "safer gamma refactor",
+        "proposed_patch": "diff --git a/src/Numerics/SpecialFunctions/Gamma.cs b/src/Numerics/SpecialFunctions/Gamma.cs\n",
+        "candidate_verification": {
+            "status": "passed",
+            "checks": {"GammaTests": "passed", "numeric_equivalence_gamma": "passed"},
+            "required_checks": ["GammaTests", "numeric_equivalence_gamma"],
+            "domain": "numeric_equivalence",
+        },
+    })
+    assert req["evidence"]["candidate_verification"]["status"] == "passed"
+    assert req["evidence"]["candidate_verification"]["checks"]["GammaTests"] == "passed"
+    assert req["evidence"]["candidate_verification"]["required_checks"] == [
+        "GammaTests", "numeric_equivalence_gamma",
+    ]

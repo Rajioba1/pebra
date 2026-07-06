@@ -212,6 +212,7 @@ def _build_input(
         review_cost_variance=evidence.review_cost_variance,
         variance_breakdown=evidence.variance_breakdown,
         benefit_delta_evidence=evidence.benefit_delta_evidence,
+        candidate_verification=evidence.candidate_verification,
         symbol_diff_evidence=symbol_diff,
         fanin_evidence=fanin_ev,
         file_fanin_rollup=file_fanin_rollup,

@@ -3,7 +3,8 @@
 BOTH arms expose a tool with the IDENTICAL name, input schema, and output shape:
 
     name:   "advisory_check"   (never "pebra_assess" — the name must not reveal the arm)
-    input:  {"target_file": str, "change_summary": str, "proposed_patch": str}
+    input:  {"target_file": str, "change_summary": str, "proposed_patch": str,
+             "candidate_verification": dict?}
     output: {"recommended_decision": str|None, "risk_level": str, "advisory": str, "detail": dict}
 
 Only the BACKING CONTENT differs:
@@ -31,6 +32,10 @@ INPUT_SCHEMA: dict[str, Any] = {
         "target_file": {"type": "string", "description": "Repo-relative path you intend to change."},
         "change_summary": {"type": "string", "description": "One-line summary of the intended change."},
         "proposed_patch": {"type": "string", "description": "Unified diff of the intended change."},
+        "candidate_verification": {
+            "type": "object",
+            "description": "Optional pre-edit verification result for a revised candidate patch.",
+        },
     },
     "required": ["target_file", "change_summary", "proposed_patch"],
 }

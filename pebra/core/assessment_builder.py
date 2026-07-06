@@ -232,6 +232,13 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "file_fanin_rollup": file_fanin_rollup,
             "fallback_reason": sde.fallback_reason,
         },
+        "candidate_verification": {
+            "status": inp.candidate_verification.status,
+            "checks": dict(inp.candidate_verification.checks),
+            "required_checks": list(inp.candidate_verification.required_checks),
+            "domain": inp.candidate_verification.domain,
+            "reason": inp.candidate_verification.reason,
+        },
     }
     return Assessment(
         input=inp,

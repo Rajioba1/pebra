@@ -9,7 +9,12 @@ benefit.
 from __future__ import annotations
 
 from pebra.adapters.evidence_merge import merge_evidence
-from pebra.core.models import ArchitectureEvidence, BenefitDeltaEvidence, EvidenceBundle
+from pebra.core.models import (
+    ArchitectureEvidence,
+    BenefitDeltaEvidence,
+    CandidateVerificationEvidence,
+    EvidenceBundle,
+)
 from pebra.ports.config_port import CriticalityGlob, PebraConfig, PolicyRule
 
 
@@ -150,6 +155,20 @@ def test_architecture_evidence_is_carried_through() -> None:
     merged = _empty_merge(base, architecture_evidence=arch)
     assert merged.architecture_evidence.god_node_score == 0.9
     assert merged.architecture_evidence.cycle_participation is True
+
+
+def test_candidate_verification_evidence_is_carried_through() -> None:
+    verification = CandidateVerificationEvidence(
+        status="passed",
+        checks={"targeted_tests": "passed"},
+        required_checks=["targeted_tests"],
+        domain="covering_tests",
+    )
+    base = _base(candidate_verification=verification)
+
+    merged = _empty_merge(base)
+
+    assert merged.candidate_verification == verification
 
 
 def test_policy_rules_produce_gate1_violations_from_config() -> None:

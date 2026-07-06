@@ -118,6 +118,45 @@ def _should_revise_safer(assessment: Assessment) -> bool:
     return _has_narrowing_headroom(assessment)
 
 
+def _revise_candidate_decision(
+    assessment: Assessment,
+    gates_fired: list[dict[str, Any]],
+    *,
+    source_gate: int,
+) -> tuple[Decision, bool, int]:
+    verification = assessment.input.candidate_verification
+    status = verification.status
+    required_checks = list(verification.required_checks)
+    missing_or_failed = [
+        check
+        for check in required_checks
+        if str(verification.checks.get(check, "")).lower() != "passed"
+    ]
+    if status == "passed" and required_checks and not missing_or_failed:
+        gates_fired.append({
+            "gate": 7,
+            "name": "candidate_verification_passed",
+            "domain": verification.domain,
+            "checks": dict(verification.checks),
+            "required_checks": required_checks,
+        })
+        return Decision.PROCEED, assessment.scores["criticality_stage"] in _SENSITIVE_STAGES, 7
+    if status in {"passed", "failed", "unavailable"}:
+        gates_fired.append({
+            "gate": 7,
+            "name": "candidate_verification_not_passed",
+            "status": status,
+            "domain": verification.domain,
+            "checks": dict(verification.checks),
+            "required_checks": required_checks,
+            "missing_or_failed_checks": missing_or_failed,
+            "reason": verification.reason,
+        })
+        return Decision.REVISE_SAFER, False, source_gate
+    gates_fired.append({"gate": 6, "name": "revise_safer"})
+    return Decision.REVISE_SAFER, False, source_gate
+
+
 def _graph_evidence(blast: Any) -> dict[str, Any]:
     """Surface blast graph incompleteness (3c/3d) for rendering. Empty when the graph is fully
     resolved, so a clean assessment carries no uncertainty noise (and the worked example is unchanged)."""
@@ -238,7 +277,9 @@ def decide(
     # --- Gate 3: expected_loss over effective threshold ---
     elif s["expected_loss"] > s["effective_threshold"]:
         if _should_revise_safer(assessment):
-            provisional, fired_gate = Decision.REVISE_SAFER, 3
+            provisional, requires_confirmation, fired_gate = _revise_candidate_decision(
+                assessment, gates_fired, source_gate=3
+            )
         elif s["expected_utility"] < 0:
             provisional, fired_gate = Decision.REJECT, 3
         else:
@@ -246,19 +287,17 @@ def decide(
         gates_fired.append({"gate": 3, "name": "expected_loss_over_threshold",
                             "expected_loss": s["expected_loss"],
                             "threshold": s["effective_threshold"]})
-        if provisional is Decision.REVISE_SAFER:
-            gates_fired.append({"gate": 6, "name": "revise_safer"})
     # --- Gate 4: RAU < 0 ---
     elif s["rau"] < 0:
         if _should_revise_safer(assessment):
-            provisional, fired_gate = Decision.REVISE_SAFER, 4
+            provisional, requires_confirmation, fired_gate = _revise_candidate_decision(
+                assessment, gates_fired, source_gate=4
+            )
         elif t.get("ask_on_negative_rau", False):
             provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 4
         else:
             provisional, fired_gate = Decision.REJECT, 4
         gates_fired.append({"gate": 4, "name": "negative_rau", "rau": s["rau"]})
-        if provisional is Decision.REVISE_SAFER:
-            gates_fired.append({"gate": 6, "name": "revise_safer"})
     # --- Gate 5: utility_sd too wide while EU positive ---
     elif (
         s["utility_sd"] > t.get("max_utility_sd_without_human", 0.20)

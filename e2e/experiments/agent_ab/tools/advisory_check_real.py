@@ -37,6 +37,18 @@ def _build_request(payload: dict[str, Any], *, revise_safer_attempt: int = 0) ->
     if not patch:
         raise ValueError("advisory_check requires proposed_patch so PEBRA can assess the intended edit")
     thresholds = {**_THRESHOLDS, "revise_safer_attempt": max(0, int(revise_safer_attempt))}
+    evidence = {
+        "events": [], "p_success": 0.75, "immediate_benefit": 0.5, "review_cost": 0.1,
+        "criticality_stage": "C3", "criticality_value": 0.8,
+        "edit_confidence_factors": {"p_success": 0.75, "evidence_quality": 0.7, "testability": 0.7,
+                                    "reversibility": 0.7, "source_reliability": 0.7,
+                                    "scope_control": 0.7},
+        "benefit_delta_evidence": {"source_type": "projected", "future_change_exposure": 0.0,
+                                   "deltas": {}},
+    }
+    candidate_verification = payload.get("candidate_verification")
+    if isinstance(candidate_verification, dict):
+        evidence["candidate_verification"] = candidate_verification
     return {
         "schema_version": "0.1", "task": summary, "repo_id": "ab_experiment",
         "candidate_actions": [{
@@ -44,15 +56,7 @@ def _build_request(payload: dict[str, Any], *, revise_safer_attempt: int = 0) ->
             "affected_symbols": [], "expected_files": [target] if target else [],
             "proposed_patch": patch,
         }],
-        "evidence": {
-            "events": [], "p_success": 0.75, "immediate_benefit": 0.5, "review_cost": 0.1,
-            "criticality_stage": "C3", "criticality_value": 0.8,
-            "edit_confidence_factors": {"p_success": 0.75, "evidence_quality": 0.7, "testability": 0.7,
-                                        "reversibility": 0.7, "source_reliability": 0.7,
-                                        "scope_control": 0.7},
-            "benefit_delta_evidence": {"source_type": "projected", "future_change_exposure": 0.0,
-                                       "deltas": {}},
-        },
+        "evidence": evidence,
         "thresholds": thresholds,
     }
 
