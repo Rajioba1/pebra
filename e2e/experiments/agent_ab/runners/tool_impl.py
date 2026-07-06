@@ -11,9 +11,11 @@ No pebra import.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Callable
 
+from e2e.experiments.agent_ab.forbidden import EXPERIMENT_LEAK_TERMS
 from e2e.experiments.agent_ab.tools import advisory_contract
 from e2e.external.utils import dotnet_harness as dn
 
@@ -22,6 +24,20 @@ _MAX_LIST_ENTRIES = 500
 _MAX_MATCHES = 200
 _MAX_GREP_FILE_BYTES = 1_000_000
 _HIDDEN_DIRS = {".git", ".codegraph", ".pebra"}
+_REDACTION = "[redacted]"
+
+
+def model_safe_text(text: str) -> str:
+    """Remove workspace paths and forbidden experiment/engine terms from model-facing harness text."""
+    safe = text or ""
+    safe = re.sub(r"[A-Za-z]:[\\/][^\s()\"']+", "<path>", safe)
+    safe = re.sub(r"(?<!\w)/(?:[^\s()\"']+/)+[^\s()\"']+", "<path>", safe)
+    for term in EXPERIMENT_LEAK_TERMS:
+        if term.isalpha():
+            safe = re.sub(rf"\b{re.escape(term)}\b", _REDACTION, safe, flags=re.IGNORECASE)
+        else:
+            safe = re.sub(re.escape(term), _REDACTION, safe, flags=re.IGNORECASE)
+    return safe
 
 
 class PathTraversalError(ValueError):
@@ -46,12 +62,12 @@ def _contains_hidden_part(path: Path) -> bool:
 def read_file(path: str, repo_root: Path) -> dict[str, Any]:
     try:
         target = _resolve_guarded(path, repo_root)
-    except PathTraversalError as exc:
-        return {"error": str(exc)}
-    if not target.is_file():
-        return {"error": f"not a file: {path}"}
+    except PathTraversalError:
+        return {"error": "path escapes repo boundary"}
     if _contains_hidden_part(target.relative_to(repo_root.resolve())):
-        return {"error": f"hidden path: {path}"}
+        return {"error": "hidden path requested"}
+    if not target.is_file():
+        return {"error": model_safe_text(f"not a file: {path}")}
     data = target.read_bytes()[:_MAX_READ_BYTES]
     text = data.decode("utf-8", errors="replace")
     if target.stat().st_size > _MAX_READ_BYTES:
@@ -62,25 +78,26 @@ def read_file(path: str, repo_root: Path) -> dict[str, Any]:
 def write_file(path: str, content: str, repo_root: Path) -> dict[str, Any]:
     try:
         target = _resolve_guarded(path, repo_root)
-    except PathTraversalError as exc:
-        return {"error": str(exc)}
+    except PathTraversalError:
+        return {"error": "path escapes repo boundary"}
     if _contains_hidden_part(target.relative_to(repo_root.resolve())):
-        return {"error": f"hidden path: {path}"}
+        return {"error": "hidden path requested"}
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     except OSError as exc:
-        return {"error": f"write failed: {exc}"}
+        detail = exc.strerror or type(exc).__name__
+        return {"error": model_safe_text(f"write failed for {path!r}: {detail}")}
     return {"ok": True}
 
 
 def list_dir(path: str | None, repo_root: Path) -> dict[str, Any]:
     try:
         target = _resolve_guarded(path or ".", repo_root)
-    except PathTraversalError as exc:
-        return {"error": str(exc)}
+    except PathTraversalError:
+        return {"error": "path escapes repo boundary"}
     if not target.is_dir():
-        return {"error": f"not a directory: {path}"}
+        return {"error": model_safe_text(f"not a directory: {path}")}
     root = repo_root.resolve()
     entries = sorted(
         p.relative_to(root).as_posix() + ("/" if p.is_dir() else "")
@@ -95,16 +112,16 @@ def search_grep(pattern: str, repo_root: Path, *, path: str | None = None,
     """Python-native recursive line scan (no rg dependency). Returns up to _MAX_MATCHES lines."""
     try:
         root = _resolve_guarded(path or ".", repo_root)
-    except PathTraversalError as exc:
-        return {"matches": [], "error": str(exc)}
+    except PathTraversalError:
+        return {"matches": [], "error": "path escapes repo boundary"}
     if file_glob and (Path(file_glob).is_absolute() or ".." in Path(file_glob).parts):
-        return {"matches": [], "error": f"file_glob {file_glob!r} escapes repo boundary"}
+        return {"matches": [], "error": "file_glob escapes repo boundary"}
     matches: list[str] = []
     repo = repo_root.resolve()
     try:
         files = [root] if root.is_file() else root.rglob(file_glob or "*")
     except (OSError, ValueError) as exc:
-        return {"matches": [], "error": f"search failed: {exc}"}
+        return {"matches": [], "error": model_safe_text(f"search failed: {type(exc).__name__}")}
     for fp in files:
         if len(matches) >= _MAX_MATCHES:
             break
@@ -132,12 +149,14 @@ def search_grep(pattern: str, repo_root: Path, *, path: str | None = None,
 
 def run_build(repo_root: Path, *, sln: str = "TemplateBlueprint.sln") -> dict[str, Any]:
     r = dn.run_build(repo_root, sln=sln)
-    return {"available": r.available, "passed": r.passed, "error_summary": r.error_summary}
+    return {"available": r.available, "passed": r.passed,
+            "error_summary": model_safe_text(r.error_summary)}
 
 
 def run_tests(repo_root: Path, *, sln: str = "TemplateBlueprint.sln") -> dict[str, Any]:
     r = dn.run_tests(repo_root, sln=sln)
-    return {"available": r.available, "passed": r.passed, "error_summary": r.error_summary}
+    return {"available": r.available, "passed": r.passed,
+            "error_summary": model_safe_text(r.error_summary)}
 
 
 def advisory_check(payload: dict[str, Any], advisory_backend: Callable[..., dict[str, Any]]) -> dict[str, Any]:

@@ -91,8 +91,10 @@ def blinding_presend_check(texts: list[str]) -> None:
     for text in texts:
         leaked, terms = blinding.scan_text(text or "")
         if leaked:
+            redacted = tool_impl.model_safe_text(text or "")[:240]
             raise BlindingViolationError(
-                f"pre-send blinding check matched {terms!r}; aborting run (fail-closed)"
+                f"pre-send blinding check matched {terms!r}; redacted_text={redacted!r}; "
+                "aborting run (fail-closed)"
             )
 
 

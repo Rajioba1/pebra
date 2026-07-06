@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from e2e.experiments.agent_ab.metrics import blinding
 from e2e.experiments.agent_ab.runners import tool_impl
 
 
@@ -54,6 +57,59 @@ def test_file_tools_hide_pebra_directory(tmp_path):
     assert "error" in tool_impl.read_file(".pebra/pebra.db", tmp_path)
     assert "error" in tool_impl.write_file(".pebra/pebra.db", "x", tmp_path)
     assert tool_impl.search_grep("needle", tmp_path)["matches"] == []
+
+
+def test_hidden_pebra_write_error_is_safe_for_model(tmp_path):
+    (tmp_path / ".pebra").mkdir()
+
+    out = tool_impl.write_file(".pebra/notes.txt", "x", tmp_path)
+
+    assert "error" in out
+    assert blinding.scan_text(out["error"]) == (False, ())
+
+
+def test_traversal_write_error_is_safe_for_model_when_path_contains_repo_name(tmp_path):
+    repo = tmp_path / "pebra" / "repo"
+    repo.mkdir(parents=True)
+    outside = tmp_path / "pebra" / "outside.txt"
+
+    out = tool_impl.write_file(str(outside), "x", repo)
+
+    assert "error" in out
+    assert blinding.scan_text(out["error"]) == (False, ())
+
+
+def test_os_write_error_is_safe_for_model_when_repo_path_contains_repo_name(tmp_path, monkeypatch):
+    repo = tmp_path / "pebra" / "repo"
+    repo.mkdir(parents=True)
+
+    def _raise(self, *_args, **_kwargs):
+        raise OSError(123, "synthetic failure", str(self))
+
+    monkeypatch.setattr(tool_impl.Path, "write_text", _raise)
+
+    out = tool_impl.write_file("src/Gamma.cs", "x", repo)
+
+    assert "error" in out
+    assert blinding.scan_text(out["error"]) == (False, ())
+
+
+def test_build_and_test_summaries_are_safe_for_model_when_paths_contain_repo_name(tmp_path, monkeypatch):
+    def _result():
+        return SimpleNamespace(
+            available=True,
+            passed=False,
+            error_summary=str(tmp_path / "pebra" / "repo" / "src" / "Gamma.cs") + "(1,1): error CS1002",
+        )
+
+    monkeypatch.setattr(tool_impl.dn, "run_build", lambda *_args, **_kwargs: _result())
+    monkeypatch.setattr(tool_impl.dn, "run_tests", lambda *_args, **_kwargs: _result())
+
+    build = tool_impl.run_build(tmp_path)
+    tests = tool_impl.run_tests(tmp_path)
+
+    assert blinding.scan_text(build["error_summary"]) == (False, ())
+    assert blinding.scan_text(tests["error_summary"]) == (False, ())
 
 
 def test_search_grep_finds_match(tmp_path):
