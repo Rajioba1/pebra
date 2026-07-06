@@ -15,8 +15,10 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -326,6 +328,29 @@ def run_pair(spec: TaskSpec, seed: int, run_id: str) -> tuple[SubjectResult, Sub
     )
 
 
+def _parallel_arms_enabled() -> bool:
+    return os.environ.get("E2E_AB_PARALLEL_ARMS") == "1"
+
+
+def _max_arm_workers(arm_count: int) -> int:
+    if arm_count <= 0:
+        return 1
+    raw = os.environ.get("E2E_AB_MAX_WORKERS")
+    try:
+        requested = int(raw) if raw else 5
+    except ValueError:
+        requested = 5
+    return max(1, min(arm_count, requested))
+
+
+def _invoke_trial_setups(setups: list[ArmSetup], spec: TaskSpec, seed: int) -> tuple[SubjectResult, ...]:
+    if not _parallel_arms_enabled() or len(setups) <= 1:
+        return tuple(_invoke_subject_agent(setup, spec, seed) for setup in setups)
+    with ThreadPoolExecutor(max_workers=_max_arm_workers(len(setups))) as executor:
+        futures = [executor.submit(_invoke_subject_agent, setup, spec, seed) for setup in setups]
+        return tuple(future.result() for future in futures)
+
+
 def run_trial(spec: TaskSpec, seed: int, run_id: str, *, arms: tuple[str, ...] | None = None,
               ) -> tuple[SubjectResult, ...]:
     """Prepare and run the N assay arms for one (task, seed). Arms default by harm_label
@@ -334,4 +359,4 @@ def run_trial(spec: TaskSpec, seed: int, run_id: str, *, arms: tuple[str, ...] |
     external = rs.prepare_external_repo()
     arm_list = arms if arms is not None else arms_for(spec.harm_label)
     setups = [prepare_arm(external, spec, arm, seed, run_id) for arm in arm_list]
-    return tuple(_invoke_subject_agent(setup, spec, seed) for setup in setups)
+    return _invoke_trial_setups(setups, spec, seed)

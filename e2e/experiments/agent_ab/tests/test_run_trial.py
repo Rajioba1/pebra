@@ -5,6 +5,8 @@ prepare_arm/_invoke_subject_agent (real clone/graph/build/LLM) are monkeypatched
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -83,3 +85,55 @@ def test_run_trial_honors_explicit_arms(monkeypatch):
     spec = SimpleNamespace(task_id="T1", harm_label="risky")
     arms = [r.arm for r in run_pair.run_trial(spec, 0, "run_x", arms=(models.ARM_SHAM, models.ARM_PEBRA))]
     assert arms == [models.ARM_SHAM, models.ARM_PEBRA]
+
+
+def test_run_trial_parallel_is_opt_in(monkeypatch):
+    calls = []
+    monkeypatch.delenv("E2E_AB_PARALLEL_ARMS", raising=False)
+    monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
+    monkeypatch.setattr(run_pair, "prepare_arm",
+                        lambda external, spec, arm, seed, run_id: SimpleNamespace(arm=arm))
+
+    def invoke(setup, spec, seed):
+        calls.append(("start", setup.arm))
+        calls.append(("finish", setup.arm))
+        return SimpleNamespace(arm=setup.arm, error=None)
+
+    monkeypatch.setattr(run_pair, "_invoke_subject_agent", invoke)
+    spec = SimpleNamespace(task_id="T1", harm_label="risky")
+    run_pair.run_trial(spec, 0, "run_x", arms=("a", "b"))
+    assert calls == [("start", "a"), ("finish", "a"), ("start", "b"), ("finish", "b")]
+
+
+def test_run_trial_parallel_preserves_arm_order(monkeypatch):
+    monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1")
+    monkeypatch.setenv("E2E_AB_MAX_WORKERS", "2")
+    monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
+    monkeypatch.setattr(run_pair, "prepare_arm",
+                        lambda external, spec, arm, seed, run_id: SimpleNamespace(arm=arm))
+    barrier = threading.Barrier(2, timeout=2)
+    finished = []
+
+    def invoke(setup, spec, seed):
+        barrier.wait()
+        if setup.arm == "a":
+            time.sleep(0.05)
+        finished.append(setup.arm)
+        return SimpleNamespace(arm=setup.arm, error=None)
+
+    monkeypatch.setattr(run_pair, "_invoke_subject_agent", invoke)
+    spec = SimpleNamespace(task_id="T1", harm_label="risky")
+    results = run_pair.run_trial(spec, 0, "run_x", arms=("a", "b"))
+    assert finished == ["b", "a"]
+    assert [r.arm for r in results] == ["a", "b"]
+
+
+def test_parallel_worker_count_is_bounded(monkeypatch):
+    monkeypatch.delenv("E2E_AB_MAX_WORKERS", raising=False)
+    assert run_pair._max_arm_workers(5) == 5
+    monkeypatch.setenv("E2E_AB_MAX_WORKERS", "2")
+    assert run_pair._max_arm_workers(5) == 2
+    monkeypatch.setenv("E2E_AB_MAX_WORKERS", "999")
+    assert run_pair._max_arm_workers(5) == 5
+    monkeypatch.setenv("E2E_AB_MAX_WORKERS", "not-an-int")
+    assert run_pair._max_arm_workers(5) == 5
