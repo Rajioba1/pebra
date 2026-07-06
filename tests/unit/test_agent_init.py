@@ -13,6 +13,7 @@ from pebra.cli.main import build_parser
 
 _SKILL_REL = Path(".claude") / "skills" / "pebra-safe-edit" / "SKILL.md"
 _TOKENS = ("pebra assess", "pebra verify", "record-outcome", "pre-edit")
+_REVISE_TOKENS = ("revise_safer", "proposed_patch", "expected_loss", "resubmit")
 
 
 def _run(target: str, repo_root: Path) -> int:
@@ -42,6 +43,17 @@ def test_skill_wording_is_consult_not_block(tmp_path):
     body = (tmp_path / _SKILL_REL).read_text(encoding="utf-8").lower()
     assert "consult" in body
     assert "block" not in body  # enforcement wording (blocks edits) is a later slice, not Phase 1
+
+
+def test_skill_protocol_requires_reassessing_revise_safer(tmp_path):
+    _run("claude", tmp_path)
+    body = (tmp_path / _SKILL_REL).read_text(encoding="utf-8")
+    for token in _REVISE_TOKENS:
+        assert token in body, f"missing {token!r}"
+    lowered = body.lower()
+    assert "do not apply the original patch" in lowered
+    assert "lower risk" in lowered
+    assert "permits" in lowered
 
 
 def test_codex_creates_agents_md(tmp_path):

@@ -33,12 +33,19 @@ Before any significant edit, rename, or delete, you must consult PEBRA first. Th
 obligation, not optional. Do not skip these steps:
 
 1. **Assess (pre-edit).** Draft the intended change, then run
-   `pebra assess <request.json> --json` with the target file(s) in `expected_files`. Read the returned
-   decision, risk math, safe edit scope, and required checks before touching the code.
-2. **Edit** within the safe scope PEBRA reports; keep to the smallest sufficient change.
-3. **Verify.** After editing, run `pebra verify --assessment-id <id> --scope staged` and resolve any
+   `pebra assess <request.json> --json` with the target file(s) in `expected_files` and the intended
+   unified diff in `proposed_patch`. Read the returned decision, `scores.expected_loss`, safe edit
+   scope, and required checks before touching the code.
+2. **Revise when asked.** If the decision is `revise_safer`, do not apply the original patch. Use
+   `model_guidance_packet.advisory.safer_route` to draft a narrower candidate, then resubmit by running
+   `pebra assess` again with that new `proposed_patch`. Edit only after the reassessment permits
+   editing and shows lower risk (for example, lower `scores.expected_loss` or a less severe decision).
+3. **Escalate when asked.** If the decision is `ask_human` or `reject`, stop and ask the user for
+   approval or a different route; do not treat it as permission to edit.
+4. **Edit** within the safe scope PEBRA reports; keep to the smallest sufficient change.
+5. **Verify.** After editing, run `pebra verify --assessment-id <id> --scope staged` and resolve any
    scope drift or build failures it reports.
-4. **Record.** Run `pebra record-outcome --assessment-id <id> --status completed`.
+6. **Record.** Run `pebra record-outcome --assessment-id <id> --status completed`.
 
 Consulting PEBRA before editing high-impact code is how you avoid breaking dependents you cannot see
 from local context.
