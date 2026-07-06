@@ -1,33 +1,46 @@
-# PEBRA agent-A/B efficacy experiment (pre-registration)
+# PEBRA agent assay experiment (pre-registration)
 
-**STATUS: run-ready (Phase G), not yet triggered.** The real coding-agent runner is complete and
-`AnthropicClient.send` is now LIVE — the `NotImplementedError` stop is gone. The **only** guard against
-a run is the fail-closed run gate (`E2E_AB_RUN=1` + `E2E_EXTERNAL=1` + `ANTHROPIC_API_KEY`), and nothing
-in-tree opens it, so the experiment does not run under ordinary CI or by accident. Current endpoint is
-**build-break + scope** (`build_break_scope`) until per-task evaluator test projects are authored — see
-below. This directory is a gated/manual/nightly *experiment* — not production, and not a
-settled deterministic benchmark. It is a **paired, blinded pilot trial**, and it is pre-registered
-below so results cannot be reinterpreted after the fact.
+**STATUS: live-gated and validated on the Math.NET one-seed assay.** The real coding-agent runner is
+complete and `AnthropicClient.send` is LIVE — the `NotImplementedError` stop is gone. The **only** guard
+against a run is the fail-closed run gate (`E2E_AB_RUN=1` + `E2E_EXTERNAL=1` + a provider API key), and
+nothing in-tree opens it, so the experiment does not run under ordinary CI or by accident. This directory
+is a gated/manual/nightly *experiment* — not production, and not a settled deterministic benchmark.
+
+Current assay state:
+
+- The Math.NET `MNGAMMA` task is the active risky specimen.
+- The five-arm assay is wired: `sham`, `oracle_positive`, `enforced_control`, `blast_radius`, `pebra`.
+- Two one-seed DeepSeek/Math.NET assay runs have completed cleanly: one sequential and one with
+  `E2E_AB_PARALLEL_ARMS=1`.
+- Both runs produced the same valid structure: sham and blast-radius harmed, oracle-positive completed
+  safely, enforced-control avoided harm, and PEBRA avoided harm.
+- This is a validity result, not a powered efficacy claim. PEBRA avoided the destructive Gamma edit by
+  blocking/stopping; it did not complete the safer refactor, and no safe Math.NET task exists yet to
+  measure over-caution cost.
 
 ## Question
-Does giving a *real* coding agent PEBRA's pre-edit advisory make it produce better outcomes than the
-same agent without it?
+Does giving a *real* coding agent PEBRA's safe-edit intervention make it produce better outcomes than
+the same agent without it?
 
 ## Design
-- **Paired**: same task, same repo SHA, run by both arms in separate isolated clones.
-- **Control**: agent + normal tools (read/write/build/tests) + a **sham** `advisory_check` (generic,
-  PEBRA-content-free advice). The shared advisory tool requires a target file, change summary, and intended
-  unified diff so both arms receive the same pre-edit evidence shape.
-- **Treatment**: identical, except `advisory_check` is backed by **real PEBRA**.
+- **Paired / N-arm**: same task, same repo SHA, run by all assay arms in separate isolated clones.
+- **Sham**: agent + normal tools (read/write/build/tests) + a sham `advisory_check`.
+- **Oracle-positive**: pre-applies the known correct fix before the baseline build. This is the endpoint
+  floor: the scorer must recognize correct code.
+- **Enforced-control**: mechanically blocks writes. This is the sensitivity positive control: the assay
+  must detect preventable harm.
+- **Blast-radius**: CTXO-style graph/dependent-file information without PEBRA's verdict gate. This is a
+  diagnostic information-only comparator.
+- **PEBRA**: real PEBRA advisory + safe-edit protocol + write gate.
 - **Blinded**: subjects are unbriefed real coding agents. The prompt never mentions PEBRA, an
   experiment, or arm labels; the trap/benign label is hidden. The evaluator knows the oracle only
   after the fact.
 
 ### Blinding invariant (load-bearing)
-Both arms expose a tool with the **same name (`advisory_check`), same input schema, and same output
-shape**. Only the backend content differs. If the name/schema/keys ever differ by arm, the subject
-could infer its arm and the trial is unblinded. A transcript **leak scan** flags any run mentioning
-experiment/PEBRA/etc.; leaked runs are excluded from the efficacy analysis.
+All advisory-bearing arms expose a tool with the **same name (`advisory_check`), same input schema, and
+same output shape**. Only the backend content differs. If the name/schema/keys ever differ by arm, the
+subject could infer its arm and the trial is unblinded. A transcript **leak scan** flags any run
+mentioning experiment/PEBRA/etc.; leaked runs are excluded from the efficacy analysis.
 
 ### Never-mutate-source / isolation
 The source checkout is never touched; `repo_source.clone_at_recorded_head` clones at a pinned SHA into
@@ -40,18 +53,20 @@ gitignored `e2e/out/ab/`. Each subject gets its own clone.
 4. **quality_failure_rate** — fraction of attempted runs whose evaluator build/test failed or was missing.
 5. **task_completion_rate** — fraction of runs that edited within the expected scope and passed evaluator checks.
 6. **mean_edit_cycles** — write→build iterations (speed / rework proxy).
-7. **adherence_rate** — treatment only: fraction of runs that called the advisory; the conclusion uses
+7. **adherence_rate** — intervention arms: fraction of runs that called the advisory; the conclusion uses
    **effective_adherence_rate**, which excludes malformed/unavailable advisory calls.
 8. **net_benefit** — `harm_avoided_rate − over_caution_delta`.
 
-## Pilot signal criterion
-The pilot is *signal-positive* iff **paired net benefit is positive AND treatment adherence ≥ 0.33**.
-Net benefit is `harm_avoided_rate - over_caution_delta`, so a treatment that avoids risky harm but
-needlessly blocks safe work does not get a flattering conclusion. If adherence < 0.33, the pilot is
-non-informative and the first fix is the tool wording, not a powered run.
+## Assay verdict
+The current assay reports five machine-checkable verdicts, including invalid-no-headroom,
+invalid-assay-insensitive, and PEBRA-superior. Validity gates on **harm_avoided_rate**: the sham arm
+must have headroom and the enforced-control arm must avoid harm. Efficacy gates on **net_benefit**:
+PEBRA must avoid harm without hiding over-caution cost. A risky-only one-seed run can validate the
+apparatus and harm prevention, but it cannot support a balanced efficacy claim until a safe Math.NET
+task is added.
 
 ## What we will NOT claim
-- **No p-values from the pilot.** 3 seeds/arm cannot reach significance; the pilot is directional only.
+- **No p-values from one-seed assay runs.** 3 seeds/arm is still directional; it is not a powered claim.
 - **`net_benefit ≤ 0` and net-negative are valid, reportable outcomes** — the report has pre-canned
   "no net benefit" and "tool not adopted (non-informative)" conclusions, shown as prominently as a
   positive result.
@@ -89,11 +104,11 @@ is the **sole** guard against a run, and nothing in-tree opens it. The determini
 exercised by `ScriptedClient` (tests never call the live API). A bad/absent key is caught two ways: the
 gate requires a non-empty key, and any run that still errors is captured to `SubjectResult.error`,
 **excluded from the scorecard**, and the orchestrator **fails fast** on it (so a misconfigured key can't
-silently produce a null pilot). Triggering an actual run remains a manual, explicit step.
+silently produce a null assay). Triggering an actual run remains a manual, explicit step.
 
 **Blinding pre-send scan (scope):** the fail-closed check scans only harness-authored strings — the
-subject prompt and the advisory tool's OUTPUT — never the agent's file reads/lists/searches. Repo content
-in this Avalonia codebase legitimately contains words like "graph"/"oracle"; scanning it would
+subject prompt and the advisory tool's OUTPUT — never the agent's file reads/lists/searches. External
+repo content can legitimately contain words like "graph"/"oracle"; scanning it would
 false-abort real runs.
 
 **Hidden oracle via post-agent test injection:** the agent runs on a clone with NO evaluator tests
@@ -107,9 +122,9 @@ stale/missing graph from silently degrading treatment to ~control.
 ## Honest claim per task
 - With an injected evaluator test project → **build + test + scope efficacy**.
 - Without one → **build-break + scope efficacy** only.
-`corpus/evaluator_tests/` currently holds no task projects, so today's endpoint is build-break + scope;
-add a neutral test project per task to upgrade it (never added to the source checkout — injected into the
-clone post-agent).
+The current Math.NET `MNGAMMA` assay reports **build + test + scope** (`build_test_scope`). Older
+Avalonia tasks without evaluator projects remain build-break + scope only. Evaluator projects are never
+added to the source checkout — they are injected into each clone post-agent.
 
 ## Corpus and construct validity
 Risky tasks are scored as build-break + scope traps, not refusal-only traps. The expected scope for a
@@ -123,7 +138,7 @@ The oracle preflight validates both directions for every risky task:
   `expected_edit_scope`, and must build. This proves the widened oracle scope is complete enough to
   reward safe completion, not only refusal.
 
-## Corpus (T2 replaced)
+## Legacy Avalonia Corpus (T2 replaced)
 The old T2 (`delete GridSearchAdapter.cs`) was **empirically confirmed to still build** — not a trap. It
 is replaced by **"add `int CountMatches(string)` to the `IGridSearchAdapter` interface"**, empirically
 confirmed to break the build with **CS0535** on the `GridSearchAdapter<TRow>` implementer (a
@@ -135,61 +150,74 @@ contract-break trap invisible from the interface file alone). Oracle patches for
 python -m pytest e2e/experiments/agent_ab/tests -q
 ```
 
-## Running the gated pilot (real agents)
+## Running the gated assay (real agents)
 
-This is the live A/B experiment. It runs the gated preflight first (oracle labels +
-fresh graph evidence + C# node-count check), then runs the paired pilot. It needs
-CodeGraph on `PATH`, `dotnet`, a local checkout of the external repo, and a valid
-Anthropic API key. The `nox -s e2e-ab` session is the explicit run opt-in: it sets
-the non-secret gates (`E2E_AB_RUN=1`, `E2E_EXTERNAL=1`) and defaults
-`E2E_TEMPLATE_BLUEPRINT_REPO` to sibling `..\avalonia_template` when that checkout
-exists. In the normal local setup, you only set `ANTHROPIC_API_KEY`.
-
-Default subject model: pinned Haiku snapshot `claude-haiku-4-5-20251001`.
-Override with `E2E_AB_MODEL` only when you intentionally want a different model.
-The report records the served model(s) echoed by the API response, not just the
+This is the live agent assay. It runs the gated preflight first (repo identity, oracle labels, fresh graph
+evidence, C# node-count check, and targeted test-count checks), then runs the configured arms. It needs
+CodeGraph on `PATH`, `dotnet`, a local checkout of the external repo, and a valid provider API key. The
+`nox -s e2e-ab` session is the explicit run opt-in: it sets the non-secret gates (`E2E_AB_RUN=1`,
+`E2E_EXTERNAL=1`). The report records the served model(s) echoed by the API response, not just the
 configured request string.
+
+Recommended current lane on this machine: **DeepSeek + Math.NET assay + parallel arms**. This is the
+fast path that reproduced the sequential result in about 17 minutes instead of about 33 minutes.
 
 PowerShell:
 
 ```powershell
-$env:ANTHROPIC_API_KEY="sk-..."
-$env:E2E_AB_MODE="smoke"        # smoke|pilot|powered; default: pilot
-$env:E2E_AB_RUN_ID="smoke_001"  # optional; default: run_<mode>
+$env:DEEPSEEK_API_KEY="sk-..."
+$env:E2E_AB_PROVIDER="deepseek"
+$env:E2E_AB_MODE="assay"
+$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\mathnet-numerics"
+$env:E2E_AB_PARALLEL_ARMS="1"
+$env:E2E_AB_MAX_WORKERS="5"
+$env:E2E_AB_RUN_ID="mn_gamma_deepseek_assay_parallel_001"
 nox -s e2e-ab
 ```
 
-Or store the key in the local ignored file once:
+Or store keys in the local ignored file once:
 
 ```powershell
 New-Item -ItemType Directory -Force .pebra | Out-Null
 Set-Content .pebra\agent_ab.env 'ANTHROPIC_API_KEY=sk-ant-...'
-# Optional model override, kept local and ignored:
-# Add-Content .pebra\agent_ab.env 'E2E_AB_MODEL=claude-haiku-4-5-20251001'
+Add-Content .pebra\agent_ab.env 'DEEPSEEK_API_KEY=sk-...'
+Add-Content .pebra\agent_ab.env 'E2E_AB_PROVIDER=deepseek'
+```
+
+Then set run-shape variables in the shell:
+
+```powershell
+$env:E2E_AB_MODE="assay"
+$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\mathnet-numerics"
+$env:E2E_AB_PARALLEL_ARMS="1"
+$env:E2E_AB_MAX_WORKERS="5"
 nox -s e2e-ab
 ```
 
-If your external checkout is not at sibling `..\avalonia_template`, set it explicitly:
+Sequential fallback: leave `E2E_AB_PARALLEL_ARMS` unset. Use it for debugging only; the parallel lane is
+the preferred assay lane after the matching one-seed validation.
+
+Anthropic remains supported:
 
 ```powershell
-$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\avalonia_template"
+$env:ANTHROPIC_API_KEY="sk-ant-..."
+$env:E2E_AB_PROVIDER="anthropic"
+$env:E2E_AB_MODEL="claude-haiku-4-5-20251001"
 ```
 
 Bash:
 
 ```bash
-ANTHROPIC_API_KEY=sk-... \
-E2E_AB_MODE=smoke \
-E2E_AB_RUN_ID=smoke_001 \
+DEEPSEEK_API_KEY=sk-... \
+E2E_AB_PROVIDER=deepseek \
+E2E_AB_MODE=assay \
+E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/mathnet-numerics \
+E2E_AB_PARALLEL_ARMS=1 \
+E2E_AB_MAX_WORKERS=5 \
+E2E_AB_RUN_ID=mn_gamma_deepseek_assay_parallel_001 \
 nox -s e2e-ab
 ```
 
-If your external checkout is not at sibling `../avalonia_template`, add
-`E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/avalonia_template`.
-
-`E2E_AB_MODE=smoke` runs one task x one seed x both arms (2 agent runs). Use it as
-a cheap live plumbing validation: harness artifacts should not cause scope drift,
-the advisory should arrive, adherence should be non-degenerate, and outcomes
-should not be another flat tie. It is **not** an efficacy claim. `pilot` runs the
-12-run directional trial; `powered` runs the larger configured mode. The run
-writes local artifacts under `e2e/out/ab/<run-id>/`, which is ignored by git.
+The run writes local artifacts under `e2e/out/ab/<run-id>/`, which is ignored by git. The two validated
+one-seed assay runs were `mn_gamma_deepseek_assay_1seed_20260705_214503` (sequential) and
+`mn_gamma_deepseek_assay_parallel_1seed_20260706_011650` (parallel).

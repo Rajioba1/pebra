@@ -15,7 +15,18 @@ boundaries, with deterministic JSON assertions plus optional screenshots for hum
 
 ## Current Scope
 
-Current slice: `agent_cli_seeded_learning + dashboard_metrics`.
+Current deterministic product slice: `agent_cli_seeded_learning + dashboard_metrics`.
+
+Current live-agent experiment slice: `e2e/experiments/agent_ab/` now supports the
+Math.NET five-arm assay (`sham`, `oracle_positive`, `enforced_control`,
+`blast_radius`, `pebra`). Two one-seed DeepSeek/Math.NET assay runs have completed
+cleanly, one sequential and one with parallel arms. Both produced the same valid
+structure: sham and blast-radius harmed, oracle-positive completed safely,
+enforced-control avoided harm, and PEBRA avoided harm. This is evidence that the
+assay is finally sensitive and that PEBRA prevents the destructive Gamma edit in
+this setup, but it is not yet a powered efficacy claim: PEBRA avoided harm by
+blocking/stopping, not by completing the safer refactor, and the Math.NET corpus
+does not yet include a safe task to measure over-caution cost.
 
 It is not full Tauri-level coverage yet. Remaining gated lanes:
 
@@ -49,14 +60,26 @@ Dashboard screenshot lane:
 nox -s e2e-ui
 ```
 
-Blinded agent A/B experiment (real agents, gated/manual only):
+Blinded agent assay experiment (real agents, gated/manual only):
 
 ```powershell
 nox -s e2e-ab
 ```
 
 See `e2e/experiments/agent_ab/README.md` for the required environment variables
-and the full pilot recipe.
+and the full assay recipe. The recommended assay lane on this machine is the
+opt-in parallel-arm path:
+
+```powershell
+$env:E2E_AB_MODE="assay"
+$env:E2E_AB_PROVIDER="deepseek"
+$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\mathnet-numerics"
+$env:E2E_AB_PARALLEL_ARMS="1"
+$env:E2E_AB_MAX_WORKERS="5"
+nox -s e2e-ab
+```
+
+Leave `E2E_AB_PARALLEL_ARMS` unset to use the slower sequential fallback.
 
 ## Artifacts
 
