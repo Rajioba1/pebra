@@ -35,9 +35,11 @@ and its expected loss must be lower. The PEBRA arm also surfaces the production
 `safer_route` constraints as blinded advisory text, so the next run tests the
 deployed safe-edit loop rather than only a generic "narrow it" warning.
 That calibration currently blocks the Math.NET task: live C# assess still scores
-the harmful and reference Gamma patches at the same file-level risk. Until PEBRA
-can distinguish the safer route or the claim is narrowed to stop/block behavior,
-another paid live-agent assay is not the right next step.
+the harmful and reference Gamma patches at the same file-level risk, and both
+route to `revise_safer`. The calibration uses independent fresh stores for the
+two patch assessments so the result is not polluted by the revise-attempt
+counter. Until PEBRA can distinguish the safer route or the claim is narrowed to
+stop/block behavior, another paid live-agent assay is not the right next step.
 
 It is not full Tauri-level coverage yet. Remaining gated lanes:
 

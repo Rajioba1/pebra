@@ -20,8 +20,10 @@ import (graph/assess reached via cli_harness subprocess).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
@@ -65,6 +67,14 @@ def _apply_patch(patch_file: Path, repo_path: Path) -> None:
         raise PreflightError(f"git apply failed for {patch_file.name}: {proc.stderr.strip()}")
 
 
+def _rmtree_onerror(func, path, exc_info) -> None:
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except OSError:
+        raise exc_info[1].with_traceback(exc_info[2])
+
+
 def _clone_fresh(external: rs.ExternalRepo, dest: Path, *, out_dir: Path) -> Path:
     root = out_dir.resolve()
     target = dest.resolve()
@@ -73,7 +83,7 @@ def _clone_fresh(external: rs.ExternalRepo, dest: Path, *, out_dir: Path) -> Pat
     except ValueError as exc:
         raise PreflightError(f"refusing to remove preflight clone outside {root}: {target}") from exc
     if target.exists():
-        shutil.rmtree(target)
+        shutil.rmtree(target, onerror=_rmtree_onerror)
     return rs.clone_at_recorded_head(external, dest)
 
 
@@ -408,24 +418,33 @@ def run_revise_safer_calibration(
     patch_dir = patch_dir or _PATCH_DIR
     correct_patch_dir = correct_patch_dir or _CORRECT_PATCH_DIR
     failures: list[str] = []
+    risky_seen = 0
+    checked = 0
     for spec in corpus:
         if spec.harm_label != "risky":
             continue
+        risky_seen += 1
         patch_file = patch_dir / f"{spec.task_id}.patch"
         correct_patch = correct_patch_dir / f"{spec.task_id}.patch"
-        if not patch_file.exists() or not correct_patch.exists():
+        missing = [str(p) for p in (patch_file, correct_patch) if not p.exists()]
+        if missing:
+            failures.append(f"{spec.task_id}: missing revise-safer calibration patch: {', '.join(missing)}")
             continue
+        checked += 1
         try:
             dest = out_dir / "revise_calibration" / spec.task_id / "repo"
             repo_path = _clone_fresh(external, dest, out_dir=out_dir)
             if setup_graph_fn is not None:
                 setup_graph_fn(repo_path)
-            db = dest.parent / "revise_calibration.db"
+            bad_db = dest.parent / "bad_revise_calibration.db"
+            reference_db = dest.parent / "reference_revise_calibration.db"
+            bad_db.unlink(missing_ok=True)
+            reference_db.unlink(missing_ok=True)
             bad = assess_fn(
                 repo_path,
                 spec,
                 patch_file.read_text(encoding="utf-8"),
-                db,
+                bad_db,
                 revise_safer_attempt=0,
             )
             bad_decision = bad.get("recommended_decision")
@@ -438,7 +457,7 @@ def run_revise_safer_calibration(
                 repo_path,
                 spec,
                 correct_patch.read_text(encoding="utf-8"),
-                db,
+                reference_db,
                 revise_safer_attempt=0,
             )
             fixed_decision = fixed.get("recommended_decision")
@@ -460,5 +479,7 @@ def run_revise_safer_calibration(
             failures.append(f"{spec.task_id}: {exc.args[0] if exc.args else exc}")
         except Exception as exc:  # noqa: BLE001 - infra error recorded with the task id
             failures.append(f"{spec.task_id}: infrastructure error: {type(exc).__name__}: {exc}")
+    if risky_seen and checked == 0:
+        failures.append("revise-safer calibration validated zero risky patch pairs")
     if failures:
         raise PreflightError("revise-safer calibration failed:\n" + "\n".join(failures))

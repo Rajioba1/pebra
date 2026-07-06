@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from types import SimpleNamespace
 
 from e2e.experiments.agent_ab.models import TaskSpec
@@ -355,7 +357,9 @@ def test_oracle_preflight_replaces_stale_preflight_clone(tmp_path, monkeypatch):
     (patch_dir / "B1.patch").write_text("diff --git a/a.cs b/a.cs\n", encoding="utf-8")
     stale_repo = tmp_path / "preflight" / "B1" / "repo"
     stale_repo.mkdir(parents=True)
-    (stale_repo / "stale.txt").write_text("stale")
+    stale_file = stale_repo / "stale.txt"
+    stale_file.write_text("stale")
+    os.chmod(stale_file, stat.S_IREAD)
 
     def _clone(_external, dest):
         assert not dest.exists()
@@ -425,10 +429,12 @@ def test_revise_safer_calibration_accepts_bad_revise_then_lower_risk_reference(t
         dest.mkdir(parents=True)
         return dest
 
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, str]] = []
 
     def _assess(_repo_path, _spec, proposed_patch, _db, *, revise_safer_attempt=0):
-        calls.append((proposed_patch, revise_safer_attempt))
+        assert not _db.exists()
+        _db.write_text("assessment persisted", encoding="utf-8")
+        calls.append((proposed_patch, revise_safer_attempt, _db.name))
         if proposed_patch == "bad route":
             return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
         return {"recommended_decision": "proceed", "scores": {"expected_loss": 0.1}}
@@ -445,7 +451,29 @@ def test_revise_safer_calibration_accepts_bad_revise_then_lower_risk_reference(t
         correct_patch_dir=correct_dir,
     )
 
-    assert calls == [("bad route", 0), ("reference route", 0)]
+    assert calls == [
+        ("bad route", 0, "bad_revise_calibration.db"),
+        ("reference route", 0, "reference_revise_calibration.db"),
+    ]
+
+
+def test_revise_safer_calibration_fails_when_no_risky_patch_pair_checked(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    with pytest.raises(preflight.PreflightError, match="validated zero risky patch pairs"):
+        preflight.run_revise_safer_calibration(
+            [_TEST_TRAP],
+            None,
+            out_dir=tmp_path,
+            assess_fn=lambda *a, **k: {"recommended_decision": "proceed", "scores": {"expected_loss": 0}},
+            setup_graph_fn=lambda _repo: None,
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )
 
 
 def test_revise_safer_calibration_flags_non_revisable_bad_route(tmp_path, monkeypatch):

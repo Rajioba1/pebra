@@ -25,7 +25,7 @@ Current assay state:
   scores/provenance remain hidden and `detail` stays `{}`, but the agent sees the same structural
   route constraints production asks it to use.
 - Local no-LLM calibration against Math.NET currently **fails**: PEBRA scores the harmful and reference
-  Gamma patches at the same file-level C# risk and the reference patch remains blocked. That is a real
+  Gamma patches at the same file-level C# risk and both route to `revise_safer`. That is a real
   product/calibration gap, not a runner failure. Do not spend on another live-agent assay if the claim is
   safe completion via `revise_safer`; the next run would be testing stop/block behavior again.
 
@@ -139,7 +139,10 @@ the assay would only be measuring stop/block behavior, not PEBRA's safer-route l
 Current reviewer-derived status: this check is intentionally stricter than the prior successful
 one-seed runs, and it currently blocks MNGAMMA. The raw reason is that the live C# assess path still has
 `changed_symbols=[]` / `scope_basis=unknown_fallback` for both the harmful and reference patches, so the
-risk model sees the same high-fan-in file edit twice. A valid safe-completion assay needs either a real
+risk model sees the same high-fan-in file edit twice. A prior calibration implementation contaminated
+the second assess call with the first call's persisted `revise_safer` attempt; that state leak is fixed
+by using independent fresh stores per patch before this conclusion is drawn. A valid safe-completion
+assay needs either a real
 C# patch semantic classifier or an explicit pre-edit verification route; otherwise `ask_human`/stop is
 the honest decision.
 
@@ -170,7 +173,8 @@ The reviewer summary after the first valid DeepSeek runs is therefore:
   `revise_safer`; the experiment now surfaces blinded `safer_route` constraints; and the assay has a
   route-calibration preflight so the reference safer patch must actually reduce PEBRA risk.
 - **New blocker found by the robust preflight:** the Math.NET reference patch does not yet reduce
-  PEBRA's computed risk, because C# patch semantics are still unresolved on the assess path. This is
+  PEBRA's computed risk or route to a non-blocking decision, because C# patch semantics are still
+  unresolved on the assess path. This is
   exactly the edge case reviewers wanted caught before another paid run.
 - **Still not claimed:** powered efficacy, PEBRA beating blunt enforcement, or balanced net benefit.
   Those require at least one safe Math.NET task and more seeds.
