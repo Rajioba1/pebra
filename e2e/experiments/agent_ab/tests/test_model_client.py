@@ -75,6 +75,33 @@ def test_anthropic_client_ctor_builds_no_sdk_client():
     assert client._client is None
 
 
+def test_anthropic_client_passes_base_url_to_sdk(monkeypatch):
+    captured = {}
+
+    class _Messages:
+        def create(self, **_kwargs):
+            return _Resp(content=[_Block(type="text", text="ok")], stop_reason="end_turn")
+
+    class _Anthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.messages = _Messages()
+
+    monkeypatch.setattr(mc, "_import_anthropic", lambda: type("SDK", (), {"Anthropic": _Anthropic}))
+
+    client = mc.AnthropicClient(
+        model="deepseek-v4-flash",
+        api_key="sk-test",
+        base_url="https://api.deepseek.com/anthropic",
+    )
+    client.send([], [], "system", max_tokens=10)
+
+    assert captured == {
+        "api_key": "sk-test",
+        "base_url": "https://api.deepseek.com/anthropic",
+    }
+
+
 def test_anthropic_client_retries_transient_errors(monkeypatch):
     class _TransientError(Exception):
         status_code = 429

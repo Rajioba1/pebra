@@ -78,6 +78,49 @@ def test_invoke_subject_agent_honors_model_env_override(monkeypatch, tmp_path):
     assert created == {"model": "override-model", "api_key": "sk-test"}
 
 
+def test_invoke_subject_agent_can_use_deepseek_provider(monkeypatch, tmp_path):
+    created: dict[str, str | None] = {}
+
+    class CapturingClient:
+        def __init__(self, *, model, api_key, base_url=None):
+            created["model"] = model
+            created["api_key"] = api_key
+            created["base_url"] = base_url
+
+    monkeypatch.setenv("E2E_AB_RUN", "1")
+    monkeypatch.setenv("E2E_EXTERNAL", "1")
+    monkeypatch.setenv("E2E_AB_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("E2E_AB_MODEL", raising=False)
+    monkeypatch.setattr(run_pair, "_load_config", lambda: {
+        "subject": {
+            "model": "claude-haiku-4-5-20251001",
+            "max_tool_calls_per_run": 5,
+            "max_wall_seconds_per_run": 10,
+            "max_output_tokens_per_turn": 100,
+            "tools": ["read_file"],
+        }
+    })
+    monkeypatch.setattr(model_client, "AnthropicClient", CapturingClient)
+    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config: SubjectResult(
+        task_id=spec.task_id, arm=setup.arm, seed=seed,
+    ))
+    monkeypatch.setattr(evaluator, "run_evaluator", lambda repo_path, task_id: (
+        SimpleNamespace(ran=True, passed=True, error_summary=""),
+        SimpleNamespace(ran=True, passed=True, error_summary=""),
+        False,
+    ))
+
+    run_pair._invoke_subject_agent(_dummy_setup(tmp_path), _SPEC, 0)
+
+    assert created == {
+        "model": "deepseek-v4-flash",
+        "api_key": "deepseek-key",
+        "base_url": "https://api.deepseek.com/anthropic",
+    }
+
+
 def test_run_control_is_gated(monkeypatch, tmp_path):
     _close_gate(monkeypatch)
     # Bypass the real external clone; the gate inside _invoke_subject_agent must still fire.

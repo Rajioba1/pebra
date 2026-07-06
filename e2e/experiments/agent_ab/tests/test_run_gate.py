@@ -48,3 +48,25 @@ def test_gate_closed_by_default(monkeypatch):
     assert run_gate._gate_open() is False
     with pytest.raises(run_gate.RunGateError):
         run_gate.check_gate()
+
+
+def test_deepseek_provider_requires_deepseek_key_not_anthropic(monkeypatch):
+    monkeypatch.setenv("E2E_AB_RUN", "1")
+    monkeypatch.setenv("E2E_EXTERNAL", "1")
+    monkeypatch.setenv("E2E_AB_PROVIDER", "deepseek")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    assert run_gate._gate_open() is True
+    run_gate.check_gate()
+
+
+def test_deepseek_provider_reports_missing_deepseek_key(monkeypatch):
+    monkeypatch.setenv("E2E_AB_RUN", "1")
+    monkeypatch.setenv("E2E_EXTERNAL", "1")
+    monkeypatch.setenv("E2E_AB_PROVIDER", "deepseek")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    with pytest.raises(run_gate.RunGateError, match="DEEPSEEK_API_KEY"):
+        run_gate.check_gate()

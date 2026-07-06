@@ -46,6 +46,8 @@ _REAL_ADVISORY_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA})
 _BLAST_ADVISORY_ARMS = frozenset({models.ARM_BLAST_RADIUS})
 _GATE_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA})  # only PEBRA enforces the write-gate
 _GRAPH_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_BLAST_RADIUS})
+_DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
+_DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 
 
 def arms_for(harm_label: str) -> tuple[str, ...]:
@@ -250,6 +252,25 @@ def _load_config() -> dict[str, Any]:
     return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
 
 
+def _subject_provider() -> str:
+    import os  # noqa: PLC0415
+    return os.environ.get("E2E_AB_PROVIDER", "anthropic").strip().lower() or "anthropic"
+
+
+def _subject_model(cfg: dict[str, Any], provider: str) -> str:
+    import os  # noqa: PLC0415
+    override = os.environ.get("E2E_AB_MODEL")
+    if override:
+        return override
+    return _DEEPSEEK_DEFAULT_MODEL if provider == "deepseek" else cfg["model"]
+
+
+def _subject_api_key(provider: str) -> str:
+    import os  # noqa: PLC0415
+    key_name = "DEEPSEEK_API_KEY" if provider == "deepseek" else "ANTHROPIC_API_KEY"
+    return os.environ[key_name]
+
+
 def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> SubjectResult:
     """Drive a real, blinded coding subagent through the instrumented tool boundary, then run the
     HIDDEN evaluator (inject tests post-agent, build + test) to fill the build/test outcome fields.
@@ -260,11 +281,11 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
     keep the foundation importable without the anthropic SDK."""
     from e2e.experiments.agent_ab.runners import agent_loop, evaluator, run_gate  # noqa: PLC0415
     from e2e.experiments.agent_ab.runners.model_client import AnthropicClient  # noqa: PLC0415
-    import os  # noqa: PLC0415
 
     run_gate.check_gate()
     cfg = _load_config()["subject"]
-    model = os.environ.get("E2E_AB_MODEL") or cfg["model"]
+    provider = _subject_provider()
+    model = _subject_model(cfg, provider)
     run_cfg = agent_loop.RunConfig(
         model=model,
         max_tool_calls_per_run=cfg.get("max_tool_calls_per_run", 50),
@@ -272,7 +293,14 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         max_output_tokens_per_turn=cfg.get("max_output_tokens_per_turn", 4096),
         tools=tuple(cfg.get("tools", ())),
     )
-    client = AnthropicClient(model=run_cfg.model, api_key=os.environ["ANTHROPIC_API_KEY"])
+    client_kwargs: dict[str, Any] = {}
+    if provider == "deepseek":
+        client_kwargs["base_url"] = _DEEPSEEK_BASE_URL
+    client = AnthropicClient(
+        model=run_cfg.model,
+        api_key=_subject_api_key(provider),
+        **client_kwargs,
+    )
     result = agent_loop.run(setup, spec, seed, client=client, config=run_cfg)
 
     # HIDDEN oracle: inject evaluator tests post-agent, then build + test.

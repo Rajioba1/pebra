@@ -97,15 +97,26 @@ class AnthropicClient:
     """Real subject client (Phase G). Reachable only behind the run gate. Lazily constructs the SDK
     client on first ``send``, then maps each response via the pure ``_response_to_turn``."""
 
-    def __init__(self, model: str, api_key: str, *, transient_retries: int = 2) -> None:
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        *,
+        transient_retries: int = 2,
+        base_url: str | None = None,
+    ) -> None:
         self._model = model
         self._api_key = api_key
         self._transient_retries = transient_retries
+        self._base_url = base_url
         self._client: Any = None  # lazily constructed on first send (needs the SDK + a real key)
 
     def send(self, messages, tools, system, *, max_tokens) -> ModelTurn:  # pragma: no cover - live only
         if self._client is None:
-            self._client = _import_anthropic().Anthropic(api_key=self._api_key)
+            kwargs = {"api_key": self._api_key}
+            if self._base_url is not None:
+                kwargs["base_url"] = self._base_url
+            self._client = _import_anthropic().Anthropic(**kwargs)
         attempts = self._transient_retries + 1
         for attempt in range(attempts):
             try:
