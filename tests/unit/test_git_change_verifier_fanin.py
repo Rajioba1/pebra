@@ -100,6 +100,54 @@ def test_reclassify_non_python_fresh_but_unresolved_fails_closed(monkeypatch) ->
     assert analyzed is True  # fresh graph, no owner -> fail closed (attempted), not silently skipped
 
 
+def test_reclassify_fresh_unresolved_structural_file_is_not_masked_by_python_cosmetic(
+    monkeypatch,
+) -> None:
+    # A cleanly parsed no-row Python edit plus a fresh-but-unresolved structural file must stay UNKNOWN.
+    # Otherwise the Python cosmetic branch masks a deleted/unresolved non-Python file in the same commit.
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "src")
+    monkeypatch.setattr(gcv, "parses", lambda src: True)
+    monkeypatch.setattr(gcv, "compute_complexity_delta", lambda b, a: 0.0)
+    monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [])
+    unresolved_fresh = FanInEvidence(resolution_method="unresolved", graph_freshness="fresh")
+
+    v = gcv.GitChangeVerifier(structural_symbols_fn=lambda *a: unresolved_fresh)
+    kind, _syms, _d, analyzed, _c, _r, py_analyzed = (
+        v._reclassify("/repo", ["doc.py", "Payment.cs"], "x")
+    )
+
+    assert kind == "UNKNOWN"
+    assert analyzed is True
+    assert py_analyzed is True
+
+
+def test_reclassify_unparsable_python_is_not_masked_by_other_rows(monkeypatch) -> None:
+    # If any parsed file produces rows, an unparsable Python file must still fail the whole envelope.
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.adapters.ast_diff_adapter import _row
+
+    behavioral = _row("good.py::f", "f", signature_changed=False, body_changed=True,
+                      control_flow_changed=False)
+    sources = {"bad.py": "def broken(:\n", "good.py": "def f():\n    return 1\n"}
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: sources[f])
+    monkeypatch.setattr(gcv.GitChangeVerifier, "_read_after",
+                        lambda self, root, scope, f: sources[f])
+    monkeypatch.setattr(gcv, "parses", lambda src: "broken" not in src)
+    monkeypatch.setattr(gcv, "compute_complexity_delta", lambda b, a: 0.0)
+    monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [dict(behavioral)])
+
+    kind, _syms, _d, analyzed, _c, _r, py_analyzed = (
+        gcv.GitChangeVerifier()._reclassify("/repo", ["bad.py", "good.py"], "x")
+    )
+
+    assert kind == "UNKNOWN"
+    assert analyzed is True
+    assert py_analyzed is True
+
+
 def test_reclassify_non_source_file_does_not_use_structural_symbols(monkeypatch) -> None:
     # Graph structural verify is a code-owner check, not a generic file validator. A changed README or
     # config file must not become UNKNOWN+attempted merely because a fresh graph cannot resolve it.

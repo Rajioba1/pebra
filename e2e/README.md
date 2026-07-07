@@ -52,6 +52,25 @@ and the viable implementation is a throwaway tiny-directory index of touched
 files. For C#, the honest choices remain partial graph/topology support or a
 separate C# semantic provider.
 
+Current semantic boundary:
+
+- Fine-grained CodeGraph semantic diff from before/after signatures is still
+  dark/unwired.
+- For C#, CodeGraph does not provide method signatures, so PEBRA remains
+  topology/visibility/structure-backed, not mathematically or
+  signature-semantically aware.
+- `revise_safer` can tell the agent that the current route is structurally
+  risky, return safer-route constraints, block the write, and reassess a
+  narrower candidate. It cannot independently prove that a Lanczos refactor is
+  mathematically equivalent unless caller-supplied/test-backed candidate
+  verification or the hidden test oracle catches it.
+
+Review workflow: changes to this boundary need independent review across three
+paths before a paid run: CodeGraph capability/provenance, `revise_safer` gate
+and reassessment behavior, and candidate-verifier/test-oracle semantics. Treat
+review findings as hypotheses until they are re-derived from code and pinned by
+tests.
+
 It is not full Tauri-level coverage yet. Remaining gated lanes:
 
 - `E2E_CODEGRAPH=1`: real CodeGraph graph/fan-in product path.

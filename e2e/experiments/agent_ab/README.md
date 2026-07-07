@@ -161,6 +161,21 @@ files, matched by `(file_path, qualified_name)` and enabled only for languages w
 capability supports the fields being compared. That can improve pre-edit analysis for signature-capable
 languages while C# stays an honest partial/topology-backed case.
 
+**Current semantic boundary:** the live PEBRA path now uses CodeGraph-provided graph details for
+risk/blast metrics and `revise_safer` routing, but it does **not** yet use a live fine-grained
+before/after CodeGraph semantic diff. For C#, CodeGraph does not currently provide method signatures,
+so the Math.NET assay remains topology/visibility/structure-backed rather than mathematically or
+signature-semantically aware. `revise_safer` can block a structurally risky route, ask the agent to
+narrow/resubmit under safer-route constraints, and reassess the new candidate. It cannot independently
+prove the Lanczos refactor is mathematically equivalent; that proof must come from caller-supplied/
+test-backed candidate verification or the hidden evaluator/test oracle. The `pebra_graph_repair` arm is
+still a repair hint, not automatic candidate verification.
+
+Review workflow for this boundary: use independent reviewers for the three separable paths before
+trusting a run: CodeGraph capability/provenance, `revise_safer` gate/reassessment behavior, and
+candidate-verifier/test-oracle semantics. Re-derive every finding from code before fixing it; do not
+treat reviewer reports as authoritative unless the live call sites and tests agree.
+
 ## Honest claim per task
 - With an injected evaluator test project → **build + test + scope efficacy**.
 - Without one → **build-break + scope efficacy** only.

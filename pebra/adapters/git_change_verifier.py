@@ -119,6 +119,7 @@ class GitChangeVerifier:
         analyzed = False          # any reclassification attempted (Python OR structural)
         python_analyzed = False   # a Python file parsed cleanly -> complexity delta is real
         unparsable = False
+        structural_unresolved = False
         parsed_ok = False
         for f in files:
             if f.endswith(".py"):
@@ -148,17 +149,20 @@ class GitChangeVerifier:
                 # so it must NOT force-escalate every non-Python edit (mirrors codegraph being optional).
                 if getattr(ev, "graph_freshness", "unknown") == "fresh":
                     analyzed = True
+                    if getattr(ev, "resolution_method", "unresolved") == "unresolved":
+                        structural_unresolved = True
                 rows.extend(change_classifier.rows_from_fanin(ev))
 
+        if unparsable or structural_unresolved:
+            # Any file we attempted but could not classify means the whole multi-file envelope is
+            # unproven. Do not let another file's rows mask that failure.
+            return "UNKNOWN", [], complexity_delta, analyzed, False, [], python_analyzed
         if rows:
             self._enrich_fanin(rows, repo_root)
             summary = change_classifier.classify_diff(rows, thresholds or {})
             return (summary.max_change_kind, summary.changed_symbols, complexity_delta, analyzed,
                     summary.consequential_symbol_changed, list(summary.consequence_reason),
                     python_analyzed)
-        if unparsable:
-            # changed Python we couldn't parse -> cannot prove envelope compliance (escalates)
-            return "UNKNOWN", [], complexity_delta, analyzed, False, [], python_analyzed
         if parsed_ok:
             # parsed cleanly with no semantic change (docstring/comment/whitespace only) -> cosmetic
             return ChangeKind.COSMETIC.value, [], complexity_delta, analyzed, False, [], python_analyzed

@@ -336,7 +336,43 @@ def test_location_resolves_tightest_owner_and_counts_callers(tmp_path) -> None:
     assert ev.outgoing_edge_counts == {"calls": 5}
     # multi-language attach facts: the resolved owner's own language + graph-side qualified name
     assert ev.resolved_language == "python"
+    assert ev.resolved_languages == ("python",)
     assert ev.resolved_qualified_names == ("LoginManager::validate_login",)
+
+
+def test_mixed_language_hunks_preserve_all_resolved_languages(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:py", "function", "py_fn", "pkg::py_fn", "src/a.py", 10, 20)
+    _node(con, "method:cs", "method", "CsFn", "Ns.C::CsFn", "src/B.cs", 30, 40)
+    con.execute("UPDATE nodes SET language = 'csharp' WHERE id = 'method:cs'")
+    con.commit()
+    con.close()
+    patch = (
+        "diff --git a/src/a.py b/src/a.py\n"
+        "--- a/src/a.py\n"
+        "+++ b/src/a.py\n"
+        "@@ -12 +12 @@\n"
+        "-x\n"
+        "+y\n"
+        "diff --git a/src/B.cs b/src/B.cs\n"
+        "--- a/src/B.cs\n"
+        "+++ b/src/B.cs\n"
+        "@@ -33 +33 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="patch", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert set(ev.node_ids_resolved) == {"func:py", "method:cs"}
+    assert ev.resolved_language == "python"
+    assert ev.resolved_languages == ("python", "csharp")
 
 
 def test_hunk_spanning_two_symbols_aggregates_graph_context(tmp_path) -> None:

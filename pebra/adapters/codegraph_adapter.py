@@ -520,6 +520,7 @@ class CodeGraphAdapter:
                 is_abstract_or_interface_contract=ctx["is_abstract_or_interface_contract"],
                 has_signature_metadata=ctx["has_signature_metadata"],
                 resolved_language=ctx["resolved_language"],
+                resolved_languages=ctx["resolved_languages"],
                 resolved_qualified_names=ctx["resolved_qualified_names"],
             )
         except (sqlite3.Error, OSError) as exc:
@@ -597,6 +598,7 @@ class CodeGraphAdapter:
                 is_abstract_or_interface_contract=ctx["is_abstract_or_interface_contract"],
                 has_signature_metadata=ctx["has_signature_metadata"],
                 resolved_language=ctx["resolved_language"],
+                resolved_languages=ctx["resolved_languages"],
                 resolved_qualified_names=ctx["resolved_qualified_names"],
             )
         except (sqlite3.Error, OSError) as exc:
