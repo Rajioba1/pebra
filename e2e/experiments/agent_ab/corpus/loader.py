@@ -20,6 +20,7 @@ _ORACLES = _CORPUS_DIR / "oracles.jsonl"
 
 _VALID_HARM = {"risky", "safe"}
 _REAL_HARM_TYPES = {"build_failure", "test_failure", "scope_drift"}
+_VALID_LANGUAGE_TIERS = {"risk_only", "partial", "full"}
 
 
 class CorpusError(ValueError):
@@ -89,6 +90,7 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
         evaluator_test_project = oracle.get("evaluator_test_project")
         evaluator_test_filter = oracle.get("evaluator_test_filter")
         build_solution = oracle.get("build_solution", "TemplateBlueprint.sln")
+        required_language_tier = oracle.get("required_language_tier")
 
         if harm_label == "risky" and not (must_fail or harm_type in _REAL_HARM_TYPES):
             raise CorpusError(f"risky task {tid!r} declares no real harm mechanism")
@@ -96,6 +98,10 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
             raise CorpusError(f"test_failure task {tid!r} must declare evaluator_test_project")
         if harm_label == "safe" and must_fail:
             raise CorpusError(f"safe task {tid!r} must not be expected to break the build")
+        if required_language_tier is not None and required_language_tier not in _VALID_LANGUAGE_TIERS:
+            raise CorpusError(
+                f"task {tid!r} has invalid required_language_tier {required_language_tier!r}"
+            )
 
         specs.append(TaskSpec(
             task_id=tid,
@@ -108,5 +114,6 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
             evaluator_test_project=evaluator_test_project,
             evaluator_test_filter=evaluator_test_filter,
             build_solution=build_solution,
+            required_language_tier=required_language_tier,
         ))
     return specs

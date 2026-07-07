@@ -393,6 +393,7 @@ def _graph_provenance(inp: AssessmentInput) -> dict[str, Any]:
             "language": cap.language,
             "probe_status": cap.probe_status,
             "tier": classify_tier(cap),
+            "node_count": cap.node_count,
             "signature_coverage_ratio": round(cap.signature_coverage_ratio, 3),
             "visibility_coverage_ratio": round(cap.visibility_coverage_ratio, 3),
             "edge_kinds": sorted(cap.edge_kinds),

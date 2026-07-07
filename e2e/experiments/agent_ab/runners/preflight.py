@@ -44,6 +44,7 @@ _TRUSTED_RESOLUTION = {"location"}
 _MIN_CSHARP_NODES = 50
 _REPO_ENV_VAR = "E2E_TEMPLATE_BLUEPRINT_REPO"
 _BLOCKING_DECISIONS = {"reject", "ask_human", "revise_safer"}
+_LANGUAGE_TIER_RANK = {"risk_only": 1, "partial": 2, "full": 3}
 
 
 class PreflightError(RuntimeError):
@@ -283,10 +284,11 @@ def _graph_backed_failure(spec: TaskSpec, assess_payload: dict[str, Any]) -> str
     target was produced from real graph evidence, not degraded/untrusted fallback.
 
     These are PEBRA's self-reported freshness/resolution fields for THIS target. They are paired with an
-    INDEPENDENT graph-validity check in ``run_graph_preflight`` — a repo-wide C# node-count floor (via
-    ``pebra graph-stats``) — which catches a 'freshly' built index that actually parsed no nodes and
-    could otherwise name-fallback-resolve while reporting fresh. Together: target resolves fresh AND the
-    graph demonstrably contains real C# nodes."""
+    INDEPENDENT graph-validity check in ``run_graph_preflight`` — a C# node-count floor for legacy C#
+    specimens, or the measured language's node_count for explicit multi-language tier floors — which
+    catches a 'freshly' built index that actually parsed no nodes and could otherwise
+    name-fallback-resolve while reporting fresh. Together: target resolves fresh AND the graph
+    demonstrably contains real nodes for the task's required language."""
     scores = assess_payload.get("scores") or {}
     sse = scores.get("symbol_scope_evidence") or {}
     fanin = sse.get("symbol_fanin") or {}
@@ -310,6 +312,48 @@ def _graph_backed_failure(spec: TaskSpec, assess_payload: dict[str, Any]) -> str
             f"{spec.task_id}: fresh graph resolved but did not produce material graph-backed risk "
             f"(reach={reach}, expected_loss={expected_loss!r})"
         )
+    required_tier = spec.required_language_tier
+    if required_tier:
+        graph_prov = assess_payload.get("graph_provenance") or {}
+        cap = graph_prov.get("language_capability") or {}
+        measured_tier = cap.get("tier")
+        if _LANGUAGE_TIER_RANK.get(str(measured_tier), 0) < _LANGUAGE_TIER_RANK[required_tier]:
+            return (
+                f"{spec.task_id}: requires language tier {required_tier}, "
+                f"but assess payload proved {measured_tier!r}"
+            )
+    return None
+
+
+def _language_capability_from_payload(assess_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not assess_payload:
+        return {}
+    graph_prov = assess_payload.get("graph_provenance") or {}
+    cap = graph_prov.get("language_capability") or {}
+    return cap if isinstance(cap, dict) else {}
+
+
+def _node_count_failure(
+    spec: TaskSpec,
+    counts: dict[str, Any],
+    assess_payload: dict[str, Any] | None = None,
+) -> str | None:
+    cap = _language_capability_from_payload(assess_payload)
+    language = str(cap.get("language") or "").lower()
+    if spec.required_language_tier and language and language != "csharp":
+        lang_nodes = int(cap.get("node_count") or 0)
+        if lang_nodes <= 0:
+            return (
+                f"{spec.task_id}: CodeGraph has {lang_nodes} {language} callable nodes; "
+                "index is empty/degraded for the required language"
+            )
+        return None
+    cs_nodes = int(counts.get("csharp_callable", 0))
+    if cs_nodes < _MIN_CSHARP_NODES:
+        return (
+            f"{spec.task_id}: CodeGraph has {cs_nodes} C# callable nodes "
+            f"(< {_MIN_CSHARP_NODES}); index is empty/degraded despite freshness self-report"
+        )
     return None
 
 
@@ -327,13 +371,14 @@ def run_graph_preflight(
     ``assess_fn(repo_path, spec)`` returns the treatment assess payload for the task's target; injectable
     so this is unit-testable with a fake payload. ``setup_graph_fn`` indexes the clone (defaults to the
     cli_harness setup-graph in the live path). ``node_count_fn`` returns repo-wide CodeGraph node counts
-    (defaults to ``pebra graph-stats`` via cli_harness) for the INDEPENDENT validity check: it asserts
-    the index actually contains C# callable nodes, catching a 'fresh' but empty index."""
+    (defaults to ``pebra graph-stats`` via cli_harness) for the INDEPENDENT validity check: legacy C#
+    tasks require C# callable nodes, while explicit multi-language tier floors use the assessed
+    language capability's node_count."""
     node_count_fn = node_count_fn or _live_node_counts
     failures: list[str] = []
     for spec in corpus:
-        if spec.harm_label != "risky":
-            continue  # graph value is asserted on the risky (graph-dependent) targets
+        if spec.harm_label != "risky" and not spec.required_language_tier:
+            continue  # graph value is asserted on risky targets and explicit language-tier floors
         # Accumulate ALL failures; a clone/setup-graph/assess infra error on one task is recorded as a
         # PreflightError line, not raised mid-loop as a raw CLIError that hides the other tasks.
         try:
@@ -341,16 +386,18 @@ def run_graph_preflight(
             repo_path = _clone_fresh(external, dest, out_dir=out_dir)
             if setup_graph_fn is not None:
                 setup_graph_fn(repo_path)
-            # Independent validity FIRST: a 'fresh' index that parsed no C# is not a real intervention.
+            payload = assess_fn(repo_path, spec) if spec.required_language_tier else None
+            # Independent validity: legacy C# tasks keep the C# node floor; tiered non-C# tasks use the
+            # measured language node_count from the assess payload, so multi-language fixtures are not
+            # blocked by a C#-specific validity guard.
             counts = node_count_fn(repo_path)
-            cs_nodes = int(counts.get("csharp_callable", 0))
-            if cs_nodes < _MIN_CSHARP_NODES:
-                failures.append(
-                    f"{spec.task_id}: CodeGraph has {cs_nodes} C# callable nodes "
-                    f"(< {_MIN_CSHARP_NODES}); index is empty/degraded despite freshness self-report"
-                )
+            node_msg = _node_count_failure(spec, counts, payload)
+            if node_msg:
+                failures.append(node_msg)
                 continue
-            msg = _graph_backed_failure(spec, assess_fn(repo_path, spec))
+            if payload is None:
+                payload = assess_fn(repo_path, spec)
+            msg = _graph_backed_failure(spec, payload)
             if msg:
                 failures.append(msg)
         except PreflightError as exc:

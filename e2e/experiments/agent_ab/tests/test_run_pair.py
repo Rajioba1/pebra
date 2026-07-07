@@ -227,6 +227,38 @@ def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):
         run_pair.prepare_arm(_External(), _SPEC, "control", 0, "rid")
 
 
+def test_prepare_arm_does_not_apply_csharp_floor_to_tiered_multilanguage_task(monkeypatch, tmp_path):
+    spec = TaskSpec(
+        "TSSEM", "d", ("src/a.ts",), "safe", ("src/a.ts",), "none", False,
+        required_language_tier="full",
+    )
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",
+                        lambda _external, dest: (dest.mkdir(parents=True), dest)[1])
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
+    monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
+                        lambda *, repo_root: {"csharp_callable": 0})
+    monkeypatch.setattr(run_pair.dn, "run_build_delta",
+                        lambda repo, *, sln="TemplateBlueprint.sln": SimpleNamespace(
+                            available=True, ran=True, passed=True, error_summary=""))
+
+    setup = run_pair.prepare_arm(_External(), spec, "pebra", 0, "rid")
+
+    assert setup.arm == "pebra"
+
+
+def test_prepare_arm_still_applies_csharp_floor_to_legacy_graph_task(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",
+                        lambda _external, dest: (dest.mkdir(parents=True), dest)[1])
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
+    monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
+                        lambda *, repo_root: {"csharp_callable": 0})
+
+    with pytest.raises(run_pair.RunPairError, match="C# callable nodes"):
+        run_pair.prepare_arm(_External(), _SPEC, "pebra", 0, "rid")
+
+
 def test_oracle_positive_pre_patch_happens_before_baseline_build(monkeypatch, tmp_path):
     monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
     calls: list[str] = []

@@ -64,6 +64,7 @@ class TaskSpec:
     evaluator_test_project: str | None = None  # hidden: existing repo test project to run post-edit
     evaluator_test_filter: str | None = None   # hidden: optional dotnet test filter for that project
     build_solution: str = "TemplateBlueprint.sln"  # hidden: solution passed to dotnet build/test tools
+    required_language_tier: str | None = None  # hidden: "risk_only" | "partial" | "full" preflight floor
 
 
 # ---- one subject run (what the runner captures; scoring consumes it) --------------------------

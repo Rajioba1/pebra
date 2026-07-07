@@ -15,6 +15,10 @@ _TEST_TRAP = TaskSpec(
     "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",), "test_failure", False,
     evaluator_test_project="tests/Tests.csproj", evaluator_test_filter="FullyQualifiedName~GammaTests",
 )
+_FULL_TIER_TRAP = TaskSpec(
+    "TSSEM", "d", ("src/a.ts",), "risky", ("src/a.ts",), "test_failure", False,
+    required_language_tier="full",
+)
 
 
 def _build(ran=True, passed=True, err=""):
@@ -121,6 +125,34 @@ def test_unresolved_target_is_flagged():
 
 def test_missing_evidence_is_flagged():
     assert preflight._graph_backed_failure(_TRAP, {}) is not None
+
+
+def test_required_language_tier_fails_when_payload_is_lower():
+    payload = _payload("fresh", "location")
+    payload["graph_provenance"] = {
+        "language_capability": {"language": "csharp", "tier": "partial"}
+    }
+
+    msg = preflight._graph_backed_failure(_FULL_TIER_TRAP, payload)
+
+    assert msg and "requires language tier full" in msg
+
+
+def test_required_language_tier_fails_when_payload_omits_capability():
+    payload = _payload("fresh", "location")
+
+    msg = preflight._graph_backed_failure(_FULL_TIER_TRAP, payload)
+
+    assert msg and "requires language tier full" in msg
+
+
+def test_required_language_tier_passes_when_payload_meets_requirement():
+    payload = _payload("fresh", "location")
+    payload["graph_provenance"] = {
+        "language_capability": {"language": "typescript", "tier": "full"}
+    }
+
+    assert preflight._graph_backed_failure(_FULL_TIER_TRAP, payload) is None
 
 
 # ---- accumulate-ALL-failures (never first-fail) ----
@@ -412,6 +444,76 @@ def test_graph_preflight_passes_with_enough_nodes_and_fresh(tmp_path, monkeypatc
     preflight.run_graph_preflight([_TRAP], None, out_dir=tmp_path,
                                   assess_fn=_fresh_payload, setup_graph_fn=None,
                                   node_count_fn=lambda p: {"csharp_callable": 700})
+
+
+def test_graph_preflight_checks_safe_task_when_language_tier_is_required(tmp_path, monkeypatch):
+    safe_full = TaskSpec(
+        "BSEM", "d", ("a.ts",), "safe", ("a.ts",), "none", False,
+        required_language_tier="full",
+    )
+    calls: list[str] = []
+
+    def _assess(_repo_path, spec):
+        calls.append(spec.task_id)
+        payload = _payload("fresh", "location")
+        payload["graph_provenance"] = {
+            "language_capability": {"language": "csharp", "tier": "partial"}
+        }
+        return payload
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
+
+    with pytest.raises(preflight.PreflightError, match="requires language tier full"):
+        preflight.run_graph_preflight([safe_full], None, out_dir=tmp_path,
+                                      assess_fn=_assess, setup_graph_fn=None,
+                                      node_count_fn=lambda p: {"csharp_callable": 700})
+
+    assert calls == ["BSEM"]
+
+
+def test_graph_preflight_uses_language_node_count_for_non_csharp_tiered_task(tmp_path, monkeypatch):
+    ts_full = TaskSpec(
+        "TSSEM", "d", ("a.ts",), "safe", ("a.ts",), "none", False,
+        required_language_tier="full",
+    )
+
+    def _assess(_repo_path, _spec):
+        payload = _payload("fresh", "location")
+        payload["graph_provenance"] = {
+            "language_capability": {
+                "language": "typescript", "tier": "full", "node_count": 12,
+            }
+        }
+        return payload
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
+
+    preflight.run_graph_preflight([ts_full], None, out_dir=tmp_path,
+                                  assess_fn=_assess, setup_graph_fn=None,
+                                  node_count_fn=lambda p: {"csharp_callable": 0})
+
+
+def test_graph_preflight_fails_non_csharp_tiered_task_with_zero_language_nodes(tmp_path, monkeypatch):
+    ts_full = TaskSpec(
+        "TSSEM", "d", ("a.ts",), "safe", ("a.ts",), "none", False,
+        required_language_tier="full",
+    )
+
+    def _assess(_repo_path, _spec):
+        payload = _payload("fresh", "location")
+        payload["graph_provenance"] = {
+            "language_capability": {
+                "language": "typescript", "tier": "full", "node_count": 0,
+            }
+        }
+        return payload
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
+
+    with pytest.raises(preflight.PreflightError, match="typescript callable nodes"):
+        preflight.run_graph_preflight([ts_full], None, out_dir=tmp_path,
+                                      assess_fn=_assess, setup_graph_fn=None,
+                                      node_count_fn=lambda p: {"csharp_callable": 0})
 
 
 # ---- revise-safer route calibration -----------------------------------------------------------

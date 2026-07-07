@@ -284,7 +284,10 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
     cli_harness.setup_graph(repo_root=repo_path)
     if arm in _GRAPH_ARMS:
         counts = cli_harness.graph_node_counts(repo_root=repo_path)
-        if int(counts.get("csharp_callable", 0)) < _MIN_CSHARP_NODES:
+        # Legacy graph tasks are C# specimens and keep the independent C# node floor. Explicit
+        # multi-language tasks are validated by the mandatory graph preflight using the assessed
+        # language capability tier; prepare_arm does not have an assess payload to infer that language.
+        if not spec.required_language_tier and int(counts.get("csharp_callable", 0)) < _MIN_CSHARP_NODES:
             raise RunPairError(
                 f"{arm} arm CodeGraph has {counts.get('csharp_callable', 0)} C# callable nodes "
                 f"(< {_MIN_CSHARP_NODES})"

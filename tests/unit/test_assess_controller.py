@@ -362,6 +362,21 @@ def test_codegraph_structural_tier_rejects_mixed_language_resolution() -> None:
     assert sse["structure_tier"] == "unavailable"
 
 
+def test_language_capability_provenance_includes_measured_node_count() -> None:
+    ev = m.FanInEvidence(
+        resolution_method="location", graph_freshness="fresh", resolved_language="typescript",
+        node_ids_resolved=("ts:f",), resolved_qualified_names=("f",),
+        resolved_symbol_count=1, symbol_fan_in_percentile=0.5,
+    )
+    cap = LanguageCapability(
+        language="typescript", probe_status="measured", node_count=12,
+        signature_coverage_ratio=1.0, visibility_coverage_ratio=0.0,
+    )
+    result = _run_cg_unparsed_with_cap(ev, cap, _request_with_patch()).recommended_result
+
+    assert result.provenance["graph_provenance"]["language_capability"]["node_count"] == 12
+
+
 def test_codegraph_structural_tier_requires_a_candidate_patch() -> None:
     # A no-patch request may name affected_symbols for context, but that does NOT prove an owner body
     # was touched. The coarse graph tier must not turn name-fallback fan-in into a fabricated body edit.
