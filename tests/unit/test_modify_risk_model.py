@@ -60,6 +60,30 @@ def test_high_fanin_internal_contract_modify_injects_dependency_break():
     assert dep["probability_source_type"] == "prior_uncalibrated"
 
 
+def test_coarse_structural_tier_counts_as_unknown_change_for_large_owner():
+    # Monotonic-safety: a coarse codegraph_structural classification of a BEHAVIORAL internal owner in
+    # a LARGE span must still inject dependency_break (it counts as unknown_change), so reclassifying
+    # UNKNOWN->BEHAVIORAL for a non-Python owner never silently drops the MODIFY event.
+    events = _events(
+        _sde(max_change_kind="BEHAVIORAL", visibility="internal",
+             consequential_symbol_changed=False, symbol_fan_in_percentile=0.10,
+             structure_tier="codegraph_structural"),
+        _fanin(symbol_fan_in_percentile=0.10, symbol_caller_count=1, max_owner_span_lines=400),
+    )
+    assert _by(events, "dependency_break") is not None
+
+
+def test_python_ast_behavioral_internal_no_event_baseline():
+    # Contrast/baseline: the SAME low-fan-in internal BEHAVIORAL change WITHOUT the coarse tier does
+    # not inject dependency_break — proving the event above is due to the coarse-tier uncertainty term.
+    events = _events(
+        _sde(max_change_kind="BEHAVIORAL", visibility="internal",
+             consequential_symbol_changed=False, symbol_fan_in_percentile=0.10),
+        _fanin(symbol_fan_in_percentile=0.10, symbol_caller_count=1, max_owner_span_lines=400),
+    )
+    assert _by(events, "dependency_break") is None
+
+
 def test_public_contract_modify_also_injects_public_api_break():
     events = _events(_sde(visibility="public_api"))
 

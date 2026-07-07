@@ -19,9 +19,12 @@ from e2e.utils import cli_harness
 def test_arms_for_risky_and_safe():
     assert run_pair.arms_for("risky") == (
         models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_ENFORCED_CONTROL,
-        models.ARM_BLAST_RADIUS, models.ARM_PEBRA)
-    assert run_pair.arms_for("safe") == (models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA)
+        models.ARM_BLAST_RADIUS, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)
+    assert run_pair.arms_for("safe") == (
+        models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)
     assert models.ARM_ORACLE_POSITIVE not in run_pair.arms_for("safe")  # no harm to fix on safe tasks
+    # the repair arm runs on safe tasks too, so its over-caution is measurable (Gate 6 net_benefit)
+    assert models.ARM_PEBRA_GRAPH_REPAIR in run_pair.arms_for("safe")
 
 
 def _mark(name):
@@ -43,6 +46,53 @@ def test_advisory_backend_dispatch(monkeypatch):
     assert which(models.ARM_ENFORCED_CONTROL) == "sham"
     assert which(models.ARM_ORACLE_POSITIVE) == "sham"    # oracle uses sham advisory (mechanism = pre-patch)
     assert which(models.ARM_CONTROL) == "sham"
+    assert which(models.ARM_PEBRA_GRAPH_REPAIR) == "real"  # repair arm is real PEBRA + appended repair context
+
+
+def _revise(*_a, **_k):
+    return {"recommended_decision": "revise_safer", "advisory": "Do not apply this patch.", "detail": {}}
+
+
+def test_repair_arm_appends_covering_tests_hint_on_revise_safer(monkeypatch):
+    monkeypatch.setattr(advisory_check_real, "advise", _revise)
+    hint = " Before resubmitting, run the covering tests"
+
+    repair = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, Path("/r"), Path("/d"),
+        covering_hint=" Before resubmitting, run the covering tests in tests/X.csproj and confirm.")
+    plain = run_pair._advisory_backend(models.ARM_PEBRA, Path("/r"), Path("/d"))
+
+    out_repair = repair({"target_file": "a.cs"})
+    out_plain = plain({"target_file": "a.cs"})
+    # the repair arm gets the extra covering-tests context; plain PEBRA does not (that IS the contrast)
+    assert hint in out_repair["advisory"]
+    assert hint not in out_plain["advisory"]
+
+
+def test_repair_hint_not_appended_when_not_revise_safer(monkeypatch):
+    monkeypatch.setattr(advisory_check_real, "advise",
+                        lambda *a, **k: {"recommended_decision": "proceed", "advisory": "OK.", "detail": {}})
+    repair = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, Path("/r"), Path("/d"), covering_hint=" run the covering tests")
+    assert "covering tests" not in repair({"target_file": "a.cs"})["advisory"]
+
+
+def test_covering_tests_hint_anchors_agent_facing_hints_and_stays_blinded():
+    spec = SimpleNamespace(
+        target_hints=("src/Numerics/SpecialFunctions/Gamma.cs",),
+        # the HIDDEN oracle fields must NEVER reach the hint:
+        evaluator_test_project="src/Numerics.Tests/Numerics.Tests.csproj",
+        evaluator_test_filter="FullyQualifiedName~GammaTests")
+    hint = run_pair._covering_tests_hint(spec)
+    assert "src/Numerics/SpecialFunctions/Gamma.cs" in hint  # anchored on the agent-facing target hint
+    # ANSWER-KEY GUARD: the hidden evaluator project/filter must not leak into agent-facing text
+    assert "Numerics.Tests" not in hint and "FullyQualifiedName~GammaTests" not in hint
+    from e2e.experiments.agent_ab import forbidden
+    assert not forbidden.match_terms(hint, forbidden.CORPUS_FORBIDDEN_TERMS)
+
+
+def test_covering_tests_hint_empty_without_target_hints():
+    assert run_pair._covering_tests_hint(SimpleNamespace(target_hints=())) == ""
 
 
 def test_gate_backend_only_pebra_enforces(monkeypatch):
@@ -54,6 +104,7 @@ def test_gate_backend_only_pebra_enforces(monkeypatch):
 
     assert perm(models.ARM_PEBRA) == "deny" and perm(models.ARM_TREATMENT) == "deny"
     assert perm(models.ARM_ENFORCED_CONTROL) == "deny"
+    assert perm(models.ARM_PEBRA_GRAPH_REPAIR) == "deny"  # repair arm gets the real PEBRA write-gate
     for arm in (models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_ORACLE_POSITIVE):
         assert perm(arm) == "allow"  # non-PEBRA arms never block a write
 

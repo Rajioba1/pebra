@@ -43,13 +43,92 @@ def test_reclassify_surfaces_consequential_from_high_fanin(monkeypatch) -> None:
     monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [dict(behavioral)])
 
     v = gcv.GitChangeVerifier(fanin_lookup=lambda ids, root: {"a.py::Cls.m": 0.97})
-    max_kind, symbols, delta, analyzed, consequential, reasons = v._reclassify("/repo", ["a.py"], "x")
+    max_kind, symbols, delta, analyzed, consequential, reasons, py_analyzed = (
+        v._reclassify("/repo", ["a.py"], "x"))
     assert consequential is True  # high fan-in made a BEHAVIORAL change consequential
+    assert py_analyzed is True    # a Python file parsed cleanly -> complexity delta is real
     assert any("callers_percentile" in r for r in reasons)
 
     # without the lookup, the same BEHAVIORAL change is NOT consequential (callers_percentile stays 0.0)
     v2 = gcv.GitChangeVerifier()
     assert v2._reclassify("/repo", ["a.py"], "x")[4] is False
+
+
+def test_reclassify_non_python_uses_structural_symbols(monkeypatch) -> None:
+    # Multi-language verify tier: a non-Python changed file is reclassified from graph structure
+    # (exported owner -> coarse CONTRACT) instead of being silently skipped.
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "src")
+
+    def fake_structural(f, before, after, root):
+        return FanInEvidence(
+            resolution_method="location", graph_freshness="fresh",
+            resolved_qualified_names=("Ns.Widget::Render",), resolved_symbol_count=1,
+            node_ids_resolved=("cs:Render",), is_exported_contract=True)
+
+    v = gcv.GitChangeVerifier(structural_symbols_fn=fake_structural)
+    max_kind, symbols, delta, analyzed, conseq, reasons, py_analyzed = (
+        v._reclassify("/repo", ["Widget.cs"], "x"))
+    assert analyzed is True and py_analyzed is False  # reclassified, but no Python complexity delta
+    assert max_kind == "CONTRACT"
+    assert "Ns.Widget::Render" in symbols
+
+
+def test_reclassify_non_python_skipped_without_structural_fn() -> None:
+    # Pre-multilang behavior preserved: no structural lookup wired -> non-Python files are ignored.
+    from pebra.adapters import git_change_verifier as gcv
+
+    v = gcv.GitChangeVerifier()
+    max_kind, symbols, delta, analyzed, conseq, reasons, py_analyzed = (
+        v._reclassify("/repo", ["Widget.cs"], "x"))
+    assert analyzed is False and max_kind == "UNKNOWN"
+
+
+def test_reclassify_non_python_fresh_but_unresolved_fails_closed(monkeypatch) -> None:
+    # A FRESH graph that resolves NO owner (e.g. a deleted in-scope .cs file) must count as an ATTEMPTED
+    # reclassification (analyzed=True) so UNKNOWN + reclassification_attempted escalates the guardrail —
+    # otherwise a dangerous in-scope non-Python change slips through verify.
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "src")
+    unresolved_fresh = FanInEvidence(resolution_method="unresolved", graph_freshness="fresh")
+    v = gcv.GitChangeVerifier(structural_symbols_fn=lambda *a: unresolved_fresh)
+    _kind, _syms, _d, analyzed, _c, _r, _py = v._reclassify("/repo", ["Widget.cs"], "x")
+    assert analyzed is True  # fresh graph, no owner -> fail closed (attempted), not silently skipped
+
+
+def test_reclassify_non_source_file_does_not_use_structural_symbols(monkeypatch) -> None:
+    # Graph structural verify is a code-owner check, not a generic file validator. A changed README or
+    # config file must not become UNKNOWN+attempted merely because a fresh graph cannot resolve it.
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence
+
+    calls = []
+
+    def fake_structural(*args):
+        calls.append(args)
+        return FanInEvidence(resolution_method="unresolved", graph_freshness="fresh")
+
+    v = gcv.GitChangeVerifier(structural_symbols_fn=fake_structural)
+    _kind, _syms, _d, analyzed, _c, _r, _py = v._reclassify("/repo", ["README.md"], "x")
+    assert analyzed is False
+    assert calls == []
+
+
+def test_reclassify_non_python_absent_graph_does_not_force_escalation(monkeypatch) -> None:
+    # But a merely ABSENT/stale graph (freshness != fresh) is infra absence, not a change signal — it
+    # must NOT force every non-Python edit to escalate (codegraph is optional).
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "src")
+    unresolved_absent = FanInEvidence(resolution_method="unresolved", graph_freshness="unknown")
+    v = gcv.GitChangeVerifier(structural_symbols_fn=lambda *a: unresolved_absent)
+    _kind, _syms, _d, analyzed, _c, _r, _py = v._reclassify("/repo", ["Widget.cs"], "x")
+    assert analyzed is False
 
 
 def test_reclassify_uses_threshold_override(monkeypatch) -> None:

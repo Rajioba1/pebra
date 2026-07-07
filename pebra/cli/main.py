@@ -8,6 +8,7 @@ from typing import Sequence
 from pebra.cli import accept_risk as accept_risk_cmd
 from pebra.cli import agent_init as agent_init_cmd
 from pebra.cli import assess as assess_cmd
+from pebra.cli import capabilities as capabilities_cmd
 from pebra.cli import dashboard as dashboard_cmd
 from pebra.cli import dependents as dependents_cmd
 from pebra.cli import gate_check as gate_check_cmd
@@ -35,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_cmd.register(subparsers)
     setup_graph_cmd.register(subparsers)
     graph_stats_cmd.register(subparsers)
+    capabilities_cmd.register(subparsers)
     gate_check_cmd.register(subparsers)
     gate_hook_cmd.register(subparsers)
     dependents_cmd.register(subparsers)

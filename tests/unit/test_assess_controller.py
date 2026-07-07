@@ -11,6 +11,7 @@ import pytest
 from pebra.app import assess_controller as ac
 from pebra.core import models as m
 from pebra.core.constants import Decision, RiskMode
+from pebra.core.language_capability import LanguageCapability
 from pebra.ports.repository_registry_port import RepoMetadata
 
 _THRESHOLDS = {
@@ -113,6 +114,25 @@ def _request():
         action_type="edit",
         affected_symbols=["src/auth.py::validate_login"],
         expected_files=["src/auth.py"],
+    )
+
+
+def _request_with_patch():
+    return m.AssessmentRequest.single_action(
+        task="Fix failing login validation",
+        action_id="a1",
+        label="Patch validate_login only",
+        action_type="edit",
+        affected_symbols=["src/auth.py::validate_login"],
+        expected_files=["src/auth.py"],
+        proposed_patch=(
+            "diff --git a/src/auth.py b/src/auth.py\n"
+            "--- a/src/auth.py\n"
+            "+++ b/src/auth.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n"
+        ),
     )
 
 
@@ -255,6 +275,100 @@ def _run_cg(ev, extra_thresholds=None):
     return outcome
 
 
+class _UnparsedSymbolDiff:
+    """A language with NO AST-level diff (e.g. C#): the symbol-diff provider returns UNKNOWN with
+    parsed_patch_available=False — exactly the case the codegraph_structural tier is meant to upgrade."""
+
+    def symbol_diff(self, action, repo_root):
+        return m.SymbolDiffEvidence(parsed_patch_available=False, max_change_kind="UNKNOWN")
+
+
+def _run_cg_unparsed(ev, request=None):
+    store = FakeStore()
+    return ac.assess(
+        request or _request(), thresholds=_THRESHOLDS, start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(), symbol_diff_provider=_UnparsedSymbolDiff(),
+        blast_provider=FakeBlast(), sanction_port=FakeSanction(), repository_registry=FakeRegistry(),
+        store=store, fanin_provider=FakeFanInProvider(ev),
+    )
+
+
+class FakeCapabilityProvider:
+    def __init__(self, cap):
+        self.cap = cap
+
+    def capability_for(self, language, repo_root):
+        return self.cap
+
+
+def _run_cg_unparsed_with_cap(ev, cap, request=None):
+    store = FakeStore()
+    return ac.assess(
+        request or _request(), thresholds=_THRESHOLDS, start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(), symbol_diff_provider=_UnparsedSymbolDiff(),
+        blast_provider=FakeBlast(), sanction_port=FakeSanction(), repository_registry=FakeRegistry(),
+        store=store, fanin_provider=FakeFanInProvider(ev),
+        language_capability_provider=FakeCapabilityProvider(cap),
+    )
+
+
+def test_codegraph_structural_tier_upgrades_unknown_for_exported_owner() -> None:
+    # C#-shaped: no AST diff, but the graph resolved an EXPORTED owner -> coarse CONTRACT (not UNKNOWN),
+    # tagged structure_tier=codegraph_structural. This is the multi-language breadth unlock.
+    ev = m.FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        node_ids_resolved=("cs:Render",), resolved_qualified_names=("Ns.Widget::Render",),
+        resolved_symbol_count=1, symbol_fan_in_percentile=0.5, is_exported_contract=True,
+    )
+    sse = _run_cg_unparsed(ev, _request_with_patch()).recommended_result.symbol_scope_evidence
+    assert sse["max_change_kind"] == "CONTRACT"
+    assert sse["visibility"] == "exported"
+    assert sse["scope_basis"] == "graph_identity"
+
+
+def test_codegraph_structural_tier_requires_partial_or_full_capability() -> None:
+    # A trusted location fan-in result is still only graph-risk evidence when the measured language
+    # capability lacks callable visibility/signature coverage. It must not fabricate a changed-symbol
+    # diff tier for a risk-only language.
+    ev = m.FanInEvidence(
+        resolution_method="location", graph_freshness="fresh", resolved_language="csharp",
+        node_ids_resolved=("cs:Render",), resolved_qualified_names=("Ns.Widget::Render",),
+        resolved_symbol_count=1, symbol_fan_in_percentile=0.5, is_exported_contract=True,
+    )
+    cap = LanguageCapability(
+        language="csharp", probe_status="measured", node_count=12,
+        signature_coverage_ratio=0.0, visibility_coverage_ratio=0.0,
+    )
+    sse = _run_cg_unparsed_with_cap(ev, cap, _request_with_patch()).recommended_result.symbol_scope_evidence
+    assert sse["max_change_kind"] == "UNKNOWN"
+    assert sse["structure_tier"] == "unavailable"
+
+
+def test_codegraph_structural_tier_requires_a_candidate_patch() -> None:
+    # A no-patch request may name affected_symbols for context, but that does NOT prove an owner body
+    # was touched. The coarse graph tier must not turn name-fallback fan-in into a fabricated body edit.
+    ev = m.FanInEvidence(
+        resolution_method="name_fallback", graph_freshness="fresh",
+        node_ids_resolved=("cs:Render",), resolved_qualified_names=("Ns.Widget::Render",),
+        resolved_symbol_count=1, symbol_fan_in_percentile=0.5, is_exported_contract=True,
+    )
+    sse = _run_cg_unparsed(ev).recommended_result.symbol_scope_evidence
+    assert sse["max_change_kind"] == "UNKNOWN"
+    assert sse["structure_tier"] == "unavailable"
+
+
+def test_codegraph_structural_tier_skipped_when_ast_diff_present() -> None:
+    # When a real AST diff IS present (parsed_patch_available=True), the coarse tier must NOT fire —
+    # the Python path is byte-identical (BEHAVIORAL from FakeSymbolDiff, not overwritten).
+    ev = m.FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        node_ids_resolved=("x",), resolved_qualified_names=("x",), resolved_symbol_count=1,
+        is_exported_contract=True,
+    )
+    sse = _run_cg(ev).recommended_result.symbol_scope_evidence
+    assert sse["max_change_kind"] == "BEHAVIORAL"  # unchanged; coarse tier did not override the AST
+
+
 def test_no_fanin_provider_leaves_fan_in_at_evidence_value() -> None:
     # Without codegraph, the symbol fan-in is whatever the symbol-diff provider supplied (0.42 here).
     outcome, _ = _run()
@@ -283,6 +397,8 @@ def test_codegraph_versions_are_provenance_not_scores() -> None:
         "engine": "CodeGraph",
         "provider_version": "1.1.1",
         "index_version": "24",
+        # which structural tier classified this diff (no resolved_language here -> no capability block)
+        "structure_tier": "unavailable",
     }
     symbol_fanin = result.scores["symbol_scope_evidence"]["symbol_fanin"]
     assert "provider_version" not in symbol_fanin
@@ -437,6 +553,8 @@ def test_assess_uses_persisted_revise_safer_attempt_when_caller_is_lower() -> No
     assert store.count_calls == [("repo_local_example", "abc123", ("src/auth.py",))]
     assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN
     assert not any(g.get("name") == "revise_safer" for g in outcome.recommended_result.gates_fired)
+    _result, persisted_payload, _predictions = store.persisted[0]
+    assert persisted_payload["thresholds"]["revise_safer_attempt"] == 1
 
 
 def test_assess_keeps_caller_revise_safer_attempt_when_caller_is_higher() -> None:
@@ -461,6 +579,8 @@ def test_assess_keeps_caller_revise_safer_attempt_when_caller_is_higher() -> Non
 
     assert store.count_calls == [("repo_local_example", "abc123", ("src/auth.py",))]
     assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN
+    _result, persisted_payload, _predictions = store.persisted[0]
+    assert persisted_payload["thresholds"]["revise_safer_attempt"] == 1
 
 
 def test_assess_store_attempt_error_fails_open_to_caller_attempt() -> None:

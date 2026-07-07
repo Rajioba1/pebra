@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pebra.core.constants import ChangeKind
+from pebra.core.models import FanInEvidence
 
 # Severity ranking for max_change_kind. UNKNOWN sits high (conservative fallback) but below the
 # kinds we can positively identify as contract/side-effect.
@@ -162,3 +163,32 @@ def classify_diff(rows: list[dict[str, Any]], thresholds: dict[str, float]) -> C
         consequence_reason=list(dict.fromkeys(reasons)),  # dedupe, keep order
         fallback_reason=None,
     )
+
+
+def rows_from_fanin(fanin: FanInEvidence) -> list[dict[str, Any]]:
+    """The ``codegraph_structural`` (multi-language) diff tier: one coarse ``classify_diff`` row per
+    graph-resolved owner, built ONLY from facts CodeGraph measures.
+
+    Honestly coarser than the Python-AST tier: this tier sees *that* an owner's span was touched, not
+    *what* changed inside it, so it always sets ``body_changed=True`` and NEVER sets
+    ``signature_changed``. ``visibility`` is ``"exported"`` iff the graph proves a public/abstract
+    contract surface, so an exported owner reaches CONTRACT by the SAME ``classify_symbol`` rule the AST
+    tier uses (exported + body_changed) — earned, not fabricated — while an internal owner lands at
+    BEHAVIORAL. The owner's fan-in percentile rides ``callers_percentile`` so high-fan-in owners are
+    still flagged consequential. Empty when no owner resolved (caller keeps the UNKNOWN cold start)."""
+    names = list(fanin.resolved_qualified_names) or list(fanin.node_ids_resolved)
+    if not names and fanin.resolved_symbol_count > 0:
+        names = [f"<owner {i + 1}>" for i in range(fanin.resolved_symbol_count)]
+    if not names:
+        return []
+    exported = fanin.is_exported_contract or fanin.is_abstract_or_interface_contract
+    visibility = "exported" if exported else "internal"
+    return [
+        {
+            "symbol_id": name,
+            "body_changed": True,
+            "visibility": visibility,
+            "callers_percentile": fanin.symbol_fan_in_percentile,
+        }
+        for name in names
+    ]

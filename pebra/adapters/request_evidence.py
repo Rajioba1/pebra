@@ -45,6 +45,11 @@ class RequestEvidenceProvider:
                 ],
                 domain=verification_raw.get("domain"),
                 reason=verification_raw.get("reason"),
+                verified_patch_hash=(
+                    str(verification_raw["verified_patch_hash"])
+                    if isinstance(verification_raw.get("verified_patch_hash"), str)
+                    else None
+                ),
             )
             if isinstance(verification_raw, dict)
             else CandidateVerificationEvidence()

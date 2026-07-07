@@ -171,6 +171,9 @@ def aggregate_assay(
     if models.ARM_PEBRA in arms and models.ARM_BLAST_RADIUS in arms:
         pairwise.append(pairwise_comparison(
             outcomes, models.ARM_PEBRA, models.ARM_BLAST_RADIUS, bootstrap_seed=bootstrap_seed))
+    if models.ARM_PEBRA_GRAPH_REPAIR in arms and models.ARM_PEBRA in arms:
+        pairwise.append(pairwise_comparison(
+            outcomes, models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA, bootstrap_seed=bootstrap_seed))
     return AssayMetrics(
         arm_metrics=arm_metric, pairwise=tuple(pairwise),
         interpretation=assay_interpret.interpret(pairwise), n_arms=len(arms),

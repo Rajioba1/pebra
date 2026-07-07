@@ -128,6 +128,113 @@ def test_node_counts_counts_callable_and_csharp(tmp_path):
     assert counts == {"total": 4, "callable": 3, "csharp_callable": 2}
 
 
+def test_probe_capabilities_measures_per_language_coverage(tmp_path):
+    from pebra.core.language_capability import classify_tier
+
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir(parents=True)
+    db = cg_dir / "codegraph.db"
+    _make_db(db)
+    con = sqlite3.connect(str(db))
+    # typescript: 2 callables, both with signature + visibility -> FULL
+    con.execute("INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, "
+                "end_line, signature, visibility, updated_at) VALUES "
+                "('ts1','function','a','a','a.ts','typescript',1,5,'(x:int)=>int','public',0)")
+    con.execute("INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, "
+                "end_line, signature, visibility, updated_at) VALUES "
+                "('ts2','method','b','b','a.ts','typescript',6,9,'()=>void','public',0)")
+    # csharp: 1 callable, visibility but NO signature -> PARTIAL (the real C# shape)
+    con.execute("INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, "
+                "end_line, signature, visibility, updated_at) VALUES "
+                "('cs1','class','C','C','C.cs','csharp',1,9,NULL,'public',0)")
+    con.execute("INSERT INTO edges (source, target, kind, provenance) VALUES ('ts1','ts2','calls','t')")
+    con.commit()
+    con.close()
+
+    caps = _adapter().probe_capabilities(str(tmp_path))
+    assert caps["typescript"].probe_status == "measured"
+    assert caps["typescript"].node_count == 2
+    assert caps["typescript"].signature_coverage_ratio == pytest.approx(1.0)
+    assert caps["typescript"].visibility_coverage_ratio == pytest.approx(1.0)
+    assert "calls" in caps["typescript"].edge_kinds
+    assert classify_tier(caps["typescript"]) == "full"
+    assert caps["csharp"].signature_coverage_ratio == pytest.approx(0.0)
+    assert caps["csharp"].visibility_coverage_ratio == pytest.approx(1.0)
+    assert classify_tier(caps["csharp"]) == "partial"
+
+
+def test_structural_symbols_resolves_owner_from_after_diff(tmp_path):
+    # verify-path (post-edit) resolution: a change at after-line 15 lands inside validate_login (10-20),
+    # resolved against the current graph from before/after text alone (no patch string).
+    _seed_repo(tmp_path)
+    before = "\n".join(f"line{i}" for i in range(1, 41))
+    after = before.replace("line15", "line15_changed")
+    ev = _adapter().structural_symbols("src/auth.py", before, after, str(tmp_path))
+    assert ev.resolution_method == "location"
+    assert ev.node_ids_resolved == ("method:vl",)
+    assert ev.resolved_qualified_names == ("LoginManager::validate_login",)
+    assert ev.symbol_caller_count == 3  # same union fan-in the assess path sees for this owner
+
+
+def test_structural_symbols_deleted_file_abstains(tmp_path):
+    _seed_repo(tmp_path)
+    ev = _adapter().structural_symbols("src/auth.py", "whatever", None, str(tmp_path))
+    assert ev.resolution_method == "unresolved"  # no post-edit content -> honest abstain, never raises
+
+
+def test_structural_symbols_deleted_file_checks_graph_freshness_first(tmp_path):
+    _seed_repo(tmp_path)
+    ev = cga.CodeGraphAdapter(status_fn=lambda r: None).structural_symbols(
+        "src/auth.py", "whatever", None, str(tmp_path)
+    )
+    assert ev.graph_freshness == "unknown"
+    assert "CLI not found" in (ev.fallback_reason or "")
+
+
+def test_capability_for_graph_unavailable_is_not_measured(tmp_path):
+    cap = cga.CodeGraphAdapter(status_fn=lambda r: None).capability_for("python", str(tmp_path))
+    assert cap.probe_status == "graph_unavailable"
+    assert cap.fallback_reason  # honest reason, never a fabricated 'measured'
+
+
+def test_capability_for_indexed_language_absent_is_measured_zero(tmp_path):
+    _seed_repo(tmp_path)  # python-only fixture
+    cap = _adapter().capability_for("rust", str(tmp_path))
+    assert cap.probe_status == "measured" and cap.node_count == 0  # graph read, just no rust nodes
+
+
+def test_probe_rejects_worktree_mismatch(tmp_path):
+    # capability is a TRUST claim: a borrowed/foreign-worktree index must NOT be reported as measured
+    _seed_repo(tmp_path)
+    status = {**FRESH, "worktreeMismatch": True}
+    cap = cga.CodeGraphAdapter(status_fn=lambda r: status).capability_for("python", str(tmp_path))
+    assert cap.probe_status == "graph_unavailable"
+
+
+def test_probe_rejects_out_of_range_codegraph_version(tmp_path):
+    # an incompatible codegraph build may populate signature/visibility differently -> not trusted
+    _seed_repo(tmp_path)
+    status = {**FRESH, "version": "0.0.1"}
+    cap = cga.CodeGraphAdapter(status_fn=lambda r: status).capability_for("python", str(tmp_path))
+    assert cap.probe_status == "graph_unavailable"
+
+
+def test_probe_is_memoized_per_repo_root(tmp_path):
+    # fanin already spawns a status subprocess per action; the probe must not double it -> status_fn
+    # is called at most once across repeated capability_for calls for the same repo_root.
+    _seed_repo(tmp_path)
+    calls = []
+
+    def counting_status(r):
+        calls.append(r)
+        return FRESH
+
+    adapter = cga.CodeGraphAdapter(status_fn=counting_status)
+    adapter.capability_for("python", str(tmp_path))
+    adapter.capability_for("rust", str(tmp_path))
+    assert len(calls) == 1  # second call served from the per-repo_root probe cache
+
+
 def test_node_counts_zero_when_graph_absent(tmp_path):
     # no codegraph status (CLI/index absent) -> honest zeros, never fabricated
     counts = cga.CodeGraphAdapter(status_fn=lambda r: None).node_counts(str(tmp_path))
@@ -227,6 +334,9 @@ def test_location_resolves_tightest_owner_and_counts_callers(tmp_path) -> None:
     assert ev.resolved_symbol_count == 1
     assert ev.incoming_edge_counts == {"calls": 2, "references": 1, "imports": 1}
     assert ev.outgoing_edge_counts == {"calls": 5}
+    # multi-language attach facts: the resolved owner's own language + graph-side qualified name
+    assert ev.resolved_language == "python"
+    assert ev.resolved_qualified_names == ("LoginManager::validate_login",)
 
 
 def test_hunk_spanning_two_symbols_aggregates_graph_context(tmp_path) -> None:

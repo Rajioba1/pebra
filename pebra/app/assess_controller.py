@@ -27,6 +27,7 @@ from pebra.core import (
 from pebra.core.apply_snapshot import apply_snapshot
 from pebra.core.explanation_generator import Explanation
 from pebra.core.graph_trust import is_trusted_fanin
+from pebra.core.language_capability import LanguageCapability, classify_tier
 from pebra.core.models import (
     AssessmentInput,
     AssessmentRequest,
@@ -38,6 +39,7 @@ from pebra.ports.blast_radius_port import BlastRadiusProvider
 from pebra.ports.fanin_port import FanInProvider
 from pebra.ports.file_fanin_port import FileFanInProvider
 from pebra.ports.evidence_port import EvidenceProvider
+from pebra.ports.language_capability_port import LanguageCapabilityProvider
 from pebra.ports.repository_registry_port import RepositoryRegistryPort
 from pebra.ports.sanction_port import SanctionPort
 from pebra.ports.snapshot_read_port import SnapshotReadPort
@@ -54,6 +56,7 @@ class ScoredAction:
     # Milestone 4a: the prediction manifest captured at scoring time (WHAT PEBRA predicted), persisted
     # atomically with the assessment. Shadow-only measurement — it never changes this decision.
     predictions: list[dict[str, Any]] = field(default_factory=list)
+    thresholds: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -64,6 +67,41 @@ class AssessmentOutcome:
     repo_id: str
     repo_root: str
     scored_actions: list[ScoredAction] = field(default_factory=list)
+
+
+def _capability_for_fanin(
+    fanin_ev: Any,
+    provider: LanguageCapabilityProvider | None,
+    repo_root: str,
+) -> LanguageCapability:
+    if provider is None or fanin_ev is None:
+        return LanguageCapability()
+    languages = tuple(getattr(fanin_ev, "resolved_languages", ()) or ())
+    if not languages and getattr(fanin_ev, "resolved_language", None):
+        languages = (fanin_ev.resolved_language,)
+    if len(languages) != 1:
+        return LanguageCapability(
+            language="mixed" if languages else "unknown",
+            probe_status="unmeasured",
+            fallback_reason=(
+                "multiple resolved languages" if languages else "no resolved language"
+            ),
+        )
+    return provider.capability_for(languages[0], repo_root)
+
+
+def _codegraph_structural_tier_allowed(
+    fanin_ev: Any,
+    provider: LanguageCapabilityProvider | None,
+    cap: LanguageCapability,
+) -> bool:
+    if provider is None:
+        # Tests and legacy embeddings that do not wire capability probing keep the old behavior.
+        return True
+    languages = tuple(getattr(fanin_ev, "resolved_languages", ()) or ())
+    if len(languages) > 1:
+        return False
+    return classify_tier(cap) in {"full", "partial"}
 
 
 def _merge_event_max(existing: dict[str, Any], injected: dict[str, Any]) -> dict[str, Any]:
@@ -92,6 +130,7 @@ def _build_input(
     sanction_port: SanctionPort,
     fanin_provider: FanInProvider | None = None,
     file_fanin_provider: FileFanInProvider | None = None,
+    language_capability_provider: LanguageCapabilityProvider | None = None,
 ) -> AssessmentInput:
     evidence = evidence_provider.gather_evidence(request, action, repo_root)
     symbol_diff = symbol_diff_provider.symbol_diff(action, repo_root)
@@ -120,13 +159,51 @@ def _build_input(
     # an actionable reason; when optional (default), it is identity. The raw evidence is attached either
     # way for Gate 13 + provenance.
     fanin_ev = None
+    language_capability = LanguageCapability()
     if fanin_provider is not None:
         fanin_ev = fanin_provider.fanin(action, repo_root)
+        language_capability = _capability_for_fanin(
+            fanin_ev, language_capability_provider, repo_root
+        )
         trusted = is_trusted_fanin(fanin_ev)
         if trusted:
             fan_in_threshold = effective_thresholds.get(
                 "consequential_symbol_fan_in_percentile", 0.90
             )
+            # Multi-language coarse diff tier: when there is NO AST-level symbol diff (non-Python, or
+            # any language whose diff wasn't parsed) but the graph resolved the changed owner(s),
+            # classify from graph structure instead of leaving max_change_kind at UNKNOWN. Gated on
+            # `not parsed_patch_available`, so a real AST diff (Python) is untouched — byte-identical.
+            if (
+                action.proposed_patch
+                and not symbol_diff.parsed_patch_available
+                and fanin_ev.resolution_method == "location"
+                and fanin_ev.node_ids_resolved
+                and _codegraph_structural_tier_allowed(
+                    fanin_ev, language_capability_provider, language_capability
+                )
+            ):
+                rows = change_classifier.rows_from_fanin(fanin_ev)
+                if rows:
+                    summary = change_classifier.classify_diff(rows, effective_thresholds)
+                    symbol_diff = replace(
+                        symbol_diff,
+                        changed_symbols=summary.changed_symbols or symbol_diff.changed_symbols,
+                        max_change_kind=summary.max_change_kind,
+                        visibility=summary.visibility,
+                        consequential_symbol_changed=(
+                            symbol_diff.consequential_symbol_changed
+                            or summary.consequential_symbol_changed
+                        ),
+                        consequence_reason=list(dict.fromkeys(
+                            symbol_diff.consequence_reason + summary.consequence_reason
+                        )),
+                        fallback_reason=(
+                            "graph-structural coarse classification "
+                            "(no AST-level symbol diff for this language)"
+                        ),
+                        structure_tier="codegraph_structural",
+                    )
             patched = replace(
                 symbol_diff,
                 symbol_fan_in_percentile=fanin_ev.symbol_fan_in_percentile,
@@ -139,6 +216,9 @@ def _build_input(
                 ),
             )
 
+    # Multi-language: attach the MEASURED capability for the resolved edit's language. Only probed
+    # when fan-in resolved a language (avoids a needless DB open for unresolved edits). Advisory only
+    # in this phase — nothing in the engine scores off it; it rides the input for honest surfacing.
     # Destructive-op event injection (assess-path risk model). Only DELETE injects (symbol loss →
     # call-graph roll-up + no-graph baseline floor). RENAME/MOVE are recorded on the symbol_diff axis
     # but NOT scored here (path migration is an import-graph question, modeled in a later slice); CREATE
@@ -215,6 +295,7 @@ def _build_input(
         candidate_verification=evidence.candidate_verification,
         symbol_diff_evidence=symbol_diff,
         fanin_evidence=fanin_ev,
+        language_capability=language_capability,
         file_fanin_rollup=file_fanin_rollup,
         blast_evidence=blast,
         architecture_evidence=evidence.architecture_evidence,
@@ -239,6 +320,7 @@ def _score_action(
         sanction_port=ports["sanction_port"],
         fanin_provider=ports.get("fanin_provider"),
         file_fanin_provider=ports.get("file_fanin_provider"),
+        language_capability_provider=ports.get("language_capability_provider"),
     )
     # Phase-4 reframe: capture structural features pre-scoring and attach to the IR for CAPTURE only.
     # assessment_builder/decision_engine ignore inp.structural_features (no score/gate change — Hard
@@ -289,6 +371,7 @@ def _score_action(
         result=result,
         explanation=explanation,
         predictions=[asdict(t) for t in manifest],
+        thresholds=dict(inp.thresholds),
     )
 
 
@@ -296,11 +379,26 @@ def _graph_provenance(inp: AssessmentInput) -> dict[str, Any]:
     fanin = inp.fanin_evidence
     if fanin is None:
         return {}
-    return {
+    prov: dict[str, Any] = {
         "engine": "CodeGraph",
         "provider_version": fanin.provider_version,
         "index_version": fanin.index_version,
     }
+    # Honest per-language reach: measured tier + coverage for the resolved edit's language, and the
+    # tier that produced THIS diff. Lets a reader see WHY a non-Python diff is coarse — so
+    # "unavailable"/"partial" can't be mistaken for "verified full support".
+    cap = inp.language_capability
+    if cap.probe_status != "unmeasured":
+        prov["language_capability"] = {
+            "language": cap.language,
+            "probe_status": cap.probe_status,
+            "tier": classify_tier(cap),
+            "signature_coverage_ratio": round(cap.signature_coverage_ratio, 3),
+            "visibility_coverage_ratio": round(cap.visibility_coverage_ratio, 3),
+            "edge_kinds": sorted(cap.edge_kinds),
+        }
+    prov["structure_tier"] = inp.symbol_diff_evidence.structure_tier
+    return prov
 
 
 def _thresholds_with_revise_attempt(
@@ -361,6 +459,7 @@ def assess(
     snapshot_read_port: SnapshotReadPort | None = None,
     fanin_provider: FanInProvider | None = None,
     file_fanin_provider: FileFanInProvider | None = None,
+    language_capability_provider: LanguageCapabilityProvider | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     repo = repository_registry.resolve(start_path)
@@ -390,6 +489,7 @@ def assess(
                 active_snapshot_bundle=active_snapshot_bundle,
                 fanin_provider=fanin_provider,
                 file_fanin_provider=file_fanin_provider,
+                language_capability_provider=language_capability_provider,
             )
         )
 
@@ -398,7 +498,8 @@ def assess(
         recommended.result,
         # persist the thresholds used so the post-edit verify path can reproduce the SAME consequential
         # fan-in threshold (otherwise verify silently falls back to the 0.90 default — assess/verify drift).
-        {"task": request.task, "action_id": recommended.action.id, "thresholds": dict(thresholds)},
+        {"task": request.task, "action_id": recommended.action.id,
+         "thresholds": dict(recommended.thresholds)},
         predictions=recommended.predictions,
     )
     return AssessmentOutcome(

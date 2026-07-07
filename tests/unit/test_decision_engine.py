@@ -44,6 +44,31 @@ def test_gate3_expected_loss_over_threshold_with_positive_eu_asks_human() -> Non
     assert any(g["gate"] == 3 for g in result.gates_fired)
 
 
+def test_coarse_structural_tier_still_asks_human_at_c4_internal_owner() -> None:
+    # Monotonic-safety: the codegraph_structural tier is coarse (owner touched, inner change unseen),
+    # so an internal BEHAVIORAL coarse classification must NOT let a C4 edit slip past Gate 2 — the
+    # tier inherits UNKNOWN's escalation rather than suppressing it by reclassifying UNKNOWN->BEHAVIORAL.
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        criticality_stage="C4",
+        criticality_value=0.95,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=False,
+            changed_symbols=["Ns.Widget::_helper"],
+            max_change_kind="BEHAVIORAL",   # coarse tier reclassified UNKNOWN -> BEHAVIORAL (internal)
+            visibility="internal",
+            consequential_symbol_changed=False,
+            structure_tier="codegraph_structural",
+        ),
+    )
+    result = de.decide(ab.build_assessment(inp))
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["gate"] == 2 for g in result.gates_fired)  # coarse tier still trips the C4 gate
+
+
 def test_gate3_structural_dependency_risk_requests_safer_revision() -> None:
     from pebra.core import models as m
 
@@ -116,8 +141,10 @@ def test_gate3_verified_safer_candidate_can_proceed_pre_edit() -> None:
     from pebra.core import models as m
 
     inp = _worked_example_input()
+    action = replace(inp.action, expected_files=["src/api.py"], proposed_patch=_CANDIDATE_PATCH)
     inp = replace(
         inp,
+        action=action,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
         symbol_diff_evidence=m.SymbolDiffEvidence(
@@ -132,6 +159,7 @@ def test_gate3_verified_safer_candidate_can_proceed_pre_edit() -> None:
             checks={"GammaTests": "passed", "numeric_equivalence_gamma": "passed"},
             required_checks=["GammaTests", "numeric_equivalence_gamma"],
             domain="numeric_equivalence",
+            verified_patch_hash=de.candidate_patch_hash(_CANDIDATE_PATCH),
         ),
     )
 
@@ -140,6 +168,38 @@ def test_gate3_verified_safer_candidate_can_proceed_pre_edit() -> None:
     assert result.recommended_decision is Decision.PROCEED
     assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
     assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
+def test_gate3_passed_verification_without_a_candidate_patch_cannot_proceed() -> None:
+    # Reviewer-found replay bypass: a "passed" blob with NO proposed_patch (and no hash) must NOT
+    # proceed just because the caller omitted the patch — there is nothing to bind, so it is unbound.
+    from pebra.core import models as m
+
+    inp = _worked_example_input()  # worked-example action has proposed_patch=None
+    inp = replace(
+        inp,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"GammaTests": "passed"},
+            required_checks=["GammaTests"],
+            domain="numeric_equivalence",
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert any(g["name"] == "candidate_verification_patch_mismatch" for g in result.gates_fired)
+    assert not any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
 
 
 @pytest.mark.parametrize("status", ["failed", "unavailable"])
@@ -208,8 +268,10 @@ def test_sensitive_verified_candidate_still_requires_confirmation() -> None:
     from pebra.core import models as m
 
     inp = _worked_example_input()
+    action = replace(inp.action, expected_files=["src/api.py"], proposed_patch=_CANDIDATE_PATCH)
     inp = replace(
         inp,
+        action=action,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
         symbol_diff_evidence=m.SymbolDiffEvidence(
@@ -224,6 +286,7 @@ def test_sensitive_verified_candidate_still_requires_confirmation() -> None:
             checks={"targeted_tests": "passed"},
             required_checks=["targeted_tests"],
             domain="covering_tests",
+            verified_patch_hash=de.candidate_patch_hash(_CANDIDATE_PATCH),
         ),
     )
 
@@ -232,6 +295,62 @@ def test_sensitive_verified_candidate_still_requires_confirmation() -> None:
     assert result.recommended_decision is Decision.PROCEED
     assert result.requires_confirmation is True
     assert result.risk_mode is RiskMode.SENSITIVE_CONTEXT
+
+
+_CANDIDATE_PATCH = (
+    "diff --git a/src/api.py b/src/api.py\n"
+    "--- a/src/api.py\n"
+    "+++ b/src/api.py\n"
+    "@@ -1,2 +1,2 @@\n"
+    "-old\n"
+    "+narrowed\n"
+)
+
+
+def _verified_candidate_input(*, verified_patch_hash):
+    """A structural-risk input whose action carries a real candidate patch and a passed
+    verification bound (or mis-bound) to that patch via verified_patch_hash."""
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    action = replace(inp.action, expected_files=["src/api.py"], proposed_patch=_CANDIDATE_PATCH)
+    return replace(
+        inp,
+        action=action,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"targeted_tests": "passed"},
+            required_checks=["targeted_tests"],
+            domain="covering_tests",
+            verified_patch_hash=verified_patch_hash,
+        ),
+    )
+
+
+def test_gate3_passed_verification_bound_to_candidate_patch_proceeds() -> None:
+    correct = de.candidate_patch_hash(_CANDIDATE_PATCH)
+    result = de.decide(ab.build_assessment(_verified_candidate_input(verified_patch_hash=correct)))
+    assert result.recommended_decision is Decision.PROCEED
+    assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
+
+
+@pytest.mark.parametrize("bad_hash", [None, "", "deadbeef", "0" * 64])
+def test_gate3_passed_verification_unbound_from_candidate_patch_stays_blocking(bad_hash) -> None:
+    # A passed verification whose hash does not pin THIS patch is a stale/forged/replayed proof:
+    # honoring it would wave through a swapped patch. Must degrade to REVISE_SAFER, never PROCEED.
+    result = de.decide(ab.build_assessment(_verified_candidate_input(verified_patch_hash=bad_hash)))
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert any(g["name"] == "candidate_verification_patch_mismatch" for g in result.gates_fired)
+    assert not any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
 
 
 def test_gate3_unparsed_single_file_without_resolved_scope_does_not_revise() -> None:

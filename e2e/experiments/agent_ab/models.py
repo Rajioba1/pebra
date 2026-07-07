@@ -21,6 +21,19 @@ ARM_BLAST_RADIUS = "blast_radius"        # CTXO-style graph-guidance diagnostic 
 ARM_ENFORCED_CONTROL = "enforced_control"  # sensitivity control: write gate blocks known-risky edits
 ARM_PEBRA = "pebra"                      # experimental treatment
 ARM_ORACLE_POSITIVE = "oracle_positive"  # endpoint floor: correct fix pre-applied before the agent runs
+ARM_PEBRA_GRAPH_REPAIR = "pebra_graph_repair"  # PEBRA + repair-context hint (candidate verifier not wired)
+
+# The full assay arm universe. Every arm-membership frozenset in run_pair.py is validated against this
+# at import (fail loud on a missing/unregistered arm) so a mis-wired arm can never run as a silent
+# placebo. Legacy ARM_CONTROL/ARM_TREATMENT are NOT part of the assay path and stay out of this set.
+ALL_ASSAY_ARMS: tuple[str, ...] = (
+    ARM_SHAM,
+    ARM_BLAST_RADIUS,
+    ARM_ENFORCED_CONTROL,
+    ARM_PEBRA,
+    ARM_ORACLE_POSITIVE,
+    ARM_PEBRA_GRAPH_REPAIR,
+)
 
 # Pre-registered assay verdicts (checked in order; see metrics/assay_interpret.py).
 VERDICT_NO_HEADROOM = "INVALID_NO_HEADROOM"
@@ -28,6 +41,9 @@ VERDICT_ASSAY_INSENSITIVE = "INVALID_ASSAY_INSENSITIVE"
 VERDICT_PEBRA_INFERIOR = "PEBRA_INFERIOR"
 VERDICT_PEBRA_PARTIAL = "PEBRA_EFFICACY_PARTIAL"
 VERDICT_PEBRA_SUPERIOR = "PEBRA_SUPERIOR"
+# The graph-repair arm verdict tier (only reached when ARM_PEBRA_GRAPH_REPAIR is in the run).
+VERDICT_PEBRA_GRAPH_REPAIR_PARTIAL = "PEBRA_GRAPH_REPAIR_PARTIAL"
+VERDICT_PEBRA_GRAPH_REPAIR_SUPERIOR = "PEBRA_GRAPH_REPAIR_SUPERIOR"
 
 
 # ---- task corpus ------------------------------------------------------------------------------
@@ -188,6 +204,7 @@ class AssayInterpretation:
     assay_detects_realistic: bool
     pebra_has_efficacy: bool
     pebra_exceeds_blast: bool
+    graph_repair_exceeds_pebra: bool = False
 
 
 @dataclass(frozen=True)

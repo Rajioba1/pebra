@@ -121,6 +121,37 @@ def test_assess_payload_exposes_repo_state_and_graph_provenance() -> None:
     assert payload["graph_provenance"]["symbol_fanin"]["caller_count"] == 12
     assert "provider_version" not in payload["graph_provenance"]["symbol_fanin"]
     assert payload["graph_provenance"]["file_fanin_rollup"]["distinct_caller_count"] == 13
+    # multi-language honesty must reach the JSON/MCP consumer (defaults None when absent, as here)
+    assert "structure_tier" in payload["graph_provenance"]
+    assert "language_capability" in payload["graph_provenance"]
+
+
+def test_assess_payload_forwards_language_capability_and_structure_tier() -> None:
+    cap = {"language": "csharp", "tier": "partial", "signature_coverage_ratio": 0.0}
+    result = AssessmentResult(
+        recommended_decision=Decision.PROCEED,
+        requires_confirmation=False,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.NORMAL,
+        scores={"symbol_scope_evidence": {"structure_tier": "codegraph_structural"}},
+        repo_id="r",
+        repo_root="/repo",
+        provenance={"graph_provenance": {
+            "engine": "CodeGraph", "provider_version": "1.1.1", "index_version": "24",
+            "structure_tier": "codegraph_structural", "language_capability": cap,
+        }},
+    )
+    outcome = AssessmentOutcome(
+        recommended_result=result,
+        recommended_explanation=Explanation(
+            risk_level_band="Low", value_after_risk_band="Positive", confidence_band="high",
+            confidence_percent=90, code_sensitivity_label="Low", code_sensitivity_descriptor="code",
+            expected_damage=0.0, risk_budget_percent=100, affected_area="file"),
+        assessment_id="asm_2", repo_id="r", repo_root="/repo",
+    )
+    gp = composition.assess_payload(outcome)["graph_provenance"]
+    assert gp["structure_tier"] == "codegraph_structural"
+    assert gp["language_capability"] == cap
 
 
 def test_assess_payload_does_not_claim_graph_engine_without_graph_evidence() -> None:

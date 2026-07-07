@@ -20,6 +20,7 @@ pendingChanges is empty AND index.reindexRecommended is false.
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -32,6 +33,7 @@ from typing import Any
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
 from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range
+from pebra.core.language_capability import LanguageCapability
 from pebra.core.models import CandidateAction, FanInEvidence, FileFanInRollup
 from pebra.core.score_math import fractional_rank
 
@@ -119,6 +121,25 @@ def _merge_contiguous(line_numbers: list[int]) -> list[tuple[int, int]]:
             lo = prev = n
     ranges.append((lo, prev))
     return ranges
+
+
+def _changed_after_side_ranges(before: str, after: str) -> list[tuple[int, int]]:
+    """AFTER-side (1-based, inclusive) line ranges that differ between ``before`` and ``after``.
+
+    Verify runs POST-edit, so the graph indexes the CURRENT (after) worktree; owners must be resolved
+    against after-side line numbers (unlike the assess path, which uses the un-applied patch's OLD
+    side). A pure deletion is mapped to the surviving boundary line so its enclosing owner is still
+    picked up."""
+    a, b = before.splitlines(), after.splitlines()
+    lines: list[int] = []
+    for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "delete":
+            lines.append(max(1, j1))  # after-side boundary where the deletion landed
+        else:  # replace / insert -> the new/changed after-side lines
+            lines.extend(range(j1 + 1, j2 + 1))
+    return _merge_contiguous(lines)
 
 
 def _default_status(repo_root: str) -> dict[str, Any] | None:
@@ -212,6 +233,11 @@ class CodeGraphAdapter:
         self._status_fn = status_fn or _default_status
         self._dist_cache: dict[tuple[str, float], list[int]] = {}
         self._impact_dist_cache: dict[tuple[str, float], list[int]] = {}
+        # Memoize the capability probe per repo_root for this adapter's lifetime (one assess()/CLI call):
+        # fanin() already spawned a `codegraph status` subprocess for the same repo, so re-probing per
+        # action would double the subprocess count. Same-lifetime staleness is a non-issue (the adapter
+        # is rebuilt per assess() in composition), mirroring _dist_cache's per-instance scope.
+        self._probe_cache: dict[str, tuple[dict[str, LanguageCapability], bool, str | None]] = {}
 
     def node_counts(self, repo_root: str) -> dict[str, int]:
         """Repo-wide CodeGraph node counts for an INDEPENDENT graph-validity check (used by the A/B
@@ -245,6 +271,102 @@ class CodeGraphAdapter:
             return {"total": int(total), "callable": int(callable_), "csharp_callable": int(csharp)}
         except sqlite3.Error:
             return zero
+        finally:
+            con.close()
+
+    def probe_capabilities(self, repo_root: str) -> dict[str, LanguageCapability]:
+        """MEASURED per-language capability from the indexed graph: for each language, the callable-node
+        count and the fraction of those nodes carrying a signature / a visibility, plus the edge kinds
+        it sources. Structural (coverage doesn't change with staleness) so it mirrors ``node_counts``'
+        gates — initialized + schema + readable DB — NOT the freshness gate. Fail-soft: returns ``{}``
+        when the graph is absent/uninitialized/unreadable/below-schema. Never raises."""
+        caps, _ok, _reason = self._probe(repo_root)
+        return caps
+
+    def capability_for(self, language: str, repo_root: str) -> LanguageCapability:
+        """The measured capability for one language: ``graph_unavailable`` when the probe couldn't read
+        the graph at all; ``measured`` with ``node_count=0`` when the graph is readable but has no
+        callable nodes for that language (honest 'indexed but nothing to classify')."""
+        caps, ok, reason = self._probe(repo_root)
+        if not ok:
+            return LanguageCapability(
+                language=language, probe_status="graph_unavailable", fallback_reason=reason
+            )
+        return caps.get(
+            language,
+            LanguageCapability(language=language, probe_status="measured", node_count=0),
+        )
+
+    def _probe(self, repo_root: str) -> tuple[dict[str, LanguageCapability], bool, str | None]:
+        if repo_root in self._probe_cache:
+            return self._probe_cache[repo_root]
+        result = self._probe_uncached(repo_root)
+        self._probe_cache[repo_root] = result
+        return result
+
+    def _probe_uncached(
+        self, repo_root: str
+    ) -> tuple[dict[str, LanguageCapability], bool, str | None]:
+        status = self._status_fn(repo_root)
+        if status is None:
+            return {}, False, "codegraph CLI not found"
+        # Capability is a TRUST claim ("this language is measured as supported"), so — unlike the plain
+        # node_counts preflight — it must reject the same untrusted-index states fanin() rejects: an
+        # out-of-range codegraph version (different extraction semantics) and a borrowed/foreign
+        # worktree index (a DIFFERENT codebase). Ordinary staleness is NOT gated: coverage (does a
+        # language carry signatures/visibility) is structural and doesn't drift with pending changes.
+        runtime_ver = status.get("version")
+        if runtime_ver and not in_accepted_range(runtime_ver):
+            return {}, False, f"codegraph version {runtime_ver} outside accepted range"
+        if status.get("worktreeMismatch"):
+            return {}, False, "codegraph index belongs to another worktree"
+        if status.get("initialized") is False:
+            return {}, False, "codegraph index not initialized"
+        db_path = _db_path_from_status(repo_root, status)
+        if not db_path.is_file():
+            return {}, False, "codegraph DB not found"
+        try:
+            con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            return {}, False, f"codegraph DB could not be opened: {exc}"
+        con.row_factory = sqlite3.Row
+        try:
+            if self._schema_version(con) < _MIN_SCHEMA_VERSION:
+                return {}, False, f"codegraph schema below v{_MIN_SCHEMA_VERSION}"
+            ph = ",".join("?" * len(_CALLABLE_KINDS))
+            rows = con.execute(
+                f"SELECT language AS lang, COUNT(*) AS n, "
+                f"SUM(CASE WHEN signature IS NOT NULL AND signature <> '' THEN 1 ELSE 0 END) AS sig_n, "
+                f"SUM(CASE WHEN visibility IS NOT NULL AND visibility <> '' THEN 1 ELSE 0 END) AS vis_n "
+                f"FROM nodes WHERE kind IN ({ph}) GROUP BY language",
+                _CALLABLE_KINDS,
+            ).fetchall()
+            edges_by_lang: dict[str, set[str]] = {}
+            for er in con.execute(
+                f"SELECT src.language AS lang, e.kind AS kind FROM edges e "
+                f"JOIN nodes src ON src.id = e.source WHERE src.kind IN ({ph}) "
+                f"GROUP BY src.language, e.kind",
+                _CALLABLE_KINDS,
+            ).fetchall():
+                if er["lang"] and er["kind"]:
+                    edges_by_lang.setdefault(str(er["lang"]), set()).add(str(er["kind"]))
+            caps: dict[str, LanguageCapability] = {}
+            for r in rows:
+                lang = r["lang"]
+                if not lang:
+                    continue
+                n = int(r["n"])
+                sig = int(r["sig_n"] or 0)
+                vis = int(r["vis_n"] or 0)
+                caps[str(lang)] = LanguageCapability(
+                    language=str(lang), probe_status="measured", node_count=n,
+                    signature_coverage_ratio=(sig / n) if n else 0.0,
+                    visibility_coverage_ratio=(vis / n) if n else 0.0,
+                    edge_kinds=frozenset(edges_by_lang.get(str(lang), set())),
+                )
+            return caps, True, None
+        except (sqlite3.Error, OSError) as exc:
+            return {}, False, f"codegraph DB query failed: {exc}"
         finally:
             con.close()
 
@@ -397,9 +519,87 @@ class CodeGraphAdapter:
                 is_exported_contract=ctx["is_exported_contract"],
                 is_abstract_or_interface_contract=ctx["is_abstract_or_interface_contract"],
                 has_signature_metadata=ctx["has_signature_metadata"],
+                resolved_language=ctx["resolved_language"],
+                resolved_qualified_names=ctx["resolved_qualified_names"],
             )
         except (sqlite3.Error, OSError) as exc:
             # never let a corrupt/locked/half-written DB crash the assessment (fail-soft contract)
+            return _unresolved("unknown", f"codegraph DB query failed: {exc}")
+        finally:
+            con.close()
+
+    def structural_symbols(
+        self, file_path: str, before: str | None, after: str | None, repo_root: str
+    ) -> FanInEvidence:
+        """Post-edit sibling of ``fanin()`` for the multi-language verify tier: resolve the owners of an
+        already-applied change from full before/after text (no patch string) and return the same
+        ``FanInEvidence``. The caller turns it into coarse classifier rows via
+        ``change_classifier.rows_from_fanin`` — the reason non-Python files no longer fall through the
+        verifier's ``.py``-only reclassification. Mirrors ``fanin()``'s freshness/version/schema/DB
+        fail-soft gates exactly; never raises."""
+        status = self._status_fn(repo_root)
+        if status is None:
+            return _unresolved("unknown", f"codegraph CLI not found; {_INSTALL_HINT}")
+        runtime_ver = status.get("version")
+        if runtime_ver and not in_accepted_range(runtime_ver):
+            return _unresolved("unknown", f"codegraph version {runtime_ver} outside accepted range")
+        if status.get("initialized") is False:
+            return _unresolved("unknown", f"codegraph index not initialized; {_INIT_HINT}")
+        if not _is_fresh(status):
+            return _unresolved("stale", "codegraph index stale; run: pebra doctor --fix-graph")
+        db_path = _db_path_from_status(repo_root, status)
+        if not db_path.is_file():
+            return _unresolved("unknown", f"codegraph DB not found; {_INIT_HINT}")
+        if after is None:
+            return _unresolved(
+                "fresh", "file has no post-edit content (deleted); no current-graph owners"
+            )
+        try:
+            con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            return _unresolved("unknown", f"codegraph DB could not be opened: {exc}")
+        con.row_factory = sqlite3.Row
+        try:
+            if self._schema_version(con) < _MIN_SCHEMA_VERSION:
+                return _unresolved("fresh", f"codegraph schema below v{_MIN_SCHEMA_VERSION}")
+            cg_ver, ext_ver = self._versions(con)
+            rel = _repo_relative(file_path, repo_root)
+            node_ids: list[str] = []
+            for lo, hi in _changed_after_side_ranges(before or "", after):
+                for nid in self._owners_at(con, rel, lo, hi):
+                    if nid not in node_ids:
+                        node_ids.append(nid)
+            if not node_ids:
+                return FanInEvidence(
+                    resolution_method="unresolved", graph_freshness="fresh",
+                    provider_version=cg_ver, index_version=ext_ver,
+                    fallback_reason="changed lines did not resolve to a graph owner",
+                )
+            count, pctl = self._fanin(con, node_ids, db_path)
+            ctx = self._graph_context(con, node_ids, self._impact_distribution(con, db_path))
+            return FanInEvidence(
+                symbol_fan_in_percentile=pctl, symbol_caller_count=count,
+                resolution_method="location", node_ids_resolved=tuple(node_ids),
+                provider_version=cg_ver, index_version=ext_ver, graph_freshness="fresh",
+                owner_kinds=ctx["owner_kinds"], max_owner_span_lines=ctx["max_owner_span_lines"],
+                resolved_symbol_count=ctx["resolved_symbol_count"],
+                incoming_edge_counts=ctx["incoming_edge_counts"],
+                outgoing_edge_counts=ctx["outgoing_edge_counts"],
+                modify_impact_count=ctx["modify_impact_count"],
+                modify_impact_percentile=ctx["modify_impact_percentile"],
+                modify_impact_edge_counts=ctx["modify_impact_edge_counts"],
+                container_hierarchy_kinds=ctx["container_hierarchy_kinds"],
+                graph_file_size_bytes=ctx["graph_file_size_bytes"],
+                graph_file_node_count=ctx["graph_file_node_count"],
+                graph_file_error_count=ctx["graph_file_error_count"],
+                contract_surface_kind=ctx["contract_surface_kind"],
+                is_exported_contract=ctx["is_exported_contract"],
+                is_abstract_or_interface_contract=ctx["is_abstract_or_interface_contract"],
+                has_signature_metadata=ctx["has_signature_metadata"],
+                resolved_language=ctx["resolved_language"],
+                resolved_qualified_names=ctx["resolved_qualified_names"],
+            )
+        except (sqlite3.Error, OSError) as exc:
             return _unresolved("unknown", f"codegraph DB query failed: {exc}")
         finally:
             con.close()
@@ -696,16 +896,22 @@ class CodeGraphAdapter:
                 "is_exported_contract": False,
                 "is_abstract_or_interface_contract": False,
                 "has_signature_metadata": False,
+                "resolved_language": None,
+                "resolved_languages": (),
+                "resolved_qualified_names": (),
             }
         id_ph = ",".join("?" * len(node_ids))
         rows = con.execute(
             f"SELECT id, kind, file_path, start_line, end_line, signature, return_type, type_parameters, "
-            f"visibility, is_exported, is_abstract FROM nodes WHERE id IN ({id_ph})",
+            f"visibility, is_exported, is_abstract, language, qualified_name "
+            f"FROM nodes WHERE id IN ({id_ph})",
             tuple(node_ids),
         ).fetchall()
         by_id = {r["id"]: r for r in rows}
         kinds: list[str] = []
         max_span = 0
+        languages: list[str] = []
+        qualified_names: list[str] = []
         for nid in node_ids:
             r = by_id.get(nid)
             if r is None:
@@ -715,6 +921,12 @@ class CodeGraphAdapter:
                 kinds.append(kind)
             if r["start_line"] is not None and r["end_line"] is not None:
                 max_span = max(max_span, int(r["end_line"]) - int(r["start_line"]) + 1)
+            lang = r["language"]
+            if lang and lang not in languages:
+                languages.append(str(lang))
+            qn = r["qualified_name"]
+            if qn:
+                qualified_names.append(str(qn))
         incoming = {
             str(r["kind"]): int(r["c"]) for r in con.execute(
                 f"SELECT kind, COUNT(DISTINCT source) AS c FROM edges "
@@ -762,6 +974,11 @@ class CodeGraphAdapter:
             "container_hierarchy_kinds": tuple(
                 sorted({str(r["kind"]) for r in container_rows if r["kind"]})
             ),
+            # The single-language fast path feeds the capability probe. Mixed-language patches are
+            # reported explicitly so callers do not pretend the first language represents the whole edit.
+            "resolved_language": languages[0] if languages else None,
+            "resolved_languages": tuple(languages),
+            "resolved_qualified_names": tuple(qualified_names),
             **file_meta,
             **contract_meta,
         }

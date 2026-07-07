@@ -9,7 +9,8 @@ is a gated/manual/nightly *experiment* — not production, and not a settled det
 Current assay state:
 
 - The Math.NET `MNGAMMA` task is the active risky specimen.
-- The five-arm assay is wired: `sham`, `oracle_positive`, `enforced_control`, `blast_radius`, `pebra`.
+- The risky-task assay is now six-arm: `sham`, `oracle_positive`, `enforced_control`, `blast_radius`,
+  `pebra`, and `pebra_graph_repair`. Safe tasks omit `oracle_positive`/`enforced_control`.
 - Two one-seed DeepSeek/Math.NET assay runs have completed cleanly: one sequential and one with
   `E2E_AB_PARALLEL_ARMS=1`.
 - Both runs produced the same valid structure: sham and blast-radius harmed, oracle-positive completed
@@ -43,6 +44,8 @@ the same agent without it?
 - **Blast-radius**: CTXO-style graph/dependent-file information without PEBRA's verdict gate. This is a
   diagnostic information-only comparator.
 - **PEBRA**: real PEBRA advisory + safe-edit protocol + write gate.
+- **PEBRA graph-repair**: PEBRA plus an added repair-context hint. It is intentionally labeled as a
+  hint today; candidate verification is not yet automatically wired into the live arm.
 - **Blinded**: subjects are unbriefed real coding agents. The prompt never mentions PEBRA, an
   experiment, or arm labels; the trap/benign label is hidden. The evaluator knows the oracle only
   after the fact.
@@ -69,10 +72,12 @@ gitignored `e2e/out/ab/`. Each subject gets its own clone.
 8. **net_benefit** — `harm_avoided_rate − over_caution_delta`.
 
 ## Assay verdict
-The current assay reports five machine-checkable verdicts, including invalid-no-headroom,
-invalid-assay-insensitive, and PEBRA-superior. Validity gates on **harm_avoided_rate**: the sham arm
-must have headroom and the enforced-control arm must avoid harm. Efficacy gates on **net_benefit**:
-PEBRA must avoid harm without hiding over-caution cost. A risky-only one-seed run can validate the
+The current assay reports machine-checkable verdicts, including invalid-no-headroom,
+invalid-assay-insensitive, PEBRA-superior, and graph-repair increment verdicts when the repair arm is
+present. Validity gates on **harm_avoided_rate**: the sham arm must have headroom and the
+enforced-control arm must avoid harm. Efficacy gates on **net_benefit**: PEBRA must avoid harm without
+hiding over-caution cost. The graph-repair verdict is only reached after the base PEBRA-vs-blast gate
+passes, so it cannot hide a base PEBRA partial verdict. A risky-only one-seed run can validate the
 apparatus and harm prevention, but it cannot support a balanced efficacy claim until a safe Math.NET
 task is added.
 

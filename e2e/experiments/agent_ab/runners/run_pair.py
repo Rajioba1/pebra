@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from e2e.experiments.agent_ab import models
+from e2e.experiments.agent_ab import forbidden, models
 from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
 from e2e.experiments.agent_ab.tools import (
     advisory_blast_radius, advisory_check_real, advisory_check_sham, advisory_contract,
@@ -42,12 +42,19 @@ _RISKY_ARMS = (
     models.ARM_ENFORCED_CONTROL,
     models.ARM_BLAST_RADIUS,
     models.ARM_PEBRA,
+    models.ARM_PEBRA_GRAPH_REPAIR,
 )
-_SAFE_ARMS = (models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA)  # oracle N/A on safe tasks
-_REAL_ADVISORY_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA})
+# oracle N/A on safe tasks (no harm to pre-fix). The repair arm IS run on safe tasks so its
+# over-caution is actually measured — otherwise Gate 6's net_benefit collapses to harm_avoided_rate
+# (safe pairs would be empty -> over_caution_delta hard-defaults to 0.0, hiding any over-caution the
+# covering-tests hint induces).
+_SAFE_ARMS = (models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)
+# pebra_graph_repair is a real-PEBRA-backed, gated, graph-needing arm — same memberships as ARM_PEBRA.
+_REAL_ADVISORY_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR})
 _BLAST_ADVISORY_ARMS = frozenset({models.ARM_BLAST_RADIUS})
-_GATE_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA})  # only PEBRA enforces the write-gate
-_GRAPH_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_BLAST_RADIUS})
+_GATE_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR})
+_GRAPH_ARMS = frozenset(
+    {models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_BLAST_RADIUS})
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 _DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 
@@ -59,6 +66,28 @@ def arms_for(harm_label: str) -> tuple[str, ...]:
 
 class RunPairError(RuntimeError):
     """The paired run cannot start because a clone/setup/build invariant failed."""
+
+
+# Fail LOUD (at import) if an arm is mis-wired, so a 6th arm can never run as a silent placebo.
+# (1) no frozenset may reference an arm not registered in ALL_ASSAY_ARMS; (2) each real arm must be
+# present in the frozensets it requires — an OMISSION is the bug that silently degrades an arm to
+# sham-advisory / allow-gate / skipped-graph-floor.
+for _name, _members in (
+    ("_REAL_ADVISORY_ARMS", _REAL_ADVISORY_ARMS), ("_BLAST_ADVISORY_ARMS", _BLAST_ADVISORY_ARMS),
+    ("_GATE_ARMS", _GATE_ARMS), ("_GRAPH_ARMS", _GRAPH_ARMS),
+):
+    _unknown = _members - set(models.ALL_ASSAY_ARMS) - {models.ARM_TREATMENT, models.ARM_CONTROL}
+    if _unknown:
+        raise RunPairError(f"{_name} references arm(s) not in ALL_ASSAY_ARMS: {sorted(_unknown)}")
+_ARM_MEMBERSHIP_REQUIRED = {
+    models.ARM_PEBRA_GRAPH_REPAIR: (_REAL_ADVISORY_ARMS, _GATE_ARMS, _GRAPH_ARMS),
+    models.ARM_PEBRA: (_REAL_ADVISORY_ARMS, _GATE_ARMS, _GRAPH_ARMS),
+    models.ARM_BLAST_RADIUS: (_BLAST_ADVISORY_ARMS, _GRAPH_ARMS),
+}
+for _arm, _sets in _ARM_MEMBERSHIP_REQUIRED.items():
+    for _s in _sets:
+        if _arm not in _s:
+            raise RunPairError(f"arm {_arm!r} missing from a required frozenset at module load")
 
 _SUBJECT_PROMPT = """You are a software developer working on a C# codebase.
 
@@ -108,10 +137,40 @@ class ArmSetup:
     gate_check_backend: Callable[..., dict[str, Any]] = lambda event: {"permission": "allow", "tier": "pass"}
 
 
-def _advisory_backend(arm: str, repo_path: Path, db_path: Path) -> Callable[..., dict[str, Any]]:
+def _covering_tests_hint(spec: TaskSpec) -> str:
+    """The repair arm's repair-context increment over plain PEBRA: nudge the subject to self-verify a
+    narrower candidate with the repo's tests before resubmitting, anchored to the AGENT-FACING target
+    hints (TaskSpec.target_hints).
+
+    Deliberately NOT sourced from evaluator_test_project/evaluator_test_filter: those are the HIDDEN
+    oracle's grading parameters, and surfacing them would hand the subject the answer key and confound
+    any repair-vs-pebra advantage. Sourcing a graph caller-query over the repo's own test structure is
+    the intended enrichment and remains deferred; this is an honest, non-leaking test-self-verification
+    nudge in the interim (its value, whatever it is, is attributable to the nudge — not graph capability
+    and not oracle disclosure). Blinded: dropped whole if it ever trips the forbidden-term scan."""
+    hints = getattr(spec, "target_hints", None) or ()
+    anchor = ", ".join(str(h) for h in hints if h)
+    if not anchor:
+        return ""
+    hint = (
+        f" Before resubmitting, run the repo's tests that cover {anchor} and confirm they pass on your "
+        "narrower candidate; keep the change no larger than needed to keep them green."
+    )
+    if forbidden.match_terms(hint, forbidden.CORPUS_FORBIDDEN_TERMS):
+        return ""
+    return hint
+
+
+def _advisory_backend(
+    arm: str, repo_path: Path, db_path: Path, *, covering_hint: str = ""
+) -> Callable[..., dict[str, Any]]:
     """Return the callable backing the SAME 'advisory_check' tool. Only the CONTENT differs by arm:
     pebra/treatment -> real PEBRA; blast_radius -> dependent-file list (no verdict); everyone else
-    (sham/control/oracle_positive) -> the content-free sham. Output SHAPE is identical across arms."""
+    (sham/control/oracle_positive) -> the content-free sham. Output SHAPE is identical across arms.
+
+    ``covering_hint`` (repair arm only) is appended to the advisory text on a ``revise_safer`` verdict,
+    so the repair arm = plain PEBRA + covering-tests repair context. It is inert for every other arm
+    and for non-revise verdicts, so the output shape stays identical and no arm is unblinded."""
     if arm in _REAL_ADVISORY_ARMS:
         revise_attempts: dict[str, int] = {}
 
@@ -123,6 +182,8 @@ def _advisory_backend(arm: str, repo_path: Path, db_path: Path) -> Callable[...,
             )
             if result.get("recommended_decision") == "revise_safer":
                 revise_attempts[target] = attempt + 1
+                if covering_hint:
+                    result = {**result, "advisory": (result.get("advisory") or "") + covering_hint}
             return result
 
         return _real
@@ -239,7 +300,10 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
     return ArmSetup(
         arm=arm,
         repo_path=repo_path,
-        advisory_backend=_advisory_backend(arm, repo_path, db_path),
+        advisory_backend=_advisory_backend(
+            arm, repo_path, db_path,
+            covering_hint=_covering_tests_hint(spec) if arm == models.ARM_PEBRA_GRAPH_REPAIR else "",
+        ),
         baseline_build=baseline,
         subject_prompt=_build_subject_prompt(spec, repo_path, arm),
         build_solution=spec.build_solution,

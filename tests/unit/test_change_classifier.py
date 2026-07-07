@@ -8,9 +8,63 @@ from __future__ import annotations
 
 from pebra.core import change_classifier as cc
 from pebra.core.constants import ChangeKind
-from pebra.core.models import SymbolDiffEvidence
+from pebra.core.models import FanInEvidence, SymbolDiffEvidence
 
 DEFAULT_THRESHOLDS = {"consequential_symbol_fan_in_percentile": 0.90}
+
+
+# --- rows_from_fanin: the codegraph_structural coarse diff tier (multi-language) ---
+
+
+def test_rows_from_fanin_exported_owner_is_contract_via_same_rule() -> None:
+    # exported + body_changed -> CONTRACT, earned by the SAME classify_symbol rule the AST tier uses,
+    # backed by graph facts (never a fabricated signature_changed).
+    ev = FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        resolved_qualified_names=("Ns.Widget::Render",), resolved_symbol_count=1,
+        symbol_fan_in_percentile=0.4, is_exported_contract=True,
+    )
+    rows = cc.rows_from_fanin(ev)
+    assert len(rows) == 1
+    assert rows[0]["symbol_id"] == "Ns.Widget::Render"
+    assert rows[0]["body_changed"] is True
+    assert rows[0]["visibility"] == "exported"
+    assert "signature_changed" not in rows[0]  # the coarse tier never claims signature detail
+    summary = cc.classify_diff(rows, DEFAULT_THRESHOLDS)
+    assert summary.max_change_kind == ChangeKind.CONTRACT.value
+
+
+def test_rows_from_fanin_internal_owner_is_behavioral_not_contract() -> None:
+    ev = FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        resolved_qualified_names=("Ns.Widget::_helper",), resolved_symbol_count=1,
+        is_exported_contract=False, is_abstract_or_interface_contract=False,
+    )
+    summary = cc.classify_diff(cc.rows_from_fanin(ev), DEFAULT_THRESHOLDS)
+    assert summary.max_change_kind == ChangeKind.BEHAVIORAL.value  # touched, but not a public surface
+
+
+def test_rows_from_fanin_abstract_surface_counts_as_exported() -> None:
+    ev = FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        resolved_qualified_names=("IShape",), resolved_symbol_count=1,
+        is_abstract_or_interface_contract=True,
+    )
+    assert cc.rows_from_fanin(ev)[0]["visibility"] == "exported"
+
+
+def test_rows_from_fanin_high_fanin_is_consequential() -> None:
+    ev = FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        resolved_qualified_names=("hot",), resolved_symbol_count=1,
+        symbol_fan_in_percentile=0.97, is_exported_contract=True,
+    )
+    summary = cc.classify_diff(cc.rows_from_fanin(ev), DEFAULT_THRESHOLDS)
+    assert summary.consequential_symbol_changed is True
+
+
+def test_rows_from_fanin_no_owners_is_empty() -> None:
+    assert cc.rows_from_fanin(FanInEvidence(resolution_method="unresolved")) == []
 
 
 # --- is_high_fanin_consequential: assess-path helper over assembled SymbolDiffEvidence (M5c.5) ---

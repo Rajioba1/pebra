@@ -21,6 +21,26 @@ def _packet():
     return mg.render(result, inp.action, explanation)
 
 
+def test_codegraph_structural_tier_adds_honesty_note_on_proceed() -> None:
+    from dataclasses import replace
+
+    inp = _worked_example_input()
+    # a proceed classified from the coarse multi-language tier must be flagged as not signature-verified
+    inp = replace(inp, symbol_diff_evidence=replace(
+        inp.symbol_diff_evidence, structure_tier="codegraph_structural"))
+    result = de.decide(ab.build_assessment(inp))
+    packet = mg.render(result, inp.action, eg.render(result))
+    assert result.recommended_decision.value == "proceed"
+    assert any("CodeGraph structure" in s for s in packet["advisory"]["suggested_inspection"])
+
+
+def test_default_unavailable_tier_adds_no_note() -> None:
+    # the long-standing default tier must NOT add noise to every proceed (only the coarse tier does)
+    assert not any(
+        "CodeGraph structure" in s for s in _packet()["advisory"]["suggested_inspection"]
+    )
+
+
 def test_packet_carries_decision_and_risk_mode() -> None:
     p = _packet()
     assert p["decision"] == "proceed"

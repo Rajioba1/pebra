@@ -60,6 +60,27 @@ def graph_node_counts(repo_root: str) -> dict[str, int]:
     return CodeGraphAdapter().node_counts(repo_root)
 
 
+def probe_language_capabilities(repo_root: str) -> list[dict[str, Any]]:
+    """MEASURED per-language capability for `pebra capabilities`: one serializable row per indexed
+    language with its support tier + coverage. Empty when the graph is absent. Sorted by node_count
+    desc so the best-covered languages lead."""
+    from pebra.core.language_capability import classify_tier  # noqa: PLC0415
+
+    caps = CodeGraphAdapter().probe_capabilities(repo_root)
+    rows = [
+        {
+            "language": cap.language,
+            "tier": classify_tier(cap),
+            "node_count": cap.node_count,
+            "signature_coverage_ratio": round(cap.signature_coverage_ratio, 3),
+            "visibility_coverage_ratio": round(cap.visibility_coverage_ratio, 3),
+            "edge_kinds": sorted(cap.edge_kinds),
+        }
+        for cap in caps.values()
+    ]
+    return sorted(rows, key=lambda r: (-r["node_count"], r["language"]))
+
+
 def dependent_files(repo_root: str, target: str) -> list[str]:
     """Repo-relative files that depend on ``target`` (the file-level blast radius), via the codegraph
     adapter. Empty when the graph is absent. Used by `pebra dependents`."""
@@ -103,6 +124,9 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         "fanin_provider": codegraph,
         # Destructive-op (DELETE) whole-file fan-in roll-up — same adapter, fail-soft when absent.
         "file_fanin_provider": codegraph,
+        # Multi-language: same adapter probes DECLARED∩MEASURED per-language capability so the
+        # controller can attach the resolved edit's language capability (honest per-language reach).
+        "language_capability_provider": codegraph,
     }
 
 
@@ -112,8 +136,14 @@ def build_verify_ports() -> dict[str, Any]:
     A1: the verifier gets the graph engine's per-symbol fan-in lookup so post-edit reclassification
     sees real fan-in (symmetric with assess). Absent codegraph -> the lookup returns {} -> verify keeps
     its pre-A1 behavior."""
+    # One CodeGraphAdapter backs both the per-symbol fan-in lookup (Python rows) and the multi-language
+    # structural reclassification of non-Python changed files (else they'd be silently skipped).
+    codegraph = CodeGraphAdapter()
     return {
-        "change_verifier": GitChangeVerifier(fanin_lookup=CodeGraphAdapter().percentiles_by_name),
+        "change_verifier": GitChangeVerifier(
+            fanin_lookup=codegraph.percentiles_by_name,
+            structural_symbols_fn=codegraph.structural_symbols,
+        ),
         "contract_surface": ContractSurfaceScanner(),
     }
 
@@ -177,6 +207,10 @@ def _graph_provenance(r: Any) -> dict[str, Any]:
         "symbol_fanin": symbol,
         "file_fanin_rollup": rollup,
         "fanin_validity": r.fanin_validity,
+        # Multi-language honesty must reach the actual JSON/MCP consumer (not just internal provenance):
+        # which structural tier classified this diff, and the measured per-language capability.
+        "structure_tier": stored.get("structure_tier") or sse.get("structure_tier"),
+        "language_capability": stored.get("language_capability"),
     }
 
 

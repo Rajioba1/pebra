@@ -154,7 +154,9 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
     risk_budget = score_math.risk_budget_used(expected_loss, effective_threshold)
 
     sde = inp.symbol_diff_evidence
-    if sde.parsed_patch_available:
+    if sde.structure_tier == "codegraph_structural":
+        scope_basis = "graph_identity"
+    elif sde.parsed_patch_available:
         scope_basis = "symbol"
     elif sde.changed_symbols:
         scope_basis = "file_fallback"
@@ -231,6 +233,9 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "file_operation_paths": list(sde.file_operation_paths),
             "file_fanin_rollup": file_fanin_rollup,
             "fallback_reason": sde.fallback_reason,
+            # which structural tier produced this classification (python_ast | codegraph_structural |
+            # unavailable) — surfaced so guidance can be honest about coarse/absent diffs.
+            "structure_tier": sde.structure_tier,
         },
         "candidate_verification": {
             "status": inp.candidate_verification.status,
@@ -238,6 +243,9 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "required_checks": list(inp.candidate_verification.required_checks),
             "domain": inp.candidate_verification.domain,
             "reason": inp.candidate_verification.reason,
+            # Record which patch the verification was bound to, so the manifest audit shows the
+            # gate-7 patch-binding input (see decision_engine.candidate_patch_hash).
+            "verified_patch_hash": inp.candidate_verification.verified_patch_hash,
         },
     }
     return Assessment(

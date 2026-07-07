@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pebra.core.constants import ActionStatus, Decision, GraphFreshness, RiskMode
+from pebra.core.language_capability import LanguageCapability
 
 SCHEMA_VERSION = "0.1"
 
@@ -81,6 +82,11 @@ class SymbolDiffEvidence:
     # path(s) of the affected file(s) for the fan-in roll-up / event injection.
     file_operation_kind: str = "NONE"  # FileOperationKind value
     file_operation_paths: tuple[str, ...] = ()
+    # Which structural tier produced THIS diff classification (a per-edit fact):
+    #   "python_ast"           — full AST diff (Python), richest
+    #   "codegraph_structural" — coarse graph-owner diff (any language CodeGraph resolves), no sig detail
+    #   "unavailable"          — no structural diff available (Phase-0 UNKNOWN cold start)
+    structure_tier: str = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -125,6 +131,12 @@ class FanInEvidence:
     is_exported_contract: bool = False
     is_abstract_or_interface_contract: bool = False
     has_signature_metadata: bool = False
+    # The resolved owners' language(s) (from the graph node's `language` column) — live per-call facts
+    # used to attach the repo-wide LanguageCapability when the edit resolves to exactly one language,
+    # and the graph-side qualified names used by the codegraph_structural diff tier.
+    resolved_language: str | None = None
+    resolved_languages: tuple[str, ...] = ()
+    resolved_qualified_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -218,6 +230,11 @@ class CandidateVerificationEvidence:
     required_checks: list[str] = field(default_factory=list)
     domain: str | None = None
     reason: str | None = None
+    # Binds a "passed" verification to the EXACT candidate patch it ran against (sha256 hexdigest of
+    # the patch text; see decision_engine.candidate_patch_hash for the wire convention). The engine
+    # honors "passed" only when this equals the hash of the action's proposed_patch, so a stale or
+    # replayed proof of a different patch cannot wave a swapped patch through. None => unbound.
+    verified_patch_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -308,6 +325,10 @@ class AssessmentInput:
     candidate_verification: CandidateVerificationEvidence = field(
         default_factory=CandidateVerificationEvidence
     )
+    # Repo/language-wide MEASURED capability for the resolved edit's language (declared∩measured).
+    # A repo-wide fact (not per-edit), so it rides AssessmentInput, not the frozen SymbolDiffEvidence.
+    # Default = unmeasured; assess_controller populates it from fanin_evidence.resolved_language.
+    language_capability: LanguageCapability = field(default_factory=LanguageCapability)
     active_snapshot: Any | None = None  # no learning in Phase 0 (cold start)
     sanction: Any | None = None  # pre-fetched sanction (engine never calls a port)
     # Phase-4 reframe (M5-prep): structural feature payload attached pre-scoring for CAPTURE only.

@@ -104,6 +104,17 @@ def render(
     if fanin_validity.get("reason"):
         suggested_inspection.append(fanin_validity["reason"])
 
+    # Multi-language honesty: when we're about to PROCEED on a diff that was classified from COARSE
+    # CodeGraph structure (the multi-language tier) rather than a full language-level diff, say so — a
+    # coarse structural tier is NOT a verified signature check and must not be read as one. (The default
+    # "unavailable" tier is the long-standing status quo and is deliberately NOT noted here.)
+    structure_tier = (result.symbol_scope_evidence or {}).get("structure_tier")
+    if decision == "proceed" and structure_tier == "codegraph_structural":
+        suggested_inspection.append(
+            "diff classified from CodeGraph structure (no language-level signature diff); "
+            "signature-level detail was not verified — confirm the public surface is unchanged"
+        )
+
     return {
         # Logical placeholder for the pure guidance packet. The store assigns the canonical
         # persisted id (assessment-row scoped) before hashing and writing the assessment.

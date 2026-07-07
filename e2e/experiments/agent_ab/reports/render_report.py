@@ -194,6 +194,12 @@ _VERDICT_NOTE = {
                               "dependent-file discipline.",
     "PEBRA_SUPERIOR": "PEBRA beat both sham and blast-radius → evidence of value beyond generic "
                       "blast-radius discipline.",
+    "PEBRA_GRAPH_REPAIR_SUPERIOR": "On a valid assay with PEBRA efficacy established, the repair arm "
+                                   "(repair-context hint) beat plain PEBRA (net benefit) → the repair "
+                                   "increment adds value.",
+    "PEBRA_GRAPH_REPAIR_PARTIAL": "On a valid assay with PEBRA efficacy established, the repair arm did "
+                                  "NOT beat plain PEBRA (net benefit) → the repair increment did not "
+                                  "add measurable value over PEBRA alone.",
 }
 
 
@@ -210,7 +216,8 @@ def assay_to_json(m: AssayMetrics, *, scoring_mode: str = "build_break_scope",
         "gate_trace": {"task_has_headroom": i.task_has_headroom,
                        "assay_detects_realistic": i.assay_detects_realistic,
                        "pebra_has_efficacy": i.pebra_has_efficacy,
-                       "pebra_exceeds_blast": i.pebra_exceeds_blast},
+                       "pebra_exceeds_blast": i.pebra_exceeds_blast,
+                       "graph_repair_exceeds_pebra": i.graph_repair_exceeds_pebra},
         "arms": {arm: {"n_runs": a.n_runs, "harm_rate": a.harm_rate,
                        "over_caution_rate": a.over_caution_rate, "quality_failure_rate": a.quality_failure_rate,
                        "scope_drift_rate": a.scope_drift_rate, "task_completion_rate": a.task_completion_rate,
@@ -238,12 +245,13 @@ def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "
         f"# PEBRA agent ASSAY — `{run_id}`", "",
         f"> Scoring mode: **{scoring_mode}**. Preflight: oracle={preflight_status.get('oracle')}, "
         f"graph={preflight_status.get('graph')}. Served model(s): {', '.join(served_models or []) or 'n/a'}.",
-        "> Assay arms: sham / oracle_positive / enforced_control / blast_radius / pebra. "
+        f"> Assay arms: {' / '.join(sorted(m.arm_metrics))}. "
         "Validity gates on harm_avoided; "
         "efficacy gates on net_benefit.", "",
         f"## VERDICT: {verdict}", "", _VERDICT_NOTE.get(verdict, ""), "",
         f"Gate trace: headroom={i.task_has_headroom}, assay_sensitive={i.assay_detects_realistic}, "
-        f"pebra_efficacy={i.pebra_has_efficacy}, pebra_exceeds_blast={i.pebra_exceeds_blast}", "",
+        f"pebra_efficacy={i.pebra_has_efficacy}, pebra_exceeds_blast={i.pebra_exceeds_blast}, "
+        f"graph_repair_exceeds_pebra={i.graph_repair_exceeds_pebra}", "",
         "## Per-arm endpoints", "",
         "| arm | n | harm_rate | over_caution | quality_fail | scope_drift | completion | adherence |",
         "|---|---|---|---|---|---|---|---|",

@@ -168,18 +168,19 @@ def evaluate(inp: GuardrailInput) -> GuardrailResult:
         candidates.append(Decision.ASK_HUMAN)
 
     # --- 3b. Unclassifiable actual diff (couldn't prove envelope compliance) ---
-    # If we attempted to reclassify changed Python files but the result is UNKNOWN (syntax error /
-    # unparseable diff), PEBRA cannot prove the edit stayed inside the symbol envelope. Unknown is
-    # NOT "safe" — escalate. (Pure non-code changes set reclassification_attempted=False and are
-    # governed by scope drift alone, so an in-scope docs edit is not needlessly escalated.)
+    # If we attempted to reclassify changed code but the result is UNKNOWN (syntax error, unparseable
+    # diff, or fresh graph with no resolved owner), PEBRA cannot prove the edit stayed inside the symbol
+    # envelope. Unknown is NOT "safe" — escalate. (Pure non-code changes set
+    # reclassification_attempted=False and are governed by scope drift alone, so an in-scope docs edit
+    # is not needlessly escalated.)
     classification_failed = (
         inp.actual_max_change_kind == ChangeKind.UNKNOWN.value
         and inp.reclassification_attempted
     )
     if classification_failed:
         reasons.append(
-            "Actual diff included Python files that could not be classified (syntax error or "
-            "unparseable diff); cannot prove envelope compliance."
+            "Actual diff included code that could not be classified (syntax error, unparseable diff, "
+            "or unresolved graph owner); cannot prove envelope compliance."
         )
         candidates.append(Decision.INSPECT_FIRST)
 

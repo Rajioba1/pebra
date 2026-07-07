@@ -20,6 +20,11 @@ def test_resolve_defaults_db_under_dot_pebra(tmp_path) -> None:
         ctx.store.close()
 
 
+def test_probe_language_capabilities_empty_without_graph(tmp_path) -> None:
+    # honest empty (never a fabricated capability row) when no CodeGraph index is present
+    assert composition.probe_language_capabilities(str(tmp_path)) == []
+
+
 def test_resolve_honors_explicit_db(tmp_path) -> None:
     db = str(tmp_path / "custom.db")
     ctx = composition.resolve_repo_and_db(str(tmp_path), db)

@@ -12,12 +12,21 @@ builder); it never enters p_event here.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from typing import Any
 
 from pebra.core.assessment_builder import Assessment
 from pebra.core.constants import ActionStatus, Decision, GraphFreshness, RiskMode
 from pebra.core.models import AssessmentResult
+
+
+def candidate_patch_hash(patch: str) -> str:
+    """The wire convention binding a candidate verification to the patch it ran against:
+    sha256 hexdigest of the exact UTF-8 patch text, no normalization (any drift breaks the bind,
+    which fails safe to REVISE_SAFER). The candidate-verifier adapter MUST produce this same digest
+    when populating ``CandidateVerificationEvidence.verified_patch_hash``."""
+    return hashlib.sha256(patch.encode("utf-8")).hexdigest()
 
 _SENSITIVE_STAGES = {"C3", "C4"}
 _HARD_TERMINAL_EVENTS = frozenset(
@@ -132,7 +141,31 @@ def _revise_candidate_decision(
         for check in required_checks
         if str(verification.checks.get(check, "")).lower() != "passed"
     ]
+    # A passed proof is honored ONLY when it is BOUND to the exact patch under assessment: the action
+    # must carry a candidate patch AND verified_patch_hash must pin it. An unbound "passed" (no patch
+    # to bind, or absent/mismatched hash) is a stale/forged/replayed proof and fails safe to
+    # REVISE_SAFER — never PROCEED. Keying the bind on proposed_patch being *present* (not on the
+    # caller choosing to omit it) closes the omit-the-patch replay bypass: gate 7 is reachable via
+    # structural narrowing headroom (expected_files/changed_symbols) with no patch at all.
+    proposed_patch = assessment.input.action.proposed_patch
     if status == "passed" and required_checks and not missing_or_failed:
+        bound = (
+            proposed_patch is not None
+            and bool(verification.verified_patch_hash)
+            and verification.verified_patch_hash == candidate_patch_hash(proposed_patch)
+        )
+        if not bound:
+            gates_fired.append({
+                "gate": 7,
+                "name": "candidate_verification_patch_mismatch",
+                "domain": verification.domain,
+                "required_checks": required_checks,
+                "reason": (
+                    "a passed candidate verification must be bound to the candidate patch under "
+                    "assessment via verified_patch_hash; unbound/absent/mismatched proof is not honored"
+                ),
+            })
+            return Decision.REVISE_SAFER, False, source_gate
         gates_fired.append({
             "gate": 7,
             "name": "candidate_verification_passed",
@@ -262,8 +295,14 @@ def decide(
     requires_confirmation = False
     fired_gate: int | None = None
 
+    # The codegraph_structural tier is COARSE: it proves an owner was touched, not what changed inside
+    # it, so it is still uncertain and must inherit UNKNOWN's escalation rather than suppress it —
+    # otherwise reclassifying UNKNOWN -> BEHAVIORAL for an internal owner would silently drop this C4
+    # gate (the tier would LOWER conservatism). Keeps the tier monotonic: it can only ADD severity.
     consequential_or_unknown = (
-        sse["consequential_symbol_changed"] or sse["max_change_kind"] == "UNKNOWN"
+        sse["consequential_symbol_changed"]
+        or sse["max_change_kind"] == "UNKNOWN"
+        or sse.get("structure_tier") == "codegraph_structural"
     )
 
     # --- Gate 2: C4 always ask_human on consequential/unknown symbol change ---
