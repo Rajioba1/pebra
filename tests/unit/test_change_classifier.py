@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from pebra.core import change_classifier as cc
 from pebra.core.constants import ChangeKind
-from pebra.core.models import FanInEvidence, SymbolDiffEvidence
+from pebra.core.models import (
+    FanInEvidence,
+    MaterializedGraphDiffResult,
+    MaterializedGraphDiffRow,
+    SymbolDiffEvidence,
+)
 
 DEFAULT_THRESHOLDS = {"consequential_symbol_fan_in_percentile": 0.90}
 
@@ -65,6 +70,87 @@ def test_rows_from_fanin_high_fanin_is_consequential() -> None:
 
 def test_rows_from_fanin_no_owners_is_empty() -> None:
     assert cc.rows_from_fanin(FanInEvidence(resolution_method="unresolved")) == []
+
+
+# --- rows_from_materialized_graph_diff: the codegraph_semantic tier ---
+
+
+def test_rows_from_materialized_graph_diff_signature_change_is_contract() -> None:
+    result = MaterializedGraphDiffResult(
+        available=True,
+        rows=(
+            MaterializedGraphDiffRow(
+                file_path="src/a.ts",
+                qualified_name="f",
+                language="typescript",
+                signature_changed=True,
+                return_type_changed=False,
+                visibility_changed=False,
+            ),
+        ),
+    )
+
+    rows = cc.rows_from_materialized_graph_diff(result)
+
+    assert rows == [{
+        "symbol_id": "src/a.ts::f",
+        "visibility": "internal",
+        "signature_changed": True,
+        "return_shape_changed": False,
+        "visibility_changed": False,
+        "body_changed": False,
+        "control_flow_changed": False,
+        "external_side_effect_changed": False,
+        "db_write_changed": False,
+        "payment_api_changed": False,
+        "migration_changed": False,
+        "directive_comment_changed": False,
+        "test_only": False,
+        "callers_percentile": 0.0,
+        "transitive_reaches_consequence_symbol": False,
+    }]
+    assert cc.classify_diff(rows, DEFAULT_THRESHOLDS).max_change_kind == ChangeKind.CONTRACT.value
+
+
+def test_rows_from_materialized_graph_diff_requires_signature_field() -> None:
+    result = MaterializedGraphDiffResult(
+        available=True,
+        rows=(
+            MaterializedGraphDiffRow(
+                file_path="src/a.ts",
+                qualified_name="f",
+                language="typescript",
+                signature_changed=None,
+                return_type_changed=True,
+                visibility_changed=True,
+            ),
+        ),
+    )
+
+    assert cc.rows_from_materialized_graph_diff(result) == []
+
+
+def test_rows_from_materialized_graph_diff_does_not_fabricate_cosmetic_when_nothing_changed() -> None:
+    result = MaterializedGraphDiffResult(
+        available=True,
+        rows=(
+            MaterializedGraphDiffRow(
+                file_path="src/a.ts",
+                qualified_name="f",
+                language="typescript",
+                signature_changed=False,
+                return_type_changed=None,
+                visibility_changed=None,
+            ),
+        ),
+    )
+
+    assert cc.rows_from_materialized_graph_diff(result) == []
+
+
+def test_visibility_change_classifies_as_contract_when_signature_is_comparable() -> None:
+    row = _row(visibility_changed=True)
+    assert cc.classify_symbol(row) is ChangeKind.CONTRACT
 
 
 # --- is_high_fanin_consequential: assess-path helper over assembled SymbolDiffEvidence (M5c.5) ---

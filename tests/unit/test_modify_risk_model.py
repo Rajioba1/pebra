@@ -84,6 +84,18 @@ def test_python_ast_behavioral_internal_no_event_baseline():
     assert _by(events, "dependency_break") is None
 
 
+def test_codegraph_semantic_behavioral_internal_no_event_baseline():
+    # A semantic graph diff is not the coarse owner-touched tier. If it proves only a low-fan-in
+    # internal behavioral change, it should behave like the parsed AST baseline, not UNKNOWN.
+    events = _events(
+        _sde(max_change_kind="BEHAVIORAL", visibility="internal",
+             consequential_symbol_changed=False, symbol_fan_in_percentile=0.10,
+             structure_tier="codegraph_semantic"),
+        _fanin(symbol_fan_in_percentile=0.10, symbol_caller_count=1, max_owner_span_lines=400),
+    )
+    assert _by(events, "dependency_break") is None
+
+
 def test_public_contract_modify_also_injects_public_api_break():
     events = _events(_sde(visibility="public_api"))
 

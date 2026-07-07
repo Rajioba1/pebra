@@ -85,6 +85,7 @@ class SymbolDiffEvidence:
     # Which structural tier produced THIS diff classification (a per-edit fact):
     #   "python_ast"           — full AST diff (Python), richest
     #   "codegraph_structural" — coarse graph-owner diff (any language CodeGraph resolves), no sig detail
+    #   "codegraph_semantic"   — before/after graph metadata diff where signature fields are present
     #   "unavailable"          — no structural diff available (Phase-0 UNKNOWN cold start)
     structure_tier: str = "unavailable"
 

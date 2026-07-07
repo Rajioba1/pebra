@@ -329,6 +329,20 @@ def test_builder_scope_basis_file_fallback_when_not_parsed() -> None:
     assert a.scores["symbol_scope_evidence"]["scope_basis"] == "file_fallback"
 
 
+def test_builder_scope_basis_graph_semantic_for_codegraph_semantic_tier() -> None:
+    inp = replace(
+        _worked_example_input(),
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=False,
+            changed_symbols=["src/a.ts::f"],
+            max_change_kind="CONTRACT",
+            structure_tier="codegraph_semantic",
+        ),
+    )
+    a = ab.build_assessment(inp)
+    assert a.scores["symbol_scope_evidence"]["scope_basis"] == "graph_semantic"
+
+
 def test_builder_scope_basis_unknown_fallback_when_no_symbols() -> None:
     from dataclasses import replace
     from pebra.core import models as m

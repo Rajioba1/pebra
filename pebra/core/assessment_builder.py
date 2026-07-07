@@ -154,7 +154,9 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
     risk_budget = score_math.risk_budget_used(expected_loss, effective_threshold)
 
     sde = inp.symbol_diff_evidence
-    if sde.structure_tier == "codegraph_structural":
+    if sde.structure_tier == "codegraph_semantic":
+        scope_basis = "graph_semantic"
+    elif sde.structure_tier == "codegraph_structural":
         scope_basis = "graph_identity"
     elif sde.parsed_patch_available:
         scope_basis = "symbol"
@@ -233,8 +235,8 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "file_operation_paths": list(sde.file_operation_paths),
             "file_fanin_rollup": file_fanin_rollup,
             "fallback_reason": sde.fallback_reason,
-            # which structural tier produced this classification (python_ast | codegraph_structural |
-            # unavailable) — surfaced so guidance can be honest about coarse/absent diffs.
+            # which structural tier produced this classification (python_ast | codegraph_semantic |
+            # codegraph_structural | unavailable) — surfaced so guidance can be honest.
             "structure_tier": sde.structure_tier,
         },
         "candidate_verification": {

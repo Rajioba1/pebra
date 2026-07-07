@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pebra.core.constants import ChangeKind
-from pebra.core.models import FanInEvidence
+from pebra.core.models import FanInEvidence, MaterializedGraphDiffResult
 
 # Severity ranking for max_change_kind. UNKNOWN sits high (conservative fallback) but below the
 # kinds we can positively identify as contract/side-effect.
@@ -70,6 +70,7 @@ def classify_symbol(row: dict[str, Any]) -> ChangeKind:
     if (
         row.get("signature_changed")
         or row.get("return_shape_changed")
+        or row.get("visibility_changed")
         or (row.get("visibility") in {"exported", "public_api"} and row.get("body_changed"))
     ):
         return ChangeKind.CONTRACT
@@ -192,3 +193,42 @@ def rows_from_fanin(fanin: FanInEvidence) -> list[dict[str, Any]]:
         }
         for name in names
     ]
+
+
+def rows_from_materialized_graph_diff(result: MaterializedGraphDiffResult) -> list[dict[str, Any]]:
+    """Convert proven before/after graph metadata comparisons into classifier rows.
+
+    This is the ``codegraph_semantic`` tier. A row requires a comparable signature; visibility and
+    return-type changes are useful only once that signature-level support is proven for the owner.
+    """
+    if not result.available:
+        return []
+    rows: list[dict[str, Any]] = []
+    for row in result.rows:
+        if row.signature_changed is None:
+            continue
+        comparable = (
+            row.signature_changed,
+            row.return_type_changed,
+            row.visibility_changed,
+        )
+        if not any(value is True for value in comparable):
+            continue
+        rows.append({
+            "symbol_id": f"{row.file_path}::{row.qualified_name}",
+            "visibility": "internal",
+            "signature_changed": bool(row.signature_changed),
+            "return_shape_changed": bool(row.return_type_changed),
+            "visibility_changed": bool(row.visibility_changed),
+            "body_changed": False,
+            "control_flow_changed": False,
+            "external_side_effect_changed": False,
+            "db_write_changed": False,
+            "payment_api_changed": False,
+            "migration_changed": False,
+            "directive_comment_changed": False,
+            "test_only": False,
+            "callers_percentile": 0.0,
+            "transitive_reaches_consequence_symbol": False,
+        })
+    return rows
