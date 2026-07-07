@@ -8,6 +8,7 @@ it, so 'unavailable'/'risk_only' can never be mistaken for 'verified full suppor
 from __future__ import annotations
 
 from pebra.core.language_capability import (
+    DECLARED_LANGUAGES,
     TIER_FULL,
     TIER_PARTIAL,
     TIER_RISK_ONLY,
@@ -26,6 +27,35 @@ def test_default_capability_is_unmeasured_unknown() -> None:
     assert cap.edge_kinds == frozenset()
     # an unmeasured capability must not claim any support tier
     assert classify_tier(cap) == TIER_UNKNOWN
+
+
+def test_declared_languages_match_codegraph_extractor_map_but_do_not_assert_support() -> None:
+    # This is only CLI/help vocabulary, not a support claim. The measured probe still decides tiers.
+    assert DECLARED_LANGUAGES == (
+        "c",
+        "cpp",
+        "csharp",
+        "dart",
+        "go",
+        "java",
+        "javascript",
+        "jsx",
+        "kotlin",
+        "lua",
+        "luau",
+        "objc",
+        "pascal",
+        "php",
+        "python",
+        "r",
+        "ruby",
+        "rust",
+        "scala",
+        "swift",
+        "tsx",
+        "typescript",
+    )
+    assert classify_tier(LanguageCapability(language="dart")) == TIER_UNKNOWN
 
 
 def test_unmeasured_or_graph_unavailable_is_unknown() -> None:

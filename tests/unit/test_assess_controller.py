@@ -344,6 +344,24 @@ def test_codegraph_structural_tier_requires_partial_or_full_capability() -> None
     assert sse["structure_tier"] == "unavailable"
 
 
+def test_codegraph_structural_tier_rejects_mixed_language_resolution() -> None:
+    # A patch that resolves to multiple languages may still have graph-risk evidence, but it must not
+    # be collapsed into one fabricated structural diff row.
+    ev = m.FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        node_ids_resolved=("cs:Render", "ts:render"),
+        resolved_qualified_names=("Ns.Widget::Render", "render"),
+        resolved_symbol_count=2, symbol_fan_in_percentile=0.5, is_exported_contract=True,
+        resolved_languages=("csharp", "typescript"),
+    )
+    cap = LanguageCapability(
+        language="mixed", probe_status="unmeasured", fallback_reason="multiple resolved languages"
+    )
+    sse = _run_cg_unparsed_with_cap(ev, cap, _request_with_patch()).recommended_result.symbol_scope_evidence
+    assert sse["max_change_kind"] == "UNKNOWN"
+    assert sse["structure_tier"] == "unavailable"
+
+
 def test_codegraph_structural_tier_requires_a_candidate_patch() -> None:
     # A no-patch request may name affected_symbols for context, but that does NOT prove an owner body
     # was touched. The coarse graph tier must not turn name-fallback fan-in into a fabricated body edit.

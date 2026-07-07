@@ -32,8 +32,28 @@ _VISIBILITY_COVERAGE_FLOOR = 0.5
 # Non-authoritative advertisement of languages CodeGraph is built to index. NEVER used to assert
 # support (only the measured probe does that); surfaced in `pebra capabilities` help text.
 DECLARED_LANGUAGES: tuple[str, ...] = (
-    "python", "typescript", "javascript", "tsx", "jsx", "csharp", "java", "kotlin", "go", "rust",
-    "ruby", "php", "c", "cpp", "swift", "scala",
+    "c",
+    "cpp",
+    "csharp",
+    "dart",
+    "go",
+    "java",
+    "javascript",
+    "jsx",
+    "kotlin",
+    "lua",
+    "luau",
+    "objc",
+    "pascal",
+    "php",
+    "python",
+    "r",
+    "ruby",
+    "rust",
+    "scala",
+    "swift",
+    "tsx",
+    "typescript",
 )
 
 
