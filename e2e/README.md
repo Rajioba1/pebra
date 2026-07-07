@@ -43,6 +43,15 @@ two patch assessments so the result is not polluted by the revise-attempt
 counter. Until PEBRA can distinguish the safer route or the claim is narrowed to
 stop/block behavior, another paid live-agent assay is not the right next step.
 
+This does not block product robustness work in other languages. The C# assay is
+a mirror for one partial-support language. CodeGraph can expose richer
+signature-level fields for other languages, and PEBRA may add a dark-gated
+before/after materialization path for those signature-capable languages. That
+path must stay off by default, because CodeGraph has no per-file extraction CLI
+and the viable implementation is a throwaway tiny-directory index of touched
+files. For C#, the honest choices remain partial graph/topology support or a
+separate C# semantic provider.
+
 It is not full Tauri-level coverage yet. Remaining gated lanes:
 
 - `E2E_CODEGRAPH=1`: real CodeGraph graph/fan-in product path.

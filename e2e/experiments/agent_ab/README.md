@@ -29,6 +29,10 @@ Current assay state:
   Gamma patches at the same file-level C# risk and both route to `revise_safer`. That is a real
   product/calibration gap, not a runner failure. Do not spend on another live-agent assay if the claim is
   safe completion via `revise_safer`; the next run would be testing stop/block behavior again.
+- This C# result should not veto broader product robustness work. Math.NET is one partial-support mirror.
+  CodeGraph provides richer signature-level fields for other languages, so a dark-gated before/after
+  materialization path can still improve pre-edit analysis outside C#. C# itself remains partial unless
+  a C# semantic provider is added or CodeGraph grows C# signatures.
 
 ## Question
 Does giving a *real* coding agent PEBRA's safe-edit intervention make it produce better outcomes than
@@ -151,6 +155,12 @@ assay needs either a real
 C# patch semantic classifier or an explicit pre-edit verification route; otherwise `ask_human`/stop is
 the honest decision.
 
+Product roadmap note: the broader multi-language plan is still valuable for robustness. CodeGraph has
+no per-file extraction CLI, so the viable design is dark-gated tiny-directory materialization of touched
+files, matched by `(file_path, qualified_name)` and enabled only for languages whose measured
+capability supports the fields being compared. That can improve pre-edit analysis for signature-capable
+languages while C# stays an honest partial/topology-backed case.
+
 ## Honest claim per task
 - With an injected evaluator test project → **build + test + scope efficacy**.
 - Without one → **build-break + scope efficacy** only.
@@ -181,6 +191,9 @@ The reviewer summary after the first valid DeepSeek runs is therefore:
   PEBRA's computed risk or route to a non-blocking decision, because C# patch semantics are still
   unresolved on the assess path. This is
   exactly the edge case reviewers wanted caught before another paid run.
+- **Product robustness issue:** this blocker is C#-specific, not a reason to abandon multi-language
+  pre-edit analysis. Build signature-capable language support dark-gated; treat C# semantic uplift as a
+  separate Roslyn/upstream-CodeGraph decision.
 - **Still not claimed:** powered efficacy, PEBRA beating blunt enforcement, or balanced net benefit.
   Those require at least one safe Math.NET task and more seeds.
 
