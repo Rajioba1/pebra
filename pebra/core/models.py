@@ -90,6 +90,28 @@ class SymbolDiffEvidence:
 
 
 @dataclass(frozen=True)
+class MaterializedGraphDiffRow:
+    """One before/after owner metadata comparison from a dark-gated CodeGraph materialization."""
+
+    file_path: str
+    qualified_name: str
+    language: str
+    signature_changed: bool | None = None
+    return_type_changed: bool | None = None
+    visibility_changed: bool | None = None
+
+
+@dataclass(frozen=True)
+class MaterializedGraphDiffResult:
+    """Dormant semantic-diff evidence from materialized before/after touched-file indexes."""
+
+    available: bool = False
+    rows: tuple[MaterializedGraphDiffRow, ...] = ()
+    fallback_reason: str | None = None
+    latency_ms: float = 0.0
+
+
+@dataclass(frozen=True)
 class FanInEvidence:
     """Language-agnostic per-symbol fan-in, resolved by location through codegraph's call graph.
 
