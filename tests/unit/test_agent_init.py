@@ -56,6 +56,16 @@ def test_skill_protocol_requires_reassessing_revise_safer(tmp_path):
     assert "permits" in lowered
 
 
+def test_skill_protocol_omits_dead_candidate_verification_self_report(tmp_path):
+    # The trust boundary discards request-supplied evidence.candidate_verification, and safer_route has
+    # no candidate_verification field. The shipped protocol must NOT instruct agents to self-report it,
+    # or a real agent would cycle revise_safer forever on a genuinely safe, verified edit.
+    _run("claude", tmp_path)
+    body = (tmp_path / _SKILL_REL).read_text(encoding="utf-8")
+    assert "evidence.candidate_verification" not in body
+    assert "safer_route.candidate_verification" not in body
+
+
 def test_codex_creates_agents_md(tmp_path):
     assert _run("codex", tmp_path) == 0
     agents = tmp_path / "AGENTS.md"
