@@ -33,12 +33,22 @@ def register(subparsers: Any) -> None:
     p.add_argument("--json", action="store_true", dest="as_json", help="Emit canonical JSON.")
     p.add_argument("--repo-root", default=None, help="Repo root (defaults to current directory).")
     p.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
+    p.add_argument(
+        "--trusted-candidate-verification-file",
+        default=None,
+        help="Host-produced candidate verification JSON, outside untrusted request.evidence.",
+    )
     p.set_defaults(func=run)
 
 
 def run(args: Any) -> int:
     raw = json.loads(Path(args.request_file).read_text(encoding="utf-8"))
     request = candidate_parser.parse(raw)
+    trusted_candidate_verification = (
+        json.loads(Path(args.trusted_candidate_verification_file).read_text(encoding="utf-8"))
+        if args.trusted_candidate_verification_file
+        else None
+    )
 
     start_path = args.repo_root or "."
     ctx = composition.resolve_repo_and_db(start_path, args.db)
@@ -47,6 +57,7 @@ def run(args: Any) -> int:
             request,
             thresholds=request.thresholds,
             start_path=start_path,
+            trusted_candidate_verification=trusted_candidate_verification,
             **composition.build_assess_ports(request, ctx),
         )
         if args.as_json:

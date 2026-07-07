@@ -7,7 +7,11 @@ patches yield no entry (so the assess path is inert for normal edits — golden 
 
 from __future__ import annotations
 
-from pebra.adapters.patch_header_adapter import DestructiveOp, parse_patch_headers
+from pebra.adapters.patch_header_adapter import (
+    DestructiveOp,
+    parse_patch_headers,
+    touched_files,
+)
 
 _DELETE = """diff --git a/src/config.py b/src/config.py
 deleted file mode 100644
@@ -97,3 +101,31 @@ def test_multiple_ops_in_one_patch():
 def test_a_b_prefixes_stripped():
     (op,) = parse_patch_headers(_DELETE)
     assert not op.old_path.startswith("a/")
+
+
+# --- touched_files (P0): the file paths a patch touches, for materialization ---
+
+
+def test_touched_files_modify_returns_the_single_path():
+    modify = (
+        "diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    assert touched_files(modify) == ("src/a.py",)
+
+
+def test_touched_files_rename_returns_both_old_and_new():
+    rename = (
+        "diff --git a/src/old.py b/src/new.py\n"
+        "similarity index 100%\nrename from src/old.py\nrename to src/new.py\n"
+    )
+    assert touched_files(rename) == ("src/new.py", "src/old.py")  # sorted, deduped, both sides
+
+
+def test_touched_files_multiple_files_deduped_and_sorted():
+    patch = _DELETE + _CREATE + _MODIFY
+    assert touched_files(patch) == tuple(sorted(set(touched_files(patch))))
+    assert "src/config.py" in touched_files(patch)
+
+
+def test_touched_files_empty_patch_is_empty():
+    assert touched_files("") == ()

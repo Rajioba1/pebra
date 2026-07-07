@@ -254,3 +254,29 @@ def test_decision_precedence_reject_dominates_ask_human_and_below() -> None:
 def test_verify_decision_label_mirrors_pre_commit_decision() -> None:
     r = pag.evaluate(_clean_input(current_head="zzz"))
     assert r.verify_decision == r.pre_commit_decision.value
+
+
+def test_semantic_approval_not_reproduced_by_verify_escalates() -> None:
+    # assess approved via codegraph_semantic; verify could only reproduce the coarse tier -> INSPECT_FIRST
+    result = pag.evaluate(_clean_input(
+        pre_edit_structure_tier="codegraph_semantic",
+        actual_structure_tier="codegraph_structural",
+    ))
+    assert result.pre_commit_decision is Decision.INSPECT_FIRST
+    assert any("semantic" in r.lower() for r in result.reasons)
+
+
+def test_semantic_approval_reproduced_does_not_escalate() -> None:
+    result = pag.evaluate(_clean_input(
+        pre_edit_structure_tier="codegraph_semantic",
+        actual_structure_tier="codegraph_semantic",
+    ))
+    assert result.pre_commit_decision is Decision.PROCEED
+
+
+def test_non_semantic_pre_edit_tier_is_unaffected() -> None:
+    # the long-standing default/coarse pre-edit tiers never trip the new asymmetry rule
+    for tier in ("unavailable", "codegraph_structural", "python_ast"):
+        result = pag.evaluate(_clean_input(
+            pre_edit_structure_tier=tier, actual_structure_tier="unavailable"))
+        assert result.pre_commit_decision is Decision.PROCEED

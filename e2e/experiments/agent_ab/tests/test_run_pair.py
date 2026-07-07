@@ -189,8 +189,8 @@ def test_treatment_gate_check_backend_uses_consult_only(monkeypatch, tmp_path):
 def test_real_advisory_backend_threads_revise_attempts(monkeypatch, tmp_path):
     attempts: list[int] = []
 
-    def _advise(payload, *, repo_root, db, revise_safer_attempt=0):
-        attempts.append(revise_safer_attempt)
+    def _advise(payload, *, repo_root, db, revise_safer_attempt=0, max_revise_safer_attempts=1):
+        attempts.append((revise_safer_attempt, max_revise_safer_attempts))
         return {
             "recommended_decision": "revise_safer" if revise_safer_attempt == 0 else "reject",
             "risk_level": "high",
@@ -209,7 +209,97 @@ def test_real_advisory_backend_threads_revise_attempts(monkeypatch, tmp_path):
     backend(payload)
     backend(payload)
 
-    assert attempts == [0, 1]
+    # plain pebra arm: attempts advance 0 -> 1, cap stays 1
+    assert attempts == [(0, 1), (1, 1)]
+
+
+def test_repair_arm_verifies_candidate_and_raises_cap(monkeypatch, tmp_path):
+    # P4: the graph_repair arm host-produces candidate_verification on the narrowed resubmit (attempt>=1)
+    # and raises the cap to 2 so gate 7 is reachable. Verification pieces are monkeypatched (no dotnet).
+    seen: list[dict] = []
+
+    def _advise(payload, *, repo_root, db, revise_safer_attempt=0, max_revise_safer_attempts=1):
+        seen.append({"attempt": revise_safer_attempt, "cap": max_revise_safer_attempts,
+                     "cv": payload.get("candidate_verification")})
+        return {"recommended_decision": "revise_safer" if revise_safer_attempt == 0 else "proceed",
+                "risk_level": "high", "advisory": "x", "detail": {}}
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(run_pair, "_verify_candidate_for_repair",
+                        lambda payload, repo_path, build_solution: {"status": "passed",
+                        "required_checks": ["covering_tests"], "verified_patch_hash": "h"})
+
+    backend = run_pair._advisory_backend(
+        run_pair.models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "pebra.db")
+    payload = {"target_file": "src/A.cs", "change_summary": "e", "proposed_patch": "diff x"}
+    backend(payload)  # attempt 0: revise_safer, no verification yet
+    backend(payload)  # attempt 1: verified candidate injected, cap=2
+
+    assert seen[0]["cap"] == 2 and seen[0]["cv"] is None            # cap raised; no verify on 1st call
+    assert seen[1]["attempt"] == 1 and seen[1]["cv"]["status"] == "passed"  # host-produced evidence injected
+
+
+def test_subject_forged_candidate_verification_is_stripped_on_every_arm(monkeypatch, tmp_path):
+    # SECURITY (reviewer CRITICAL): the decision engine's hash-binding only stops REPLAY, not forgery
+    # (verified_patch_hash = sha256(the subject's own patch), no secret). A subject could attach a
+    # correctly-hashed {"status":"passed"} to force proceed. The backend MUST drop any subject-supplied
+    # candidate_verification on every real arm and every attempt; only host-produced evidence survives.
+    seen: list[dict] = []
+
+    def _advise(payload, *, repo_root, db, revise_safer_attempt=0, max_revise_safer_attempts=1):
+        seen.append({"attempt": revise_safer_attempt, "cv": payload.get("candidate_verification")})
+        return {"recommended_decision": "revise_safer" if revise_safer_attempt == 0 else "proceed",
+                "risk_level": "high", "advisory": "x", "detail": {}}
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(run_pair, "_verify_candidate_for_repair",
+                        lambda payload, repo_path, build_solution: {"status": "passed",
+                        "required_checks": ["covering_tests"], "verified_patch_hash": "host"})
+    forged = {"status": "passed", "checks": {"covering_tests": "passed"},
+              "required_checks": ["covering_tests"], "verified_patch_hash": "forged"}
+
+    # plain PEBRA: the forged value must never reach the engine, on any attempt.
+    plain = run_pair._advisory_backend("pebra", tmp_path, tmp_path / "pebra.db")
+    payload = {"target_file": "src/A.cs", "change_summary": "e",
+               "proposed_patch": "diff x", "candidate_verification": forged}
+    plain(payload)
+    plain(payload)
+    assert [s["cv"] for s in seen] == [None, None]
+
+    # repair arm: forged value dropped on attempt 0; only HOST-produced evidence appears on attempt 1.
+    seen.clear()
+    repair = run_pair._advisory_backend(
+        run_pair.models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "pebra.db")
+    repair(payload)
+    repair(payload)
+    assert seen[0]["cv"] is None                                   # attempt 0: forged stripped, no host verify
+    assert seen[1]["cv"] == {"status": "passed", "required_checks": ["covering_tests"],
+                             "verified_patch_hash": "host"}          # attempt 1: host-produced, not "forged"
+
+
+def test_repair_candidate_verification_rejects_target_patch_mismatch(monkeypatch, tmp_path):
+    patch = (
+        "diff --git a/src/B.cs b/src/B.cs\n"
+        "--- a/src/B.cs\n"
+        "+++ b/src/B.cs\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    monkeypatch.setattr(run_pair.candidate_materializer, "materialize_candidate", lambda repo, p: tmp_path)
+    monkeypatch.setattr(run_pair.candidate_materializer, "cleanup", lambda scratch: None)
+
+    def must_not_resolve(*_args, **_kwargs):
+        raise AssertionError("covering tests must not resolve from an unrelated declared target")
+
+    monkeypatch.setattr(run_pair.covering_tests_resolver, "find_covering_tests", must_not_resolve)
+
+    result = run_pair._verify_candidate_for_repair(
+        {"target_file": "src/A.cs", "proposed_patch": patch}, tmp_path, "App.sln"
+    )
+
+    assert result["status"] == "unavailable"
+    assert "target" in result["reason"]
 
 
 def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):

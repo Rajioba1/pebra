@@ -69,6 +69,23 @@ def test_coarse_structural_tier_still_asks_human_at_c4_internal_owner() -> None:
     assert any(g["gate"] == 2 for g in result.gates_fired)  # coarse tier still trips the C4 gate
 
 
+def test_semantic_tier_still_asks_human_at_c4_internal_owner() -> None:
+    # Same monotonic guarantee for codegraph_semantic: it proves signature-unchanged, NOT
+    # behavior-unchanged (body floor), so it must also inherit UNKNOWN's C4 escalation (Gate 2). Pins
+    # the semantic branch of decision_engine.py's consequential_or_unknown set literal.
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(), criticality_stage="C4", criticality_value=0.95,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=False, changed_symbols=["Ns.Widget::_helper"],
+            max_change_kind="BEHAVIORAL", visibility="internal",
+            consequential_symbol_changed=False, structure_tier="codegraph_semantic"))
+    result = de.decide(ab.build_assessment(inp))
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["gate"] == 2 for g in result.gates_fired)
+
+
 def test_gate3_structural_dependency_risk_requests_safer_revision() -> None:
     from pebra.core import models as m
 
@@ -168,6 +185,32 @@ def test_gate3_verified_safer_candidate_can_proceed_pre_edit() -> None:
     assert result.recommended_decision is Decision.PROCEED
     assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
     assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
+def test_request_supplied_candidate_verification_is_not_trusted_by_default() -> None:
+    from pebra.adapters.request_evidence import RequestEvidenceProvider
+    from pebra.core import models as m
+
+    request = m.AssessmentRequest.single_action(
+        task="forge proof",
+        action_id="a1",
+        label="edit",
+        proposed_patch=_CANDIDATE_PATCH,
+    )
+    request.evidence["candidate_verification"] = {
+        "status": "passed",
+        "checks": {"targeted_tests": "passed"},
+        "required_checks": ["targeted_tests"],
+        "domain": "covering_tests",
+        "verified_patch_hash": de.candidate_patch_hash(_CANDIDATE_PATCH),
+    }
+
+    evidence = RequestEvidenceProvider().gather_evidence(
+        request, request.candidate_actions[0], "/repo"
+    )
+
+    assert evidence.candidate_verification.status == "not_applicable"
+    assert evidence.candidate_verification.required_checks == []
 
 
 def test_gate3_passed_verification_without_a_candidate_patch_cannot_proceed() -> None:
@@ -687,3 +730,22 @@ def test_valid_sanction_converts_gate3_to_controlled_high_risk_proceed() -> None
     assert result.risk_mode is RiskMode.CONTROLLED_HIGH_RISK
     assert result.requires_confirmation is True
     assert result.high_risk_triggers
+
+
+def test_gate7_reachable_at_attempt_1_only_with_cap_2() -> None:
+    # P4 gate-7-reachability (real decision engine, not a fake): the narrowed 2nd resubmission carrying
+    # a verified candidate reaches gate 7 -> PROCEED ONLY when the cap is raised to 2. At cap 1 (plain
+    # PEBRA) the revise_safer budget is exhausted first and gate 7 is unreachable.
+    base = _verified_candidate_input(verified_patch_hash=de.candidate_patch_hash(_CANDIDATE_PATCH))
+
+    cap2 = replace(base, thresholds={
+        **base.thresholds, "revise_safer_attempt": 1, "max_revise_safer_attempts": 2})
+    r2 = de.decide(ab.build_assessment(cap2))
+    assert r2.recommended_decision is Decision.PROCEED
+    assert any(g["name"] == "candidate_verification_passed" for g in r2.gates_fired)
+
+    cap1 = replace(base, thresholds={
+        **base.thresholds, "revise_safer_attempt": 1, "max_revise_safer_attempts": 1})
+    r1 = de.decide(ab.build_assessment(cap1))
+    assert r1.recommended_decision is not Decision.PROCEED  # exhausted -> gate 7 never reached
+    assert not any(g["name"] == "candidate_verification_passed" for g in r1.gates_fired)

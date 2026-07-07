@@ -43,7 +43,7 @@ def test_reclassify_surfaces_consequential_from_high_fanin(monkeypatch) -> None:
     monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [dict(behavioral)])
 
     v = gcv.GitChangeVerifier(fanin_lookup=lambda ids, root: {"a.py::Cls.m": 0.97})
-    max_kind, symbols, delta, analyzed, consequential, reasons, py_analyzed = (
+    max_kind, symbols, delta, analyzed, consequential, reasons, py_analyzed, _tier = (
         v._reclassify("/repo", ["a.py"], "x"))
     assert consequential is True  # high fan-in made a BEHAVIORAL change consequential
     assert py_analyzed is True    # a Python file parsed cleanly -> complexity delta is real
@@ -69,7 +69,7 @@ def test_reclassify_non_python_uses_structural_symbols(monkeypatch) -> None:
             node_ids_resolved=("cs:Render",), is_exported_contract=True)
 
     v = gcv.GitChangeVerifier(structural_symbols_fn=fake_structural)
-    max_kind, symbols, delta, analyzed, conseq, reasons, py_analyzed = (
+    max_kind, symbols, delta, analyzed, conseq, reasons, py_analyzed, _tier = (
         v._reclassify("/repo", ["Widget.cs"], "x"))
     assert analyzed is True and py_analyzed is False  # reclassified, but no Python complexity delta
     assert max_kind == "CONTRACT"
@@ -81,7 +81,7 @@ def test_reclassify_non_python_skipped_without_structural_fn() -> None:
     from pebra.adapters import git_change_verifier as gcv
 
     v = gcv.GitChangeVerifier()
-    max_kind, symbols, delta, analyzed, conseq, reasons, py_analyzed = (
+    max_kind, symbols, delta, analyzed, conseq, reasons, py_analyzed, _tier = (
         v._reclassify("/repo", ["Widget.cs"], "x"))
     assert analyzed is False and max_kind == "UNKNOWN"
 
@@ -96,7 +96,7 @@ def test_reclassify_non_python_fresh_but_unresolved_fails_closed(monkeypatch) ->
     monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "src")
     unresolved_fresh = FanInEvidence(resolution_method="unresolved", graph_freshness="fresh")
     v = gcv.GitChangeVerifier(structural_symbols_fn=lambda *a: unresolved_fresh)
-    _kind, _syms, _d, analyzed, _c, _r, _py = v._reclassify("/repo", ["Widget.cs"], "x")
+    _kind, _syms, _d, analyzed, _c, _r, _py, _tier = v._reclassify("/repo", ["Widget.cs"], "x")
     assert analyzed is True  # fresh graph, no owner -> fail closed (attempted), not silently skipped
 
 
@@ -115,7 +115,7 @@ def test_reclassify_fresh_unresolved_structural_file_is_not_masked_by_python_cos
     unresolved_fresh = FanInEvidence(resolution_method="unresolved", graph_freshness="fresh")
 
     v = gcv.GitChangeVerifier(structural_symbols_fn=lambda *a: unresolved_fresh)
-    kind, _syms, _d, analyzed, _c, _r, py_analyzed = (
+    kind, _syms, _d, analyzed, _c, _r, py_analyzed, _tier = (
         v._reclassify("/repo", ["doc.py", "Payment.cs"], "x")
     )
 
@@ -139,7 +139,7 @@ def test_reclassify_unparsable_python_is_not_masked_by_other_rows(monkeypatch) -
     monkeypatch.setattr(gcv, "compute_complexity_delta", lambda b, a: 0.0)
     monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [dict(behavioral)])
 
-    kind, _syms, _d, analyzed, _c, _r, py_analyzed = (
+    kind, _syms, _d, analyzed, _c, _r, py_analyzed, _tier = (
         gcv.GitChangeVerifier()._reclassify("/repo", ["bad.py", "good.py"], "x")
     )
 
@@ -161,7 +161,7 @@ def test_reclassify_non_source_file_does_not_use_structural_symbols(monkeypatch)
         return FanInEvidence(resolution_method="unresolved", graph_freshness="fresh")
 
     v = gcv.GitChangeVerifier(structural_symbols_fn=fake_structural)
-    _kind, _syms, _d, analyzed, _c, _r, _py = v._reclassify("/repo", ["README.md"], "x")
+    _kind, _syms, _d, analyzed, _c, _r, _py, _tier = v._reclassify("/repo", ["README.md"], "x")
     assert analyzed is False
     assert calls == []
 
@@ -175,8 +175,138 @@ def test_reclassify_non_python_absent_graph_does_not_force_escalation(monkeypatc
     monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "src")
     unresolved_absent = FanInEvidence(resolution_method="unresolved", graph_freshness="unknown")
     v = gcv.GitChangeVerifier(structural_symbols_fn=lambda *a: unresolved_absent)
-    _kind, _syms, _d, analyzed, _c, _r, _py = v._reclassify("/repo", ["Widget.cs"], "x")
+    _kind, _syms, _d, analyzed, _c, _r, _py, tier = v._reclassify("/repo", ["Widget.cs"], "x")
     assert analyzed is False
+    assert tier == "unavailable"  # graph resolved nothing -> NOT mislabeled "codegraph_structural"
+
+
+def test_reclassify_non_python_reproduces_semantic_tier_when_enabled(monkeypatch) -> None:
+    # P3: with the materialized-diff hook wired + the flag on, a non-Python source file is reproduced at
+    # the semantic tier (so a semantic-tier approval is reproducible at verify).
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence, MaterializedGraphDiffResult, MaterializedGraphDiffRow
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "before")
+    monkeypatch.setattr(gcv.GitChangeVerifier, "_read_after", lambda self, root, scope, f: "after")
+    ev = FanInEvidence(
+        resolution_method="location", graph_freshness="fresh", node_ids_resolved=("cs:M",),
+        resolved_qualified_names=("A.M",), resolved_file_paths=("Widget.cs",), resolved_symbol_count=1)
+
+    def fake_materialized(*, before_files, after_files, repo_root):
+        return MaterializedGraphDiffResult(available=True, rows=(MaterializedGraphDiffRow(
+            file_path="Widget.cs", qualified_name="A.M", language="csharp",
+            signature_changed=True, return_type_changed=False, visibility_changed=False),))
+
+    v = gcv.GitChangeVerifier(
+        structural_symbols_fn=lambda *a: ev,
+        materialized_diff_fn=fake_materialized,
+        semantic_diff_enabled=True,
+    )
+    _k, _s, _d, _a, _c, _r, _py, tier = v._reclassify(
+        "/repo", ["Widget.cs"], "x", thresholds={"codegraph_semantic_diff_enabled": 1.0})
+    assert tier == "codegraph_semantic"
+
+
+def test_reclassify_semantic_hook_skipped_when_language_not_full(monkeypatch) -> None:
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.language_capability import LanguageCapability
+    from pebra.core.models import FanInEvidence, MaterializedGraphDiffResult, MaterializedGraphDiffRow
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "before")
+    monkeypatch.setattr(gcv.GitChangeVerifier, "_read_after", lambda self, root, scope, f: "after")
+    ev = FanInEvidence(
+        resolution_method="location", graph_freshness="fresh", node_ids_resolved=("cs:M",),
+        resolved_qualified_names=("A.M",), resolved_symbol_count=1,
+        resolved_language="csharp", resolved_languages=("csharp",),
+        resolved_file_paths=("Widget.cs",), is_exported_contract=True)
+
+    def fake_materialized(*, before_files, after_files, repo_root):
+        return MaterializedGraphDiffResult(available=True, rows=(MaterializedGraphDiffRow(
+            file_path="Widget.cs", qualified_name="A.M", language="csharp",
+            signature_changed=True, return_type_changed=False, visibility_changed=False),))
+
+    def partial_capability(language: str, repo_root: str):
+        assert language == "csharp"
+        return LanguageCapability(
+            language="csharp", probe_status="measured", node_count=10,
+            signature_coverage_ratio=0.0, visibility_coverage_ratio=0.9)
+
+    v = gcv.GitChangeVerifier(
+        structural_symbols_fn=lambda *a: ev,
+        materialized_diff_fn=fake_materialized,
+        language_capability_fn=partial_capability,
+        semantic_diff_enabled=True,
+    )
+    _k, _s, _d, _a, _c, _r, _py, tier = v._reclassify(
+        "/repo", ["Widget.cs"], "x", thresholds={"codegraph_semantic_diff_enabled": 1.0})
+
+    assert tier == "codegraph_structural"
+
+
+def test_reclassify_semantic_hook_dark_without_flag(monkeypatch) -> None:
+    # flag OFF -> the hook is not consulted, verify stays on the coarse structural tier.
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "before")
+    monkeypatch.setattr(gcv.GitChangeVerifier, "_read_after", lambda self, root, scope, f: "after")
+    ev = FanInEvidence(
+        resolution_method="location", graph_freshness="fresh", node_ids_resolved=("cs:M",),
+        resolved_qualified_names=("A.M",), resolved_symbol_count=1, is_exported_contract=True)
+
+    def must_not_run(**_kw):
+        raise AssertionError("materialized diff must not run when the flag is off")
+
+    v = gcv.GitChangeVerifier(
+        structural_symbols_fn=lambda *a: ev,
+        materialized_diff_fn=must_not_run,
+        semantic_diff_enabled=True,
+    )
+    _k, _s, _d, _a, _c, _r, _py, tier = v._reclassify("/repo", ["Widget.cs"], "x")  # no threshold
+    assert tier == "codegraph_structural"
+
+
+def test_reclassify_semantic_hook_dark_without_deployment_gate(monkeypatch) -> None:
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "before")
+    monkeypatch.setattr(gcv.GitChangeVerifier, "_read_after", lambda self, root, scope, f: "after")
+    ev = FanInEvidence(
+        resolution_method="location", graph_freshness="fresh", node_ids_resolved=("cs:M",),
+        resolved_qualified_names=("A.M",), resolved_file_paths=("Widget.cs",),
+        resolved_symbol_count=1, is_exported_contract=True)
+
+    def must_not_run(**_kw):
+        raise AssertionError("materialized diff must not run when deployment gate is off")
+
+    v = gcv.GitChangeVerifier(structural_symbols_fn=lambda *a: ev, materialized_diff_fn=must_not_run)
+    _k, _s, _d, _a, _c, _r, _py, tier = v._reclassify(
+        "/repo", ["Widget.cs"], "x", thresholds={"codegraph_semantic_diff_enabled": 1.0}
+    )
+    assert tier == "codegraph_structural"
+
+
+def test_reclassify_semantic_hook_skipped_when_owner_unresolved(monkeypatch) -> None:
+    # Cost gate (mirrors assess): an unresolved/stale ev yields an empty floor, so the materialized
+    # diff would be wasted -> the subprocess hook must NOT run even with the flag on.
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "before")
+    monkeypatch.setattr(gcv.GitChangeVerifier, "_read_after", lambda self, root, scope, f: "after")
+    unresolved = FanInEvidence(resolution_method="unresolved", graph_freshness="fresh")
+
+    def must_not_run(**_kw):
+        raise AssertionError("materialized diff must not run when the owner is unresolved")
+
+    v = gcv.GitChangeVerifier(
+        structural_symbols_fn=lambda *a: unresolved,
+        materialized_diff_fn=must_not_run,
+        semantic_diff_enabled=True,
+    )
+    # fresh-but-unresolved fails closed to UNKNOWN via the existing rule; the point is the hook is skipped
+    v._reclassify("/repo", ["Widget.cs"], "x", thresholds={"codegraph_semantic_diff_enabled": 1.0})
 
 
 def test_reclassify_uses_threshold_override(monkeypatch) -> None:

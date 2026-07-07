@@ -14,14 +14,11 @@ Design constraints:
 - Fail-safe: absent SDK, absent covering tests, or an unsupported language all yield ``unavailable``
   (never ``passed``), so PEBRA keeps the write blocked instead of proceeding on nothing.
 
-CONTRACT (caller-enforced, NOT checked here): ``repo_path`` must be the materialization of exactly
-``patch_text`` — the caller applies ``patch_text`` to a scratch clone before calling. This verifier
-hashes ``patch_text`` and runs the covering tests against ``repo_path``; it does NOT re-derive the
-repo's actual diff, so if the caller materializes a DIFFERENT patch than the one it hashes, the green
-run is bound to the wrong patch and the binding is a lie. The robust way to honor this contract is for
-the caller to derive ``patch_text`` FROM ``repo_path``'s own diff (e.g. ``git diff``) rather than pass
-an independent string. This module is not yet wired to a live caller; when it is, that caller owns the
-patch↔repo consistency guarantee.
+CONTRACT (caller-enforced, checked at the runner boundary): ``repo_path`` must be the materialization
+of exactly ``patch_text`` and its covering tests must be derived from the patch's touched file(s), not
+from a subject-declared target. This verifier hashes ``patch_text`` and runs the selected covering
+tests against ``repo_path``; the live graph-repair runner owns the patch↔repo↔coverage consistency
+guarantee before calling this module.
 """
 
 from __future__ import annotations
@@ -44,8 +41,16 @@ def candidate_patch_hash(patch: str) -> str:
     return hashlib.sha256(patch.encode("utf-8")).hexdigest()
 
 
-def _evidence(status: str, *, patch_hash: str, checks: dict[str, str] | None = None,
-              reason: str | None = None) -> dict[str, Any]:
+def _evidence(
+    status: str,
+    *,
+    patch_hash: str,
+    checks: dict[str, str] | None = None,
+    reason: str | None = None,
+    test_project: str | None = None,
+    test_filter: str | None = None,
+    tests_selected: int | None = None,
+) -> dict[str, Any]:
     ev: dict[str, Any] = {
         "status": status,
         "checks": dict(checks or {}),
@@ -53,6 +58,15 @@ def _evidence(status: str, *, patch_hash: str, checks: dict[str, str] | None = N
         "domain": _DOMAIN,
         "verified_patch_hash": patch_hash,
     }
+    provenance: dict[str, Any] = {}
+    if test_project is not None:
+        provenance["test_project"] = test_project
+    if test_filter is not None:
+        provenance["test_filter"] = test_filter
+    if tests_selected is not None:
+        provenance["tests_selected"] = tests_selected
+    if provenance:
+        ev["provenance"] = provenance
     if reason is not None:
         ev["reason"] = reason
     return ev
@@ -87,8 +101,12 @@ def verify_candidate(
         timeout=timeout)
     if not result.available or not result.ran:
         return _evidence("unavailable", patch_hash=patch_hash,
-                         reason=result.error_summary or "covering-test run did not execute")
+                         reason=result.error_summary or "covering-test run did not execute",
+                         test_project=test_project, test_filter=test_filter,
+                         tests_selected=result.tests_selected)
 
     status = "passed" if result.passed else "failed"
     return _evidence(status, patch_hash=patch_hash, checks={_COVERING_CHECK: status},
-                     reason=None if result.passed else (result.error_summary or "covering tests failed"))
+                     reason=None if result.passed else (result.error_summary or "covering tests failed"),
+                     test_project=test_project, test_filter=test_filter,
+                     tests_selected=result.tests_selected)

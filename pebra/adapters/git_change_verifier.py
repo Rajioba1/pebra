@@ -22,6 +22,7 @@ from pebra.adapters.ast_diff_adapter import (
 )
 from pebra.core import change_classifier
 from pebra.core.constants import ChangeKind
+from pebra.core.language_capability import classify_tier
 from pebra.core.models import ActualDiffSummary
 
 _DEPENDENCY_GLOBS = (
@@ -50,6 +51,9 @@ class GitChangeVerifier:
         self,
         fanin_lookup: Callable[[list[str], str], dict[str, float]] | None = None,
         structural_symbols_fn: Callable[[str, str | None, str | None, str], Any] | None = None,
+        materialized_diff_fn: Callable[..., Any] | None = None,
+        language_capability_fn: Callable[[str, str], Any] | None = None,
+        semantic_diff_enabled: bool = False,
     ) -> None:
         # Injected by composition (bound to CodeGraphAdapter.percentiles_by_name). None -> verify keeps
         # the pre-A1 behavior (callers_percentile stays 0.0, no fan-in escalation). No adapter→adapter
@@ -59,6 +63,13 @@ class GitChangeVerifier:
         # changed files are reclassified from graph structure instead of being silently skipped. None ->
         # the pre-multilang behavior (non-.py files ignored). Same callable-shape-only dependency.
         self._structural_symbols_fn = structural_symbols_fn
+        # Semantic reproduction (symmetry with assess): bound to CodeGraphMaterializedDiffAdapter.diff.
+        # When wired, deployment-enabled, and the `codegraph_semantic_diff_enabled` threshold is on, a
+        # non-Python source file is reclassified with the SAME before/after signature diff assess used.
+        # None / either gate off -> the coarse structural tier (dark).
+        self._materialized_diff_fn = materialized_diff_fn
+        self._language_capability_fn = language_capability_fn
+        self._semantic_diff_enabled = semantic_diff_enabled
 
     def actual_diff(
         self, repo_root: str, scope: str, thresholds: dict[str, float] | None = None
@@ -72,9 +83,8 @@ class GitChangeVerifier:
                              for f in lowered)
         migration_changed = any("migration" in f for f in lowered)
 
-        max_kind, changed_symbols, complexity_delta, analyzed, consequential, reason, python_analyzed = (
-            self._reclassify(repo_root, files, scope, thresholds=thresholds)
-        )
+        (max_kind, changed_symbols, complexity_delta, analyzed, consequential, reason, python_analyzed,
+         actual_structure_tier) = self._reclassify(repo_root, files, scope, thresholds=thresholds)
         # record the delta whenever PYTHON files were analyzed — even a net-zero delta is signal
         # (distinct from "no Python files changed") for AD-29 benefit learning. Non-Python structural
         # reclassification does NOT measure a complexity delta, so it must not fabricate a 0.0 here.
@@ -91,7 +101,55 @@ class GitChangeVerifier:
             actual_consequence_reason=reason,
             measured_benefit_deltas=measured_deltas,
             reclassification_attempted=analyzed,
+            actual_structure_tier=actual_structure_tier,
         )
+
+    def _semantic_rows(
+        self, f: str, before: str | None, after: str | None, repo_root: str, ev: Any,
+        thresholds: dict[str, float] | None,
+    ) -> list[dict]:
+        """Reproduce the assess-path semantic tier for one non-Python file: run the before/after
+        materialized diff and ENRICH the coarse floor. Gated by deployment flag + request threshold +
+        measured-full language support (symmetry with assess). Modify-only (both sides present); the
+        REAL repo-relative filename ``f`` is used so CodeGraph selects the right language extractor.
+        Fail-soft to [] so verify never breaks and simply falls back to the coarse tier."""
+        if (
+            self._materialized_diff_fn is None
+            or not self._semantic_diff_enabled
+            or not (thresholds or {}).get("codegraph_semantic_diff_enabled")
+            or before is None
+            or after is None
+            # Mirror assess's gate: only spend the (subprocess) materialized diff when the graph
+            # actually resolved this owner by LOCATION. An unresolved/stale/absent ev yields an empty
+            # coarse floor, so the semantic result would be discarded — skip the wasted subprocess.
+            or getattr(ev, "resolution_method", "unresolved") != "location"
+        ):
+            return []
+        languages = tuple(getattr(ev, "resolved_languages", ()) or ())
+        if self._language_capability_fn is not None:
+            if len(languages) != 1:
+                return []
+            try:
+                cap = self._language_capability_fn(languages[0], repo_root)
+            except Exception:  # noqa: BLE001 - capability probing must fail closed to coarse tier
+                return []
+            if classify_tier(cap) != "full":
+                return []
+        try:
+            result = self._materialized_diff_fn(
+                before_files={f: before}, after_files={f: after}, repo_root=repo_root
+            )
+        except Exception:  # noqa: BLE001 - a materialized-diff failure must never break verify
+            return []
+        if not getattr(result, "available", False):
+            return []
+        rows = change_classifier.rows_from_materialized_graph_diff(result, ev)
+        # Only claim the semantic tier when it actually ENRICHED (rows differ from the coarse floor);
+        # a degraded-to-floor result is the coarse tier, so return [] and let the caller label it
+        # codegraph_structural — keeps verify's tier label honest and symmetric with assess.
+        if rows == change_classifier.rows_from_fanin(ev):
+            return []
+        return rows
 
     def _read_after(self, repo_root: str, scope: str, f: str) -> str | None:
         """The post-edit content of ``f`` for the scope: staged blob for ``staged``, else working tree."""
@@ -103,7 +161,7 @@ class GitChangeVerifier:
     def _reclassify(
         self, repo_root: str, files: list[str], scope: str,
         thresholds: dict[str, float] | None = None,
-    ) -> tuple[str, list[str], float, bool, bool, list[str], bool]:
+    ) -> tuple[str, list[str], float, bool, bool, list[str], bool, str]:
         """Rerun the symbol classifier on the actual diff (AD-27) + measure complexity delta.
 
         Python files use the full AST diff (and contribute the complexity delta). Non-Python files, when
@@ -120,6 +178,8 @@ class GitChangeVerifier:
         python_analyzed = False   # a Python file parsed cleanly -> complexity delta is real
         unparsable = False
         structural_unresolved = False
+        structural_attempted = False  # a non-Python file went through the graph-structural tier
+        used_semantic = False         # a non-Python file was reproduced at the semantic tier
         parsed_ok = False
         for f in files:
             if f.endswith(".py"):
@@ -136,38 +196,55 @@ class GitChangeVerifier:
                 rows.extend(compute_symbol_diff_rows(before, after, f))
                 complexity_delta += compute_complexity_delta(before, after)
             elif self._structural_symbols_fn is not None and _is_structural_source_file(f):
-                # Multi-language coarse reclassification for a non-Python changed file.
+                # Multi-language reclassification for a non-Python changed file.
                 before = git_adapter.file_at_rev(repo_root, "HEAD", f)
                 after = self._read_after(repo_root, scope, f)
                 ev = self._structural_symbols_fn(f, before, after, repo_root)
-                # Count this as an attempted reclassification only when the graph tool was actually
-                # AVAILABLE (fresh) — the non-Python analogue of Python's always-present ast. A
-                # fresh-but-unresolved change (e.g. a DELETED in-scope file) then fails CLOSED:
-                # analyzed=True + no rows -> actual_max_change_kind stays UNKNOWN with
-                # reclassification_attempted=True -> the classification_failed guardrail escalates. A
-                # merely absent/stale graph (freshness != fresh) is infra absence, not a change signal,
-                # so it must NOT force-escalate every non-Python edit (mirrors codegraph being optional).
+                # Only count the graph tier as actually USED when the graph was AVAILABLE (fresh) — the
+                # non-Python analogue of Python's always-present ast. A fresh-but-unresolved change (e.g.
+                # a DELETED in-scope file) then fails CLOSED (analyzed=True + no rows -> UNKNOWN +
+                # reclassification_attempted -> the classification_failed guardrail escalates). A merely
+                # absent/stale graph (freshness != fresh) is infra absence, NOT a change signal — it must
+                # not force-escalate, and must not mislabel the tier as structural (it resolved nothing).
                 if getattr(ev, "graph_freshness", "unknown") == "fresh":
                     analyzed = True
+                    structural_attempted = True
                     if getattr(ev, "resolution_method", "unresolved") == "unresolved":
                         structural_unresolved = True
-                rows.extend(change_classifier.rows_from_fanin(ev))
+                semantic_rows = self._semantic_rows(f, before, after, repo_root, ev, thresholds)
+                if semantic_rows:
+                    used_semantic = True
+                    rows.extend(semantic_rows)
+                else:
+                    rows.extend(change_classifier.rows_from_fanin(ev))
+
+        # Which tier the post-edit reclassification used (for assess/verify symmetry). Prefer the most
+        # informative tier actually produced: semantic (reproduced) > structural > python > unavailable.
+        if used_semantic:
+            tier = "codegraph_semantic"
+        elif structural_attempted:
+            tier = "codegraph_structural"
+        elif python_analyzed or unparsable:
+            tier = "python_ast"
+        else:
+            tier = "unavailable"
 
         if unparsable or structural_unresolved:
             # Any file we attempted but could not classify means the whole multi-file envelope is
             # unproven. Do not let another file's rows mask that failure.
-            return "UNKNOWN", [], complexity_delta, analyzed, False, [], python_analyzed
+            return "UNKNOWN", [], complexity_delta, analyzed, False, [], python_analyzed, tier
         if rows:
             self._enrich_fanin(rows, repo_root)
             summary = change_classifier.classify_diff(rows, thresholds or {})
             return (summary.max_change_kind, summary.changed_symbols, complexity_delta, analyzed,
                     summary.consequential_symbol_changed, list(summary.consequence_reason),
-                    python_analyzed)
+                    python_analyzed, tier)
         if parsed_ok:
             # parsed cleanly with no semantic change (docstring/comment/whitespace only) -> cosmetic
-            return ChangeKind.COSMETIC.value, [], complexity_delta, analyzed, False, [], python_analyzed
+            return (ChangeKind.COSMETIC.value, [], complexity_delta, analyzed, False, [],
+                    python_analyzed, tier)
         # nothing analyzed (pure non-code change, or non-Python with no structural lookup wired)
-        return "UNKNOWN", [], complexity_delta, analyzed, False, [], python_analyzed
+        return "UNKNOWN", [], complexity_delta, analyzed, False, [], python_analyzed, tier
 
     def _enrich_fanin(self, rows: list[dict], repo_root: str) -> None:
         """Fill ``callers_percentile`` per row from the graph engine (no-op when no lookup is wired or

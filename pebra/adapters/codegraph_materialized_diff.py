@@ -7,6 +7,7 @@ by stable ``(file_path, qualified_name)`` keys. It never treats missing metadata
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -16,6 +17,9 @@ from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
+from pebra.adapters import patch_header_adapter
+from pebra.adapters._paths import safe_relative_files
+from pebra.adapters.patch_materializer import materialize_patch
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
 from pebra.core.models import MaterializedGraphDiffResult, MaterializedGraphDiffRow
@@ -69,15 +73,20 @@ class CodeGraphMaterializedDiffAdapter:
                 latency_ms=_elapsed_ms(start),
             )
         try:
-            with tempfile.TemporaryDirectory(prefix="pebra-cg-before-") as before_tmp, (
-                tempfile.TemporaryDirectory(prefix="pebra-cg-after-")
-            ) as after_tmp:
-                before_root = Path(before_tmp)
-                after_root = Path(after_tmp)
-                _write_files(before_root, before_files)
-                _write_files(after_root, after_files)
-                before_nodes = _read_nodes(self._indexer(before_root))
-                after_nodes = _read_nodes(self._indexer(after_root))
+            # BUG-6: reuse ONE temp dir for before and after so both indexes share the identical
+            # absolute path prefix. This structurally prevents any path-derived component of a
+            # qualified_name/signature from making before/after spuriously differ (vs. two random dirs).
+            with tempfile.TemporaryDirectory(prefix="pebra-cg-") as tmp:
+                root = Path(tmp)
+                _write_files(root, before_files)
+                before_nodes = _read_nodes(self._indexer(root))
+                if not _clear_tree(root):
+                    return MaterializedGraphDiffResult(
+                        fallback_reason="could not clear materialized CodeGraph scratch tree",
+                        latency_ms=_elapsed_ms(start),
+                    )
+                _write_files(root, after_files)
+                after_nodes = _read_nodes(self._indexer(root))
         except (OSError, sqlite3.Error, subprocess.SubprocessError, ValueError) as exc:
             if str(exc) == "materialized owner key ambiguous":
                 return MaterializedGraphDiffResult(
@@ -121,6 +130,37 @@ class CodeGraphMaterializedDiffAdapter:
             latency_ms=_elapsed_ms(start),
         )
 
+    def diff_for_patch(self, *, repo_root: str, patch: str) -> MaterializedGraphDiffResult:
+        """Assess-path entrypoint: read the CURRENT working-tree content of the patch's touched files
+        (the before), apply the patch verbatim to derive the after, and diff. The before side is the
+        working tree — NOT HEAD — because the candidate narrows relative to what is on disk right now.
+        Fail-closed: disabled / no touched files / non-clean apply all return an unavailable result."""
+        if not self._enabled:
+            return MaterializedGraphDiffResult(fallback_reason="materialized CodeGraph diff disabled")
+        touched = patch_header_adapter.touched_files(patch)
+        if not touched:
+            return MaterializedGraphDiffResult(fallback_reason="no files touched by patch")
+        # The patch headers are untrusted input: reject absolute/.. paths BEFORE reading repo_root, so a
+        # malformed candidate can't read arbitrary files outside the repo (safe_relative_files also
+        # rejects symlink escapes by resolving against repo_root).
+        safe = safe_relative_files(repo_root, list(touched))
+        if len(safe) != len(touched):
+            return MaterializedGraphDiffResult(fallback_reason="invalid patch file path")
+        root = Path(repo_root)
+        before: dict[str, str | None] = {}
+        for rel in touched:
+            fp = root / rel
+            try:
+                before[rel] = fp.read_text(encoding="utf-8", errors="replace") if fp.is_file() else None
+            except OSError:
+                before[rel] = None
+        after = materialize_patch(before, patch)
+        if after is None:
+            return MaterializedGraphDiffResult(
+                fallback_reason="candidate patch did not apply cleanly to the current working tree"
+            )
+        return self.diff(before_files=before, after_files=after, repo_root=repo_root)
+
     def _index_with_codegraph(self, root: Path) -> Path:
         exe = find_engine()
         if exe is None:
@@ -140,6 +180,23 @@ class CodeGraphMaterializedDiffAdapter:
         if not db_path.is_file():
             raise FileNotFoundError(str(db_path))
         return db_path
+
+
+def _clear_tree(root: Path) -> bool:
+    """Remove every child of ``root`` (files + the .codegraph index dir) so the after-index is built on
+    a clean tree in the SAME dir the before-index used (BUG-6)."""
+    for child in root.iterdir():
+        if child.is_dir():
+            try:
+                shutil.rmtree(child)
+            except OSError:
+                return False
+        else:
+            try:
+                child.unlink()
+            except OSError:
+                return False
+    return True
 
 
 def _elapsed_ms(start: float) -> float:
@@ -214,6 +271,9 @@ def _compare_semantic_fields(
             out[changed_key] = None
             continue
         out[changed_key] = before_value != after_value
-    if out.get("signature_changed") is None:
+    # BUG-4: emit the row when ANY field was comparable (not just signature). A signature-poor owner
+    # (signature NULL both sides) with a real visibility/return-type change must NOT be discarded —
+    # gating on signature alone silently threw away visibility_changed for partial-signature owners.
+    if not any(value is not None for value in out.values()):
         return {}
     return out

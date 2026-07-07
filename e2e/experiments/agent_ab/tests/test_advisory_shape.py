@@ -124,7 +124,7 @@ def test_build_request_carries_revise_safer_attempt():
     assert req["thresholds"]["max_revise_safer_attempts"] == 1
 
 
-def test_build_request_carries_candidate_verification_evidence():
+def test_build_request_does_not_carry_candidate_verification_in_untrusted_evidence():
     req = real._build_request({
         "target_file": "src/Numerics/SpecialFunctions/Gamma.cs",
         "change_summary": "safer gamma refactor",
@@ -136,8 +136,4 @@ def test_build_request_carries_candidate_verification_evidence():
             "domain": "numeric_equivalence",
         },
     })
-    assert req["evidence"]["candidate_verification"]["status"] == "passed"
-    assert req["evidence"]["candidate_verification"]["checks"]["GammaTests"] == "passed"
-    assert req["evidence"]["candidate_verification"]["required_checks"] == [
-        "GammaTests", "numeric_equivalence_gamma",
-    ]
+    assert "candidate_verification" not in req["evidence"]

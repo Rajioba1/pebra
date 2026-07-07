@@ -46,6 +46,8 @@ def interpret(pairwise: Sequence[PairwiseComparison]) -> AssayInterpretation:
         return AssayInterpretation(models.VERDICT_ASSAY_INSENSITIVE, True, False, False, False)
     if pebra_vs_sham.net_benefit <= 0.0:
         return AssayInterpretation(models.VERDICT_PEBRA_INFERIOR, True, True, False, False)
+    if pebra_vs_sham.n_pairs_safe <= 0 or pebra_vs_blast.n_pairs_safe <= 0:
+        return AssayInterpretation(models.VERDICT_PEBRA_HARM_ONLY, True, True, False, False)
     exceeds = pebra_vs_blast.net_benefit > 0.0
     verdict = models.VERDICT_PEBRA_SUPERIOR if exceeds else models.VERDICT_PEBRA_PARTIAL
     # Gate 6 (only when the graph-repair arm is in this run): does the repair-context increment beat
@@ -53,6 +55,10 @@ def interpret(pairwise: Sequence[PairwiseComparison]) -> AssayInterpretation:
     # the base PEBRA_EFFICACY_PARTIAL verdict must remain visible.
     if exceeds and any(pc.intervention_arm == models.ARM_PEBRA_GRAPH_REPAIR for pc in pairwise):
         repair_vs_pebra = _find(pairwise, models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA)
+        if repair_vs_pebra.n_pairs_safe <= 0:
+            return AssayInterpretation(
+                models.VERDICT_PEBRA_GRAPH_REPAIR_HARM_ONLY, True, True, True, exceeds, False
+            )
         repair_exceeds = repair_vs_pebra.net_benefit > 0.0
         repair_verdict = (
             models.VERDICT_PEBRA_GRAPH_REPAIR_SUPERIOR if repair_exceeds

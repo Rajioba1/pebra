@@ -11,6 +11,7 @@ defers yaml/radon), so the dep-light CLI and the worked-example golden never pul
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from pebra.adapters.composite_evidence import CompositeEvidenceProvider
 from pebra.adapters.contract_surface import ContractSurfaceScanner
 from pebra.adapters.git_change_verifier import GitChangeVerifier
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
+from pebra.adapters.codegraph_materialized_diff import CodeGraphMaterializedDiffAdapter
 from pebra.adapters.import_graph_cache import GraphProvider
 from pebra.adapters.repository_registry import RepositoryRegistry
 from pebra.adapters.sanction_store import SanctionStore
@@ -127,6 +129,12 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         # Multi-language: same adapter probes DECLARED∩MEASURED per-language capability so the
         # controller can attach the resolved edit's language capability (honest per-language reach).
         "language_capability_provider": codegraph,
+        # Semantic tier: wired but DARK — the adapter is armed (enabled=True) yet dispatch only calls it
+        # when the deployment flag below is on, the request threshold opts in, and the resolved language
+        # measures `full`. Request thresholds alone cannot enable the live path.
+        "materialized_diff_provider": CodeGraphMaterializedDiffAdapter(enabled=True),
+        # Deployment dark gate: request thresholds alone cannot turn the expensive semantic tier on.
+        "semantic_diff_enabled": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF") == "1",
     }
 
 
@@ -143,6 +151,12 @@ def build_verify_ports() -> dict[str, Any]:
         "change_verifier": GitChangeVerifier(
             fanin_lookup=codegraph.percentiles_by_name,
             structural_symbols_fn=codegraph.structural_symbols,
+            # Semantic reproduction (symmetry with assess), also DARK behind the same threshold: a
+            # non-Python source file is re-diffed at the semantic tier so a semantic-tier approval is
+            # reproducible at verify (else the 3d guardrail would over-escalate it once live).
+            materialized_diff_fn=CodeGraphMaterializedDiffAdapter(enabled=True).diff,
+            language_capability_fn=codegraph.capability_for,
+            semantic_diff_enabled=os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF") == "1",
         ),
         "contract_surface": ContractSurfaceScanner(),
     }

@@ -34,6 +34,20 @@ def test_codegraph_structural_tier_adds_honesty_note_on_proceed() -> None:
     assert any("CodeGraph structure" in s for s in packet["advisory"]["suggested_inspection"])
 
 
+def test_codegraph_semantic_tier_also_adds_honesty_note_on_proceed() -> None:
+    from dataclasses import replace
+
+    # the semantic tier proves ONE owner's signature, not a whole-file public-surface guarantee -> it
+    # keeps the same honesty note on proceed. Pins the semantic branch of model_guidance's set literal.
+    inp = _worked_example_input()
+    inp = replace(inp, symbol_diff_evidence=replace(
+        inp.symbol_diff_evidence, structure_tier="codegraph_semantic"))
+    result = de.decide(ab.build_assessment(inp))
+    packet = mg.render(result, inp.action, eg.render(result))
+    assert result.recommended_decision.value == "proceed"
+    assert any("CodeGraph structure" in s for s in packet["advisory"]["suggested_inspection"])
+
+
 def test_default_unavailable_tier_adds_no_note() -> None:
     # the long-standing default tier must NOT add noise to every proceed (only the coarse tier does)
     assert not any(

@@ -521,6 +521,7 @@ class CodeGraphAdapter:
                 has_signature_metadata=ctx["has_signature_metadata"],
                 resolved_language=ctx["resolved_language"],
                 resolved_languages=ctx["resolved_languages"],
+                resolved_file_paths=ctx["resolved_file_paths"],
                 resolved_qualified_names=ctx["resolved_qualified_names"],
             )
         except (sqlite3.Error, OSError) as exc:
@@ -599,6 +600,7 @@ class CodeGraphAdapter:
                 has_signature_metadata=ctx["has_signature_metadata"],
                 resolved_language=ctx["resolved_language"],
                 resolved_languages=ctx["resolved_languages"],
+                resolved_file_paths=ctx["resolved_file_paths"],
                 resolved_qualified_names=ctx["resolved_qualified_names"],
             )
         except (sqlite3.Error, OSError) as exc:
@@ -900,6 +902,7 @@ class CodeGraphAdapter:
                 "has_signature_metadata": False,
                 "resolved_language": None,
                 "resolved_languages": (),
+                "resolved_file_paths": (),
                 "resolved_qualified_names": (),
             }
         id_ph = ",".join("?" * len(node_ids))
@@ -913,6 +916,7 @@ class CodeGraphAdapter:
         kinds: list[str] = []
         max_span = 0
         languages: list[str] = []
+        file_paths: list[str] = []
         qualified_names: list[str] = []
         for nid in node_ids:
             r = by_id.get(nid)
@@ -926,6 +930,9 @@ class CodeGraphAdapter:
             lang = r["language"]
             if lang and lang not in languages:
                 languages.append(str(lang))
+            fp = r["file_path"]
+            if fp and fp not in file_paths:
+                file_paths.append(str(fp).replace("\\", "/"))
             qn = r["qualified_name"]
             if qn:
                 qualified_names.append(str(qn))
@@ -980,6 +987,7 @@ class CodeGraphAdapter:
             # reported explicitly so callers do not pretend the first language represents the whole edit.
             "resolved_language": languages[0] if languages else None,
             "resolved_languages": tuple(languages),
+            "resolved_file_paths": tuple(file_paths),
             "resolved_qualified_names": tuple(qualified_names),
             **file_meta,
             **contract_meta,

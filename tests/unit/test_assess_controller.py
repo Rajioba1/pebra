@@ -176,6 +176,26 @@ def test_controller_reproduces_worked_example_decision() -> None:
     assert r.risk_mode is RiskMode.SENSITIVE_CONTEXT
 
 
+def test_trusted_candidate_verification_sidecar_selected_by_action_id() -> None:
+    request = _request_with_patch()
+    raw = {
+        "a1": {
+            "status": "passed",
+            "checks": {"targeted_tests": "passed"},
+            "required_checks": ["targeted_tests"],
+            "domain": "covering_tests",
+            "verified_patch_hash": "a" * 64,
+        }
+    }
+
+    verification = ac._trusted_verification_for_action(raw, request.candidate_actions[0])
+
+    assert verification is not None
+    assert verification.status == "passed"
+    assert verification.required_checks == ["targeted_tests"]
+    assert verification.verified_patch_hash == "a" * 64
+
+
 def test_controller_reproduces_worked_example_numbers() -> None:
     outcome, _ = _run()
     s = outcome.recommended_result.scores
@@ -636,3 +656,101 @@ def test_assess_store_attempt_error_fails_open_to_caller_attempt() -> None:
     )
 
     assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN
+
+
+# --- P1: codegraph_semantic tier dispatch (dark-gated) ---
+
+
+class _FakeMaterializedDiff:
+    def __init__(self, result):
+        self.result = result
+
+    def diff_for_patch(self, *, repo_root, patch):
+        return self.result
+
+    def diff(self, **_kw):  # pragma: no cover - unused by the dispatch
+        return self.result
+
+
+def _full_cap():
+    return LanguageCapability(
+        language="typescript", probe_status="measured", node_count=100,
+        signature_coverage_ratio=0.9, visibility_coverage_ratio=0.9)
+
+
+def _semantic_ev():
+    return m.FanInEvidence(
+        resolution_method="location", graph_freshness="fresh", node_ids_resolved=("ts:f",),
+        resolved_qualified_names=("f",), resolved_language="typescript",
+        resolved_languages=("typescript",), resolved_file_paths=("src/a.ts",),
+        resolved_symbol_count=1, symbol_fan_in_percentile=0.5)
+
+
+def _run_semantic(ev, materialized, *, enabled=True, provider=True, deployment_enabled=True):
+    store = FakeStore()
+    thr = {**_THRESHOLDS}
+    if enabled:
+        thr["codegraph_semantic_diff_enabled"] = 1.0
+    return ac.assess(
+        _request_with_patch(), thresholds=thr, start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(), symbol_diff_provider=_UnparsedSymbolDiff(),
+        blast_provider=FakeBlast(), sanction_port=FakeSanction(), repository_registry=FakeRegistry(),
+        store=store, fanin_provider=FakeFanInProvider(ev),
+        language_capability_provider=FakeCapabilityProvider(_full_cap()),
+        materialized_diff_provider=_FakeMaterializedDiff(materialized) if provider else None,
+        semantic_diff_enabled=deployment_enabled,
+    )
+
+
+def _sig_change_result():
+    return m.MaterializedGraphDiffResult(
+        available=True,
+        rows=(m.MaterializedGraphDiffRow(
+            file_path="src/a.ts", qualified_name="f", language="typescript",
+            signature_changed=True, return_type_changed=False, visibility_changed=False),))
+
+
+def test_semantic_tier_enriches_when_enabled_full_language() -> None:
+    sse = _run_semantic(_semantic_ev(), _sig_change_result()).recommended_result.symbol_scope_evidence
+    assert sse["structure_tier"] == "codegraph_semantic"
+    assert sse["max_change_kind"] == "CONTRACT"  # proven signature change
+
+
+def test_semantic_tier_falls_back_to_structural_when_disabled() -> None:
+    sse = _run_semantic(
+        _semantic_ev(), _sig_change_result(), enabled=False).recommended_result.symbol_scope_evidence
+    assert sse["structure_tier"] == "codegraph_structural"  # flag off -> coarse, materializer unused
+
+
+def test_semantic_tier_dark_without_provider_is_structural() -> None:
+    # production default (composition does not wire the provider yet) -> coarse tier, byte-identical.
+    sse = _run_semantic(
+        _semantic_ev(), _sig_change_result(), provider=False).recommended_result.symbol_scope_evidence
+    assert sse["structure_tier"] == "codegraph_structural"
+
+
+def test_semantic_tier_dark_without_deployment_gate_is_structural() -> None:
+    sse = _run_semantic(
+        _semantic_ev(), _sig_change_result(), deployment_enabled=False
+    ).recommended_result.symbol_scope_evidence
+    assert sse["structure_tier"] == "codegraph_structural"
+
+
+def test_semantic_tier_unavailable_result_falls_back_to_structural() -> None:
+    unavailable = m.MaterializedGraphDiffResult(available=False, fallback_reason="patch did not apply")
+    sse = _run_semantic(_semantic_ev(), unavailable).recommended_result.symbol_scope_evidence
+    assert sse["structure_tier"] == "codegraph_structural"
+
+
+def test_semantic_tier_multi_owner_degrades_to_honest_structural_label() -> None:
+    # False-provenance fix: materialized diff AVAILABLE but the patch resolved 2 owners -> the enrichment
+    # degrades to the coarse floor (ambiguous join). The tier must be labeled codegraph_structural
+    # (honest), NOT codegraph_semantic, since no signature-level check actually applied.
+    ev = m.FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        node_ids_resolved=("ts:f", "ts:g"), resolved_qualified_names=("f", "g"),
+        resolved_language="typescript", resolved_languages=("typescript",),
+        resolved_file_paths=("src/a.ts", "src/b.ts"), resolved_symbol_count=2,
+        symbol_fan_in_percentile=0.5)
+    sse = _run_semantic(ev, _sig_change_result()).recommended_result.symbol_scope_evidence
+    assert sse["structure_tier"] == "codegraph_structural"  # degraded -> honest coarse label

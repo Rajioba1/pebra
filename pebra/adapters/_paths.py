@@ -8,7 +8,7 @@ BEFORE reading/copying, so analysis can never touch files outside the repo. Inva
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 
 def safe_relative_files(repo_root: str, files: list[str]) -> list[str]:
@@ -20,6 +20,8 @@ def safe_relative_files(repo_root: str, files: list[str]) -> list[str]:
     root = Path(repo_root).resolve()
     safe: list[str] = []
     for rel in files:
+        if PureWindowsPath(rel).drive or ":" in rel:
+            continue
         p = Path(rel)
         if p.is_absolute() or ".." in p.parts:
             continue

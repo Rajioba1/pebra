@@ -16,6 +16,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +28,7 @@ from e2e.experiments.agent_ab import forbidden, models
 from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
 from e2e.experiments.agent_ab.tools import (
     advisory_blast_radius, advisory_check_real, advisory_check_sham, advisory_contract,
+    candidate_materializer, candidate_verifier, covering_tests_resolver,
 )
 from e2e.external.utils import dotnet_harness as dn
 from e2e.external.utils import repo_source as rs
@@ -34,6 +36,7 @@ from e2e.utils import cli_harness
 
 _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _MIN_CSHARP_NODES = 50
+_DIFF_GIT = re.compile(r"^diff --git a/(.*) b/(.*)$")
 
 # ---- assay arm sets (legacy 2-arm control/treatment map onto sham/pebra behavior) ---------------
 _RISKY_ARMS = (
@@ -161,8 +164,54 @@ def _covering_tests_hint(spec: TaskSpec) -> str:
     return hint
 
 
+def _patch_touched_files(patch: str) -> tuple[str, ...]:
+    paths: set[str] = set()
+    for line in patch.splitlines():
+        if m := _DIFF_GIT.match(line):
+            paths.add(m.group(1).replace("\\", "/"))
+            paths.add(m.group(2).replace("\\", "/"))
+    return tuple(sorted(paths))
+
+
+def _verify_candidate_for_repair(
+    payload: dict[str, Any], repo_path: Path, build_solution: str
+) -> dict[str, Any]:
+    """Host-produced candidate verification for the graph_repair arm: materialize the agent's narrowed
+    candidate, discover its covering tests via a graph caller-query (NOT the hidden oracle), run them,
+    and return hash-bound ``candidate_verification`` evidence for PEBRA's gate 7. Fail-safe to
+    ``unavailable`` (never a fabricated pass); the hash always binds the exact resubmitted patch."""
+    patch = str(payload.get("proposed_patch", ""))
+    unavailable = {
+        "status": "unavailable", "required_checks": ["covering_tests"], "domain": "covering_tests",
+        "verified_patch_hash": candidate_verifier.candidate_patch_hash(patch),
+    }
+    if not patch:
+        return {**unavailable, "reason": "no candidate patch to verify"}
+    touched = _patch_touched_files(patch)
+    declared_target = str(payload.get("target_file", "")).replace("\\", "/").lstrip("/")
+    if len(touched) != 1:
+        return {**unavailable, "reason": "candidate patch must touch exactly one target file"}
+    patch_target = touched[0]
+    if declared_target and patch_target != declared_target:
+        return {**unavailable, "reason": "candidate patch target does not match advisory target"}
+    scratch = candidate_materializer.materialize_candidate(repo_path, patch)
+    if scratch is None:
+        return {**unavailable, "reason": "candidate patch did not apply cleanly"}
+    try:
+        project, test_filter = covering_tests_resolver.find_covering_tests(
+            repo_path, patch_target, patch
+        )
+        return candidate_verifier.verify_candidate(
+            repo_path=scratch, patch_text=patch, language="csharp",
+            test_project=project, test_filter=test_filter, build_solution=build_solution,
+        )
+    finally:
+        candidate_materializer.cleanup(scratch)
+
+
 def _advisory_backend(
-    arm: str, repo_path: Path, db_path: Path, *, covering_hint: str = ""
+    arm: str, repo_path: Path, db_path: Path, *, covering_hint: str = "",
+    build_solution: str = "TemplateBlueprint.sln",
 ) -> Callable[..., dict[str, Any]]:
     """Return the callable backing the SAME 'advisory_check' tool. Only the CONTENT differs by arm:
     pebra/treatment -> real PEBRA; blast_radius -> dependent-file list (no verdict); everyone else
@@ -174,11 +223,30 @@ def _advisory_backend(
     if arm in _REAL_ADVISORY_ARMS:
         revise_attempts: dict[str, int] = {}
 
+        is_repair = arm == models.ARM_PEBRA_GRAPH_REPAIR
+        # The repair arm raises the attempt cap to 2 so the narrowed+verified resubmission can reach
+        # gate 7 (with the default 1 it is exhausted first and gate 7 is unreachable). Other arms stay 1.
+        max_attempts = 2 if is_repair else 1
+
         def _real(payload: dict[str, Any]) -> dict[str, Any]:
             target = str(payload.get("target_file", ""))
             attempt = revise_attempts.get(target, 0)
+            # NEVER trust a subject-supplied candidate_verification. The hash-binding in the decision
+            # engine only stops REPLAY against a different patch; it is NOT an authenticity check
+            # (verified_patch_hash = sha256(the subject's own patch) is secret-free, so a subject could
+            # forge a correctly-hashed {"status":"passed"} and flip the persisted decision to proceed).
+            # So we strip it unconditionally on EVERY real-advisory arm and every attempt; only the
+            # repair arm's HOST-PRODUCED verification (materialize -> covering tests -> run -> hash-bound
+            # evidence) below is ever allowed to reach the engine.
+            payload = {k: v for k, v in payload.items() if k != "candidate_verification"}
+            # On the narrowed RESUBMISSION (attempt >= 1) the repair arm host-produces the verification
+            # and injects it — this is the only path by which candidate_verification reaches the engine.
+            if is_repair and attempt >= 1:
+                payload = {**payload, "candidate_verification":
+                           _verify_candidate_for_repair(payload, repo_path, build_solution)}
             result = advisory_check_real.advise(
-                payload, repo_root=repo_path, db=db_path, revise_safer_attempt=attempt
+                payload, repo_root=repo_path, db=db_path, revise_safer_attempt=attempt,
+                max_revise_safer_attempts=max_attempts,
             )
             if result.get("recommended_decision") == "revise_safer":
                 revise_attempts[target] = attempt + 1
@@ -306,6 +374,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         advisory_backend=_advisory_backend(
             arm, repo_path, db_path,
             covering_hint=_covering_tests_hint(spec) if arm == models.ARM_PEBRA_GRAPH_REPAIR else "",
+            build_solution=spec.build_solution,
         ),
         baseline_build=baseline,
         subject_prompt=_build_subject_prompt(spec, repo_path, arm),

@@ -60,11 +60,18 @@ def assess(
     *,
     repo_root: Path | str,
     db: Path | str,
+    trusted_candidate_verification_path: Path | str | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> dict:
-    return _run_json([
+    args = [
         "assess", str(request_path), "--json", "--repo-root", str(repo_root), "--db", str(db),
-    ], extra_env=extra_env)
+    ]
+    if trusted_candidate_verification_path is not None:
+        args += [
+            "--trusted-candidate-verification-file",
+            str(trusted_candidate_verification_path),
+        ]
+    return _run_json(args, extra_env=extra_env)
 
 
 def record_outcome(

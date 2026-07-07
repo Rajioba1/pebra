@@ -302,7 +302,7 @@ def decide(
     consequential_or_unknown = (
         sse["consequential_symbol_changed"]
         or sse["max_change_kind"] == "UNKNOWN"
-        or sse.get("structure_tier") == "codegraph_structural"
+        or sse.get("structure_tier") in {"codegraph_structural", "codegraph_semantic"}
     )
 
     # --- Gate 2: C4 always ask_human on consequential/unknown symbol change ---

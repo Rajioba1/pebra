@@ -2,7 +2,7 @@ from pebra.adapters.request_evidence import RequestEvidenceProvider
 from pebra.core.models import AssessmentRequest, CandidateAction
 
 
-def test_request_evidence_parses_candidate_verification() -> None:
+def test_request_evidence_ignores_candidate_verification_from_request() -> None:
     request = AssessmentRequest(
         task="verify safer route",
         candidate_actions=[CandidateAction(id="a1", label="edit", action_type="edit")],
@@ -22,15 +22,15 @@ def test_request_evidence_parses_candidate_verification() -> None:
         request, request.candidate_actions[0], repo_root="."
     )
 
-    assert bundle.candidate_verification.status == "passed"
-    assert bundle.candidate_verification.checks["GammaTests"] == "passed"
-    assert bundle.candidate_verification.required_checks == ["GammaTests"]
-    assert bundle.candidate_verification.domain == "numeric_equivalence"
-    assert bundle.candidate_verification.reason == "all sampled values stayed within tolerance"
-    assert bundle.candidate_verification.verified_patch_hash == "a" * 64
+    assert bundle.candidate_verification.status == "not_applicable"
+    assert bundle.candidate_verification.checks == {}
+    assert bundle.candidate_verification.required_checks == []
+    assert bundle.candidate_verification.domain is None
+    assert bundle.candidate_verification.reason is None
+    assert bundle.candidate_verification.verified_patch_hash is None
 
 
-def test_request_evidence_rejects_non_string_verified_patch_hash() -> None:
+def test_request_evidence_ignores_non_string_verified_patch_hash() -> None:
     request = AssessmentRequest(
         task="verify safer route",
         candidate_actions=[CandidateAction(id="a1", label="edit", action_type="edit")],
@@ -41,5 +41,7 @@ def test_request_evidence_rejects_non_string_verified_patch_hash() -> None:
         request, request.candidate_actions[0], repo_root="."
     )
 
-    # A non-string hash cannot bind a patch; it must land as None (fail-safe), never crash parsing.
+    # Candidate verification is host/controller evidence, not request evidence. Malformed blobs must
+    # be ignored, never interpreted.
     assert bundle.candidate_verification.verified_patch_hash is None
+    assert bundle.candidate_verification.status == "not_applicable"

@@ -33,27 +33,11 @@ class RequestEvidenceProvider:
             deltas=dict(bde_raw.get("deltas", {})),
             future_change_exposure=bde_raw.get("future_change_exposure", 0.0),
         )
-        verification_raw = ev.get("candidate_verification", {})
-        verification = (
-            CandidateVerificationEvidence(
-                status=str(verification_raw.get("status", "not_applicable")),
-                checks=dict(verification_raw.get("checks", {})),
-                required_checks=[
-                    str(check)
-                    for check in verification_raw.get("required_checks", [])
-                    if isinstance(check, str)
-                ],
-                domain=verification_raw.get("domain"),
-                reason=verification_raw.get("reason"),
-                verified_patch_hash=(
-                    str(verification_raw["verified_patch_hash"])
-                    if isinstance(verification_raw.get("verified_patch_hash"), str)
-                    else None
-                ),
-            )
-            if isinstance(verification_raw, dict)
-            else CandidateVerificationEvidence()
-        )
+        # Candidate verification is trusted host/controller evidence, not model/request evidence. A
+        # caller can always compute sha256(their own patch), so accepting this blob from the request
+        # would let an untrusted subject forge "passed" checks. assess_controller may inject trusted
+        # verification through its explicit host-only argument after this provider returns.
+        verification = CandidateVerificationEvidence()
         return EvidenceBundle(
             events=list(ev.get("events", [])),
             p_success=ev.get("p_success", COLD_START_PRIORS["p_success"]),

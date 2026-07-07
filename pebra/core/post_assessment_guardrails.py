@@ -63,6 +63,11 @@ class GuardrailInput:
     # with real fan-in). Escalate only when NEWLY consequential — never re-flag what assess approved.
     pre_edit_consequential: bool = False
     actual_consequential: bool = False
+    # Assess/verify tier symmetry: the structural tier assess used to APPROVE this action vs the tier
+    # verify could reproduce on the actual diff. A semantic-tier approval verify cannot reproduce is
+    # escalated (we relied on a signature-level check verify can't confirm).
+    pre_edit_structure_tier: str = "unavailable"
+    actual_structure_tier: str = "unavailable"
 
 
 @dataclass
@@ -195,6 +200,22 @@ def evaluate(inp: GuardrailInput) -> GuardrailResult:
         reasons.append(
             "Actual change is consequential by post-edit fan-in/scope evidence that the pre-edit "
             "assessment did not flag; inspect before autonomous proceed."
+        )
+        candidates.append(Decision.INSPECT_FIRST)
+
+    # --- 3d. Assess/verify tier asymmetry (semantic approval not reproducible) ---
+    # Assess approved this action using the codegraph_semantic tier (a proven signature-level check),
+    # but verify could not reproduce that tier on the actual diff — so the signature-level guarantee the
+    # approval leaned on is unconfirmed post-edit. Escalate rather than trust it. No-op for every
+    # existing flow (Python / coarse-tier / unavailable pre-edit tiers never trip it).
+    semantic_not_reproduced = (
+        inp.pre_edit_structure_tier == "codegraph_semantic"
+        and inp.actual_structure_tier != "codegraph_semantic"
+    )
+    if semantic_not_reproduced:
+        reasons.append(
+            "Pre-edit approval used a CodeGraph semantic (signature-level) check that post-edit "
+            "verification could not reproduce; inspect before autonomous proceed."
         )
         candidates.append(Decision.INSPECT_FIRST)
 

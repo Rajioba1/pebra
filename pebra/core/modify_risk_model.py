@@ -134,7 +134,9 @@ def events_for_modify_risk(
     # A coarse codegraph_structural classification is still uncertain (owner touched, inner change
     # unseen), so it counts as an unknown change here — otherwise reclassifying UNKNOWN -> BEHAVIORAL
     # for an internal owner would silently drop the MODIFY dependency_break event this term feeds.
-    unknown_change = kind is ChangeKind.UNKNOWN or symbol_diff.structure_tier == "codegraph_structural"
+    unknown_change = kind is ChangeKind.UNKNOWN or symbol_diff.structure_tier in {
+        "codegraph_structural", "codegraph_semantic"
+    }
     public_consequential = _is_public(symbol_diff) and symbol_diff.consequential_symbol_changed
     graph_public_contract = _graph_public_contract(fanin)
     graph_important_modify = (high_fanin or large_owner or broad_symbol_edit) and (

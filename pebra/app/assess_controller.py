@@ -33,6 +33,7 @@ from pebra.core.models import (
     AssessmentRequest,
     AssessmentResult,
     CandidateAction,
+    CandidateVerificationEvidence,
     FileFanInRollup,
 )
 from pebra.ports.blast_radius_port import BlastRadiusProvider
@@ -40,6 +41,7 @@ from pebra.ports.fanin_port import FanInProvider
 from pebra.ports.file_fanin_port import FileFanInProvider
 from pebra.ports.evidence_port import EvidenceProvider
 from pebra.ports.language_capability_port import LanguageCapabilityProvider
+from pebra.ports.materialized_diff_port import MaterializedGraphDiffProvider
 from pebra.ports.repository_registry_port import RepositoryRegistryPort
 from pebra.ports.sanction_port import SanctionPort
 from pebra.ports.snapshot_read_port import SnapshotReadPort
@@ -131,6 +133,9 @@ def _build_input(
     fanin_provider: FanInProvider | None = None,
     file_fanin_provider: FileFanInProvider | None = None,
     language_capability_provider: LanguageCapabilityProvider | None = None,
+    materialized_diff_provider: MaterializedGraphDiffProvider | None = None,
+    semantic_diff_enabled: bool = False,
+    trusted_candidate_verification: CandidateVerificationEvidence | None = None,
 ) -> AssessmentInput:
     evidence = evidence_provider.gather_evidence(request, action, repo_root)
     symbol_diff = symbol_diff_provider.symbol_diff(action, repo_root)
@@ -183,7 +188,40 @@ def _build_input(
                     fanin_ev, language_capability_provider, language_capability
                 )
             ):
-                rows = change_classifier.rows_from_fanin(fanin_ev)
+                # Semantic tier (dark, opt-in): for a measured-`full` language, materialize the
+                # candidate and produce a real before/after signature/return/visibility diff that
+                # ENRICHES the coarse floor. Falls back to the coarse tier when disabled / not `full` /
+                # unavailable. Default-off threshold -> Python and every existing caller are untouched.
+                materialized = None
+                if (
+                    materialized_diff_provider is not None
+                    and semantic_diff_enabled
+                    and effective_thresholds.get("codegraph_semantic_diff_enabled")
+                    and classify_tier(language_capability) == "full"
+                ):
+                    materialized = materialized_diff_provider.diff_for_patch(
+                        repo_root=repo_root, patch=action.proposed_patch
+                    )
+                # Honest tier label: `rows_from_materialized_graph_diff` DEGRADES to the pure coarse
+                # floor when the diff is unavailable or the join is ambiguous (multi-owner). Only label
+                # "codegraph_semantic" when it actually ENRICHED (rows differ from the coarse floor) —
+                # otherwise no signature-level check happened and the honest tier is coarse-structural.
+                coarse = change_classifier.rows_from_fanin(fanin_ev)
+                enriched = (
+                    change_classifier.rows_from_materialized_graph_diff(materialized, fanin_ev)
+                    if materialized is not None and materialized.available
+                    else coarse
+                )
+                if enriched != coarse:
+                    rows, tier, tier_reason = enriched, "codegraph_semantic", (
+                        "graph-semantic before/after classification "
+                        "(materialized signature/return/visibility diff)"
+                    )
+                else:
+                    rows, tier, tier_reason = coarse, "codegraph_structural", (
+                        "graph-structural coarse classification "
+                        "(no AST-level symbol diff for this language)"
+                    )
                 if rows:
                     summary = change_classifier.classify_diff(rows, effective_thresholds)
                     symbol_diff = replace(
@@ -198,11 +236,8 @@ def _build_input(
                         consequence_reason=list(dict.fromkeys(
                             symbol_diff.consequence_reason + summary.consequence_reason
                         )),
-                        fallback_reason=(
-                            "graph-structural coarse classification "
-                            "(no AST-level symbol diff for this language)"
-                        ),
-                        structure_tier="codegraph_structural",
+                        fallback_reason=tier_reason,
+                        structure_tier=tier,
                     )
             patched = replace(
                 symbol_diff,
@@ -292,7 +327,7 @@ def _build_input(
         review_cost_variance=evidence.review_cost_variance,
         variance_breakdown=evidence.variance_breakdown,
         benefit_delta_evidence=evidence.benefit_delta_evidence,
-        candidate_verification=evidence.candidate_verification,
+        candidate_verification=trusted_candidate_verification or evidence.candidate_verification,
         symbol_diff_evidence=symbol_diff,
         fanin_evidence=fanin_ev,
         language_capability=language_capability,
@@ -321,6 +356,9 @@ def _score_action(
         fanin_provider=ports.get("fanin_provider"),
         file_fanin_provider=ports.get("file_fanin_provider"),
         language_capability_provider=ports.get("language_capability_provider"),
+        materialized_diff_provider=ports.get("materialized_diff_provider"),
+        semantic_diff_enabled=bool(ports.get("semantic_diff_enabled", False)),
+        trusted_candidate_verification=ports.get("trusted_candidate_verification"),
     )
     # Phase-4 reframe: capture structural features pre-scoring and attach to the IR for CAPTURE only.
     # assessment_builder/decision_engine ignore inp.structural_features (no score/gate change — Hard
@@ -443,6 +481,40 @@ def _recommended(scored: list[ScoredAction]) -> ScoredAction:
     return max(pool, key=lambda s: s.result.scores["rau"])
 
 
+def _candidate_verification_from_raw(raw: dict[str, Any]) -> CandidateVerificationEvidence:
+    return CandidateVerificationEvidence(
+        status=str(raw.get("status", "not_applicable")),
+        checks=dict(raw.get("checks", {})),
+        required_checks=[str(check) for check in raw.get("required_checks", []) if isinstance(check, str)],
+        domain=raw.get("domain"),
+        reason=raw.get("reason"),
+        verified_patch_hash=(
+            str(raw["verified_patch_hash"])
+            if isinstance(raw.get("verified_patch_hash"), str)
+            else None
+        ),
+    )
+
+
+def _trusted_verification_for_action(
+    raw: dict[str, Any] | None, action: CandidateAction
+) -> CandidateVerificationEvidence | None:
+    """Host-only candidate verification injected outside request.evidence.
+
+    Accepted shapes:
+    - a single verification dict with a ``status`` field, for one-action surfaces;
+    - ``{action_id: verification_dict}`` for multi-action surfaces.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if isinstance(raw.get("status"), str):
+        return _candidate_verification_from_raw(raw)
+    action_raw = raw.get(action.id)
+    if isinstance(action_raw, dict):
+        return _candidate_verification_from_raw(action_raw)
+    return None
+
+
 def assess(
     request: AssessmentRequest,
     *,
@@ -461,6 +533,9 @@ def assess(
     fanin_provider: FanInProvider | None = None,
     file_fanin_provider: FileFanInProvider | None = None,
     language_capability_provider: LanguageCapabilityProvider | None = None,
+    materialized_diff_provider: MaterializedGraphDiffProvider | None = None,
+    semantic_diff_enabled: bool = False,
+    trusted_candidate_verification: dict[str, Any] | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     repo = repository_registry.resolve(start_path)
@@ -491,6 +566,11 @@ def assess(
                 fanin_provider=fanin_provider,
                 file_fanin_provider=file_fanin_provider,
                 language_capability_provider=language_capability_provider,
+                materialized_diff_provider=materialized_diff_provider,
+                semantic_diff_enabled=semantic_diff_enabled,
+                trusted_candidate_verification=_trusted_verification_for_action(
+                    trusted_candidate_verification, action
+                ),
             )
         )
 

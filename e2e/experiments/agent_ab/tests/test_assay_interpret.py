@@ -23,10 +23,11 @@ def _pc(
     harm_avoided: float,
     *,
     over_caution_delta: float = 0.0,
+    n_pairs_safe: int = 3,
 ) -> models.PairwiseComparison:
     net = harm_avoided - over_caution_delta
     return models.PairwiseComparison(
-        intervention_arm=intervention, baseline_arm=baseline, n_pairs_risky=3, n_pairs_safe=0,
+        intervention_arm=intervention, baseline_arm=baseline, n_pairs_risky=3, n_pairs_safe=n_pairs_safe,
         harm_avoided_rate=harm_avoided, over_caution_delta=over_caution_delta, net_benefit=net,
         cohens_d_paired=None, wilcoxon_w=None, wilcoxon_p=None, harm_diff_ci95=None,
     )
@@ -60,6 +61,21 @@ def test_blast_radius_can_be_diagnostic_without_invalidating_the_assay():
     i = _interp(oracle=0.8, enforced=0.7, blast=0.0, pebra_sham=0.5, pebra_blast=0.5)
     assert i.verdict == models.VERDICT_PEBRA_SUPERIOR
     assert i.assay_detects_realistic is True
+
+
+def test_risky_only_positive_run_is_harm_avoidance_only_not_efficacy():
+    i = assay_interpret.interpret([
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 0.8, n_pairs_safe=0),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 0.5, n_pairs_safe=0),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.0, n_pairs_safe=0),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 0.5, n_pairs_safe=0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 0.5, n_pairs_safe=0),
+    ])
+
+    assert i.verdict == models.VERDICT_PEBRA_HARM_ONLY
+    assert i.task_has_headroom is True
+    assert i.assay_detects_realistic is True
+    assert i.pebra_has_efficacy is False
 
 
 def test_pebra_inferior_when_pebra_does_not_beat_sham():

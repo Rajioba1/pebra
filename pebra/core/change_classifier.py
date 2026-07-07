@@ -195,40 +195,44 @@ def rows_from_fanin(fanin: FanInEvidence) -> list[dict[str, Any]]:
     ]
 
 
-def rows_from_materialized_graph_diff(result: MaterializedGraphDiffResult) -> list[dict[str, Any]]:
-    """Convert proven before/after graph metadata comparisons into classifier rows.
+def rows_from_materialized_graph_diff(
+    result: MaterializedGraphDiffResult, fanin: FanInEvidence
+) -> list[dict[str, Any]]:
+    """The ``codegraph_semantic`` tier: the coarse ``rows_from_fanin`` FLOOR, ENRICHED with proven
+    signature/return-type/visibility change facts from the before/after materialized diff.
 
-    This is the ``codegraph_semantic`` tier. A row requires a comparable signature; visibility and
-    return-type changes are useful only once that signature-level support is proven for the owner.
-    """
-    if not result.available:
-        return []
-    rows: list[dict[str, Any]] = []
-    for row in result.rows:
-        if row.signature_changed is None:
-            continue
-        comparable = (
-            row.signature_changed,
-            row.return_type_changed,
-            row.visibility_changed,
-        )
-        if not any(value is True for value in comparable):
-            continue
-        rows.append({
-            "symbol_id": f"{row.file_path}::{row.qualified_name}",
-            "visibility": "internal",
-            "signature_changed": bool(row.signature_changed),
-            "return_shape_changed": bool(row.return_type_changed),
-            "visibility_changed": bool(row.visibility_changed),
-            "body_changed": False,
-            "control_flow_changed": False,
-            "external_side_effect_changed": False,
-            "db_write_changed": False,
-            "payment_api_changed": False,
-            "migration_changed": False,
-            "directive_comment_changed": False,
-            "test_only": False,
-            "callers_percentile": 0.0,
-            "transitive_reaches_consequence_symbol": False,
-        })
-    return rows
+    It ENRICHES, never replaces: every row keeps the coarse floor (``body_changed=True``, the owner's
+    real visibility + fan-in), so a body-only rewrite can never be masked and the tier is provably
+    >= the coarse tier in severity — it only ADDS the signature-level precision. Enrichment is applied
+    only when the join is unambiguous: exactly one graph-resolved owner AND exactly one *changed*
+    materialized-diff row (FanInEvidence carries no per-owner file_path, so a many-to-many join can't be
+    made safely). In every other case (unavailable diff, no change, or a multi-owner/multi-change patch)
+    it returns the pure coarse floor — coarser, never less safe."""
+    floor = rows_from_fanin(fanin)
+    owner_paths = tuple(getattr(fanin, "resolved_file_paths", ()) or ())
+    if not floor or not result.available or len(floor) != 1 or len(owner_paths) != 1:
+        return floor
+    # IDENTITY-safe join: enrich only when a SINGLE changed diff row is for the SAME owner the coarse
+    # floor resolved (match by qualified_name) — never by count alone. Otherwise an unrelated owner's
+    # signature change in another touched file could be mis-attributed to this owner (a fabricated
+    # per-symbol fact). `result.rows` spans every owner in every touched file, so the filter is required.
+    floor_name = floor[0]["symbol_id"]
+    floor_path = owner_paths[0].replace("\\", "/")
+    changed = [
+        r for r in result.rows
+        if r.qualified_name == floor_name
+        and r.file_path.replace("\\", "/") == floor_path
+        and any(v is True for v in (r.signature_changed, r.return_type_changed, r.visibility_changed))
+    ]
+    if len(changed) != 1:
+        return floor  # ambiguous / no proven change for THIS owner -> keep the coarse floor
+    row = dict(floor[0])
+    diff_row = changed[0]
+    # per-field enrichment: only overwrite when the field was actually comparable (not None)
+    if diff_row.signature_changed is not None:
+        row["signature_changed"] = bool(diff_row.signature_changed)
+    if diff_row.return_type_changed is not None:
+        row["return_shape_changed"] = bool(diff_row.return_type_changed)
+    if diff_row.visibility_changed is not None:
+        row["visibility_changed"] = bool(diff_row.visibility_changed)
+    return [row]

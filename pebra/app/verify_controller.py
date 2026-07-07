@@ -74,6 +74,7 @@ def verify(
     sse = stored["scores"]["symbol_scope_evidence"]
     pre_edit_kind = sse["max_change_kind"]
     pre_edit_consequential = bool(sse.get("consequential_symbol_changed", False))
+    pre_edit_structure_tier = str(sse.get("structure_tier", "unavailable"))
     stored_thresholds = dict((stored.get("request") or {}).get("thresholds") or {})
     assessed_commit = stored.get("assessed_commit")
 
@@ -101,6 +102,8 @@ def verify(
         requires_dry_run=requires_dry_run,
         dry_run_preview_present=dry_run_preview_present,
         reclassification_attempted=actual.reclassification_attempted,
+        pre_edit_structure_tier=pre_edit_structure_tier,
+        actual_structure_tier=actual.actual_structure_tier,
     )
     result = pag.evaluate(inp)
 

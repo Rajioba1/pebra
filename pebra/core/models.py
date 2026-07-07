@@ -159,6 +159,7 @@ class FanInEvidence:
     # and the graph-side qualified names used by the codegraph_structural diff tier.
     resolved_language: str | None = None
     resolved_languages: tuple[str, ...] = ()
+    resolved_file_paths: tuple[str, ...] = ()
     resolved_qualified_names: tuple[str, ...] = ()
 
 
@@ -280,6 +281,10 @@ class ActualDiffSummary:
     # True iff ≥1 changed file was a Python file we attempted to reclassify. Distinguishes
     # "couldn't parse code we changed" (escalate) from "no code symbols at all" (don't).
     reclassification_attempted: bool = False
+    # Which structural tier the POST-edit reclassification used (python_ast | codegraph_structural |
+    # codegraph_semantic | unavailable). Compared against the pre-edit tier so a semantic-tier approval
+    # verify cannot reproduce is escalated rather than silently trusted (assess/verify symmetry).
+    actual_structure_tier: str = "unavailable"
 
 
 @dataclass(frozen=True)

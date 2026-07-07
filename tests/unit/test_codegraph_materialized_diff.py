@@ -137,27 +137,34 @@ def test_materialized_diff_does_not_treat_null_vs_null_as_unchanged(tmp_path: Pa
         repo_root=str(tmp_path),
     )
 
-    assert result.available is False
-    assert result.rows == ()
-    assert result.fallback_reason == "no comparable semantic fields"
+    # null-vs-null signature/return is reported as None (NOT a fabricated "False = unchanged"); the row
+    # is still available because visibility was genuinely comparable (public == public -> unchanged).
+    assert result.available is True
+    assert result.rows[0].signature_changed is None
+    assert result.rows[0].return_type_changed is None
+    assert result.rows[0].visibility_changed is False
 
 
-def test_materialized_diff_keeps_csharp_signatureless_shape_unavailable(tmp_path: Path) -> None:
+def test_materialized_diff_csharp_visibility_change_captured_without_signature(tmp_path: Path) -> None:
+    # BUG-4: a signature-poor owner (signature NULL both sides) with a real visibility change must NOT
+    # be discarded — the comparable visibility field is captured even though signature is unavailable.
+    calls: list[int] = []
+
     def fake_index(root: Path) -> Path:
+        calls.append(1)
         db_path = root / ".codegraph" / "codegraph.db"
-        _make_db(db_path, [("src/A.cs", "A.M", None, "public", "int")], language="csharp")
+        vis = "public" if len(calls) == 1 else "private"
+        _make_db(db_path, [("src/A.cs", "A.M", None, vis, "int")], language="csharp")
         return db_path
 
     adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=fake_index)
-
     result = adapter.diff(
-        before_files={"src/A.cs": "before"},
-        after_files={"src/A.cs": "after"},
+        before_files={"src/A.cs": "before"}, after_files={"src/A.cs": "after"},
         repo_root=str(tmp_path),
     )
-
-    assert result.available is False
-    assert result.fallback_reason == "no comparable semantic fields"
+    assert result.available is True
+    assert result.rows[0].signature_changed is None  # signature genuinely not comparable
+    assert result.rows[0].visibility_changed is True  # ...but the visibility change is still captured
 
 
 def test_materialized_diff_no_owner_nodes_is_unavailable(tmp_path: Path) -> None:
@@ -239,3 +246,78 @@ def test_materialized_diff_fails_unavailable_when_owner_sets_do_not_match(tmp_pa
 
     assert result.available is False
     assert result.fallback_reason == "materialized owner mismatch"
+
+
+# --- P0: diff_for_patch (materialize the assess-path candidate) + BUG-6 single-tempdir ---
+
+
+def test_diff_for_patch_disabled_does_no_io(tmp_path: Path) -> None:
+    def should_not_index(root: Path) -> Path:
+        raise AssertionError("indexer must not run when disabled")
+
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=False, indexer=should_not_index)
+    result = adapter.diff_for_patch(repo_root=str(tmp_path), patch="diff --git a/x b/x\n")
+    assert result.available is False
+    assert result.fallback_reason == "materialized CodeGraph diff disabled"
+
+
+def test_diff_for_patch_empty_patch_touches_nothing(tmp_path: Path) -> None:
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=lambda r: r)
+    assert adapter.diff_for_patch(repo_root=str(tmp_path), patch="").fallback_reason == (
+        "no files touched by patch"
+    )
+
+
+def test_diff_for_patch_non_applying_patch_fails_closed(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.ts").write_text("actual content\n", encoding="utf-8")
+    bad = (
+        "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n"
+        "@@ -1 +1 @@\n-does not match\n+new\n"
+    )
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=lambda r: r)
+    result = adapter.diff_for_patch(repo_root=str(tmp_path), patch=bad)
+    assert result.available is False
+    assert result.fallback_reason == "candidate patch did not apply cleanly to the current working tree"
+
+
+def test_diff_for_patch_happy_path_reuses_one_tempdir(tmp_path: Path) -> None:
+    # BUG-6 regression: before and after must be indexed in the SAME temp dir (identical path prefix),
+    # not two separate random dirs.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.ts").write_text("export function f(x: number) { return x }\n", "utf-8")
+    patch = (
+        "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n"
+        "@@ -1 +1 @@\n"
+        "-export function f(x: number) { return x }\n"
+        "+export function f(x: string) { return x }\n"
+    )
+    roots: list[str] = []
+
+    def fake_index(root: Path) -> Path:
+        roots.append(str(root))
+        db_path = root / ".codegraph" / "codegraph.db"
+        sig = "(x: number) => number" if len(roots) == 1 else "(x: string) => string"
+        _make_db(db_path, [("src/a.ts", "f", sig, "public", "number")])
+        return db_path
+
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=fake_index)
+    result = adapter.diff_for_patch(repo_root=str(tmp_path), patch=patch)
+    assert len(roots) == 2 and roots[0] == roots[1]  # one reused tempdir, not two
+    assert result.available is True
+    assert result.rows[0].signature_changed is True
+
+
+def test_diff_for_patch_rejects_path_traversal_header(tmp_path: Path) -> None:
+    # An untrusted patch header with ../ must be rejected BEFORE reading repo_root -> no arbitrary read.
+    def should_not_index(root: Path) -> Path:
+        raise AssertionError("must not index an escaping patch")
+
+    evil = (
+        "diff --git a/../../../outside.txt b/../../../outside.txt\n"
+        "--- a/../../../outside.txt\n+++ b/../../../outside.txt\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=should_not_index)
+    result = adapter.diff_for_patch(repo_root=str(tmp_path), patch=evil)
+    assert result.available is False
+    assert result.fallback_reason == "invalid patch file path"

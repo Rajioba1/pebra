@@ -30,13 +30,22 @@ _THRESHOLDS = {
 }
 
 
-def _build_request(payload: dict[str, Any], *, revise_safer_attempt: int = 0) -> dict[str, Any]:
+def _build_request(
+    payload: dict[str, Any], *, revise_safer_attempt: int = 0, max_revise_safer_attempts: int = 1
+) -> dict[str, Any]:
     target = payload.get("target_file", "")
     summary = payload.get("change_summary", "proposed change")
     patch = payload.get("proposed_patch", "")
     if not patch:
         raise ValueError("advisory_check requires proposed_patch so PEBRA can assess the intended edit")
-    thresholds = {**_THRESHOLDS, "revise_safer_attempt": max(0, int(revise_safer_attempt))}
+    thresholds = {
+        **_THRESHOLDS,
+        "revise_safer_attempt": max(0, int(revise_safer_attempt)),
+        # The graph-repair arm raises this to 2 so the SECOND (narrowed + verified) resubmission can
+        # actually reach gate 7 — with the default 1, _revision_exhausted fires on that call and gate 7
+        # is unreachable, making candidate verification dead code. Plain PEBRA keeps the default 1.
+        "max_revise_safer_attempts": max(1, int(max_revise_safer_attempts)),
+    }
     evidence = {
         "events": [], "p_success": 0.75, "immediate_benefit": 0.5, "review_cost": 0.1,
         "criticality_stage": "C3", "criticality_value": 0.8,
@@ -46,9 +55,6 @@ def _build_request(payload: dict[str, Any], *, revise_safer_attempt: int = 0) ->
         "benefit_delta_evidence": {"source_type": "projected", "future_change_exposure": 0.0,
                                    "deltas": {}},
     }
-    candidate_verification = payload.get("candidate_verification")
-    if isinstance(candidate_verification, dict):
-        evidence["candidate_verification"] = candidate_verification
     return {
         "schema_version": "0.1", "task": summary, "repo_id": "ab_experiment",
         "candidate_actions": [{
@@ -143,15 +149,32 @@ def _shape_output(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def advise(
-    payload: dict[str, Any], *, repo_root: Path | str, db: Path | str, revise_safer_attempt: int = 0
+    payload: dict[str, Any], *, repo_root: Path | str, db: Path | str, revise_safer_attempt: int = 0,
+    max_revise_safer_attempts: int = 1,
 ) -> dict[str, Any]:
     """Run PEBRA on the proposed change and return the shared, arm-neutral advisory shape."""
-    request = _build_request(payload, revise_safer_attempt=revise_safer_attempt)
+    request = _build_request(
+        payload, revise_safer_attempt=revise_safer_attempt,
+        max_revise_safer_attempts=max_revise_safer_attempts,
+    )
+    trusted_verification = payload.get("candidate_verification")
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
         json.dump(request, fh)
         req_path = fh.name
+    trusted_path = None
+    if isinstance(trusted_verification, dict):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+            json.dump(trusted_verification, fh)
+            trusted_path = fh.name
     try:
-        result = cli_harness.assess(req_path, repo_root=repo_root, db=db)
+        result = cli_harness.assess(
+            req_path,
+            repo_root=repo_root,
+            db=db,
+            trusted_candidate_verification_path=trusted_path,
+        )
     finally:
         Path(req_path).unlink(missing_ok=True)
+        if trusted_path is not None:
+            Path(trusted_path).unlink(missing_ok=True)
     return _shape_output(result)

@@ -79,3 +79,16 @@ def parse_patch_headers(patch: str) -> list[DestructiveOp]:
             block.append(line)
     _flush()
     return ops
+
+
+def touched_files(patch: str) -> tuple[str, ...]:
+    """The repo-relative file paths a patch touches (both the a/ old-side and b/ new-side of every
+    ``diff --git`` header), sorted and de-duplicated. Used to build the before/after materialization
+    scope; a rename contributes both its old and new name. Pure, no I/O."""
+    paths: set[str] = set()
+    for line in patch.splitlines():
+        m = _DIFF_GIT.match(line)
+        if m:
+            paths.add(m.group(1))
+            paths.add(m.group(2))
+    return tuple(sorted(paths))

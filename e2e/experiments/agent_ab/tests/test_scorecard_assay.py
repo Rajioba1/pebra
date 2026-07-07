@@ -67,6 +67,8 @@ def test_aggregate_assay_builds_comparisons_and_interprets_superior():
         outs.append(_o("T1", models.ARM_ENFORCED_CONTROL, seed, "risky", harm=False))
         outs.append(_o("T1", models.ARM_BLAST_RADIUS, seed, "risky", harm=(seed != 0)))  # avoids only seed0
         outs.append(_o("T1", models.ARM_PEBRA, seed, "risky", harm=False))
+        for arm in arms:
+            outs.append(_o("B1", arm, seed, "safe", harm=False, over_caut=False))
     am = scorecard.aggregate_assay(outs, arms=arms)
     assert am.n_arms == 5 and set(am.arm_metrics) == set(arms)
     assert am.interpretation.verdict == models.VERDICT_PEBRA_SUPERIOR

@@ -44,10 +44,24 @@ def test_build_assess_ports_has_the_controller_keys(tmp_path) -> None:
     assert set(ports) >= {
         "evidence_provider", "symbol_diff_provider", "blast_provider",
         "sanction_port", "repository_registry", "store", "assessed_commit",
-        "fanin_provider",
+        "fanin_provider", "language_capability_provider", "materialized_diff_provider",
     }
+
+
+def test_build_assess_ports_semantic_provider_is_wired_but_dark(tmp_path) -> None:
+    # P3: the materialized-diff provider is wired (armed) but the dispatch only calls it when the
+    # default-OFF codegraph_semantic_diff_enabled threshold is set -> dark by default.
+    req = candidate_parser.parse({"task": "t", "candidate_actions": [{"id": "a1"}]})
+    ctx = composition.resolve_repo_and_db(str(tmp_path))
+    try:
+        provider = composition.build_assess_ports(req, ctx)["materialized_diff_provider"]
+    finally:
+        ctx.store.close()
+    assert hasattr(provider, "diff_for_patch")
 
 
 def test_build_verify_ports_has_the_controller_keys() -> None:
     ports = composition.build_verify_ports()
     assert set(ports) == {"change_verifier", "contract_surface"}
+    # the verifier is wired with the semantic reproduction hook (dark behind the same threshold)
+    assert ports["change_verifier"]._materialized_diff_fn is not None
