@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from pebra.core import high_risk_controls
+from pebra.core.constants import UNCERTAIN_STRUCTURE_TIERS
 from pebra.core.explanation_generator import Explanation
 from pebra.core.models import AssessmentResult, CandidateAction
 
@@ -109,7 +110,7 @@ def render(
     # coarse structural tier is NOT a verified signature check and must not be read as one. (The default
     # "unavailable" tier is the long-standing status quo and is deliberately NOT noted here.)
     structure_tier = (result.symbol_scope_evidence or {}).get("structure_tier")
-    if decision == "proceed" and structure_tier in {"codegraph_structural", "codegraph_semantic"}:
+    if decision == "proceed" and structure_tier in UNCERTAIN_STRUCTURE_TIERS:
         # The semantic tier proves ONE owner's signature fields, not a whole-file public-surface
         # guarantee, and the coarse tier proves even less — both keep this honesty note on proceed.
         suggested_inspection.append(

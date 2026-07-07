@@ -13,12 +13,11 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Mapping
-from pathlib import Path
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pebra.adapters import patch_header_adapter
-from pebra.adapters._paths import safe_relative_files
+from pebra.adapters._paths import is_safe_relative, safe_relative_files
 from pebra.adapters.patch_materializer import materialize_patch
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
@@ -61,7 +60,7 @@ class CodeGraphMaterializedDiffAdapter:
                 fallback_reason="materialized CodeGraph diff disabled",
             )
         try:
-            paths = _validate_materialized_paths(set(before_files) | set(after_files))
+            paths = _validate_materialized_paths(repo_root, set(before_files) | set(after_files))
         except ValueError:
             return MaterializedGraphDiffResult(
                 fallback_reason="invalid materialized file path",
@@ -203,30 +202,29 @@ def _elapsed_ms(start: float) -> float:
     return max(0.0, (time.monotonic() - start) * 1000.0)
 
 
-def _validate_materialized_paths(paths: set[str]) -> tuple[str, ...]:
+def _validate_materialized_paths(repo_root: str, paths: set[str]) -> tuple[str, ...]:
+    """Repo-safety gate for the touched-file set, applied ONCE per diff. Raises on any path that fails
+    the shared canonical predicate (absolute/.., drive, ``:``/ADS, symlink-escape); returns the safe
+    paths normalized to posix. `_write_files` relies on this having run and only guards temp-tree
+    containment mechanically, so repo-safety lives in exactly one predicate (`_paths.is_safe_relative`).
+    """
     clean: list[str] = []
     for rel in paths:
-        normalized = rel.replace("\\", "/")
-        posix = PurePosixPath(normalized)
-        win = PureWindowsPath(rel)
-        if (
-            not normalized
-            or posix.is_absolute()
-            or win.is_absolute()
-            or win.drive
-            or ".." in posix.parts
-        ):
+        if not is_safe_relative(repo_root, rel):
             raise ValueError("invalid materialized file path")
-        clean.append(posix.as_posix())
+        clean.append(PurePosixPath(rel.replace("\\", "/")).as_posix())
     return tuple(sorted(clean))
 
 
 def _write_files(root: Path, files: Mapping[str, str | None]) -> None:
+    # Keys were already repo-safety-validated by `_validate_materialized_paths`; here we only normalize
+    # and mechanically guard that the write stays inside the temp tree (defense-in-depth: any escaping
+    # key raises ValueError, caught by diff()'s fail-closed handler).
     root_real = root.resolve()
     for rel, content in files.items():
         if content is None:
             continue
-        normalized = _validate_materialized_paths({rel})[0]
+        normalized = PurePosixPath(rel.replace("\\", "/")).as_posix()
         path = (root / normalized).resolve()
         path.relative_to(root_real)
         path.parent.mkdir(parents=True, exist_ok=True)

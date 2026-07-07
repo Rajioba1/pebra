@@ -17,7 +17,13 @@ from collections.abc import Sequence
 from typing import Any
 
 from pebra.core.assessment_builder import Assessment
-from pebra.core.constants import ActionStatus, Decision, GraphFreshness, RiskMode
+from pebra.core.constants import (
+    ActionStatus,
+    Decision,
+    GraphFreshness,
+    RiskMode,
+    UNCERTAIN_STRUCTURE_TIERS,
+)
 from pebra.core.models import AssessmentResult
 
 
@@ -302,7 +308,7 @@ def decide(
     consequential_or_unknown = (
         sse["consequential_symbol_changed"]
         or sse["max_change_kind"] == "UNKNOWN"
-        or sse.get("structure_tier") in {"codegraph_structural", "codegraph_semantic"}
+        or sse.get("structure_tier") in UNCERTAIN_STRUCTURE_TIERS
     )
 
     # --- Gate 2: C4 always ask_human on consequential/unknown symbol change ---

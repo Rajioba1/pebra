@@ -28,6 +28,14 @@ class ActionStatus(Enum):
     REJECTED = "rejected"
 
 
+# Coarse graph classification tiers that prove an owner was TOUCHED but not what changed inside it.
+# They stay UNCERTAIN — inheriting UNKNOWN's escalation, never suppressing it — at every risk/guidance
+# gate, so a signature-unchanged result can never be read as behavior-unchanged. Single source of truth
+# for the decision engine, the MODIFY risk model, and the model-guidance honesty note; keep them here so
+# a future tier rename/addition can't desync the gates.
+UNCERTAIN_STRUCTURE_TIERS: frozenset[str] = frozenset({"codegraph_structural", "codegraph_semantic"})
+
+
 class RiskMode(Enum):
     NORMAL = "normal"
     SENSITIVE_CONTEXT = "sensitive_context"

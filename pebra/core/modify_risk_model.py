@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pebra.core.constants import ChangeKind
+from pebra.core.constants import ChangeKind, UNCERTAIN_STRUCTURE_TIERS
 from pebra.core.graph_trust import is_trusted_fanin
 from pebra.core.models import ArchitectureEvidence, FanInEvidence, SymbolDiffEvidence
 
@@ -134,9 +134,9 @@ def events_for_modify_risk(
     # A coarse codegraph_structural classification is still uncertain (owner touched, inner change
     # unseen), so it counts as an unknown change here — otherwise reclassifying UNKNOWN -> BEHAVIORAL
     # for an internal owner would silently drop the MODIFY dependency_break event this term feeds.
-    unknown_change = kind is ChangeKind.UNKNOWN or symbol_diff.structure_tier in {
-        "codegraph_structural", "codegraph_semantic"
-    }
+    unknown_change = (
+        kind is ChangeKind.UNKNOWN or symbol_diff.structure_tier in UNCERTAIN_STRUCTURE_TIERS
+    )
     public_consequential = _is_public(symbol_diff) and symbol_diff.consequential_symbol_changed
     graph_public_contract = _graph_public_contract(fanin)
     graph_important_modify = (high_fanin or large_owner or broad_symbol_edit) and (
