@@ -128,3 +128,173 @@ def test_dashboard_static_uses_human_metric_labels(tmp_path) -> None:
     assert "Learned rules" in text
     assert "prediction_errors" not in text
     assert "learned_risk_facts" not in text
+
+
+# --- Phase 2: richer read routes (scores-series, calibration, learning, graph) ---
+
+
+def _pe_row(predicted: float, actual: int) -> dict:
+    return {
+        "target_type": "risk_binary", "target_name": "edit",
+        "predicted_probability": predicted, "actual_outcome": actual,
+        "outcome_label_status": "observed", "calibration_scope": "proceeded_edits_only",
+        "shadow_mode": 0, "hash_version": 2, "benefit_guidance_influenced": 0,
+    }
+
+
+def _seed_rich(tmp_path) -> tuple[str, str]:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    asm = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED, requires_confirmation=False,
+            action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL,
+            scores={
+                "edit_confidence": 0.83, "benefit": 0.4, "rau": 0.2, "expected_utility": 0.3,
+                "expected_loss": 0.1,
+                "symbol_scope_evidence": {
+                    "symbol_fanin": {"resolved_qualified_names": ["Gamma::Gamma", "Gamma::LogGamma"]}
+                },
+            },
+            repo_id="r", repo_root="/x", model_guidance_packet={"decision": "proceed"},
+        ),
+        {"task": "t"},
+    )
+    store.insert_prediction_error(asm, _pe_row(0.7, 1))
+    store.insert_prediction_error(asm, _pe_row(0.2, 0))
+    store.insert_risk_snapshot("r", {"promotion_reason": "benefit_promoted"}, "active")
+    store.close()
+    return db, asm
+
+
+def test_scores_series_projects_score_fields(tmp_path) -> None:
+    db, asm = _seed_rich(tmp_path)
+    body = _client(db).get("/api/repos/r/scores-series", headers=_AUTH).json()
+    item = body["items"][0]
+    assert item["assessment_id"] == asm
+    assert item["scores"]["benefit"] == 0.4
+    assert item["scores"]["rau"] == 0.2
+    assert item["scores"]["edit_confidence"] == 0.83
+
+
+def test_calibration_risk_binary_returns_reliability_bins(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    body = _client(db).get("/api/repos/r/calibration?target_type=risk_binary", headers=_AUTH).json()
+    assert body["target_type"] == "risk_binary"
+    assert len(body["bins"]) == 10
+    assert body["sample_count"] == 2
+
+
+def test_calibration_unknown_target_type_is_400(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    resp = _client(db).get("/api/repos/r/calibration?target_type=bogus", headers=_AUTH)
+    assert resp.status_code == 400
+
+
+def test_learning_snapshots_and_facts_routes(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    snaps = _client(db).get("/api/repos/r/learning/snapshots", headers=_AUTH).json()
+    assert snaps["items"][0]["promotion_reason"] == "benefit_promoted"
+    facts = _client(db).get("/api/repos/r/learning/facts", headers=_AUTH).json()
+    assert facts["items"] == []  # none seeded, but route is live + fail-soft
+
+
+class _StubReader:
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def hot_subgraph(self, symbols, repo_root, *, max_depth=2, max_nodes=300):
+        self.calls.append((symbols, repo_root, max_depth, max_nodes))
+        return {"available": True, "nodes": [{"id": "n1"}], "edges": [], "graph_freshness": "fresh"}
+
+    def file_overview(self, repo_root, *, top_n=200):
+        return {"available": True, "files": [{"file_path": "src/Gamma.cs"}]}
+
+
+def test_graph_hotspot_passes_resolved_names_and_repo_root(tmp_path) -> None:
+    db, asm = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    stub = _StubReader()
+    app.state.graph_reader = stub
+    client = TestClient(app, base_url="http://127.0.0.1")
+    body = client.get(f"/api/repos/r/graph/hotspot?assessment_id={asm}", headers=_AUTH).json()
+
+    assert body["available"] is True and body["nodes"] == [{"id": "n1"}]
+    assert stub.calls == [
+        (
+            [
+                {"qualified_name": "Gamma::Gamma", "file_path": None},
+                {"qualified_name": "Gamma::LogGamma", "file_path": None},
+            ],
+            "/repo",
+            2,
+            300,
+        )
+    ]
+
+
+def test_graph_hotspot_rejects_cross_repo_assessment(tmp_path) -> None:
+    # The assessment belongs to repo "r"; requesting it under a different repo_id must 404, not leak
+    # that assessment's resolved symbols into another repo's graph view (cross-repo IDOR).
+    db, asm = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _StubReader()
+    client = TestClient(app, base_url="http://127.0.0.1")
+    resp = client.get(f"/api/repos/OTHER/graph/hotspot?assessment_id={asm}", headers=_AUTH)
+    assert resp.status_code == 404
+
+
+def test_graph_hotspot_rejects_url_repo_that_does_not_match_launched_repo(tmp_path) -> None:
+    db, asm = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _StubReader()
+    client = TestClient(app, base_url="http://127.0.0.1")
+    resp = client.get(f"/api/repos/OTHER/graph/hotspot?assessment_id={asm}", headers=_AUTH)
+    assert resp.status_code == 404
+
+
+def test_graph_hotspot_failsoft_without_repo_root(tmp_path) -> None:
+    db, asm = _seed_rich(tmp_path)
+    resp = _client(db).get(f"/api/repos/r/graph/hotspot?assessment_id={asm}", headers=_AUTH)
+    assert resp.status_code == 200  # never 500
+    assert resp.json()["available"] is False
+
+
+def test_graph_overview_failsoft_without_repo_root(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    resp = _client(db).get("/api/repos/r/graph/overview", headers=_AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["available"] is False
+
+
+def test_graph_overview_rejects_url_repo_that_does_not_match_launched_repo(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _StubReader()
+    client = TestClient(app, base_url="http://127.0.0.1")
+    assert client.get("/api/repos/OTHER/graph/overview", headers=_AUTH).status_code == 404
+
+
+def test_graph_overview_accepts_launched_repo(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _StubReader()
+    client = TestClient(app, base_url="http://127.0.0.1")
+    body = client.get("/api/repos/r/graph/overview", headers=_AUTH).json()
+    assert body["available"] is True
+    assert body["files"] == [{"file_path": "src/Gamma.cs"}]

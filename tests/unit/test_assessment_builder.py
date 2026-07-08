@@ -205,6 +205,28 @@ def test_builder_surfaces_symbol_fanin_graph_provenance() -> None:
     assert "index_version" not in sse["symbol_fanin"]
 
 
+def test_builder_persists_resolved_graph_identity_for_hotspot_replay() -> None:
+    # The dashboard maps a stored assessment back onto graph nodes by qualified name (the same identity
+    # the verify path re-resolves by). Aggregate counts alone can't do that, so the builder must carry
+    # the resolved qualified names + file paths into the persisted symbol_fanin dict.
+    inp = replace(
+        _worked_example_input(),
+        fanin_evidence=m.FanInEvidence(
+            symbol_fan_in_percentile=0.5,
+            symbol_caller_count=3,
+            resolution_method="location",
+            graph_freshness="fresh",
+            resolved_qualified_names=("Gamma::Gamma", "Gamma::LogGamma"),
+            resolved_file_paths=("src/Gamma.cs",),
+        ),
+    )
+
+    sse = ab.build_assessment(inp).scores["symbol_scope_evidence"]
+
+    assert sse["symbol_fanin"]["resolved_qualified_names"] == ["Gamma::Gamma", "Gamma::LogGamma"]
+    assert sse["symbol_fanin"]["resolved_file_paths"] == ["src/Gamma.cs"]
+
+
 def test_builder_uses_tighter_c3_threshold_as_effective() -> None:
     a = ab.build_assessment(_worked_example_input())
     assert a.scores["effective_threshold"] == pytest.approx(0.20)

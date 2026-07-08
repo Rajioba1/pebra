@@ -1216,6 +1216,120 @@ class SqliteStore:
             "outcomes": self.load_outcomes(assessment_id),
         }
 
+    # target_type -> the pre-built trusted-subset view (same filters the promotion gate uses). The map
+    # is a fixed literal, so the view name is never caller-controlled (no injection via target_type).
+    _CALIBRATION_VIEWS = {
+        "risk_binary": "risk_binary_calibration_data",
+        "benefit_binary": "benefit_binary_calibration_data",
+        "benefit_continuous": "benefit_continuous_calibration_data",
+    }
+
+    def list_prediction_errors(
+        self,
+        repo_id: str,
+        target_type: str = "risk_binary",
+        scope: str = "production",
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Observed prediction-error rows for a repo, for the dashboard calibration diagram.
+
+        ``scope='production'`` returns exactly the trusted subset the promotion gate scores (via the
+        pre-built calibration view); ``scope='all'`` returns every observed row for the target_type
+        (incl. shadow), so the dashboard can show calibration before promotion. Repo-scoped by joining
+        assessments. Unknown target_type/scope -> ValueError (a caller bug, not a data condition)."""
+        if target_type not in self._CALIBRATION_VIEWS:
+            raise ValueError(f"unknown target_type {target_type!r}")
+        if scope not in ("production", "all"):
+            raise ValueError(f"unknown scope {scope!r}")
+        limit = max(0, min(limit, 5000))
+        cols = (
+            "pe.predicted_probability, pe.actual_outcome, pe.predicted_value, pe.actual_value, "
+            "pe.residual, pe.recorded_at"
+        )
+        if scope == "production":
+            source = self._CALIBRATION_VIEWS[target_type]  # trusted-subset view (fixed literal)
+            sql = (
+                f"SELECT {cols} FROM {source} pe JOIN assessments a ON a.id = pe.assessment_id "
+                "WHERE a.repo_id = ? ORDER BY pe.id ASC LIMIT ?"
+            )
+            params: tuple[Any, ...] = (repo_id, limit)
+        else:
+            sql = (
+                f"SELECT {cols} FROM prediction_errors pe JOIN assessments a ON a.id = pe.assessment_id "
+                "WHERE a.repo_id = ? AND pe.target_type = ? AND pe.outcome_label_status = 'observed' "
+                "ORDER BY pe.id ASC LIMIT ?"
+            )
+            params = (repo_id, target_type, limit)
+        return [
+            {
+                "predicted_probability": pp,
+                "actual_outcome": ao,
+                "predicted_value": pv,
+                "actual_value": av,
+                "residual": res,
+                "recorded_at": rec,
+            }
+            for pp, ao, pv, av, res, rec in self._con.execute(sql, params)
+        ]
+
+    def list_risk_snapshots(self, repo_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Newest-first learning snapshots for a repo (the learning-loop panel): status, parsed metrics,
+        and the promotion/rollback/drift lifecycle fields."""
+        limit = max(0, min(limit, 500))
+        rows = self._con.execute(
+            "SELECT id, status, metrics_json, promotion_reason, rollback_reason, drift_score, "
+            "activated_at, created_at FROM risk_snapshots WHERE repo_id = ? ORDER BY id DESC LIMIT ?",
+            (repo_id, limit),
+        ).fetchall()
+        return [
+            {
+                "snapshot_id": f"rs_{sid}",
+                "status": status,
+                "metrics": json.loads(metrics_json) if metrics_json else {},
+                "promotion_reason": promotion_reason,
+                "rollback_reason": rollback_reason,
+                "drift_score": drift_score,
+                "activated_at": activated_at,
+                "created_at": created_at,
+            }
+            for sid, status, metrics_json, promotion_reason, rollback_reason, drift_score,
+            activated_at, created_at in rows
+        ]
+
+    def list_learned_risk_facts(
+        self, repo_id: str, snapshot_id: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """Newest-first learned risk facts for a repo (optionally one snapshot). ``snapshot_id`` accepts
+        the display form ``rs_<n>`` or the bare ``<n>`` the facts table stores."""
+        limit = max(0, min(limit, 1000))
+        sql = (
+            "SELECT id, snapshot_id, fact_type, target_type, target_name, scope_kind, scope_value, "
+            "status, fact_json, created_at FROM learned_risk_facts WHERE repo_id = ?"
+        )
+        params: list[Any] = [repo_id]
+        if snapshot_id is not None:
+            bare = snapshot_id[3:] if snapshot_id.startswith("rs_") else snapshot_id
+            sql += " AND snapshot_id = ?"
+            params.append(bare)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        return [
+            {
+                "fact_id": f"lrf_{fid}",
+                "snapshot_id": snap if str(snap).startswith("rs_") else f"rs_{snap}",
+                "fact_type": fact_type,
+                "target_type": target_type,
+                "target_name": target_name,
+                "scope_kind": scope_kind,
+                "scope_value": scope_value,
+                "status": status,
+                "fact": json.loads(fact_json) if fact_json else {},
+                "created_at": created_at,
+            }
+            for fid, snap, fact_type, target_type, target_name, scope_kind, scope_value,
+            status, fact_json, created_at in self._con.execute(sql, params)
+        ]
+
     def chain_status(self) -> dict[str, Any]:
         """Audit-chain panel: integrity verdict + per-table row counts."""
         counts = {

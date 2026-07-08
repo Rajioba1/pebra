@@ -43,10 +43,28 @@ def _hostname(host: str) -> str:
     return host.rsplit(":", 1)[0] if ":" in host else host
 
 
-def create_app(db_path: str, token: str, *, allowed_hosts: Iterable[str] | None = None) -> FastAPI:
+def create_app(
+    db_path: str,
+    token: str,
+    *,
+    allowed_hosts: Iterable[str] | None = None,
+    repo_id: str | None = None,
+    repo_root: str | None = None,
+    graph_reader: object | None = None,
+) -> FastAPI:
     app = FastAPI(title="PEBRA Risk Observatory")
     app.state.db_path = db_path
     app.state.token = token
+    app.state.repo_id = repo_id
+    # repo_root binds the graph routes to a codebase on disk (the .codegraph index). None (e.g. a
+    # replayed db from another machine) makes the graph routes fail-soft, never error.
+    app.state.repo_root = repo_root
+    # graph_reader is injectable for tests; the default reads codegraph's SQLite via the real gate.
+    if graph_reader is None:
+        from pebra.adapters.codegraph_graph_reader import CodeGraphReader
+
+        graph_reader = CodeGraphReader()
+    app.state.graph_reader = graph_reader
     allowed = _allowed_hosts(allowed_hosts)
 
     @app.middleware("http")
@@ -81,12 +99,13 @@ def serve(
     instance: int = 0,
     token: str | None = None,
     repo_id: str | None = None,
+    repo_root: str | None = None,
 ) -> None:
     import uvicorn
 
     token = token or auth.generate_token()
     port = ports.allocate_port(host, requested=requested_port, instance=instance)
-    app = create_app(db_path, token)
+    app = create_app(db_path, token, repo_id=repo_id, repo_root=repo_root)
     repo_q = f"&repo={repo_id}" if repo_id else ""
     print(f"PEBRA Risk Observatory: http://{host}:{port}/?token={token}{repo_q}")
     uvicorn.run(app, host=host, port=port, log_level="warning")

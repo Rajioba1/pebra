@@ -29,3 +29,18 @@ def test_dashboard_cli_resolves_and_invokes_serve(tmp_path, monkeypatch) -> None
     assert captured["db"] == db
     assert captured["kw"]["requested_port"] == 0
     assert captured["kw"]["instance"] == 2
+
+
+def test_dashboard_cli_repo_id_override_for_replay(tmp_path, monkeypatch) -> None:
+    # A replayed/copied db resolves to a different repo_id (sha1 of the abs path), so the routes would
+    # return empty. --repo-id pins the original id explicitly, sidestepping path resolution.
+    from pebra.dashboard import server
+
+    captured: dict = {}
+    monkeypatch.setattr(server, "serve", lambda db_path, **kw: captured.update(kw=kw))
+    rc = main(
+        ["dashboard", "--repo-root", str(tmp_path), "--db", str(tmp_path / "x.db"),
+         "--repo-id", "deadbeef1234", "--port", "0"]
+    )
+    assert rc == 0
+    assert captured["kw"]["repo_id"] == "deadbeef1234"

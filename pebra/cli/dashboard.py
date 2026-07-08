@@ -18,6 +18,10 @@ def register(subparsers: Any) -> None:
     )
     p.add_argument("--repo-root", default=None)
     p.add_argument("--db", default=None)
+    p.add_argument(
+        "--repo-id", default=None,
+        help="Override the resolved repo_id (for replaying a db copied from another path/machine).",
+    )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument(
         "--port", type=int, default=None,
@@ -41,6 +45,7 @@ def run(args: Any) -> int:
         host=args.host,
         requested_port=args.port,
         instance=args.instance,
-        repo_id=repo.repo_id,
+        repo_id=args.repo_id or repo.repo_id,
+        repo_root=repo.repo_root,
     )
     return 0

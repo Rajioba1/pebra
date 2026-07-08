@@ -11,7 +11,7 @@ uses measured calibration data to promote learned facts for future assessments.
 - Pre-edit `assess` with expected loss, expected utility, RAU, edit confidence, and ordered gates.
 - Post-edit `verify` against the approved safe scope and required checks.
 - Outcome recording, shadow learning, promotion, scorecards, and learned-fact reapplication.
-- Read-only local dashboard for assessment/learning state.
+- Read-only local Risk Observatory dashboard for assessment, calibration, learning, and graph state.
 - Explicit graph-engine setup and diagnostics through `pebra setup-graph` and `pebra doctor`.
 - CodeGraph-backed evidence:
   - per-symbol fan-in;
@@ -71,6 +71,11 @@ pebra promote --repo-root <repo_root>
 pebra scorecard --repo-root <repo_root>
 pebra dashboard --port 0
 ```
+
+The dashboard is local-only and bearer-guarded. It exposes five browser views:
+overview, score history, calibration, learned facts, and CodeGraph hotspots. Graph views
+are fail-soft when no trusted graph index is bound to the launched repo, and graph
+routes are repo-scoped to avoid replaying one repo's graph under another repo id.
 
 ## Validation
 

@@ -3,13 +3,41 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PEBRA Risk Observatory</title>
+  <title>PEBRA · Risk Observatory</title>
+  <link rel="stylesheet" href="/static/vendor/uplot.min.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <h1>PEBRA Risk Observatory</h1>
-  <p class="hint">Local, read-only view over the assessment store.</p>
-  <main id="app" data-testid="app">Loading…</main>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">PEBRA</span>
+      <span class="brand-sub">Risk Observatory</span>
+    </div>
+    <div class="topbar-meta">
+      <span class="repo-chip" data-testid="repo-chip" id="repo-chip">no repo</span>
+      <span class="chain-pill" data-testid="chain-status" id="chain-pill">audit chain: …</span>
+      <span class="live-dot" id="live-dot" hidden>live</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <a class="tab" href="#overview" data-tab="overview" role="tab">Overview</a>
+    <a class="tab" href="#history" data-tab="history" role="tab">History</a>
+    <a class="tab" href="#calibration" data-tab="calibration" role="tab">Calibration</a>
+    <a class="tab" href="#learning" data-tab="learning" role="tab">Learning</a>
+    <a class="tab" href="#graph" data-tab="graph" role="tab">Graph</a>
+  </nav>
+
+  <main id="app" data-testid="app">
+    <section class="view" id="view-overview" data-testid="overview" hidden></section>
+    <section class="view" id="view-history" data-testid="history" hidden></section>
+    <section class="view" id="view-calibration" data-testid="calibration" hidden></section>
+    <section class="view" id="view-learning" data-testid="learning" hidden></section>
+    <section class="view" id="view-graph" data-testid="graph" hidden></section>
+    <p class="boot" id="boot">Loading telemetry…</p>
+  </main>
+
+  <script nonce="{{ nonce }}" src="/static/vendor/uplot.iife.min.js"></script>
   <script nonce="{{ nonce }}" src="/static/app.js"></script>
 </body>
 </html>

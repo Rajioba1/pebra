@@ -11,7 +11,8 @@ boundaries, with deterministic JSON assertions plus optional screenshots for hum
   `assess proposed edit -> apply edit -> verify actual diff -> record-outcome -> learn`.
 - Promotion runs through `pebra promote`.
 - The future assessment is a fresh pre-edit assessment on a clean tree with the learned snapshot active.
-- The dashboard launches through `pebra dashboard --port 0` and is queried over HTTP.
+- The dashboard launches through `pebra dashboard --port 0` and is queried over HTTP, including the
+  Risk Observatory read surface for score series, calibration, learning state, and graph fail-soft views.
 - The external lane clones a real local repo into `e2e/out/`, initializes CodeGraph there, and validates
   graph-backed assessment over real CodeGraph + dotnet surfaces.
 
@@ -19,7 +20,7 @@ boundaries, with deterministic JSON assertions plus optional screenshots for hum
 
 Current slices:
 
-- `agent_cli_seeded_learning + dashboard_metrics`;
+- `agent_cli_seeded_learning + dashboard_metrics` / Risk Observatory HTTP reads;
 - external CodeGraph graph-vs-no-graph DELETE delta;
 - external CodeGraph graph-vs-no-graph MODIFY delta;
 - real compiler-outcome learning on `avalonia_template`;
@@ -119,6 +120,11 @@ Dashboard screenshot lane:
 nox -s e2e-ui
 ```
 
+Without `E2E_UI=1`, the dashboard lane still launches the real server and checks the JSON endpoints over
+HTTP. With `E2E_UI=1`, Playwright drives all five dashboard tabs (`overview`, `history`, `calibration`,
+`learning`, `graph`) and asserts loaded view markers, no uncaught page errors, and no CSP violations.
+The seeded-learning fixture writes more than 100 outcomes, so this lane takes minutes on Windows.
+
 Blinded agent assay experiment (real agents, gated/manual only):
 
 ```powershell
@@ -205,7 +211,8 @@ The suite asserts:
 - Completed outcomes can be recorded and learned.
 - Promotion writes at least one active risk snapshot after the seeded history.
 - A future pre-edit assessment shifts decision/math after learning.
-- Dashboard API exposes chain, overview, and assessment history for the learned run.
+- Dashboard API exposes chain, overview, assessment history, score series, calibration bins, learning
+  snapshots/facts, and graph fail-soft payloads for the learned run.
 - External graph lane proves CodeGraph changed the DELETE and MODIFY assessment by comparing indexed
   and no-graph copies of the same repo/request.
 - External compiler lane records a real dotnet build failure, then uses honest seeded history to prove

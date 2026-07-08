@@ -206,6 +206,11 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "is_exported_contract": fanin.is_exported_contract,
             "is_abstract_or_interface_contract": fanin.is_abstract_or_interface_contract,
             "has_signature_metadata": fanin.has_signature_metadata,
+            # Graph identity for dashboard hotspot replay: the resolved owners' qualified names +
+            # files, so a stored assessment can be mapped back onto graph nodes later (the same
+            # qualified-name identity the verify path re-resolves by). Aggregate counts can't do that.
+            "resolved_qualified_names": list(fanin.resolved_qualified_names),
+            "resolved_file_paths": list(fanin.resolved_file_paths),
         }
         if fanin is not None
         else None

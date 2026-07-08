@@ -131,3 +131,84 @@ def test_chain_status_reports_valid_and_counts(tmp_path) -> None:
     assert status["valid"] is True
     assert status["counts"]["assessments"] == 1
     assert status["counts"]["outcomes"] == 1
+
+
+# --- calibration + learning read surface (dashboard views) ---
+
+
+def _pe_row(
+    *, target_type: str = "risk_binary", predicted: float = 0.7, actual: int = 1, production: bool = True
+) -> dict:
+    return {
+        "target_type": target_type,
+        "target_name": "edit",
+        "predicted_probability": predicted,
+        "actual_outcome": actual,
+        "outcome_label_status": "observed",
+        "calibration_scope": "proceeded_edits_only" if production else "shadow",
+        "shadow_mode": 0 if production else 1,
+        "hash_version": 2,
+        "benefit_guidance_influenced": 0,
+    }
+
+
+def test_list_prediction_errors_production_scope_is_repo_scoped_and_trusted(tmp_path) -> None:
+    store = _store(tmp_path)
+    a1 = _persist(store, repo_id="r1")
+    store.insert_prediction_error(a1, _pe_row(predicted=0.7, actual=1))
+    store.insert_prediction_error(a1, _pe_row(predicted=0.2, actual=0))
+    store.insert_prediction_error(a1, _pe_row(predicted=0.9, actual=1, production=False))  # shadow
+    other = _persist(store, repo_id="other")
+    store.insert_prediction_error(other, _pe_row(predicted=0.5, actual=1))
+
+    rows = store.list_prediction_errors("r1", target_type="risk_binary", scope="production")
+    assert len(rows) == 2  # the shadow row and the other-repo row are both excluded
+    assert {(r["predicted_probability"], r["actual_outcome"]) for r in rows} == {(0.7, 1), (0.2, 0)}
+
+
+def test_list_prediction_errors_all_scope_includes_shadow(tmp_path) -> None:
+    store = _store(tmp_path)
+    a1 = _persist(store, repo_id="r1")
+    store.insert_prediction_error(a1, _pe_row(predicted=0.7, actual=1))
+    store.insert_prediction_error(a1, _pe_row(predicted=0.9, actual=1, production=False))  # shadow
+
+    rows = store.list_prediction_errors("r1", target_type="risk_binary", scope="all")
+    assert len(rows) == 2  # observed shadow rows are visible in the "all" scope
+
+
+def test_list_risk_snapshots_newest_first_with_lifecycle(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.insert_risk_snapshot("r1", {"ece": 0.1}, "shadow")
+    store.insert_risk_snapshot(
+        "r1", {"promotion_reason": "benefit_promoted", "drift_score": 0.2}, "active"
+    )
+    store.insert_risk_snapshot("other", {"ece": 0.3}, "shadow")
+
+    rows = store.list_risk_snapshots("r1")
+    assert len(rows) == 2  # scoped to r1
+    assert rows[0]["status"] == "active"  # newest first
+    assert rows[0]["promotion_reason"] == "benefit_promoted"
+    assert rows[0]["drift_score"] == 0.2
+    assert rows[1]["metrics"]["ece"] == 0.1
+
+
+def test_list_learned_risk_facts_scoped_to_repo_and_snapshot(tmp_path) -> None:
+    store = _store(tmp_path)
+    facts = [
+        {"target_type": "risk_binary", "target_name": "Gamma::LogGamma", "fact_json": {"delta": 0.1}},
+        {"target_type": "risk_binary", "target_name": "Gamma::Gamma", "fact_json": {"delta": 0.2}},
+    ]
+    snap_id, _ = store.insert_learned_fact_batch_with_snapshot("r1", {"ece": 0.1}, facts, "active")
+    store.insert_learned_fact_batch_with_snapshot(
+        "other", {"ece": 0.1}, [{"target_type": "risk_binary", "target_name": "X"}], "active"
+    )
+
+    rows = store.list_learned_risk_facts("r1")
+    assert len(rows) == 2
+    assert {r["target_name"] for r in rows} == {"Gamma::LogGamma", "Gamma::Gamma"}
+    assert rows[0]["fact"]  # fact_json parsed to a dict
+    assert {r["snapshot_id"] for r in rows} == {snap_id}
+
+    scoped = store.list_learned_risk_facts("r1", snapshot_id=snap_id)
+    assert len(scoped) == 2
+    assert store.list_learned_risk_facts("r1", snapshot_id="rs_99999") == []
