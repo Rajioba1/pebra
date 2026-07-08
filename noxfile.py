@@ -82,6 +82,9 @@ def e2e(session: nox.Session) -> None:
     targets = [
         "e2e/utils/tests", "e2e/test_boundary_discipline.py", "e2e/smoke",
         "e2e/features/agent", "e2e/features/learning", "e2e/features/dashboard",
+        # RCA benefit lane: skips internally when rust-code-analysis-cli is absent (except the
+        # binary-free fail-safe test), so it's safe to always include.
+        "e2e/features/benefit",
     ]
     graph_path = Path("e2e/features/graph")
     if os.environ.get("E2E_CODEGRAPH") == "1" and graph_path.exists():

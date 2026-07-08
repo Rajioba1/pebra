@@ -754,3 +754,86 @@ def test_semantic_tier_multi_owner_degrades_to_honest_structural_label() -> None
         symbol_fan_in_percentile=0.5)
     sse = _run_semantic(ev, _sig_change_result()).recommended_result.symbol_scope_evidence
     assert sse["structure_tier"] == "codegraph_structural"  # degraded -> honest coarse label
+
+
+# --- tier-3: derived future_change_exposure credits RCA benefit by default -----------------------
+
+class _MeasuredBenefitEvidence:
+    """FakeEvidence but with a MEASURED benefit delta (a simplification) + a settable exposure/explicit
+    flag — simulates the post-RCA-merge bundle the assess-path exposure derivation acts on."""
+
+    def __init__(self, *, exposure: float = 0.0, explicit: bool = False, auto: bool = True):
+        self._bde = m.BenefitDeltaEvidence(
+            source_type="measured", deltas={"complexity_delta": -2.0},
+            future_change_exposure=exposure, future_change_exposure_explicit=explicit,
+            auto_exposure_allowed=auto,
+        )
+
+    def gather_evidence(self, request, action, repo_root):
+        from dataclasses import replace  # noqa: PLC0415
+        base = FakeEvidence().gather_evidence(request, action, repo_root)
+        return replace(base, benefit_delta_evidence=self._bde)
+
+
+def _trusted_fanin(pct: float = 0.9):
+    return m.FanInEvidence(
+        graph_freshness="fresh", resolution_method="location", graph_file_error_count=0,
+        symbol_fan_in_percentile=pct, symbol_caller_count=3,
+    )
+
+
+def _run_benefit(evidence_provider, fanin_ev):
+    return ac.assess(
+        _request(), thresholds=_THRESHOLDS, start_path="/abs/path/to/example-repo/src",
+        evidence_provider=evidence_provider, symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(), sanction_port=FakeSanction(), repository_registry=FakeRegistry(),
+        store=FakeStore(),
+        fanin_provider=FakeFanInProvider(fanin_ev) if fanin_ev is not None else None,
+    )
+
+
+_IMMEDIATE = 0.82  # FakeEvidence.immediate_benefit — benefit == this exactly when nothing is credited
+
+
+def test_derived_exposure_credits_benefit_by_default() -> None:
+    # measured RCA delta + unset exposure + trusted high fan-in -> benefit credited WITHOUT the request.
+    out = _run_benefit(_MeasuredBenefitEvidence(exposure=0.0), _trusted_fanin(0.9))
+    assert out.recommended_result.scores["benefit"] > _IMMEDIATE
+
+
+def test_request_supplied_measured_delta_does_not_get_derived_exposure() -> None:
+    # A caller can label request JSON as source_type="measured"; that must NOT receive trusted graph
+    # exposure unless it came from the provider-filled RCA path (auto_exposure_allowed=True).
+    out = _run_benefit(_MeasuredBenefitEvidence(exposure=0.0, auto=False), _trusted_fanin(0.9))
+    assert out.recommended_result.scores["benefit"] == _IMMEDIATE
+
+
+def test_explicit_zero_caller_exposure_is_not_clobbered() -> None:
+    # an EXPLICIT caller 0.0 ("credit nothing, on purpose") must survive the derivation.
+    out = _run_benefit(_MeasuredBenefitEvidence(exposure=0.0, explicit=True), _trusted_fanin(0.9))
+    assert out.recommended_result.scores["benefit"] == _IMMEDIATE
+
+
+def test_explicit_nonzero_caller_exposure_wins_over_derived() -> None:
+    explicit = _run_benefit(_MeasuredBenefitEvidence(exposure=0.3, explicit=True), _trusted_fanin(0.9))
+    derived = _run_benefit(_MeasuredBenefitEvidence(exposure=0.0), _trusted_fanin(0.9))
+    b_exp = explicit.recommended_result.scores["benefit"]
+    b_der = derived.recommended_result.scores["benefit"]
+    assert _IMMEDIATE < b_exp < b_der  # caller's 0.3 credited (not the derived 0.9), never clobbered
+
+
+def test_absent_graph_falls_back_to_no_credit() -> None:
+    out = _run_benefit(_MeasuredBenefitEvidence(exposure=0.0), None)  # no trusted fan-in
+    assert out.recommended_result.scores["benefit"] == _IMMEDIATE
+
+
+def test_exposure_derivation_never_changes_risk() -> None:
+    # Hold fan-in CONSTANT (identical risk effect) and toggle ONLY the derivation via the explicit
+    # flag: on (explicit=False) vs off (explicit=True). Risk must be bit-identical; only benefit moves.
+    fanin = _trusted_fanin(0.9)
+    on = _run_benefit(_MeasuredBenefitEvidence(exposure=0.0), fanin)
+    off = _run_benefit(_MeasuredBenefitEvidence(exposure=0.0, explicit=True), fanin)
+    d, o = on.recommended_result.scores, off.recommended_result.scores
+    assert d["expected_loss"] == o["expected_loss"]
+    assert d["loss_components"] == o["loss_components"]
+    assert d["benefit"] > o["benefit"]

@@ -65,3 +65,44 @@ def test_build_verify_ports_has_the_controller_keys() -> None:
     assert set(ports) == {"change_verifier", "contract_surface"}
     # the verifier is wired with the semantic reproduction hook (dark behind the same threshold)
     assert ports["change_verifier"]._materialized_diff_fn is not None
+
+
+def test_verify_payload_exposes_measured_benefit_and_deltas() -> None:
+    # The RCA post-edit benefit is surfaced on the verify JSON boundary (not dashboard-only): both the
+    # scalar measured_benefit and the raw measured_benefit_deltas must be in verify_payload's output.
+    from pebra.app.verify_controller import VerifyOutcome
+    from pebra.core.constants import Decision
+    from pebra.core.post_assessment_guardrails import GuardrailResult
+
+    result = GuardrailResult(
+        evidence_freshness="fresh", assessed_commit="a", current_head="a",
+        scope_drift_detected=False, unexpected_files=[], pre_edit_symbol_diff_summary="",
+        actual_symbol_diff_summary="", symbol_change_mismatch=False, contract_surface_changes=[],
+        dry_run_required=False, classification_failed=False, pre_commit_decision=Decision.PROCEED,
+    )
+    outcome = VerifyOutcome(
+        result=result, guardrails_id="g1", repo_id="r", measured_benefit=0.42,
+        measured_benefit_deltas={"complexity_delta": -2.0, "maintainability_index_delta": 5.5},
+    )
+    payload = composition.verify_payload(outcome)
+    assert payload["measured_benefit"] == 0.42
+    assert payload["measured_benefit_deltas"] == {
+        "complexity_delta": -2.0, "maintainability_index_delta": 5.5,
+    }
+    assert payload["pre_commit_decision"] == "proceed"  # existing contract preserved
+
+
+def test_verify_payload_defaults_are_empty_when_nothing_measured() -> None:
+    from pebra.app.verify_controller import VerifyOutcome
+    from pebra.core.constants import Decision
+    from pebra.core.post_assessment_guardrails import GuardrailResult
+
+    result = GuardrailResult(
+        evidence_freshness="fresh", assessed_commit="a", current_head="a",
+        scope_drift_detected=False, unexpected_files=[], pre_edit_symbol_diff_summary="",
+        actual_symbol_diff_summary="", symbol_change_mismatch=False, contract_surface_changes=[],
+        dry_run_required=False, classification_failed=False, pre_commit_decision=Decision.PROCEED,
+    )
+    payload = composition.verify_payload(VerifyOutcome(result=result, guardrails_id="g", repo_id="r"))
+    assert payload["measured_benefit"] == 0.0
+    assert payload["measured_benefit_deltas"] == {}  # nothing measured -> empty, distinct from a 0.0 delta

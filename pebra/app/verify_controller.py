@@ -28,6 +28,9 @@ class VerifyOutcome:
     repo_id: str
     invalidated_sanctions: list[str] = field(default_factory=list)
     measured_benefit: float = 0.0  # post-edit measured maintainability benefit (AD-29 feeds learning)
+    # The raw RCA deltas behind measured_benefit ({complexity_delta, maintainability_index_delta}, or {}
+    # when nothing was measured). Surfaced on the verify JSON boundary — not dashboard-only.
+    measured_benefit_deltas: dict[str, float] = field(default_factory=dict)
 
 
 def _triggered_signals(actual, contract_changes: list[str]) -> set[str]:
@@ -140,4 +143,5 @@ def verify(
         repo_id=stored.get("repo_id", ""),
         invalidated_sanctions=invalidated,
         measured_benefit=measured.benefit,
+        measured_benefit_deltas=dict(actual.measured_benefit_deltas),
     )

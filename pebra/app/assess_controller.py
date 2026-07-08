@@ -19,6 +19,7 @@ from pebra.core import (
     decision_engine,
     destructive_op_model,
     explanation_generator,
+    exposure_model,
     modify_risk_model,
     model_guidance,
     prediction_capture,
@@ -249,6 +250,27 @@ def _build_input(
                     symbol_diff.consequential_symbol_changed
                     or change_classifier.is_high_fanin_consequential(patched, fan_in_threshold)
                 ),
+            )
+
+    # Tier-3 benefit-exposure derivation: when RCA measured a real maintainability delta but nobody set
+    # future_change_exposure (its unset default 0.0), derive the weight from the trusted graph fan-in so
+    # the benefit is credited by DEFAULT — proportional to the code's future-change reach. An EXPLICIT
+    # caller exposure (incl. an explicit 0.0) always wins. BENEFIT-only: only benefit_delta_evidence is
+    # replaced; risk/events/gates are untouched. Absent/untrusted graph -> derive_exposure returns 0.0.
+    bd = evidence.benefit_delta_evidence
+    if (
+        bd.auto_exposure_allowed
+        and not bd.future_change_exposure_explicit
+        and bd.future_change_exposure == 0.0
+        and bd.source_type != "projected"
+        and bd.deltas
+    ):
+        derived = exposure_model.derive_exposure(
+            fanin_ev, cap=effective_thresholds.get("future_change_exposure_cap", 1.0)
+        )
+        if derived > 0.0:
+            evidence = replace(
+                evidence, benefit_delta_evidence=replace(bd, future_change_exposure=derived)
             )
 
     # Multi-language: attach the MEASURED capability for the resolved edit's language. Only probed

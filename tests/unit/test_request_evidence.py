@@ -45,3 +45,25 @@ def test_request_evidence_ignores_non_string_verified_patch_hash() -> None:
     # be ignored, never interpreted.
     assert bundle.candidate_verification.verified_patch_hash is None
     assert bundle.candidate_verification.status == "not_applicable"
+
+
+def test_request_supplied_measured_benefit_is_not_auto_exposure_eligible() -> None:
+    request = AssessmentRequest(
+        task="caller measured claim",
+        candidate_actions=[CandidateAction(id="a1", label="edit", action_type="edit")],
+        evidence={
+            "benefit_delta_evidence": {
+                "source_type": "measured",
+                "deltas": {"complexity_delta": -2.0},
+            }
+        },
+    )
+
+    bundle = RequestEvidenceProvider().gather_evidence(
+        request, request.candidate_actions[0], repo_root="."
+    )
+
+    assert bundle.benefit_delta_evidence.source_type == "measured"
+    assert bundle.benefit_delta_evidence.deltas == {"complexity_delta": -2.0}
+    assert bundle.benefit_delta_evidence.future_change_exposure_explicit is False
+    assert bundle.benefit_delta_evidence.auto_exposure_allowed is False

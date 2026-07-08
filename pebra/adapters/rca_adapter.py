@@ -162,4 +162,5 @@ class RustCodeAnalysisAdapter:
         return BenefitDeltaEvidence(
             scope=scope, source_type="measured", deltas=deltas,
             future_change_exposure=future_change_exposure,
+            auto_exposure_allowed=True,
         )

@@ -16,7 +16,10 @@ from __future__ import annotations
 from typing import Any
 
 from pebra.core.constants import ChangeKind, UNCERTAIN_STRUCTURE_TIERS
-from pebra.core.graph_trust import is_trusted_fanin
+from pebra.core.graph_trust import (
+    effective_impact_percentile as _effective_impact_percentile,
+    is_trusted_fanin,
+)
 from pebra.core.models import ArchitectureEvidence, FanInEvidence, SymbolDiffEvidence
 
 _P_EVENT_CAP = 0.45
@@ -81,17 +84,6 @@ def _is_public(sde: SymbolDiffEvidence) -> bool:
 
 def _graph_public_contract(fanin: FanInEvidence) -> bool:
     return fanin.is_exported_contract or fanin.is_abstract_or_interface_contract
-
-
-def _effective_impact_percentile(fanin: FanInEvidence) -> float:
-    direct = fanin.symbol_fan_in_percentile if fanin.symbol_caller_count > 0 else 0.0
-    structural = fanin.modify_impact_percentile if fanin.modify_impact_count > 0 else 0.0
-    transitive = (
-        fanin.modify_transitive_impact_percentile
-        if fanin.modify_transitive_impact_count > 0
-        else 0.0
-    )
-    return max(direct, structural, transitive)
 
 
 def _p_event(

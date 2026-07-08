@@ -69,10 +69,15 @@ def test_merge_does_not_mutate_base() -> None:
 def test_provider_fills_projected_benefit() -> None:
     base = _base()
     merged = _empty_merge(
-        base, provider_benefit=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": -2.0})
+        base,
+        provider_benefit=BenefitDeltaEvidence(
+            source_type="measured", deltas={"complexity_delta": -2.0},
+            auto_exposure_allowed=True,
+        ),
     )
     assert merged.benefit_delta_evidence.source_type == "measured"
     assert merged.benefit_delta_evidence.deltas["complexity_delta"] == -2.0
+    assert merged.benefit_delta_evidence.auto_exposure_allowed is True
 
 
 def test_merge_event_dicts_are_not_aliased_to_base() -> None:
@@ -104,9 +109,14 @@ def test_provider_does_not_override_non_projected_request_benefit() -> None:
         benefit_delta_evidence=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": 0.5})
     )
     merged = _empty_merge(
-        base, provider_benefit=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": -9.0})
+        base,
+        provider_benefit=BenefitDeltaEvidence(
+            source_type="measured", deltas={"complexity_delta": -9.0},
+            auto_exposure_allowed=True,
+        ),
     )
     assert merged.benefit_delta_evidence.deltas["complexity_delta"] == 0.5  # request wins
+    assert merged.benefit_delta_evidence.auto_exposure_allowed is False
 
 
 def test_config_raises_criticality() -> None:
@@ -195,3 +205,17 @@ def test_architecture_centrality_lowers_scope_control_bounded() -> None:
     assert merged.edit_confidence_factors["scope_control"] == 0.92
     assert merged.architecture_evidence == arch
     assert base.edit_confidence_factors["scope_control"] == 0.92
+
+
+def test_explicit_zero_exposure_survives_a_nonzero_provider() -> None:
+    # An EXPLICIT caller future_change_exposure=0.0 ("credit nothing, on purpose") must win even against
+    # a (hypothetical future) nonzero provider exposure — never silently overridden at the merge.
+    base = _base(benefit_delta_evidence=BenefitDeltaEvidence(
+        source_type="projected", deltas={}, future_change_exposure=0.0,
+        future_change_exposure_explicit=True))
+    merged = _empty_merge(base, provider_benefit=BenefitDeltaEvidence(
+        source_type="measured", deltas={"complexity_delta": -1.0}, future_change_exposure=0.5,
+        auto_exposure_allowed=True))
+    assert merged.benefit_delta_evidence.future_change_exposure == 0.0
+    assert merged.benefit_delta_evidence.source_type == "measured"  # RCA still measured; caller vetoed credit
+    assert merged.benefit_delta_evidence.auto_exposure_allowed is True

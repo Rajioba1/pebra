@@ -155,6 +155,7 @@ def test_gather_measured_when_patch_applies(tmp_path) -> None:
     ev = adapter.gather_benefit_evidence(str(repo), ["a.py"], _PATCH)
     assert ev.source_type == "measured"
     assert set(ev.deltas) == {"complexity_delta", "maintainability_index_delta"}
+    assert ev.auto_exposure_allowed is True
     assert ev.scope == "a.py"
 
 

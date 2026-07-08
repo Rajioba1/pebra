@@ -259,4 +259,8 @@ def verify_payload(outcome: VerifyOutcome) -> dict[str, Any]:
     payload = asdict(outcome.result)
     payload["pre_commit_decision"] = outcome.result.pre_commit_decision.value
     payload["guardrails_id"] = outcome.guardrails_id
+    # Post-edit RCA benefit — the CLI-boundary observable for the measured maintainability delta (kept
+    # in sync with what's persisted to the store / shown on the dashboard, not a dashboard-only signal).
+    payload["measured_benefit"] = outcome.measured_benefit
+    payload["measured_benefit_deltas"] = dict(outcome.measured_benefit_deltas)
     return payload

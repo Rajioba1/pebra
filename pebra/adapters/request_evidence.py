@@ -32,6 +32,7 @@ class RequestEvidenceProvider:
             source_type=bde_raw.get("source_type", "projected"),
             deltas=dict(bde_raw.get("deltas", {})),
             future_change_exposure=bde_raw.get("future_change_exposure", 0.0),
+            future_change_exposure_explicit="future_change_exposure" in bde_raw,
         )
         # Candidate verification is trusted host/controller evidence, not model/request evidence. A
         # caller can always compute sha256(their own patch), so accepting this blob from the request

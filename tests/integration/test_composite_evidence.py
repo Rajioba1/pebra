@@ -87,6 +87,7 @@ def test_rca_patch_changes_benefit_deltas(tmp_path) -> None:
     ev = CompositeEvidenceProvider().gather_evidence(req, action, str(tmp_path))
     assert ev.benefit_delta_evidence.source_type == "measured"
     assert "complexity_delta" in ev.benefit_delta_evidence.deltas
+    assert ev.benefit_delta_evidence.auto_exposure_allowed is True
 
 
 def test_traversal_expected_file_is_not_scanned(tmp_path) -> None:

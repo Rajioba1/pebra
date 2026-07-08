@@ -41,7 +41,20 @@ def _merge_benefit_delta_evidence(
         scope=base.scope or provider.scope,
         source_type=provider.source_type,
         deltas=merged,
-        future_change_exposure=base.future_change_exposure or provider.future_change_exposure,
+        # An EXPLICIT caller exposure (incl. an explicit 0.0) is authoritative and must never be
+        # overridden by a provider value; only when the request left it UNSET do we fall through to the
+        # provider's (today always 0.0). Guarantees "explicit caller policy always wins" at the value
+        # level, not just via the assess-path derivation gate.
+        future_change_exposure=(
+            base.future_change_exposure
+            if base.future_change_exposure_explicit
+            else (base.future_change_exposure or provider.future_change_exposure)
+        ),
+        # explicit-ness is a request property; only the request (base) can carry it, never the provider.
+        future_change_exposure_explicit=base.future_change_exposure_explicit,
+        # auto-exposure eligibility is a trusted provider property; it is carried only when the provider
+        # filled an otherwise-empty request benefit slot.
+        auto_exposure_allowed=provider.auto_exposure_allowed,
     )
 
 

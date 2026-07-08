@@ -242,6 +242,14 @@ class BenefitDeltaEvidence:
     source_type: str = "projected"  # projected | derived | measured
     deltas: dict[str, float] = field(default_factory=dict)
     future_change_exposure: float = 0.0
+    # True iff the request EXPLICITLY supplied future_change_exposure (vs left it unset). Lets the
+    # assess-path exposure derivation avoid clobbering an explicit caller-chosen 0.0, which is otherwise
+    # value-indistinguishable from "unset". Only the request sets this; providers never do.
+    future_change_exposure_explicit: bool = False
+    # True only for trusted provider-measured deltas that may receive graph-derived exposure when the
+    # caller left exposure unset. Request JSON never sets this; it prevents caller-supplied "measured"
+    # deltas from being auto-credited as if an adapter had measured them.
+    auto_exposure_allowed: bool = False
 
 
 @dataclass(frozen=True)
