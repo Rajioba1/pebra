@@ -14,6 +14,7 @@ def _make_db(
     rows: list[tuple[str, str, str | None, str | None, str | None]],
     *,
     language: str = "typescript",
+    is_exported: int | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
@@ -27,13 +28,14 @@ def _make_db(
             language TEXT,
             signature TEXT,
             visibility TEXT,
-            return_type TEXT
+            return_type TEXT,
+            is_exported INTEGER
         );
         """
     )
     for i, (file_path, qualified_name, signature, visibility, return_type) in enumerate(rows):
         con.execute(
-            "INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 f"n{i}",
                 "function",
@@ -43,6 +45,7 @@ def _make_db(
                 signature,
                 visibility,
                 return_type,
+                is_exported,
             ),
         )
     con.commit()
@@ -121,6 +124,46 @@ def test_materialized_diff_supports_signature_language_without_visibility(tmp_pa
     assert result.rows[0].language == "go"
     assert result.rows[0].signature_changed is True
     assert result.rows[0].visibility_changed is None
+
+
+def test_javascript_export_flip_registers_as_a_visibility_change(tmp_path: Path) -> None:
+    # JavaScript has no getVisibility; is_exported IS its export surface. Dropping `export` leaves the
+    # qualified name stable and must surface as visibility_changed via the derived values.
+    dbs: list[Path] = []
+
+    def fake_index(root: Path) -> Path:
+        db_path = root / ".codegraph" / "codegraph.db"
+        dbs.append(db_path)
+        exported = 1 if len(dbs) == 1 else 0
+        _make_db(db_path, [("src/a.js", "f", "function f(x)", None, None)],
+                 language="javascript", is_exported=exported)
+        return db_path
+
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=fake_index)
+    result = adapter.diff(before_files={"src/a.js": "b"}, after_files={"src/a.js": "a"},
+                          repo_root=str(tmp_path))
+
+    assert result.available is True
+    row = result.rows[0]
+    assert row.signature_changed is False          # signature identical
+    assert row.visibility_changed is True          # exported -> unexported IS a contract change
+
+
+def test_go_unchanged_export_is_comparable_not_none(tmp_path: Path) -> None:
+    # Both sides exported: visibility is now COMPARABLE (False), not None — coverage exists where the
+    # raw null-visibility Go graph had none.
+    def fake_index(root: Path) -> Path:
+        db_path = root / ".codegraph" / "codegraph.db"
+        _make_db(db_path, [("src/a.go", "f", "func f(x int) int", None, "int")],
+                 language="go", is_exported=1)
+        return db_path
+
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=fake_index)
+    result = adapter.diff(before_files={"src/a.go": "b"}, after_files={"src/a.go": "a"},
+                          repo_root=str(tmp_path))
+
+    assert result.available is True
+    assert result.rows[0].visibility_changed is False
 
 
 def test_materialized_diff_does_not_treat_null_vs_null_as_unchanged(tmp_path: Path) -> None:

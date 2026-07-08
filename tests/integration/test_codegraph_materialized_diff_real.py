@@ -42,3 +42,46 @@ def test_diff_for_patch_stable_keys_and_detects_ts_signature_change(tmp_path):
     # TypeScript is signature-capable -> the real binary should surface the signature change end-to-end.
     if r1.available:
         assert any(row.signature_changed for row in r1.rows)
+
+
+_GO_SIG_PATCH = (
+    "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1,2 +1,2 @@\n"
+    " package main\n"
+    "-func F(x int) int { return x }\n"
+    "+func F(x string) int { return len(x) }\n"
+)
+
+
+@requires_codegraph
+def test_go_signature_change_detected_end_to_end(tmp_path):
+    # Go has a WORKING getSignature (only visibility was missing, now derived) -> a param-type change
+    # surfaces as signature_changed with the real binary, proving Go genuinely benefits from the tier.
+    (tmp_path / "main.go").write_text(
+        "package main\nfunc F(x int) int { return x }\n", encoding="utf-8"
+    )
+    r = CodeGraphMaterializedDiffAdapter(enabled=True).diff_for_patch(
+        repo_root=str(tmp_path), patch=_GO_SIG_PATCH
+    )
+    assert r.available, r.fallback_reason
+    assert any(row.signature_changed for row in r.rows)
+
+
+_JS_EXPORT_PATCH = (
+    "diff --git a/calc.js b/calc.js\n--- a/calc.js\n+++ b/calc.js\n@@ -1 +1 @@\n"
+    "-export function f(x) { return x }\n"
+    "+function f(x) { return x }\n"
+)
+
+
+@requires_codegraph
+def test_js_export_flip_surfaces_as_visibility_change_end_to_end(tmp_path):
+    # The is_exported->visibility lever's payoff: dropping `export` flips the DERIVED visibility
+    # exported->unexported, which the real binary + fill surface as a visibility change (a contract edit).
+    (tmp_path / "calc.js").write_text(
+        "export function f(x) { return x }\n", encoding="utf-8"
+    )
+    r = CodeGraphMaterializedDiffAdapter(enabled=True).diff_for_patch(
+        repo_root=str(tmp_path), patch=_JS_EXPORT_PATCH
+    )
+    assert r.available, r.fallback_reason
+    assert any(row.visibility_changed for row in r.rows)

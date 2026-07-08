@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from pebra.core.language_capability import (
     DECLARED_LANGUAGES,
+    EXPORT_AS_VISIBILITY_LANGUAGES,
     TIER_FULL,
     TIER_PARTIAL,
     TIER_RISK_ONLY,
     TIER_UNKNOWN,
     LanguageCapability,
     classify_tier,
+    derive_visibility_from_export,
 )
 
 
@@ -96,3 +98,33 @@ def test_measured_but_no_callable_nodes_is_risk_only() -> None:
     cap = LanguageCapability(language="markup", probe_status="measured", node_count=0,
                              visibility_coverage_ratio=0.0)
     assert classify_tier(cap) == TIER_RISK_ONLY
+
+
+# --- is_exported -> visibility fill (Go/JS/JSX lever) --------------------------------------------
+
+
+def test_export_as_visibility_languages_is_the_curated_source_verified_set() -> None:
+    # Exactly the languages whose extractor emits is_exported but NO real getVisibility, and whose
+    # access model IS module export. A curated fact (like DECLARED_LANGUAGES), never DB-derived.
+    assert EXPORT_AS_VISIBILITY_LANGUAGES == frozenset({"go", "javascript", "jsx"})
+
+
+def test_derive_visibility_never_overrides_a_real_emitted_value() -> None:
+    # A real visibility always wins, even for an allowlisted language and even if is_exported disagrees.
+    assert derive_visibility_from_export("go", "public", 0) == "public"
+    assert derive_visibility_from_export("typescript", "private", 1) == "private"
+
+
+def test_derive_visibility_fills_only_allowlisted_languages() -> None:
+    assert derive_visibility_from_export("go", None, 1) == "exported"
+    assert derive_visibility_from_export("go", None, 0) == "unexported"
+    assert derive_visibility_from_export("javascript", "", 1) == "exported"   # empty counts as missing
+    assert derive_visibility_from_export("jsx", None, 0) == "unexported"
+    # NOT allowlisted -> never fill, even with is_exported set (guards against TS/Luau/Pascal/etc.)
+    for lang in ("typescript", "tsx", "pascal", "luau", "java", "python", "unknown", None):
+        assert derive_visibility_from_export(lang, None, 1) is None
+
+
+def test_derive_visibility_none_is_exported_yields_none() -> None:
+    # is_exported absent (defensive) -> no fabricated value.
+    assert derive_visibility_from_export("go", None, None) is None

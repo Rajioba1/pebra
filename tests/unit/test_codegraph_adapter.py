@@ -163,6 +163,39 @@ def test_probe_capabilities_measures_per_language_coverage(tmp_path):
     assert classify_tier(caps["csharp"]) == "partial"
 
 
+def test_probe_lifts_export_visibility_languages_to_full_but_not_others(tmp_path):
+    from pebra.core.language_capability import classify_tier
+
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir(parents=True)
+    db = cg_dir / "codegraph.db"
+    _make_db(db)
+    con = sqlite3.connect(str(db))
+    # go: signature present, visibility NULL, is_exported populated -> derived visibility -> FULL
+    con.execute("INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, "
+                "end_line, signature, visibility, is_exported, updated_at) VALUES "
+                "('g1','function','Add','Add','main.go','go',1,3,'(a int) int',NULL,1,0)")
+    con.execute("INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, "
+                "end_line, signature, visibility, is_exported, updated_at) VALUES "
+                "('g2','function','secret','secret','main.go','go',4,6,'(x int) int',NULL,0,0)")
+    # java-shaped TRIPWIRE: signature present, visibility NULL, is_exported=0, NOT allowlisted. A DB-only
+    # heuristic would wrongly count it; the curated allowlist must leave it risk_only (no fabrication).
+    con.execute("INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, "
+                "end_line, signature, visibility, is_exported, updated_at) VALUES "
+                "('j1','method','m','m','C.java','java',1,3,'int (int a)',NULL,0,0)")
+    con.commit()
+    con.close()
+
+    caps = _adapter().probe_capabilities(str(tmp_path))
+    # go: both callables covered via is_exported (exported AND unexported both count) -> full
+    assert caps["go"].signature_coverage_ratio == pytest.approx(1.0)
+    assert caps["go"].visibility_coverage_ratio == pytest.approx(1.0)
+    assert classify_tier(caps["go"]) == "full"
+    # java is NOT export-as-visibility: a null-visibility java row gains NO coverage -> stays risk_only
+    assert caps["java"].visibility_coverage_ratio == pytest.approx(0.0)
+    assert classify_tier(caps["java"]) == "risk_only"
+
+
 def test_structural_symbols_resolves_owner_from_after_diff(tmp_path):
     # verify-path (post-edit) resolution: a change at after-line 15 lands inside validate_login (10-20),
     # resolved against the current graph from before/after text alone (no patch string).

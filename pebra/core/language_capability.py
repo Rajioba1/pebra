@@ -57,6 +57,38 @@ DECLARED_LANGUAGES: tuple[str, ...] = (
 )
 
 
+# Languages whose CodeGraph extractor emits NO real getVisibility but DOES populate is_exported, and
+# whose access-control model IS module export (Go, JavaScript/JSX). ONLY for these is filling visibility
+# from is_exported honest: export is genuinely their entire visibility axis, so no real value is masked
+# (unlike TypeScript, which HAS getVisibility). This is a CURATED, source-verified fact about codegraph's
+# extractors — like DECLARED_LANGUAGES — and must NEVER be re-derived from the DB: is_exported defaults
+# to 0 for every unimplemented extractor, so "unexported" is indistinguishable from "not implemented" in
+# the database, which would wrongly rope in TypeScript/Luau/Pascal/etc.
+EXPORT_AS_VISIBILITY_LANGUAGES: frozenset[str] = frozenset({"go", "javascript", "jsx"})
+
+
+def derive_visibility_from_export(
+    language: str | None,
+    visibility: str | None,
+    is_exported: bool | int | None,
+) -> str | None:
+    """Fill a MISSING visibility from is_exported, but ONLY for export-as-visibility languages.
+
+    Null-only (never overrides a real emitted visibility) and language-gated. Returns ``"exported"`` /
+    ``"unexported"`` rather than ``"public"``/``"private"``: ``"exported"`` is already the public-surface
+    synonym the consequence classifier recognizes (so a genuinely-exported symbol change lights up the
+    existing CONTRACT/consequential paths), and ``"unexported"`` is a distinct, greppable marker that the
+    value was DERIVED, not emitted. Returns ``None`` (uncomparable) when it cannot honestly fill.
+    """
+    if visibility not in (None, ""):
+        return visibility  # a real emitted value always wins
+    if language not in EXPORT_AS_VISIBILITY_LANGUAGES:
+        return None
+    if is_exported is None:
+        return None
+    return "exported" if bool(is_exported) else "unexported"
+
+
 @dataclass(frozen=True)
 class LanguageCapability:
     """What the indexed CodeGraph actually provides for one language, measured (not assumed)."""

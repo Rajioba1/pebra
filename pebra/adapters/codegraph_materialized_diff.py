@@ -21,6 +21,7 @@ from pebra.adapters._paths import is_safe_relative, safe_relative_files
 from pebra.adapters.patch_materializer import materialize_patch
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
+from pebra.core.language_capability import derive_visibility_from_export
 from pebra.core.models import MaterializedGraphDiffResult, MaterializedGraphDiffRow
 
 _CALLABLE_KINDS = ("function", "method", "class", "struct", "interface", "trait", "protocol")
@@ -237,8 +238,8 @@ def _read_nodes(db_path: Path) -> dict[tuple[str, str], dict[str, Any]]:
     try:
         ph = ",".join("?" * len(_CALLABLE_KINDS))
         rows = con.execute(
-            f"SELECT file_path, qualified_name, language, signature, visibility, return_type "
-            f"FROM nodes WHERE kind IN ({ph}) AND file_path IS NOT NULL "
+            f"SELECT file_path, qualified_name, language, signature, visibility, return_type, "
+            f"is_exported FROM nodes WHERE kind IN ({ph}) AND file_path IS NOT NULL "
             f"AND qualified_name IS NOT NULL",
             _CALLABLE_KINDS,
         ).fetchall()
@@ -247,7 +248,14 @@ def _read_nodes(db_path: Path) -> dict[tuple[str, str], dict[str, Any]]:
             key = (str(r["file_path"]).replace("\\", "/"), str(r["qualified_name"]))
             if key in out:
                 raise ValueError("materialized owner key ambiguous")
-            out[key] = dict(r)
+            d = dict(r)
+            # For export-as-visibility languages (Go/JS/JSX) the graph carries no real visibility; derive
+            # it from is_exported so an export<->unexport flip surfaces as a visibility change. Null-only
+            # and language-gated: a real emitted visibility (TS/C#/...) passes through untouched.
+            d["visibility"] = derive_visibility_from_export(
+                d.get("language"), d.get("visibility"), d.get("is_exported")
+            )
+            out[key] = d
         return out
     finally:
         con.close()

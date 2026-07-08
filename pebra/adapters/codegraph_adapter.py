@@ -33,7 +33,7 @@ from typing import Any
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
 from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range
-from pebra.core.language_capability import LanguageCapability
+from pebra.core.language_capability import EXPORT_AS_VISIBILITY_LANGUAGES, LanguageCapability
 from pebra.core.models import CandidateAction, FanInEvidence, FileFanInRollup
 from pebra.core.score_math import fractional_rank
 
@@ -334,12 +334,20 @@ class CodeGraphAdapter:
             if self._schema_version(con) < _MIN_SCHEMA_VERSION:
                 return {}, False, f"codegraph schema below v{_MIN_SCHEMA_VERSION}"
             ph = ",".join("?" * len(_CALLABLE_KINDS))
+            # A row counts as visibility-covered if it carries a real visibility OR its language is an
+            # export-as-visibility language (Go/JS/JSX) with is_exported present — those get a faithful
+            # visibility DERIVED from is_exported (see language_capability.derive_visibility_from_export),
+            # which is what lifts them from risk_only to full. The allowlist is parameterized, never
+            # inlined, and must stay the curated core constant (a DB-only heuristic would be unsound).
+            alw = ",".join("?" * len(EXPORT_AS_VISIBILITY_LANGUAGES))
+            export_langs = sorted(EXPORT_AS_VISIBILITY_LANGUAGES)
             rows = con.execute(
                 f"SELECT language AS lang, COUNT(*) AS n, "
                 f"SUM(CASE WHEN signature IS NOT NULL AND signature <> '' THEN 1 ELSE 0 END) AS sig_n, "
-                f"SUM(CASE WHEN visibility IS NOT NULL AND visibility <> '' THEN 1 ELSE 0 END) AS vis_n "
+                f"SUM(CASE WHEN (visibility IS NOT NULL AND visibility <> '') "
+                f"OR (language IN ({alw}) AND is_exported IS NOT NULL) THEN 1 ELSE 0 END) AS vis_n "
                 f"FROM nodes WHERE kind IN ({ph}) GROUP BY language",
-                _CALLABLE_KINDS,
+                (*export_langs, *_CALLABLE_KINDS),
             ).fetchall()
             edges_by_lang: dict[str, set[str]] = {}
             for er in con.execute(
