@@ -1,6 +1,6 @@
 """patch_materializer (P0) — the shared "apply a patch to a throwaway tree" recipe.
 
-Generalized from ``radon_adapter._apply_patch`` so both radon (benefit-delta measurement) and the
+Generalized from the original benefit-delta adapter so both the RCA benefit adapter and the
 CodeGraph materialized-diff tier reuse one apply/read-back implementation. It NEVER touches the real
 repo: it git-inits a temp dir, seeds the caller-supplied before-content, applies the patch VERBATIM,
 and reads the after-content back.

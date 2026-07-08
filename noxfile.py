@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 DEV = [
     "pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema",
-    "pyyaml", "radon", "bandit",
+    "pyyaml", "bandit",
     "fastapi", "uvicorn", "jinja2", "httpx",  # Risk Observatory dashboard surface + test client
     "numpy", "scikit-learn>=1.2", "scipy",  # Oracle math references for tests/oracles.
 ]

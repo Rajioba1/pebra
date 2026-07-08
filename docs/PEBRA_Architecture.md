@@ -49,7 +49,7 @@ It also records **29 Architecture Decisions (AD-1…AD-29)** that resolve gaps t
         +--------+---------+   +-----------------------------+
         |    adapters/     |   |           core/             |
         |  codegraph       |   |  PURE DOMAIN, stdlib-only   |
-        |  radon · bandit  |   |  scoring math · gates ·     |
+        |  RCA · bandit    |   |  scoring math · gates ·     |
         |  git · yaml      |   |  decision engine · explainer|
         |  sqlite_store    |   |  constants · models         |
         |  store readers   |   |  (NEVER imports adapters)   |
@@ -114,7 +114,7 @@ It also records **29 Architecture Decisions (AD-1…AD-29)** that resolve gaps t
 | architecture map adapter | adapters | `adapters/architecture_map.py` | CodeGraph nodes/edges + PEBRA summaries | MIT evidence |
 | git change verifier | adapters | `adapters/git_change_verifier.py` | GitNexus `detect_changes` concept | PolyForm NC reference-only |
 | contract surface scanner | adapters | `adapters/contract_surface.py` | GitNexus `api_impact`/`route_map`/`tool_map`/`shape_check` concepts | PolyForm NC reference-only |
-| radon adapter | adapters | `adapters/radon_adapter.py` | radon | MIT |
+| RCA benefit adapter | adapters | `adapters/rca_adapter.py` | rust-code-analysis CLI | MPL-2.0 external subprocess |
 | bandit adapter | adapters | `adapters/bandit_adapter.py` | bandit | Apache-2.0 |
 | git adapter | adapters | `adapters/git_adapter.py` | subprocess git | — |
 | yaml config | adapters | `adapters/yaml_config.py` | pyyaml | MIT |
@@ -234,7 +234,7 @@ BenefitDeltaEvidence {
 }
 ```
 
-`core/benefit_model.py` receives already-collected metrics and proposed/actual diff evidence. It does not read files, call git, run radon, inspect coverage, or query issue trackers. Adapters provide before/after metrics; the core computes directionality, normalization, exposure weighting, `benefit`, and `Var(benefit)`.
+`core/benefit_model.py` receives already-collected metrics and proposed/actual diff evidence. It does not read files, call git, run rust-code-analysis, inspect coverage, or query issue trackers. Adapters provide before/after metrics; the core computes directionality, normalization, exposure weighting, `benefit`, and `Var(benefit)`.
 
 Directionality is explicit per metric: lower is better for complexity, coupling, duplication, public surface, hidden side effects, debt interest, and recurrence; higher is better for testability, cohesion, modularity, encapsulation, observability, and operability. A new abstraction is not automatically beneficial; it earns positive value only when the measured deltas reduce future change effort.
 
@@ -1014,7 +1014,6 @@ The evidence-validity gate is the last gate before `proceed`: if `architecture_e
 - **Purity enforcement:** `import-linter` must forbid `pandas`, `scipy`, `matplotlib`, `seaborn`, `datasets`, `pydriller`, `swebench`, `fastapi`, `starlette`, `uvicorn`, and `jinja2` inside `pebra.core`, and must forbid `pebra.dashboard` from being imported by `pebra.core` or `pebra.adapters` (the dashboard reads *through* the store/scorecard readers; nothing in the brain reads back from it). The dashboard's web-stack deps are hard runtime deps (shipped, not optional), so the linter contract — not their absence — is what keeps them out of `core/`. Benchmark math that must stay in core (`Brier`, `log_loss`, bin summaries, decision-rate arithmetic, lift arithmetic) is pure stdlib. Heavy stats, plots, confidence intervals, dataset loading, and agent runners live only under `benchmarks/`; the web/dashboard stack lives only under `dashboard/`.
 - **PEBRA runtime dependencies:** the installed package should include the Python libraries needed for the designed product path:
   - `pyyaml` — `.pebra.yml` config parsing.
-  - `radon` — Python LOC, complexity, Halstead, Maintainability Index.
   - `bandit` — Python SAST / security-sensitive operation evidence.
   - `numpy` — Monte Carlo sampling and array math for calibration reports.
   - `scikit-learn` — Platt/isotonic calibration, logistic stacking when enough outcomes exist.
@@ -1024,6 +1023,7 @@ The evidence-validity gate is the last gate before `proceed`: if `architecture_e
   - `uvicorn` — local dashboard server.
   - `jinja2` — dashboard HTML templating.
 - **Required external runtime graph engine:** CodeGraph (`@colbymchenry/codegraph`, MIT) is the required precision graph backend. It is not a Python package, so it is not listed in `pyproject.toml`'s `project.dependencies`; installers and runtime checks must ensure the `codegraph` command is available and initialized for the repo. PEBRA consumes CodeGraph by subprocess (`codegraph sync --quiet`, `codegraph status --json`) and by read-only SQLite queries against `.codegraph/codegraph.db`. PEBRA owns all fan-in percentile math, confidence tiering, risk/benefit scoring, learning, and audit. CodeGraph version and extraction version are recorded in evidence and calibration scope.
+- **External runtime maintainability engine:** rust-code-analysis (`rust-code-analysis-cli`, MPL-2.0) is consumed by subprocess for multi-language complexity and Maintainability Index benefit evidence. It is not a Python package and is not imported by PEBRA. If the binary is absent or a language cannot be measured, benefit evidence falls back to projected/no-credit and risk is unchanged.
 - **External benchmark/comparison tools:** `sem`, legacy `codeindex`, Graphify artifacts, and GitNexus-style reports are comparison/enrichment references only. They may be used by benchmark adapters or research runs, but they are not the runtime source of record once CodeGraph is the required graph engine.
 - **Developer dependencies:** `pytest`, `pytest-cov`, `ruff`, `mypy`, `import-linter`, `hypothesis`, `syrupy`, `nox`, `jsonschema`, `build`, `twine`, and `pre-commit`.
 - **UI test dependencies:** `playwright` for headed visual E2E validation of the self-hosted dashboard. Playwright tests rendering/wiring against fixture store/API data; it does not validate metric formulas.
@@ -1079,7 +1079,7 @@ Benchmark scorecards must record both library versions and dataset/comparator id
 - **Phase 0 — stdlib-core skeleton → first runnable milestone.** `models.py`, `constants.py`, `score_math.py`, `benefit_model.py`, `score_normalizer.py`, `weight_resolver.py`, `confidence_gate.py`, `request_validator.py`, `candidate_parser.py`, `assessment_builder.py`, `decision_engine.py`, `explanation_generator.py`, `model_guidance.py`, `core/change_classifier.py`, `core/high_risk_controls.py`, `app/assess_controller.py`, `app/accept_risk_controller.py`, `ports/repository_registry_port.py`, `ports/symbol_diff_port.py`, `ports/sanction_port.py`, core-facing ports used by Phase 0 (`EvidenceProvider`, `BlastRadiusProvider`, `SymbolDiffProvider`, `StorePort`, `OutcomePort`, `CalibrationPort`, `RepositoryRegistryPort`, `SanctionPort`), base tables (`assessments`, `model_guidance_packets`, `sanction_events`), guidance-packet write path, risk-acceptance write path, `adapters/paths.py`, `adapters/repository_registry.py`, `adapters/ast_diff_adapter.py`, `adapters/ast_import_graph.py`, `adapters/git_adapter.py`, `adapters/store/db.py`, `adapters/sanction_store.py`, `.pebra/.gitignore` initialization, `cli/assess.py`, `cli/accept_risk.py`, `examples/login_patch.json`.
   **Milestone:** `python -m pebra assess examples/login_patch.json` prints the human card while `core/` remains stdlib-only. The fixture is the spec §10 worked example and must reproduce expected loss `0.10`, C3 risk budget `50%`, EU `0.39`, RAU `0.31`, confidence `0.83`, and `proceed` with confirmation.
 - **Phase 1 — autonomy guardrails first:** `post_assessment_guardrails`, `app/verify_controller.py`, `change_verifier_port`, `contract_surface_port`, `git_change_verifier`, `pebra verify` CLI, evidence freshness check, actual-diff drift check, post-edit full symbol reclassification, measured post-edit benefit deltas from the actual diff, guidance compliance logging, dry-run refactor requirement, pre-commit/PR risk card. The `pebra_verify` MCP tool ships in Phase 3 with the MCP server.
-- **Phase 2 — evidence quality enrichment:** `yaml_config`, `query_validator`, `ArchitectureKnowledgeProvider`, `architecture_map` adapter, unified content-hash import-graph cache, AST edge confidence, depth buckets, entrypoint signal, import-cycle detection, graph incompleteness and parse-failure uncertainty, repo-relative anchor/god-node metrics, `radon`, `bandit`.
+- **Phase 2 — evidence quality enrichment:** `yaml_config`, `query_validator`, `ArchitectureKnowledgeProvider`, `architecture_map` adapter, unified content-hash import-graph cache, AST edge confidence, depth buckets, entrypoint signal, import-cycle detection, graph incompleteness and parse-failure uncertainty, repo-relative anchor/god-node metrics, RCA benefit evidence, `bandit`.
 - **Phase 3 — MCP + outcomes:** `mcp_server` (`pebra_compare`/`pebra_assess`/`pebra_verify`/`pebra_accept_risk`/`pebra_record_outcome`), `app/record_outcome_controller.py`, `outcome_logger`, `calibration_store` (shadow read), `cli/record_outcome`.
 - **Phase 4 — CodeGraph graph engine:** required CodeGraph adapter, read-only `.codegraph/codegraph.db` queries, `codegraph sync --quiet` + `status --json` freshness gate, symbol fan-in percentiles, edge-confidence tiers, and provenance/version capture.
 - **Phase 5 — calibration + learning loop:** `LearningPort`, `app/learning_controller.py`, `prediction_error.py`, `outcome_labels.py`, `learning_store`, `apply_snapshot` (including folded snapshot/fact resolution), `risk_fact_decay`, `promotion_evaluator`, `snapshot_reconciler`, `contradiction_gate`, raw `outcomes`, `prediction_errors`, `learned_risk_facts`, `risk_snapshots`, rolling Brier/log-loss reporter, benefit outcome labels (`reverted`, `reedit_required`, `issue_reopened`, measured maintainability delta), separate risk/benefit calibration views, decoupled promotion gates, shadow/canary promotion gates, flip `shadow_mode=false`, SWE-bench pilot. Canary/benchmark rows are not included in the default calibration views; they feed separate validation reports unless a future calibrated model explicitly stratifies by `calibration_scope`.

@@ -81,13 +81,17 @@ def test_comment_only_change_classifies_cosmetic(tmp_path) -> None:
     assert summary.actual_max_change_kind == "COSMETIC"
 
 
-def test_net_zero_complexity_delta_is_still_recorded(tmp_path) -> None:
+def test_net_zero_benefit_delta_is_still_recorded(tmp_path) -> None:
     _init(tmp_path, "def f(x):\n    if x:\n        return 1\n    return 0\n")
-    # same branch count (1 if), different shape -> net complexity delta 0
     (tmp_path / "f.py").write_text(
         "def f(x):\n    if not x:\n        return 0\n    return 1\n", encoding="utf-8"
     )
     _git(tmp_path, "add", "f.py")
 
-    summary = GitChangeVerifier().actual_diff(str(tmp_path), "staged")
-    assert summary.measured_benefit_deltas == {"complexity_delta": 0.0}
+    # a benefit fn that measures a NET-ZERO delta -> still RECORDED (keys present), distinct from
+    # "nothing measured" ({}); this is the AD-29 signal for an edit that didn't move complexity/MI.
+    v = GitChangeVerifier(complexity_delta_fn=lambda f, b, a: (0.0, 0.0))
+    summary = v.actual_diff(str(tmp_path), "staged")
+    assert summary.measured_benefit_deltas == {
+        "complexity_delta": 0.0, "maintainability_index_delta": 0.0
+    }

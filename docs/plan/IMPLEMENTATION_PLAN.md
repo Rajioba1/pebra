@@ -29,7 +29,7 @@ app/        controllers (use cases): assess · accept_risk · verify · record_o
                          |  (imports core/ + ports/ only)
 core/       PURE ENGINE: scoring · gates · benefit · classifier · guidance · learning math
                          |  (imports pure stdlib + core/ only)
-ports/      Protocol contracts  <----- implemented by ----->  adapters/  (git, sqlite, radon, …)
+ports/      Protocol contracts  <----- implemented by ----->  adapters/  (git, sqlite, RCA, …)
 ```
 
 **Control flow (every workflow):** `surface → app controller → ports gather evidence → core engine
@@ -79,7 +79,7 @@ pebra/
 │
 ├── adapters/                          # I/O — implement ports; import core/ + ports/ + libs
 │   ├── paths.py · repository_registry.py · git_adapter.py · ast_import_graph.py · ast_diff_adapter.py
-│   ├── architecture_map.py · git_change_verifier.py · contract_surface.py · radon_adapter.py
+│   ├── architecture_map.py · git_change_verifier.py · contract_surface.py · rca_adapter.py
 │   ├── bandit_adapter.py · codegraph_adapter.py · yaml_config.py
 │   ├── sanction_store.py · outcome_logger.py · calibration_store.py · learning_store.py   # flat per §3
 │   └── store/db.py                    # only db.py lives under store/ per §3
@@ -124,14 +124,16 @@ needs git/sqlite/subprocess/a file path arrives *inside* `AssessmentInput`; the 
 ## 4. Cross-cutting setup (do this before any Phase 0 logic)
 
 1. **`pyproject.toml`** — Python runtime deps per §12 (`numpy`, `scikit-learn`, `cryptography`, `mapie`,
-   `radon`, `bandit`, `pyyaml`, `fastapi`, `starlette`, `uvicorn`, `jinja2`); `[dependency-groups] dev`
+   `bandit`, `pyyaml`, `fastapi`, `starlette`, `uvicorn`, `jinja2`); `[dependency-groups] dev`
    (`pytest`, `pytest-cov`, `hypothesis`, `syrupy`, `jsonschema`, `ruff`, `mypy`, `import-linter`,
    `nox`, `build`, `twine`, `pre-commit`); `[project.optional-dependencies]`
    `bench` / `bench-szz` / `bench-agent` / `bench-external`, plus `ui-e2e` (`playwright`) for the
    Phase-5d dashboard E2E; `requires-python = ">=3.11"`; `[project.scripts] pebra = "pebra.cli.main:main"`.
    CodeGraph (`@colbymchenry/codegraph`) is a required external runtime graph engine, not a Python
    dependency; installers/runtime checks must verify the `codegraph` command and repo `.codegraph/`
-   index before graph-backed assessment proceeds.
+   index before graph-backed assessment proceeds. rust-code-analysis (`rust-code-analysis-cli`) is an
+   external subprocess benefit engine, not a Python dependency; absence yields projected/no-credit
+   benefit evidence.
 2. **`import-linter` contracts** (the enforcement of §2's "one rule"):
    - `core` forbidden from importing `ports`, `adapters`, `app`, `cli`, `mcp_server`, `dashboard`,
      and any of `sqlite3, subprocess, argparse, pandas, scipy, matplotlib, seaborn, datasets,
@@ -233,9 +235,9 @@ verify returns `ask_human` on unmet binding control; sanction invalidates on sco
 `medium_auto_proceed_requires` is present, never silently accept it), `core/query_validator.py`,
 the port `ports/architecture_knowledge_port.py` **then** its impl `adapters/architecture_map.py`
 (AD-22: temporary Python AST/import graph until Phase 4 installs CodeGraph as the product graph engine),
-AST edge confidence / depth buckets / graph uncertainty / entrypoint signal / import-cycle (AD-12), `adapters/radon_adapter.py`,
+AST edge confidence / depth buckets / graph uncertainty / entrypoint signal / import-cycle (AD-12), `adapters/rca_adapter.py`,
 `adapters/bandit_adapter.py`.
-Wire symbol-level criticality and real benefit deltas (radon MI/complexity, coupling) — replacing
+Wire symbol-level criticality and real benefit deltas (RCA MI/complexity, coupling) — replacing
 Phase-0 projected stubs.
 **ADs:** AD-6 (config-loader warning), AD-12, AD-22. **Tests:** architecture-map freshness (content hash → refresh or
 `inspect_first` on rebuild failure), graph incompleteness lowers confidence without inflating blast, and cosmetic edit in a C4 path scores low (symbol evidence beats file membership).

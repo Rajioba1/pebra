@@ -2,7 +2,7 @@
 
 Proves: no-repo-evidence merges byte-identical to the request bundle (worked example unchanged when
 the composite is wired in Slice 5); the merge never mutates the base; config raises (never lowers)
-criticality; request thresholds override config; bandit events are deduped; radon fills only projected
+criticality; request thresholds override config; bandit events are deduped; the provider fills only projected
 benefit.
 """
 
@@ -38,7 +38,7 @@ def _empty_merge(base, **overrides):
     kwargs = dict(
         config=PebraConfig(),
         architecture_evidence=base.architecture_evidence,
-        radon_benefit=BenefitDeltaEvidence(source_type="projected", deltas={}),
+        provider_benefit=BenefitDeltaEvidence(source_type="projected", deltas={}),
         bandit_events=[],
         evidence_quality_penalty=0.0,
         affected_files=["src/auth.py"],
@@ -58,7 +58,7 @@ def test_merge_does_not_mutate_base() -> None:
     base = _base(events=base_events, edit_confidence_factors=base_factors)
     _empty_merge(
         base,
-        radon_benefit=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": -1.0}),
+        provider_benefit=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": -1.0}),
         bandit_events=[{"event": "security_sensitive_change", "p_event": 0.2, "elicited_disutility": 0.8}],
         evidence_quality_penalty=0.15,
     )
@@ -66,10 +66,10 @@ def test_merge_does_not_mutate_base() -> None:
     assert base.edit_confidence_factors == {"evidence_quality": 0.9}
 
 
-def test_radon_fills_projected_benefit() -> None:
+def test_provider_fills_projected_benefit() -> None:
     base = _base()
     merged = _empty_merge(
-        base, radon_benefit=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": -2.0})
+        base, provider_benefit=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": -2.0})
     )
     assert merged.benefit_delta_evidence.source_type == "measured"
     assert merged.benefit_delta_evidence.deltas["complexity_delta"] == -2.0
@@ -85,26 +85,26 @@ def test_merge_event_dicts_are_not_aliased_to_base() -> None:
     assert base.events[0]["p_event"] == 0.1
 
 
-def test_request_projected_deltas_are_authoritative_over_radon() -> None:
-    # the request supplied its own (projected) deltas -> radon must not overwrite or relabel them.
+def test_request_projected_deltas_are_authoritative_over_provider() -> None:
+    # the request supplied its own (projected) deltas -> the provider must not overwrite or relabel them.
     base = _base(
         benefit_delta_evidence=BenefitDeltaEvidence(source_type="projected", deltas={"complexity_delta": 0.5})
     )
     merged = _empty_merge(
         base,
-        radon_benefit=BenefitDeltaEvidence(
+        provider_benefit=BenefitDeltaEvidence(
             source_type="measured", deltas={"complexity_delta": -2.0, "maintainability_index_delta": 3.0}
         ),
     )
     assert merged.benefit_delta_evidence == base.benefit_delta_evidence  # request wins entirely
 
 
-def test_radon_does_not_override_non_projected_request_benefit() -> None:
+def test_provider_does_not_override_non_projected_request_benefit() -> None:
     base = _base(
         benefit_delta_evidence=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": 0.5})
     )
     merged = _empty_merge(
-        base, radon_benefit=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": -9.0})
+        base, provider_benefit=BenefitDeltaEvidence(source_type="measured", deltas={"complexity_delta": -9.0})
     )
     assert merged.benefit_delta_evidence.deltas["complexity_delta"] == 0.5  # request wins
 

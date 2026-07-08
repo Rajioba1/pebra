@@ -3,7 +3,7 @@
 This is the Phase-0 ``EvidenceProvider`` implementation: the canonical request carries an
 ``evidence{}`` block (AD-8) with elicited/configured/measured values; this adapter passes them
 through and fills any gaps with the cold-start priors from ``core.constants`` (AD-9). Later phases
-replace it with radon/bandit/AST-derived evidence — the engine never sees the change.
+replace it with RCA/bandit/AST-derived evidence — the engine never sees the change.
 """
 
 from __future__ import annotations

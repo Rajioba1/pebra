@@ -1,7 +1,7 @@
 """Benefit model (Architecture §5, AD-28) — pure, stdlib ``math`` only.
 
 Receives already-collected before/after metric deltas and computes directionality, exposure
-weighting, ``benefit``, and ``Var(benefit)``. It never reads files, calls git, runs radon, or
+weighting, ``benefit``, and ``Var(benefit)``. It never reads files, calls git, runs a complexity tool, or
 queries trackers — adapters supply the deltas inside ``BenefitDeltaEvidence``.
 
 In ``projected`` mode (no concrete patch metrics) all deltas are absent/zero, maintainability
@@ -24,7 +24,7 @@ METRIC_DIRECTION: dict[str, int] = {
     "technical_debt_interest_delta": -1,
     "recurrence_delta": -1,
     # higher is better
-    "maintainability_index_delta": +1,  # radon MI (0-100); higher = more maintainable (Slice 4b)
+    "maintainability_index_delta": +1,  # RCA MI (0-100); higher = more maintainable (Slice 4b)
     "testability_delta": +1,
     "cohesion_delta": +1,
     "modularity_delta": +1,

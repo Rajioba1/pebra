@@ -1,4 +1,4 @@
-"""Repo-relative path safety for adapters that READ caller-supplied file paths (radon, bandit).
+"""Repo-relative path safety for adapters that READ caller-supplied file paths (RCA, bandit).
 
 ``expected_files`` come from the request/action and could (now, or via a future model/MCP surface)
 contain absolute paths or ``..`` traversal. Any adapter that opens those paths must validate them

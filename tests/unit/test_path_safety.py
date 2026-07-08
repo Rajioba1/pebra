@@ -1,4 +1,4 @@
-"""Shared adapter path safety — adapters that READ caller-supplied file paths (radon 4b, bandit 4c)
+"""Shared adapter path safety — adapters that READ caller-supplied file paths (RCA 4b, bandit 4c)
 must reject paths that escape the repo (absolute, ``..`` traversal, or symlink-resolving-outside)
 BEFORE any read/copy. Invalid paths are dropped, never raised; the caller degrades to projected.
 """

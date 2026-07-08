@@ -1,4 +1,4 @@
-"""P0 — the shared patch-materialization recipe (extracted/generalized from radon_adapter._apply_patch).
+"""P0 — the shared patch-materialization recipe (extracted/generalized from the old benefit adapter).
 
 Real git in a temp dir (no mocks): git-init a throwaway tree, seed the CURRENT before-content, apply the
 patch VERBATIM (-p1 then -p0), read back after-content. Fail-closed to None on any apply failure — never
@@ -74,7 +74,7 @@ def test_unsafe_before_keys_fail_closed_before_any_write(tmp_path) -> None:
 
 def test_unchanged_is_not_special_cased_here() -> None:
     # the recipe returns after-content faithfully; the "changed nothing -> None" policy belongs to the
-    # caller (radon), not the shared primitive.
+    # caller (RCA), not the shared primitive.
     noop = (
         "diff --git a/src/a.txt b/src/a.txt\n--- a/src/a.txt\n+++ b/src/a.txt\n"
         "@@ -1,2 +1,2 @@\n old\n-old\n+old\n"

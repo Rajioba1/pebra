@@ -1,7 +1,8 @@
-"""Slice 5 — CompositeEvidenceProvider integration + live gate-12 (needs yaml/radon/bandit -> nox).
+"""Slice 5 — CompositeEvidenceProvider integration + live gate-12 (needs yaml/bandit -> nox).
 
 Calls the composite directly on a tmp repo (cleaner than spawning the CLI), and drives the full
-controller+engine for the architecture-map gate (gate 12). Skipped in the dep-light env.
+controller+engine for the architecture-map gate (gate 12). Skipped in the dep-light env. The RCA
+benefit measured-path test is additionally gated on the rust-code-analysis-cli binary being present.
 """
 
 from __future__ import annotations
@@ -23,11 +24,12 @@ from pebra.core.models import (
     CandidateAction,
     SymbolDiffEvidence,
 )
+from pebra.core.rca_engine_paths import find_rca
 from pebra.ports.repository_registry_port import RepoMetadata
 
 pytestmark = pytest.mark.skipif(
-    not all(importlib.util.find_spec(m) for m in ("yaml", "radon", "bandit")),
-    reason="requires yaml/radon/bandit (run via nox)",
+    not all(importlib.util.find_spec(m) for m in ("yaml", "bandit")),
+    reason="requires yaml/bandit (run via nox)",
 )
 
 _THRESHOLDS = {
@@ -70,7 +72,8 @@ def test_bandit_eval_produces_security_event(tmp_path) -> None:
     assert any(e["event"] == "security_sensitive_change" for e in ev.events)
 
 
-def test_radon_patch_changes_benefit_deltas(tmp_path) -> None:
+@pytest.mark.skipif(find_rca() is None, reason="requires rust-code-analysis-cli binary")
+def test_rca_patch_changes_benefit_deltas(tmp_path) -> None:
     before = "def f(x):\n    return x + 1\n"
     after = "def f(x):\n    if x > 0:\n        for i in range(x):\n            if i:\n                x += i\n    return x + 1\n"
     (tmp_path / "m.py").write_text(before, encoding="utf-8")

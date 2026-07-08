@@ -76,26 +76,6 @@ def test_syntax_error_after_yields_no_rows_not_crash() -> None:
     assert rows == []
 
 
-def test_complexity_delta_increases_when_branches_added() -> None:
-    from pebra.adapters.ast_diff_adapter import compute_complexity_delta
-    before = "def f(x):\n    return x\n"
-    after = "def f(x):\n    if x:\n        return 1\n    return 0\n"
-    assert compute_complexity_delta(before, after) > 0  # added a branch -> more complex
-
-
-def test_complexity_delta_decreases_when_branches_removed() -> None:
-    from pebra.adapters.ast_diff_adapter import compute_complexity_delta
-    before = "def f(x):\n    if x:\n        return 1\n    return 0\n"
-    after = "def f(x):\n    return bool(x)\n"
-    assert compute_complexity_delta(before, after) < 0  # simpler
-
-
-def test_complexity_delta_zero_for_no_change_or_syntax_error() -> None:
-    from pebra.adapters.ast_diff_adapter import compute_complexity_delta
-    assert compute_complexity_delta(BEFORE, BEFORE) == 0.0
-    assert compute_complexity_delta(BEFORE, "def broken(:\n") == 0.0
-
-
 # --- M4: conservative identity-replacement detection (body-only similarity, threshold 0.5) ---
 
 _REWRITE_BEFORE = (

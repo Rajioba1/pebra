@@ -1,18 +1,19 @@
 """evidence_merge (Slice 4d) — the evidence aggregation contract.
 
-PURE composition: given the ALREADY-gathered pieces (the request base bundle + radon benefit deltas +
-bandit security events + an evidence-quality penalty + config + architecture evidence), build ONE
-merged ``EvidenceBundle`` without mutating the base. No radon/bandit/yaml imports here, so it stays
-importable even in the dep-light env; the Slice-5 ``CompositeEvidenceProvider`` does the gathering and
-calls this.
+PURE composition: given the ALREADY-gathered pieces (the request base bundle + the benefit-provider's
+deltas + bandit security events + an evidence-quality penalty + config + architecture evidence), build
+ONE merged ``EvidenceBundle`` without mutating the base. No provider/bandit/yaml imports here, so it
+stays importable even in the dep-light env; the Slice-5 ``CompositeEvidenceProvider`` does the gathering
+and calls this.
 
 Contract:
-  - request evidence is authoritative; radon only fills benefit deltas the request left projected/empty;
+  - request evidence is authoritative; the benefit provider only fills benefit deltas the request left
+    projected/empty;
   - config can only RAISE criticality (never lower what the request claims);
   - request thresholds override config thresholds;
   - bandit events are appended, de-duplicated by event type against the request's events;
   - an evidence-quality penalty (bandit could not run) lowers evidence_quality, bounded at 0;
-  - with no repo evidence (radon projected/empty, no bandit events, no penalty, default config,
+  - with no repo evidence (provider projected/empty, no bandit events, no penalty, default config,
     default architecture) the merged bundle EQUALS the request-only bundle — so wiring the composite
     never changes the worked example.
 """
@@ -27,20 +28,20 @@ from pebra.ports.config_port import PebraConfig
 
 
 def _merge_benefit_delta_evidence(
-    base: BenefitDeltaEvidence, radon: BenefitDeltaEvidence
+    base: BenefitDeltaEvidence, provider: BenefitDeltaEvidence
 ) -> BenefitDeltaEvidence:
-    # Request wins entirely: radon only fills a genuine gap — when the request benefit is projected
-    # AND carries NO deltas of its own AND radon actually measured something. If the request supplied
-    # its own (projected) deltas, they are authoritative and must not be relabeled as measured.
-    if base.source_type != "projected" or base.deltas or not radon.deltas:
+    # Request wins entirely: the provider only fills a genuine gap — when the request benefit is
+    # projected AND carries NO deltas of its own AND the provider actually measured something. If the
+    # request supplied its own (projected) deltas, they are authoritative and must not be relabeled.
+    if base.source_type != "projected" or base.deltas or not provider.deltas:
         return base
-    merged = dict(radon.deltas)
+    merged = dict(provider.deltas)
     merged.update(base.deltas)  # any request-supplied key still wins
     return BenefitDeltaEvidence(
-        scope=base.scope or radon.scope,
-        source_type=radon.source_type,
+        scope=base.scope or provider.scope,
+        source_type=provider.source_type,
         deltas=merged,
-        future_change_exposure=base.future_change_exposure or radon.future_change_exposure,
+        future_change_exposure=base.future_change_exposure or provider.future_change_exposure,
     )
 
 
@@ -67,7 +68,7 @@ def merge_evidence(
     *,
     config: PebraConfig,
     architecture_evidence: ArchitectureEvidence,
-    radon_benefit: BenefitDeltaEvidence,
+    provider_benefit: BenefitDeltaEvidence,
     bandit_events: list[dict],
     evidence_quality_penalty: float,
     affected_files: list[str],
@@ -103,7 +104,7 @@ def merge_evidence(
         p_success_variance=base.p_success_variance,
         review_cost_variance=base.review_cost_variance,
         benefit_delta_evidence=_merge_benefit_delta_evidence(
-            base.benefit_delta_evidence, radon_benefit
+            base.benefit_delta_evidence, provider_benefit
         ),
         architecture_evidence=architecture_evidence,
         candidate_verification=base.candidate_verification,

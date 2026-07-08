@@ -39,7 +39,6 @@ def test_reclassify_surfaces_consequential_from_high_fanin(monkeypatch) -> None:
                       control_flow_changed=False)
     monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "src")
     monkeypatch.setattr(gcv, "parses", lambda src: True)
-    monkeypatch.setattr(gcv, "compute_complexity_delta", lambda b, a: 0.0)
     monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [dict(behavioral)])
 
     v = gcv.GitChangeVerifier(fanin_lookup=lambda ids, root: {"a.py::Cls.m": 0.97})
@@ -52,6 +51,37 @@ def test_reclassify_surfaces_consequential_from_high_fanin(monkeypatch) -> None:
     # without the lookup, the same BEHAVIORAL change is NOT consequential (callers_percentile stays 0.0)
     v2 = gcv.GitChangeVerifier()
     assert v2._reclassify("/repo", ["a.py"], "x")[4] is False
+
+
+def test_reclassify_python_benefit_via_injected_rca(monkeypatch) -> None:
+    # RCA (complexity_delta_fn) replaces the old AST complexity: the injected (cc, mi) delta for a .py
+    # file surfaces as measured_deltas with BOTH keys (complexity + maintainability).
+    from pebra.adapters import git_change_verifier as gcv
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "x = 1\n")
+    monkeypatch.setattr(gcv, "parses", lambda src: True)
+    monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [])
+    v = gcv.GitChangeVerifier(complexity_delta_fn=lambda f, b, a: (-1.0, 4.0))
+    md = v._reclassify("/repo", ["a.py"], "x")[2]  # 3rd element = measured_deltas
+    assert md == {"complexity_delta": -1.0, "maintainability_index_delta": 4.0}
+
+
+def test_reclassify_measures_non_python_benefit_independent_of_python(monkeypatch) -> None:
+    # A non-Python (.rs) commit — python_analyzed False — still yields a measured benefit delta via RCA,
+    # proving benefit measurement is multi-language and independent of the Python AST path.
+    from pebra.adapters import git_change_verifier as gcv
+    from pebra.core.models import FanInEvidence
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "fn f() {}\n")
+    v = gcv.GitChangeVerifier(
+        structural_symbols_fn=lambda f, b, a, r: FanInEvidence(
+            resolution_method="location", graph_freshness="fresh",
+            resolved_qualified_names=("f",), resolved_symbol_count=1, node_ids_resolved=("rs:f",)),
+        complexity_delta_fn=lambda f, b, a: (2.0, -3.0),
+    )
+    _kind, _syms, md, _analyzed, _c, _r, py_analyzed, _tier = v._reclassify("/repo", ["a.rs"], "x")
+    assert py_analyzed is False  # no Python analyzed at all
+    assert md == {"complexity_delta": 2.0, "maintainability_index_delta": -3.0}
 
 
 def test_reclassify_non_python_uses_structural_symbols(monkeypatch) -> None:
@@ -110,7 +140,6 @@ def test_reclassify_fresh_unresolved_structural_file_is_not_masked_by_python_cos
 
     monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "src")
     monkeypatch.setattr(gcv, "parses", lambda src: True)
-    monkeypatch.setattr(gcv, "compute_complexity_delta", lambda b, a: 0.0)
     monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [])
     unresolved_fresh = FanInEvidence(resolution_method="unresolved", graph_freshness="fresh")
 
@@ -136,7 +165,6 @@ def test_reclassify_unparsable_python_is_not_masked_by_other_rows(monkeypatch) -
     monkeypatch.setattr(gcv.GitChangeVerifier, "_read_after",
                         lambda self, root, scope, f: sources[f])
     monkeypatch.setattr(gcv, "parses", lambda src: "broken" not in src)
-    monkeypatch.setattr(gcv, "compute_complexity_delta", lambda b, a: 0.0)
     monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [dict(behavioral)])
 
     kind, _syms, _d, analyzed, _c, _r, py_analyzed, _tier = (
@@ -317,7 +345,6 @@ def test_reclassify_uses_threshold_override(monkeypatch) -> None:
                       control_flow_changed=False)
     monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "src")
     monkeypatch.setattr(gcv, "parses", lambda src: True)
-    monkeypatch.setattr(gcv, "compute_complexity_delta", lambda b, a: 0.0)
     monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [dict(behavioral)])
 
     v = gcv.GitChangeVerifier(fanin_lookup=lambda ids, root: {"a.py::f": 0.85})

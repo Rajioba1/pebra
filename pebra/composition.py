@@ -6,7 +6,7 @@ it (enforced in .importlinter). A surface resolves the repo/store, asks here for
 hands it to the app controller, then serialises the outcome via the payload helpers below.
 
 It is import-cheap: every adapter pulled in here is stdlib-backed or lazy (CompositeEvidenceProvider
-defers yaml/radon), so the dep-light CLI and the worked-example golden never pull a heavy library.
+defers yaml), so the dep-light CLI and the worked-example golden never pull a heavy library.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from pebra.adapters.git_change_verifier import GitChangeVerifier
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
 from pebra.adapters.codegraph_materialized_diff import CodeGraphMaterializedDiffAdapter
 from pebra.adapters.import_graph_cache import GraphProvider
+from pebra.adapters.rca_adapter import RustCodeAnalysisAdapter
 from pebra.adapters.repository_registry import RepositoryRegistry
 from pebra.adapters.sanction_store import SanctionStore
 from pebra.adapters.snapshot_read_store import SnapshotReadStore
@@ -157,6 +158,8 @@ def build_verify_ports() -> dict[str, Any]:
             materialized_diff_fn=CodeGraphMaterializedDiffAdapter(enabled=True).diff,
             language_capability_fn=codegraph.capability_for,
             semantic_diff_enabled=os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF") == "1",
+            # Multi-language BENEFIT measurement (RCA), symmetric with the assess-path benefit provider.
+            complexity_delta_fn=RustCodeAnalysisAdapter().measure_delta,
         ),
         "contract_surface": ContractSurfaceScanner(),
     }

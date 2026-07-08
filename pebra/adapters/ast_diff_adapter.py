@@ -148,31 +148,6 @@ def _row(symbol_id: str, qual: str, *, signature_changed: bool, body_changed: bo
     }
 
 
-_COMPLEXITY_NODES = (
-    ast.If, ast.For, ast.While, ast.Try, ast.ExceptHandler, ast.With, ast.AsyncFor,
-    ast.AsyncWith, ast.BoolOp, ast.IfExp, ast.comprehension,
-)
-
-
-def _complexity(source: str | None) -> int:
-    if not source:
-        return 0
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return 0
-    return sum(isinstance(n, _COMPLEXITY_NODES) for n in ast.walk(tree))
-
-
-def compute_complexity_delta(before_src: str | None, after_src: str | None) -> float:
-    """Measured cyclomatic-style complexity change (after - before); negative = simpler = better.
-
-    A stdlib measured signal for post-edit benefit deltas (Architecture §9 / spec §6). Unparseable
-    source contributes 0 (we don't measure what we can't parse). radon-grade MI is a later upgrade.
-    """
-    return float(_complexity(after_src) - _complexity(before_src))
-
-
 def compute_symbol_diff_rows(
     before_src: str | None, after_src: str | None, file_path: str
 ) -> list[dict[str, Any]]:

@@ -40,6 +40,19 @@ pebra doctor
 
 `assess` never silently installs external binaries.
 
+The **benefit signal** (multi-language complexity + maintainability index) is likewise an explicit
+external binary — [`rust-code-analysis`](https://github.com/mozilla/rust-code-analysis) (MPL-2.0),
+invoked as a subprocess. Build it from git (crates.io's release does not compile against current
+tree-sitter):
+
+```powershell
+cargo install --git https://github.com/mozilla/rust-code-analysis rust-code-analysis-cli
+```
+
+Point PEBRA at it via `PEBRA_RCA_BIN` or ensure it is on `PATH`. When absent, benefit evidence fails
+safe to *projected* (no maintainability credit) — it never blocks an assessment and never affects risk.
+Supported languages: Python, JavaScript/JSX, TypeScript/TSX, Java, Rust, C/C++.
+
 ## Basic Workflow
 
 ```text

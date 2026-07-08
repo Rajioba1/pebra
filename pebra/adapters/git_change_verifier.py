@@ -15,11 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from pebra.adapters import git_adapter
-from pebra.adapters.ast_diff_adapter import (
-    compute_complexity_delta,
-    compute_symbol_diff_rows,
-    parses,
-)
+from pebra.adapters.ast_diff_adapter import compute_symbol_diff_rows, parses
 from pebra.core import change_classifier
 from pebra.core.constants import ChangeKind
 from pebra.core.language_capability import classify_tier
@@ -54,6 +50,8 @@ class GitChangeVerifier:
         materialized_diff_fn: Callable[..., Any] | None = None,
         language_capability_fn: Callable[[str, str], Any] | None = None,
         semantic_diff_enabled: bool = False,
+        complexity_delta_fn: Callable[[str, str | None, str | None], tuple[float, float] | None]
+        | None = None,
     ) -> None:
         # Injected by composition (bound to CodeGraphAdapter.percentiles_by_name). None -> verify keeps
         # the pre-A1 behavior (callers_percentile stays 0.0, no fan-in escalation). No adapter→adapter
@@ -70,6 +68,11 @@ class GitChangeVerifier:
         self._materialized_diff_fn = materialized_diff_fn
         self._language_capability_fn = language_capability_fn
         self._semantic_diff_enabled = semantic_diff_enabled
+        # Benefit measurement (RCA): bound to RustCodeAnalysisAdapter.measure_delta. Returns
+        # (complexity_delta, maintainability_index_delta) for an RCA-supported file, else None. Runs on
+        # every read (Python + structural) file, BENEFIT-only — it never touches classification/risk.
+        # None -> the pre-RCA behavior (no measured benefit delta on the verify path).
+        self._complexity_delta_fn = complexity_delta_fn
 
     def actual_diff(
         self, repo_root: str, scope: str, thresholds: dict[str, float] | None = None
@@ -83,12 +86,11 @@ class GitChangeVerifier:
                              for f in lowered)
         migration_changed = any("migration" in f for f in lowered)
 
-        (max_kind, changed_symbols, complexity_delta, analyzed, consequential, reason, python_analyzed,
+        (max_kind, changed_symbols, measured_deltas, analyzed, consequential, reason, _python_analyzed,
          actual_structure_tier) = self._reclassify(repo_root, files, scope, thresholds=thresholds)
-        # record the delta whenever PYTHON files were analyzed — even a net-zero delta is signal
-        # (distinct from "no Python files changed") for AD-29 benefit learning. Non-Python structural
-        # reclassification does NOT measure a complexity delta, so it must not fabricate a 0.0 here.
-        measured_deltas = {"complexity_delta": complexity_delta} if python_analyzed else {}
+        # measured_deltas is already {complexity_delta, maintainability_index_delta} (or {}) from RCA,
+        # over EVERY measured language (not just Python). A net-zero delta is still recorded (keys
+        # present), distinct from "nothing measured" ({}), for AD-29 benefit learning.
         return ActualDiffSummary(
             current_head=git_adapter.head_commit(repo_root),
             changed_files=files,
@@ -161,19 +163,19 @@ class GitChangeVerifier:
     def _reclassify(
         self, repo_root: str, files: list[str], scope: str,
         thresholds: dict[str, float] | None = None,
-    ) -> tuple[str, list[str], float, bool, bool, list[str], bool, str]:
-        """Rerun the symbol classifier on the actual diff (AD-27) + measure complexity delta.
+    ) -> tuple[str, list[str], dict[str, float], bool, bool, list[str], bool, str]:
+        """Rerun the symbol classifier on the actual diff (AD-27) + measure the RCA benefit delta.
 
-        Python files use the full AST diff (and contribute the complexity delta). Non-Python files, when
-        a structural-symbols lookup is wired, are reclassified from graph structure (the multi-language
-        tier) instead of being skipped — so ``actual_max_change_kind`` covers a mixed-language commit.
-
-        A1: when a fan-in lookup is wired, fill each Python row's ``callers_percentile`` from the graph
-        engine BEFORE classifying (structural rows already carry the owner's fan-in). Returns the
-        consequential flag + reasons, plus ``python_analyzed`` (a complexity delta was actually measured).
+        Python files use the full AST symbol diff; non-Python files, when a structural-symbols lookup is
+        wired, are reclassified from graph structure (the multi-language tier). INDEPENDENTLY, when a
+        complexity-delta fn (RCA) is wired, EVERY read file (Python OR structural) is measured for a
+        benefit (complexity + maintainability) delta — multi-language, BENEFIT-only, never affecting
+        classification. Returns the classification + ``measured_deltas`` (summed complexity + averaged MI,
+        or {} when nothing measured) + ``python_analyzed``.
         """
         rows: list[dict] = []
-        complexity_delta = 0.0
+        cc_delta = 0.0
+        mi_deltas: list[float] = []
         analyzed = False          # any reclassification attempted (Python OR structural)
         python_analyzed = False   # a Python file parsed cleanly -> complexity delta is real
         unparsable = False
@@ -182,23 +184,24 @@ class GitChangeVerifier:
         used_semantic = False         # a non-Python file was reproduced at the semantic tier
         parsed_ok = False
         for f in files:
-            if f.endswith(".py"):
-                # We attempted classification of a Python file. (Diagnostic note: if HEAD itself was
-                # already unparseable, this still reports attempted=True/UNKNOWN — safe-conservative.)
+            is_py = f.endswith(".py")
+            is_struct = self._structural_symbols_fn is not None and _is_structural_source_file(f)
+            if not (is_py or is_struct):
+                continue
+            before = git_adapter.file_at_rev(repo_root, "HEAD", f)
+            after = self._read_after(repo_root, scope, f)
+            if is_py:
+                # We attempted classification of a Python file. (If HEAD itself was already unparseable
+                # this still reports attempted=True/UNKNOWN — safe-conservative.)
                 analyzed = True
-                before = git_adapter.file_at_rev(repo_root, "HEAD", f)
-                after = self._read_after(repo_root, scope, f)
-                if not (parses(before) and parses(after)):
+                if parses(before) and parses(after):
+                    parsed_ok = True
+                    python_analyzed = True
+                    rows.extend(compute_symbol_diff_rows(before, after, f))
+                else:
                     unparsable = True
-                    continue
-                parsed_ok = True
-                python_analyzed = True
-                rows.extend(compute_symbol_diff_rows(before, after, f))
-                complexity_delta += compute_complexity_delta(before, after)
-            elif self._structural_symbols_fn is not None and _is_structural_source_file(f):
+            elif is_struct:
                 # Multi-language reclassification for a non-Python changed file.
-                before = git_adapter.file_at_rev(repo_root, "HEAD", f)
-                after = self._read_after(repo_root, scope, f)
                 ev = self._structural_symbols_fn(f, before, after, repo_root)
                 # Only count the graph tier as actually USED when the graph was AVAILABLE (fresh) — the
                 # non-Python analogue of Python's always-present ast. A fresh-but-unresolved change (e.g.
@@ -217,6 +220,21 @@ class GitChangeVerifier:
                     rows.extend(semantic_rows)
                 else:
                     rows.extend(change_classifier.rows_from_fanin(ev))
+            # Independent BENEFIT measurement (RCA): multi-language incl. Python; measure_delta returns
+            # None for an unsupported language / unmeasurable side, so this is fail-safe and never risk.
+            if self._complexity_delta_fn is not None:
+                d = self._complexity_delta_fn(f, before, after)
+                if d is not None:
+                    cc_delta += d[0]
+                    mi_deltas.append(d[1])
+
+        # Summed complexity + averaged MI delta over the files RCA measured on both sides ({} if none).
+        measured_deltas: dict[str, float] = {}
+        if mi_deltas:
+            measured_deltas = {
+                "complexity_delta": cc_delta,
+                "maintainability_index_delta": sum(mi_deltas) / len(mi_deltas),
+            }
 
         # Which tier the post-edit reclassification used (for assess/verify symmetry). Prefer the most
         # informative tier actually produced: semantic (reproduced) > structural > python > unavailable.
@@ -232,19 +250,19 @@ class GitChangeVerifier:
         if unparsable or structural_unresolved:
             # Any file we attempted but could not classify means the whole multi-file envelope is
             # unproven. Do not let another file's rows mask that failure.
-            return "UNKNOWN", [], complexity_delta, analyzed, False, [], python_analyzed, tier
+            return "UNKNOWN", [], measured_deltas, analyzed, False, [], python_analyzed, tier
         if rows:
             self._enrich_fanin(rows, repo_root)
             summary = change_classifier.classify_diff(rows, thresholds or {})
-            return (summary.max_change_kind, summary.changed_symbols, complexity_delta, analyzed,
+            return (summary.max_change_kind, summary.changed_symbols, measured_deltas, analyzed,
                     summary.consequential_symbol_changed, list(summary.consequence_reason),
                     python_analyzed, tier)
         if parsed_ok:
             # parsed cleanly with no semantic change (docstring/comment/whitespace only) -> cosmetic
-            return (ChangeKind.COSMETIC.value, [], complexity_delta, analyzed, False, [],
+            return (ChangeKind.COSMETIC.value, [], measured_deltas, analyzed, False, [],
                     python_analyzed, tier)
         # nothing analyzed (pure non-code change, or non-Python with no structural lookup wired)
-        return "UNKNOWN", [], complexity_delta, analyzed, False, [], python_analyzed, tier
+        return "UNKNOWN", [], measured_deltas, analyzed, False, [], python_analyzed, tier
 
     def _enrich_fanin(self, rows: list[dict], repo_root: str) -> None:
         """Fill ``callers_percentile`` per row from the graph engine (no-op when no lookup is wired or

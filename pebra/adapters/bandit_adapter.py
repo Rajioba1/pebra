@@ -9,7 +9,7 @@ Rules (ratified):
     penalty; only an inability to RUN bandit lowers evidence_quality (an evidence gap, never fake
     safety);
   - bandit never sets criticality_stage — criticality stays policy/capability-driven;
-  - caller-supplied paths are validated BEFORE bandit reads them (same escape class as radon);
+  - caller-supplied paths are validated BEFORE bandit reads them (same escape class as RCA);
   - test files are excluded (a finding in a test helper is not a production security event).
 """
 

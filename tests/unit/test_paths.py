@@ -1,7 +1,7 @@
 """The canonical repo-relative path-safety predicate (`is_safe_relative`) and its filtering wrapper.
 
 One predicate is the single source of truth for every adapter that reads/writes caller-supplied paths
-(radon, bandit, the materialized CodeGraph diff), so an escape-class fix lands in exactly one place.
+(RCA, bandit, the materialized CodeGraph diff), so an escape-class fix lands in exactly one place.
 """
 
 from __future__ import annotations

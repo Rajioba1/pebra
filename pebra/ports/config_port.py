@@ -48,8 +48,8 @@ class PebraConfig:
     # AD-6: `medium_auto_proceed_requires` is v1.5-reserved — the loader WARNS if present and records
     # only this flag; the value is never evaluated.
     has_medium_auto_proceed_requires: bool = False
-    # Slice 4: when True, radon/bandit run-failures cap evidence_quality harder (strict). Default off
-    # = failures become evidence gaps (projected), not hard failures.
+    # Slice 4: when True, Bandit run-failures cap evidence_quality harder (strict). RCA absence is
+    # benefit-only and remains projected/no-credit, not an evidence-quality penalty.
     strict_mode: bool = False
 
 
