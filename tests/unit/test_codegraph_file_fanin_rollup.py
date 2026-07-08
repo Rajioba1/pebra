@@ -91,6 +91,23 @@ def test_rollup_unions_callers_across_all_symbols_in_file(tmp_path):
     assert r.file_symbol_fanin_rollup_percentile == pytest.approx(1.0)
 
 
+def test_rollup_percentile_uses_file_union_distribution_not_symbol_distribution(tmp_path):
+    _seed(tmp_path)
+    con = sqlite3.connect(str(tmp_path / ".codegraph" / "codegraph.db"))
+    _node(con, "method:big", "method", "big", "Big::big", "src/big.py", 1, 10)
+    for i in range(10):
+        _node(con, f"func:big_caller_{i}", "function", f"bc{i}", f"bc{i}",
+              "src/big_callers.py", i + 1, i + 1)
+        _edge(con, f"func:big_caller_{i}", "method:big", "calls")
+    con.commit()
+    con.close()
+
+    r = _adapter().file_fanin_rollup("src/auth.py", str(tmp_path))
+
+    assert r.distinct_caller_count == 3
+    assert r.file_symbol_fanin_rollup_percentile == pytest.approx(8 / 9)
+
+
 def test_rollup_unresolved_when_stale(tmp_path):
     _seed(tmp_path)
     assert _adapter(status=STALE).file_fanin_rollup("src/auth.py", str(tmp_path)).resolution_method == "unresolved"

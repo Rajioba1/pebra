@@ -425,8 +425,7 @@ class SqliteStore:
             );
             CREATE INDEX IF NOT EXISTS ix_prediction_errors_assessment
                 ON prediction_errors(assessment_id);
-            -- Milestone 4d: a shadow snapshot per measurement run (the metrics rollup it computed).
-            -- status stays 'shadow' in M4; promotion to 'active' is Milestone 5.
+            -- Measurement snapshots start as 'shadow'; promotion may append 'active' snapshots.
             CREATE TABLE IF NOT EXISTS risk_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 repo_id TEXT NOT NULL,

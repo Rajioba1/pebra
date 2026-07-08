@@ -1,4 +1,4 @@
-"""Nox sessions for tests, lint, benchmarks, e2e lanes, MCP smoke, and core-only import checks."""
+"""Nox sessions for tests, lint/import contracts, core-only, benchmarks, MCP smoke, and e2e lanes."""
 
 from __future__ import annotations
 
@@ -121,7 +121,7 @@ def e2e_learning(session: nox.Session) -> None:
 @nox.session(name="e2e-external")
 def e2e_external(session: nox.Session) -> None:
     """Heavy gated real-repo proof: index a real external C# repo with CodeGraph and prove graph-backed
-    risk via the graph-vs-no-graph DELETE delta (and later: real dotnet build outcome + agent A/B).
+    risk via graph-vs-no-graph DELETE/MODIFY deltas, real dotnet compiler outcome, and attribution.
 
     Requires E2E_EXTERNAL=1 and E2E_TEMPLATE_BLUEPRINT_REPO=<local git checkout>. Clones the source into
     the gitignored e2e/out/ (never mutates it), runs pebra setup-graph. NOT for per-PR CI."""

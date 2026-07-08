@@ -60,7 +60,7 @@ class AssessmentRequest:
         return cls(task=task, candidate_actions=[action])
 
 
-# --- Port return types (Architecture §3 / §5 contracts). Phase 0 carries the subset used. ---
+# --- Port return types (Architecture §3 / §5 contracts). ---
 
 
 @dataclass(frozen=True)
@@ -146,6 +146,11 @@ class FanInEvidence:
     modify_impact_count: int = 0
     modify_impact_percentile: float = 0.0
     modify_impact_edge_counts: dict[str, int] = field(default_factory=dict)
+    modify_transitive_impact_count: int = 0
+    modify_transitive_impact_percentile: float = 0.0
+    modify_transitive_depth_buckets: dict[int, int] = field(default_factory=dict)
+    modify_repo_blast_fraction: float = 0.0
+    modify_repo_graph_node_count: int = 0
     container_hierarchy_kinds: tuple[str, ...] = ()
     graph_file_size_bytes: int = 0
     graph_file_node_count: int = 0
@@ -296,10 +301,10 @@ class ContractSurfaceFindings:
 
 @dataclass(frozen=True)
 class EvidenceBundle:
-    """What EvidenceProvider returns (Phase 0): the scored inputs the engine needs.
+    """What EvidenceProvider returns: the scored inputs the engine needs.
 
-    In Phase 0 these are read from the request's evidence block (elicited/configured/projected); later
-    phases enrich them from radon/bandit/architecture map. The engine never sees the provider.
+    These may originate from request evidence, config, static analysis, architecture maps, graph
+    adapters, or other outer-layer providers. The engine never sees the provider.
     """
 
     events: list[dict[str, Any]]
@@ -357,9 +362,9 @@ class AssessmentInput:
     # A repo-wide fact (not per-edit), so it rides AssessmentInput, not the frozen SymbolDiffEvidence.
     # Default = unmeasured; assess_controller populates it from fanin_evidence.resolved_language.
     language_capability: LanguageCapability = field(default_factory=LanguageCapability)
-    active_snapshot: Any | None = None  # no learning in Phase 0 (cold start)
+    active_snapshot: Any | None = None  # read-only learned snapshot bundle; None for cold start
     sanction: Any | None = None  # pre-fetched sanction (engine never calls a port)
-    # Phase-4 reframe (M5-prep): structural feature payload attached pre-scoring for CAPTURE only.
+    # Structural feature payload attached pre-scoring for CAPTURE only.
     # assessment_builder/decision_engine MUST ignore it (no score/gate change); persisted with the
     # prediction manifest and consumed by M5 apply_snapshot. None until enrichment is wired.
     structural_features: dict[str, Any] | None = None

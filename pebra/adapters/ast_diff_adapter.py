@@ -1,10 +1,9 @@
-"""ast_diff_adapter (Phase-0 SymbolDiffProvider, AD-27) — owns symbol-diff I/O.
+"""ast_diff_adapter (SymbolDiffProvider, AD-27) — owns Python symbol-diff I/O.
 
-Phase 0: seeded with the request's ``symbol_diff`` evidence slice (a plain dict), it returns that
-directly; otherwise it falls back conservatively to a cold-start ``UNKNOWN`` summary (file/path-level
-risk). It deliberately does NOT hold the whole AssessmentRequest — only its own evidence slice, like
-any adapter config. Real AST parsing of ``action.proposed_patch`` + per-symbol fan-in lookup arrives
-in Phase 2; until then ``fallback_reason`` records why we are not at symbol granularity.
+When seeded with a request ``symbol_diff`` evidence slice (a plain dict), it returns that directly.
+Otherwise it computes Python AST-based symbol diff rows for verify/reclassification paths and falls
+back conservatively when source is unavailable or unparseable. It deliberately does NOT hold the whole
+AssessmentRequest — only its own evidence slice, like any adapter config.
 """
 
 from __future__ import annotations

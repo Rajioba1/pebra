@@ -1,8 +1,9 @@
-"""`pebra learn` (Milestone 4d) — trigger shadow learning measurement for one assessment.
+"""`pebra learn` — trigger measured learning for one assessment.
 
-SHADOW MEASUREMENT ONLY. This joins the captured prediction manifest to the recorded outcome labels,
-computes calibration errors, and records them. It does NOT change any decision parameters — reapplying
-learning to decisions is Milestone 5. Separate trigger from assess (Hard Rule).
+This joins the captured prediction manifest to the recorded outcome labels, computes calibration
+errors, and records measurement rows. It still does not promote or mutate live decision parameters;
+`pebra promote` is the explicit write step that can make learned facts active for future assessments.
+Separate trigger from assess (Hard Rule).
 """
 
 from __future__ import annotations

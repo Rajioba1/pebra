@@ -6,11 +6,14 @@ action + explanation. Binding fields are what pebra_verify enforces; advisory fi
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from pebra.core import assessment_builder as ab
 from pebra.core import decision_engine as de
 from pebra.core import explanation_generator as eg
 from pebra.core import model_guidance as mg
 from pebra.core import models as m
+from pebra.core.constants import Decision
 from tests.unit.test_assessment_builder import _worked_example_input
 
 
@@ -22,10 +25,8 @@ def _packet():
 
 
 def test_codegraph_structural_tier_adds_honesty_note_on_proceed() -> None:
-    from dataclasses import replace
-
     inp = _worked_example_input()
-    # a proceed classified from the coarse multi-language tier must be flagged as not signature-verified
+    # A proceed classified from the coarse multi-language tier must be flagged as not signature-verified.
     inp = replace(inp, symbol_diff_evidence=replace(
         inp.symbol_diff_evidence, structure_tier="codegraph_structural"))
     result = de.decide(ab.build_assessment(inp))
@@ -35,9 +36,7 @@ def test_codegraph_structural_tier_adds_honesty_note_on_proceed() -> None:
 
 
 def test_codegraph_semantic_tier_also_adds_honesty_note_on_proceed() -> None:
-    from dataclasses import replace
-
-    # the semantic tier proves ONE owner's signature, not a whole-file public-surface guarantee -> it
+    # The semantic tier proves ONE owner's signature, not a whole-file public-surface guarantee -> it
     # keeps the same honesty note on proceed. Pins the semantic branch of model_guidance's set literal.
     inp = _worked_example_input()
     inp = replace(inp, symbol_diff_evidence=replace(
@@ -49,7 +48,7 @@ def test_codegraph_semantic_tier_also_adds_honesty_note_on_proceed() -> None:
 
 
 def test_default_unavailable_tier_adds_no_note() -> None:
-    # the long-standing default tier must NOT add noise to every proceed (only the coarse tier does)
+    # The long-standing default tier must NOT add noise to every proceed.
     assert not any(
         "CodeGraph structure" in s for s in _packet()["advisory"]["suggested_inspection"]
     )
@@ -94,12 +93,6 @@ def test_requires_dry_run_false_for_non_dependency_action() -> None:
 
 
 def test_requires_dry_run_true_for_dependency_change_action() -> None:
-    from pebra.core import assessment_builder as ab
-    from pebra.core import decision_engine as de
-    from pebra.core import explanation_generator as eg
-    from pebra.core import model_guidance as mg
-    from tests.unit.test_assessment_builder import _worked_example_input
-
     inp = _worked_example_input()
     inp.action.is_dependency_change = True
     result = de.decide(ab.build_assessment(inp))
@@ -114,11 +107,8 @@ def test_no_high_risk_triggers_for_worked_example() -> None:
 
 
 def test_revise_safer_guidance_is_structural_not_generic() -> None:
-    from dataclasses import replace
-
-    inp = _worked_example_input()
     inp = replace(
-        inp,
+        _worked_example_input(),
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
         symbol_diff_evidence=m.SymbolDiffEvidence(
@@ -142,9 +132,6 @@ def test_revise_safer_guidance_is_structural_not_generic() -> None:
 
 
 def test_revise_safer_guidance_stays_domain_agnostic_for_gamma_paths() -> None:
-    from dataclasses import replace
-    from pebra.core.constants import Decision
-
     inp = _worked_example_input()
     action = replace(
         inp.action,
@@ -188,3 +175,48 @@ def test_revise_safer_guidance_stays_domain_agnostic_for_gamma_paths() -> None:
     assert "gammadk" not in rendered
     assert "lanczos" not in rendered
     assert "denominator" not in rendered
+
+
+def test_repo_blast_fraction_reaches_advisory_risk_facts_when_trusted() -> None:
+    inp = replace(
+        _worked_example_input(),
+        fanin_evidence=m.FanInEvidence(
+            resolution_method="location",
+            graph_freshness="fresh",
+            modify_transitive_impact_count=28,
+            modify_repo_blast_fraction=0.28,
+            modify_repo_graph_node_count=100,
+        ),
+    )
+    result = de.decide(ab.build_assessment(inp))
+    packet = mg.render(result, inp.action, eg.render(result))
+
+    assert packet["advisory"]["risk_facts"]["repo_blast_fraction"] == 0.28
+    assert packet["advisory"]["risk_facts"]["repo_blast_percent"] == 28.0
+    assert packet["advisory"]["risk_facts"]["repo_blast_node_count"] == 28
+    assert packet["advisory"]["risk_facts"]["repo_graph_node_count"] == 100
+
+
+def test_repo_blast_fraction_absent_from_guidance_when_graph_untrusted_or_absent() -> None:
+    absent = de.decide(ab.build_assessment(_worked_example_input()))
+    absent_packet = mg.render(absent, _worked_example_input().action, eg.render(absent))
+
+    untrusted_inp = replace(
+        _worked_example_input(),
+        fanin_evidence=m.FanInEvidence(
+            resolution_method="unresolved",
+            graph_freshness="stale",
+            modify_transitive_impact_count=28,
+            modify_repo_blast_fraction=0.28,
+            modify_repo_graph_node_count=100,
+        ),
+    )
+    untrusted = de.decide(ab.build_assessment(untrusted_inp))
+    untrusted_packet = mg.render(untrusted, untrusted_inp.action, eg.render(untrusted))
+
+    for packet in (absent_packet, untrusted_packet):
+        facts = packet["advisory"]["risk_facts"]
+        assert "repo_blast_fraction" not in facts
+        assert "repo_blast_percent" not in facts
+        assert "repo_blast_node_count" not in facts
+        assert "repo_graph_node_count" not in facts

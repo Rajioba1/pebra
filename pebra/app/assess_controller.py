@@ -4,8 +4,8 @@ The only orchestrator (plan §8): it validates the request, gathers evidence via
 AssessmentInput IR, runs the pure engine (builder -> decision -> explanation -> guidance), and
 persists through the store port. It imports only ``core/`` + ``ports/`` — never adapters.
 
-Learning is NOT on this path in Phase 0 (no apply_snapshot; cold start). The engine never fetches:
-everything it needs arrives inside AssessmentInput.
+Active learned snapshots may be loaded read-only and applied before scoring. Learning measurement and
+promotion are not on this path; everything the engine needs arrives inside AssessmentInput.
 """
 
 from __future__ import annotations

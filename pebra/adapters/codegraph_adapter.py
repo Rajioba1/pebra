@@ -48,6 +48,7 @@ _CALLABLE_KINDS = ("function", "method", "class", "struct", "interface", "trait"
 _OWNER_KINDS = _CALLABLE_KINDS + ("component", "route", "namespace", "module")
 _CONTRACT_CONTAINER_KINDS = ("class", "struct", "interface", "trait", "protocol")
 _CONTAINER_HIERARCHY_KINDS = _CONTRACT_CONTAINER_KINDS + ("namespace", "module", "file", "component", "route")
+_TRANSITIVE_REACH_MAX_DEPTH = 3
 _MIN_SCHEMA_VERSION = 5
 
 _INSTALL_HINT = "install with: npm install -g @colbymchenry/codegraph (or run: pebra setup-graph)"
@@ -233,6 +234,8 @@ class CodeGraphAdapter:
         self._status_fn = status_fn or _default_status
         self._dist_cache: dict[tuple[str, float], list[int]] = {}
         self._impact_dist_cache: dict[tuple[str, float], list[int]] = {}
+        self._transitive_impact_dist_cache: dict[tuple[str, float], list[int]] = {}
+        self._file_rollup_dist_cache: dict[tuple[str, float], list[int]] = {}
         # Memoize the capability probe per repo_root for this adapter's lifetime (one assess()/CLI call):
         # fanin() already spawned a `codegraph status` subprocess for the same repo, so re-probing per
         # action would double the subprocess count. Same-lifetime staleness is a non-issue (the adapter
@@ -502,7 +505,12 @@ class CodeGraphAdapter:
                     fallback_reason="ambiguous name match; fan-in not trusted (no location resolution)",
                 )
             count, pctl = self._fanin(con, node_ids, db_path)
-            ctx = self._graph_context(con, node_ids, self._impact_distribution(con, db_path))
+            ctx = self._graph_context(
+                con,
+                node_ids,
+                self._impact_distribution(con, db_path),
+                self._transitive_impact_distribution(con, db_path),
+            )
             return FanInEvidence(
                 symbol_fan_in_percentile=pctl,
                 symbol_caller_count=count,
@@ -519,6 +527,11 @@ class CodeGraphAdapter:
                 modify_impact_count=ctx["modify_impact_count"],
                 modify_impact_percentile=ctx["modify_impact_percentile"],
                 modify_impact_edge_counts=ctx["modify_impact_edge_counts"],
+                modify_transitive_impact_count=ctx["modify_transitive_impact_count"],
+                modify_transitive_impact_percentile=ctx["modify_transitive_impact_percentile"],
+                modify_transitive_depth_buckets=ctx["modify_transitive_depth_buckets"],
+                modify_repo_blast_fraction=ctx["modify_repo_blast_fraction"],
+                modify_repo_graph_node_count=ctx["modify_repo_graph_node_count"],
                 container_hierarchy_kinds=ctx["container_hierarchy_kinds"],
                 graph_file_size_bytes=ctx["graph_file_size_bytes"],
                 graph_file_node_count=ctx["graph_file_node_count"],
@@ -809,7 +822,7 @@ class CodeGraphAdapter:
                 f"SELECT COUNT(*) AS c FROM nodes WHERE file_path = ? AND kind IN ({call_ph})",
                 (rel, *_CALLABLE_KINDS),
             ).fetchone()["c"])
-            pctl = fractional_rank(distinct, self._distribution(con, db_path))
+            pctl = fractional_rank(distinct, self._file_rollup_distribution(con, db_path))
             return FileFanInRollup(
                 max_caller_count=mx, distinct_caller_count=distinct, symbol_count=sym_count,
                 file_symbol_fanin_rollup_percentile=pctl, resolution_method="file_location",
@@ -883,7 +896,10 @@ class CodeGraphAdapter:
 
     @staticmethod
     def _graph_context(
-        con: sqlite3.Connection, node_ids: list[str], impact_distribution: list[int] | None = None
+        con: sqlite3.Connection,
+        node_ids: list[str],
+        impact_distribution: list[int] | None = None,
+        transitive_distribution: list[int] | None = None,
     ) -> dict[str, Any]:
         """Raw graph facts around the resolved owner node(s).
 
@@ -900,6 +916,11 @@ class CodeGraphAdapter:
                 "modify_impact_count": 0,
                 "modify_impact_percentile": 0.0,
                 "modify_impact_edge_counts": {},
+                "modify_transitive_impact_count": 0,
+                "modify_transitive_impact_percentile": 0.0,
+                "modify_transitive_depth_buckets": {},
+                "modify_repo_blast_fraction": 0.0,
+                "modify_repo_graph_node_count": 0,
                 "container_hierarchy_kinds": (),
                 "graph_file_size_bytes": 0,
                 "graph_file_node_count": 0,
@@ -959,6 +980,8 @@ class CodeGraphAdapter:
             ).fetchall()
         }
         impact_targets = CodeGraphAdapter._modify_impact_target_ids(con, node_ids)
+        transitive_count, depth_buckets = CodeGraphAdapter._transitive_impact(con, impact_targets)
+        repo_node_count = CodeGraphAdapter._repo_graph_node_count(con)
         container_rows = CodeGraphAdapter._container_hierarchy_rows(con, node_ids)
         contract_containers = CodeGraphAdapter._contract_container_rows(con, node_ids)
         contract_meta = CodeGraphAdapter._contract_metadata(rows, contract_containers)
@@ -988,6 +1011,17 @@ class CodeGraphAdapter:
                 fractional_rank(impact_count, impact_distribution or [0]) if impact_count else 0.0
             ),
             "modify_impact_edge_counts": impact_edges,
+            "modify_transitive_impact_count": transitive_count,
+            "modify_transitive_impact_percentile": (
+                fractional_rank(transitive_count, transitive_distribution or [0])
+                if transitive_count
+                else 0.0
+            ),
+            "modify_transitive_depth_buckets": depth_buckets,
+            "modify_repo_blast_fraction": (
+                min(1.0, transitive_count / repo_node_count) if repo_node_count else 0.0
+            ),
+            "modify_repo_graph_node_count": repo_node_count,
             "container_hierarchy_kinds": tuple(
                 sorted({str(r["kind"]) for r in container_rows if r["kind"]})
             ),
@@ -1147,6 +1181,90 @@ class CodeGraphAdapter:
                 out.append(r["id"])
         return out
 
+    @staticmethod
+    def _transitive_impact(
+        con: sqlite3.Connection, target_ids: list[str], *, max_depth: int = _TRANSITIVE_REACH_MAX_DEPTH
+    ) -> tuple[int, dict[int, int]]:
+        """Reverse CodeGraph reach from modified targets, deduped by nearest depth."""
+        if not target_ids:
+            return 0, {}
+        target_ph = ",".join("?" * len(target_ids))
+        edge_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
+        rows = con.execute(
+            f"WITH RECURSIVE reach(id, depth) AS ("
+            f"  SELECT e.source, 1 FROM edges e "
+            f"  WHERE e.target IN ({target_ph}) AND e.kind IN ({edge_ph}) "
+            f"  AND e.source NOT IN ({target_ph}) "
+            f"  UNION "
+            f"  SELECT e.source, reach.depth + 1 FROM reach "
+            f"  JOIN edges e ON e.target = reach.id "
+            f"  WHERE reach.depth < ? AND e.kind IN ({edge_ph}) "
+            f"  AND e.source NOT IN ({target_ph})"
+            f") "
+            f"SELECT id, MIN(depth) AS depth FROM reach GROUP BY id",
+            (
+                *target_ids,
+                *_MODIFY_IMPACT_EDGE_KINDS,
+                *target_ids,
+                max_depth,
+                *_MODIFY_IMPACT_EDGE_KINDS,
+                *target_ids,
+            ),
+        ).fetchall()
+        buckets: dict[int, int] = {}
+        for row in rows:
+            depth = int(row["depth"])
+            buckets[depth] = buckets.get(depth, 0) + 1
+        return len(rows), dict(sorted(buckets.items()))
+
+    @staticmethod
+    def _repo_graph_node_count(con: sqlite3.Connection) -> int:
+        kinds_ph = ",".join("?" * len(_OWNER_KINDS))
+        row = con.execute(
+            f"SELECT COUNT(*) AS c FROM nodes WHERE kind IN ({kinds_ph})", _OWNER_KINDS
+        ).fetchone()
+        return int(row["c"] or 0)
+
+    @staticmethod
+    def _container_targets(root: str, contains_parents: dict[str, list[str]]) -> list[str]:
+        out: list[str] = [root]
+        seen = {root}
+        frontier = [(root, 0)]
+        while frontier:
+            node, depth = frontier.pop(0)
+            if depth >= 8:
+                continue
+            for parent in contains_parents.get(node, ()):
+                if parent in seen:
+                    continue
+                seen.add(parent)
+                out.append(parent)
+                frontier.append((parent, depth + 1))
+        return out
+
+    @staticmethod
+    def _transitive_impact_from_reverse(
+        target_ids: list[str],
+        reverse: dict[str, list[str]],
+        *,
+        max_depth: int = _TRANSITIVE_REACH_MAX_DEPTH,
+    ) -> tuple[int, dict[int, int]]:
+        visited = set(target_ids)
+        buckets: dict[int, int] = {}
+        frontier = [(target, 0) for target in target_ids]
+        while frontier:
+            node, depth = frontier.pop(0)
+            if depth >= max_depth:
+                continue
+            for source in reverse.get(node, ()):
+                if source in visited:
+                    continue
+                visited.add(source)
+                next_depth = depth + 1
+                buckets[next_depth] = buckets.get(next_depth, 0) + 1
+                frontier.append((source, next_depth))
+        return len(visited - set(target_ids)), dict(sorted(buckets.items()))
+
     def _distribution(self, con: sqlite3.Connection, db_path: Path) -> list[int]:
         key = (str(db_path), os.path.getmtime(db_path))
         cached = self._dist_cache.get(key)
@@ -1175,21 +1293,88 @@ class CodeGraphAdapter:
         if cached is not None:
             return cached
         call_ph = ",".join("?" * len(_CALLABLE_KINDS))
-        container_ph = ",".join("?" * len(_CONTRACT_CONTAINER_KINDS))
+        container_ph = ",".join("?" * len(_CONTAINER_HIERARCHY_KINDS))
         edge_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
         distribution = sorted(
             int(r["c"]) for r in con.execute(
-                f"SELECT n.id, COUNT(DISTINCT e.source) AS c FROM nodes n "
-                f"LEFT JOIN edges cedge ON cedge.kind = 'contains' AND cedge.target = n.id "
-                f"LEFT JOIN nodes parent ON parent.id = cedge.source "
-                f"AND parent.kind IN ({container_ph}) "
-                f"LEFT JOIN edges e ON e.kind IN ({edge_ph}) "
-                f"AND (e.target = n.id OR e.target = parent.id) "
-                f"WHERE n.kind IN ({call_ph}) GROUP BY n.id",
-                (*_CONTRACT_CONTAINER_KINDS, *_MODIFY_IMPACT_EDGE_KINDS, *_CALLABLE_KINDS),
+                f"WITH RECURSIVE targets(root_id, target_id, depth) AS ("
+                f"  SELECT n.id, n.id, 0 FROM nodes n WHERE n.kind IN ({call_ph}) "
+                f"  UNION "
+                f"  SELECT targets.root_id, e.source, targets.depth + 1 "
+                f"  FROM targets "
+                f"  JOIN edges e ON e.kind = 'contains' AND e.target = targets.target_id "
+                f"  JOIN nodes parent ON parent.id = e.source "
+                f"  WHERE targets.depth < 8 AND parent.kind IN ({container_ph})"
+                f") "
+                f"SELECT roots.id, COUNT(DISTINCT impact.source) AS c "
+                f"FROM nodes roots "
+                f"LEFT JOIN targets t ON t.root_id = roots.id "
+                f"LEFT JOIN edges impact ON impact.target = t.target_id "
+                f"AND impact.kind IN ({edge_ph}) "
+                f"WHERE roots.kind IN ({call_ph}) GROUP BY roots.id",
+                (*_CALLABLE_KINDS, *_CONTAINER_HIERARCHY_KINDS,
+                 *_MODIFY_IMPACT_EDGE_KINDS, *_CALLABLE_KINDS),
             ).fetchall()
         )
         self._impact_dist_cache[key] = distribution
+        return distribution
+
+    def _transitive_impact_distribution(
+        self, con: sqlite3.Connection, db_path: Path
+    ) -> list[int]:
+        key = (str(db_path), os.path.getmtime(db_path))
+        cached = self._transitive_impact_dist_cache.get(key)
+        if cached is not None:
+            return cached
+        call_ph = ",".join("?" * len(_CALLABLE_KINDS))
+        container_ph = ",".join("?" * len(_CONTAINER_HIERARCHY_KINDS))
+        edge_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
+        roots = [
+            str(r["id"]) for r in con.execute(
+                f"SELECT id FROM nodes WHERE kind IN ({call_ph})", _CALLABLE_KINDS
+            ).fetchall()
+        ]
+        contains_parents: dict[str, list[str]] = {}
+        for row in con.execute(
+            f"SELECT e.source, e.target FROM edges e JOIN nodes n ON n.id = e.source "
+            f"WHERE e.kind = 'contains' AND n.kind IN ({container_ph})",
+            _CONTAINER_HIERARCHY_KINDS,
+        ).fetchall():
+            contains_parents.setdefault(str(row["target"]), []).append(str(row["source"]))
+        reverse: dict[str, list[str]] = {}
+        for row in con.execute(
+            f"SELECT source, target FROM edges WHERE kind IN ({edge_ph})",
+            _MODIFY_IMPACT_EDGE_KINDS,
+        ).fetchall():
+            reverse.setdefault(str(row["target"]), []).append(str(row["source"]))
+        distribution = sorted(
+            CodeGraphAdapter._transitive_impact_from_reverse(
+                CodeGraphAdapter._container_targets(root, contains_parents), reverse
+            )[0]
+            for root in roots
+        )
+        self._transitive_impact_dist_cache[key] = distribution
+        return distribution
+
+    def _file_rollup_distribution(self, con: sqlite3.Connection, db_path: Path) -> list[int]:
+        """Repo-wide distribution of whole-file union fan-in counts."""
+        key = (str(db_path), os.path.getmtime(db_path))
+        cached = self._file_rollup_dist_cache.get(key)
+        if cached is not None:
+            return cached
+        call_ph = ",".join("?" * len(_CALLABLE_KINDS))
+        edge_ph = ",".join("?" * len(_FANIN_EDGE_KINDS))
+        distribution = sorted(
+            int(r["c"]) for r in con.execute(
+                f"SELECT n.file_path, COUNT(DISTINCT e.source) AS c "
+                f"FROM nodes n "
+                f"LEFT JOIN edges e ON e.target = n.id AND e.kind IN ({edge_ph}) "
+                f"WHERE n.kind IN ({call_ph}) AND n.file_path IS NOT NULL "
+                f"GROUP BY n.file_path",
+                (*_FANIN_EDGE_KINDS, *_CALLABLE_KINDS),
+            ).fetchall()
+        )
+        self._file_rollup_dist_cache[key] = distribution
         return distribution
 
 

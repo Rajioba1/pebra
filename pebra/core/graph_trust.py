@@ -8,9 +8,10 @@ _TRUSTED_FANIN_RESOLUTION_METHODS = {"location", "name_fallback"}
 
 
 def is_trusted_fanin(fanin: FanInEvidence | None) -> bool:
-    """True when fan-in evidence came from a fresh, unambiguous graph resolution."""
+    """True when fan-in evidence came from a fresh, unambiguous, parse-clean graph resolution."""
     return (
         fanin is not None
         and fanin.graph_freshness == "fresh"
         and fanin.resolution_method in _TRUSTED_FANIN_RESOLUTION_METHODS
+        and fanin.graph_file_error_count == 0
     )

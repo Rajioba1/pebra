@@ -1,8 +1,8 @@
-"""`pebra scorecard` (Milestone 4e) — read-only calibration + benefit report over shadow rows.
+"""`pebra scorecard` — read-only calibration + benefit report.
 
 Reports the per-target-type calibration (risk-binary Brier/log-loss, benefit-binary, benefit-continuous
-MSE — kept SEPARATE per AD-29) plus how many shadow rows have been captured. Read-only: it never
-writes and never changes a decision. With no observed labels yet, each block reports ``pending_min_n``.
+MSE — kept SEPARATE per AD-29) plus learning-chain counts. Read-only: it never writes and never changes
+a decision. With no observed labels yet, each block reports ``pending_min_n``.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pebra import learning_composition
 
 def register(subparsers: Any) -> None:
     p = subparsers.add_parser(
-        "scorecard", help="Report shadow calibration + benefit metrics (read-only)."
+        "scorecard", help="Report calibration + benefit metrics (read-only)."
     )
     p.add_argument("--repo-root", default=None)
     p.add_argument("--db", default=None)

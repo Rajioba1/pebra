@@ -17,7 +17,7 @@ Authored shape (deterministic, `random.Random(42)`):
 The score partition is authored at the **same** success rate the model learns, so applying `0.85`
 beats the flat `0.70` **by construction**. That is intentional and is stated plainly: this corpus
 proves the **loop is wired**, not that PEBRA is well-calibrated. The real, can-actually-fail
-out-of-sample quality signal lives in the **JIT/SZZ tier (deferred)**.
+out-of-sample quality signal belongs to the future **JIT/SZZ tier**.
 
 ## What the gate actually catches (it must fail if any of these break)
 - promotion does not fire (`< MIN_CALIBRATION_SAMPLES`, or the gate vetoes)
