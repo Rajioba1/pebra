@@ -80,6 +80,9 @@ path. Any non-loopback bind requires a token.
 # normal local browser UX
 pebra dashboard --port 4500 --open
 
+# venv-safe form if the `pebra` console script is not on PATH yet
+python -m pebra dashboard --port 4500 --open
+
 # force bearer auth even on loopback
 pebra dashboard --port 4500 --auth token
 
@@ -100,6 +103,8 @@ graph routes are repo-scoped to avoid replaying one repo's graph under another r
 Dashboard/e2e lanes:
 
 ```powershell
+.\.venv\Scripts\python.exe -m pytest tests/integration/test_dashboard_server.py tests/integration/test_dashboard_cli.py -q
+.\.venv\Scripts\python.exe -m pytest e2e/features/dashboard/test_dashboard_metrics_visual.py -q
 .\.venv\Scripts\nox.exe -s e2e-learning
 .\.venv\Scripts\nox.exe -s e2e-ui
 ```

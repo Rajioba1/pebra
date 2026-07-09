@@ -93,6 +93,7 @@ Manual local dashboard:
 
 ```powershell
 pebra dashboard --port 4500 --open
+python -m pebra dashboard --port 4500 --open
 pebra dashboard --port 4500 --auth token
 pebra dashboard --host 0.0.0.0 --port 4500 --auth token
 ```
@@ -126,6 +127,7 @@ nox -s e2e-external
 Dashboard screenshot lane:
 
 ```powershell
+python -m pytest e2e/features/dashboard/test_dashboard_metrics_visual.py -q
 nox -s e2e-ui
 ```
 
