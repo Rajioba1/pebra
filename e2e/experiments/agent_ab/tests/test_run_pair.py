@@ -396,7 +396,7 @@ def test_oracle_positive_pre_patch_happens_before_baseline_build(monkeypatch, tm
         dest.mkdir(parents=True)
         return dest
 
-    def _patch(repo_path, task_id):
+    def _patch(repo_path, task_id, **_kwargs):
         calls.append(f"patch:{task_id}:{repo_path.name}")
         return repo_path / "patch.diff"
 
@@ -412,6 +412,26 @@ def test_oracle_positive_pre_patch_happens_before_baseline_build(monkeypatch, tm
 
     assert setup.arm == "oracle_positive"
     assert calls == ["patch:T1:repo", "build:repo:TemplateBlueprint.sln"]
+
+
+def test_oracle_positive_uses_specimen_correct_fix_dir(monkeypatch, tmp_path):
+    spec = TaskSpec(
+        "JS1", "d", ("packages/zod/src/v3/types.ts",), "risky",
+        ("packages/zod/src/v3/types.ts",), "build_failure", True,
+        build_solution="", language="typescript", harness_id="node", specimen="javascript",
+    )
+    seen = {}
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",
+                        lambda _external, dest: (dest.mkdir(parents=True), dest)[1])
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
+    monkeypatch.setattr(arm_prep, "prepare_oracle_patch",
+                        lambda repo_path, task, **kw: seen.setdefault("patch_dir", kw["patch_dir"]))
+    monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec_arg: _FakeBackend())
+
+    run_pair.prepare_arm(_External(), spec, "oracle_positive", 0, "rid")
+
+    assert seen["patch_dir"].as_posix().endswith("specimens/javascript/corpus/correct_fix_patches")
 
 
 def test_prepare_arm_passes_task_build_solution_to_baseline(monkeypatch, tmp_path):

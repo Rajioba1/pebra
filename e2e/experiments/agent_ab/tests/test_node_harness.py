@@ -57,6 +57,90 @@ def test_build_argv_is_the_fixed_pm_build_script():
     assert nh._build_argv("npm") == ["npm", "run", "build"]
 
 
+def test_build_argv_zshy_profile_is_a_filtered_typecheck():
+    assert nh._build_argv("pnpm", profile="zshy", selector="zod:tsconfig.build.json") == [
+        "pnpm", "--filter", "zod", "exec", "zshy", "--project", "tsconfig.build.json"
+    ]
+
+
+def test_build_argv_rejects_unknown_profile():
+    try:
+        nh._build_argv("pnpm", profile="typo")
+    except ValueError as exc:
+        assert "profile" in str(exc)
+    else:
+        raise AssertionError("unknown build_profile must fail closed")
+
+
+def test_run_build_zshy_requires_a_selector(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    r = nh.run_build(tmp_path, profile="zshy", selector=None, runner=_fake_runner([]))
+    assert r.available is False and "selector" in r.error_summary
+
+
+def test_run_build_zshy_rejects_empty_selector_parts(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    for selector in (":tsconfig.build.json", "zod:"):
+        r = nh.run_build(tmp_path, profile="zshy", selector=selector, runner=_fake_runner([]))
+        assert r.available is False and "selector" in r.error_summary
+
+
+def test_run_build_zshy_requires_pnpm_even_with_other_lockfiles(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "yarn.lock").write_text("", encoding="utf-8")
+    r = nh.run_build(tmp_path, profile="zshy", selector="zod:tsconfig.build.json",
+                     runner=_fake_runner([]))
+    assert r.available is False and "pnpm" in r.error_summary
+
+
+def test_run_build_rejects_unknown_profile_before_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    _pin_node(tmp_path)
+    (tmp_path / "node_modules").mkdir()
+    r = nh.run_build(tmp_path, profile="typo", runner=_fake_runner([]))
+    assert r.available is False and r.ran is False
+    assert "profile" in r.error_summary
+
+
+def test_run_build_zshy_dispatches_the_typecheck(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    (tmp_path / "package.json").write_text('{"engines":{"node":">=20"}}', encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    runner = _fake_runner([_proc(0)])
+    r = nh.run_build(tmp_path, profile="zshy", selector="zod:tsconfig.build.json", runner=runner)
+    assert r.passed is True
+    assert runner.calls == [["pnpm", "--filter", "zod", "exec", "zshy", "--project", "tsconfig.build.json"]]
+
+
+def test_run_build_zshy_fails_if_build_mutates_worktree(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    monkeypatch.setattr(nh.shutil, "which", lambda name: f"/bin/{name}")
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    _pin_node(tmp_path)
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "src.ts").write_text("before\n", encoding="utf-8")
+    nh.subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, text=True)
+    nh.subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, text=True)
+    nh.subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-m", "base"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+
+    def _mutating_runner(argv, *, cwd, timeout, env):
+        (tmp_path / "src.ts").write_text("after\n", encoding="utf-8")
+        return _proc(0)
+
+    r = nh.run_build(tmp_path, profile="zshy", selector="zod:tsconfig.build.json",
+                     runner=_mutating_runner)
+
+    assert r.passed is False
+    assert "mutated" in r.error_summary
+
+
 def test_test_argv_is_vitest_json_with_optional_file_and_filter():
     argv = nh._test_argv("pnpm", test_path="src/x.test.ts", test_filter="handles empty")
     assert argv[:4] == ["pnpm", "exec", "vitest", "run"]

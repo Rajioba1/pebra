@@ -49,8 +49,8 @@ class _FakeNh:
     def __init__(self):
         self.calls = []
 
-    def run_build(self, root):
-        self.calls.append(("build",))
+    def run_build(self, root, *, profile="default", selector=None):
+        self.calls.append(("build", profile, selector))
         return _res()
 
     def run_tests(self, root, *, test_path=None, test_filter=None):
@@ -78,7 +78,17 @@ def test_javascript_backend_uses_node_and_maps_project_to_test_path():
     assert b.language == "javascript"
     b.run_build("/r", _spec(language="javascript"))
     b.run_tests("/r", _spec(language="javascript"), project="src/a.test.ts", test_filter="handles x")
-    assert nh.calls == [("build",), ("test", "src/a.test.ts", "handles x")]
+    assert nh.calls == [("build", "default", None), ("test", "src/a.test.ts", "handles x")]
+
+
+def test_javascript_backend_forwards_build_profile_and_selector():
+    nh = _FakeNh()
+    b = backends.get_backend("javascript", harness=nh)
+    spec = _spec(language="typescript")
+    object.__setattr__(spec, "build_profile", "zshy")
+    object.__setattr__(spec, "build_selector", "zod:tsconfig.build.json")
+    b.run_build("/r", spec)
+    assert nh.calls == [("build", "zshy", "zod:tsconfig.build.json")]
 
 
 def test_typescript_routes_to_the_javascript_backend():

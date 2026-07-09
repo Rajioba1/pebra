@@ -19,10 +19,14 @@ class JavaScriptBackend:
         self._nh = harness
 
     def run_build(self, repo_root: Any, spec: Any) -> Any:
-        return self._nh.run_build(repo_root)
+        return self._nh.run_build(
+            repo_root,
+            profile=getattr(spec, "build_profile", "default"),
+            selector=getattr(spec, "build_selector", None),
+        )
 
     def run_build_delta(self, repo_root: Any, spec: Any, *, baseline_keys: Any = None) -> Any:
-        return self._nh.run_build(repo_root)  # no compiler-diagnostic delta for the node build
+        return self.run_build(repo_root, spec)  # no compiler-diagnostic delta for the node build
 
     def run_tests(
         self, repo_root: Any, spec: Any, *, project: Any = None, test_filter: str | None = None

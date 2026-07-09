@@ -175,6 +175,10 @@ def _patch_touched_files(patch: str) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
+def _correct_patch_dir(spec: TaskSpec) -> Path:
+    return Path(__file__).resolve().parents[1] / "specimens" / spec.specimen / "corpus" / "correct_fix_patches"
+
+
 def _verify_candidate_for_repair(
     payload: dict[str, Any], repo_path: Path, spec: TaskSpec
 ) -> dict[str, Any]:
@@ -376,7 +380,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         # Endpoint floor: pre-apply the known correct fix BEFORE the baseline build, so the (correct)
         # baseline passes. Lazy import: arm_prep imports RunPairError from this module (avoid a cycle).
         from e2e.experiments.agent_ab.runners import arm_prep  # noqa: PLC0415
-        arm_prep.prepare_oracle_patch(repo_path, spec.task_id)
+        arm_prep.prepare_oracle_patch(repo_path, spec.task_id, patch_dir=_correct_patch_dir(spec))
     db_path = dest.parent / "pebra.db"
     build_backend = backends.backend_for_spec(spec)
     baseline = build_backend.run_build_delta(repo_path, spec)

@@ -106,8 +106,9 @@ task is added.
 ## Layout
 - `models.py` — dataclasses (pure, stdlib).
 - `forbidden.py` — the single shared forbidden-term set for both leak-guards (transcript scanner + corpus loader).
-- `specimens/csharp/corpus/` — `tasks.jsonl` (agent-facing) + `oracles.jsonl` (hidden labels)
-  + `loader.py` (join+validate) for the current C# specimen.
+- `specimens/<language>/corpus/` — `tasks.jsonl` (agent-facing) + `oracles.jsonl` (hidden labels)
+  + `loader.py` (join+validate) per language specimen. `specimens/loader.py` combines authored
+  specimens for the orchestrator.
 - `tools/` — `advisory_contract.py` (shared shape) + `advisory_check_sham.py` (control) + `advisory_check_real.py` (treatment, via pebra CLI).
 - `metrics/` — `oracle.py`, `adherence.py`, `blinding.py`, `scorecard.py` (all pure; the trusted ruler).
 - `reports/render_report.py` — scorecard markdown/json.
@@ -134,8 +135,9 @@ false-abort real runs.
 
 **Hidden oracle via post-agent test injection:** the agent runs on a clone with NO evaluator tests
 visible (cannot read/teach-to/delete them); after it stops and its diff is captured, the orchestrator
-injects `specimens/csharp/corpus/evaluator_tests/<task_id>/` for C# tasks and runs the task's fixed
-build/test backend.
+injects `specimens/csharp/corpus/evaluator_tests/<task_id>/` for C# tasks when present and runs the
+task's fixed build/test backend. JS/TS tasks currently use their checked-in build profile as the
+post-agent oracle unless a public test selector is declared later.
 
 **Graph pre-flight (treatment integrity):** before any run, the target must resolve on a FRESH CodeGraph
 and graph-backed fields must appear in the treatment assess payload — else fail-closed. Prevents a
@@ -193,8 +195,8 @@ complete successfully in either arm. Unrelated files still count as scope drift.
 
 The oracle preflight validates both directions for every risky task:
 
-- `specimens/csharp/corpus/oracle_patches/<task>.patch` applies the intentionally risky edit and must fail the build.
-- `specimens/csharp/corpus/correct_fix_patches/<task>.patch` applies the reference correct fix, must touch only
+- `specimens/<language>/corpus/oracle_patches/<task>.patch` applies the intentionally risky edit and must fail the build.
+- `specimens/<language>/corpus/correct_fix_patches/<task>.patch` applies the reference correct fix, must touch only
   `expected_edit_scope`, and must build. This proves the widened oracle scope is complete enough to
   reward safe completion, not only refusal.
 

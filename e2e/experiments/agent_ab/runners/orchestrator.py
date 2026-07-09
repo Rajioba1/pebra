@@ -18,17 +18,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-from e2e.experiments.agent_ab.specimens.csharp.corpus import loader
 from e2e.experiments.agent_ab.metrics import oracle, scorecard
 from e2e.experiments.agent_ab.models import ARM_CONTROL, ARM_TREATMENT, RunOutcome, TaskSpec
 from e2e.experiments.agent_ab.reports import render_report
 from e2e.experiments.agent_ab.runners import preflight, run_gate, run_pair
+from e2e.experiments.agent_ab.specimens import loader as specimen_loader
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness
 
 _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
-_PATCH_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "oracle_patches"
 _EVAL_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "evaluator_tests"
 _ALLOW_UNVERIFIED_ENV = "E2E_AB_ALLOW_UNVERIFIED"
 
@@ -38,6 +37,10 @@ class ExperimentRunError(RuntimeError):
     score it: a systematic misconfiguration (bad API key) errors on the very first run, so stopping
     avoids silently scoring a whole batch of no-op error runs as a valid null result. The incremental
     resume means fixing the cause and re-running only redoes the aborted (and any unstarted) pair."""
+
+
+def load_corpus() -> list[TaskSpec]:
+    return specimen_loader.load_corpus()
 
 
 def _scoring_mode(corpus: list[TaskSpec]) -> str:
@@ -72,7 +75,7 @@ def _plan(corpus: list[TaskSpec], task_ids: list[str], seeds: int) -> list[tuple
 def _live_assess_fn(repo_path: Path, spec: TaskSpec) -> dict[str, Any]:
     """Live graph-preflight assess: use the task's oracle patch as the proposed change so the target
     symbol resolves, and return the RAW assess payload for the freshness/resolution check."""
-    patch = (_PATCH_DIR / f"{spec.task_id}.patch")
+    patch = preflight._oracle_patch_dir(spec) / f"{spec.task_id}.patch"  # noqa: SLF001 - shared e2e path rule
     proposed = patch.read_text(encoding="utf-8") if patch.exists() else ""
     target = spec.expected_edit_scope[0] if spec.expected_edit_scope else ""
     request = {
@@ -172,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = cfg[args.mode]
     is_assay = args.mode == "assay"
     out_dir = _AB_OUT / args.run_id
-    corpus = loader.load_corpus()
+    corpus = load_corpus()
     plan = _plan(corpus, mode["tasks"], mode["seeds_per_arm"])
     planned_specs = list({spec.task_id: spec for spec, _seed in plan}.values())
     preflight.run_repo_identity_preflight(planned_specs, rs.source_repo_path())

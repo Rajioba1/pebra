@@ -12,6 +12,10 @@ import ast
 from pathlib import Path
 
 _E2E_ROOT = Path(__file__).parent
+# `e2e/out/` is the gitignored runtime area: external repo clones (incl. their node_modules) and run
+# artifacts, NOT e2e source. It must not be scanned — those are third-party trees that may not even be
+# valid Python 3 (a tab-indented dep script would raise, and a clone can't smuggle an e2e `import pebra`).
+_EXCLUDED_TOP = frozenset({"out"})
 
 
 def _pebra_imports(path: Path) -> list[str]:
@@ -30,6 +34,9 @@ def _pebra_imports(path: Path) -> list[str]:
 def test_no_e2e_module_imports_pebra_internals():
     offenders: dict[str, list[str]] = {}
     for py in sorted(_E2E_ROOT.rglob("*.py")):
+        rel = py.relative_to(_E2E_ROOT)
+        if rel.parts and rel.parts[0] in _EXCLUDED_TOP:
+            continue  # skip gitignored external clones / run artifacts under e2e/out/
         hits = _pebra_imports(py)
         if hits:
             offenders[str(py.relative_to(_E2E_ROOT))] = hits

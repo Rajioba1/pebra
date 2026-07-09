@@ -69,9 +69,12 @@ class TaskSpec:
     required_language_tier: str | None = None  # hidden: "risk_only" | "partial" | "full" preflight floor
     language: str = "csharp"  # hidden: selects the build/test backend (csharp | javascript | typescript)
     harness_id: str = "dotnet"  # hidden: fixed backend profile family (dotnet | node)
+    specimen: str = "csharp"  # hidden: specimen package under specimens/<name>/corpus
+    repo_identity_files: tuple[str, ...] = ("TemplateBlueprint.sln",)  # hidden: source repo markers
     build_profile: str = "default"  # hidden: fixed profile name, never a shell command
     test_profile: str = "default"  # hidden: fixed profile name, never a shell command
     test_selector: str | None = None  # hidden: optional profile-specific selector
+    build_selector: str | None = None  # hidden: optional profile-specific selector (e.g. "pkg:tsconfig")
 
 
 # ---- one subject run (what the runner captures; scoring consumes it) --------------------------

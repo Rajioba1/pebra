@@ -112,9 +112,29 @@ def _install_argv(pm: str) -> list[str]:
     }[pm]
 
 
-def _build_argv(pm: str) -> list[str]:
-    # FIXED profile: the specimen's own "build" script (tsc/bundler). Not a caller-supplied command.
-    return {"pnpm": ["pnpm", "run", "build"], "yarn": ["yarn", "run", "build"], "npm": ["npm", "run", "build"]}[pm]
+def _build_argv(pm: str, *, profile: str = "default", selector: str | None = None) -> list[str]:
+    # FIXED profiles (never a caller-supplied command):
+    #   default -> the specimen's own "build" script (tsc/bundler).
+    #   zshy    -> a type-check-only build via the zshy tool (Zod/colinhacks), selector "pkg:tsconfig",
+    #              run as `pnpm --filter <pkg> exec zshy --project <tsconfig>` (emits to gitignored dist,
+    #              so it never mutates tracked source; a type error exits non-zero = the trap oracle).
+    if profile == "default":
+        return {
+            "pnpm": ["pnpm", "run", "build"],
+            "yarn": ["yarn", "run", "build"],
+            "npm": ["npm", "run", "build"],
+        }[pm]
+    if profile == "zshy":
+        pkg, tsconfig = _parse_zshy_selector(selector)
+        return ["pnpm", "--filter", pkg, "exec", "zshy", "--project", tsconfig]
+    raise ValueError(f"unknown build profile: {profile}")
+
+
+def _parse_zshy_selector(selector: str | None) -> tuple[str, str]:
+    pkg, sep, tsconfig = (selector or "").partition(":")
+    if not sep or not pkg.strip() or not tsconfig.strip():
+        raise ValueError("zshy profile requires selector 'pkg:tsconfig'")
+    return pkg, tsconfig
 
 
 def _test_argv(pm: str, *, test_path: str | None = None, test_filter: str | None = None) -> list[str]:
@@ -195,8 +215,24 @@ def _run_fixed(runner: RunnerFn, argv: list[str], *, root: Path, timeout: int) -
         return subprocess.CompletedProcess(argv, 127, "", f"executable not found: {missing}")
 
 
+def _worktree_mutation_summary(root: Path) -> str | None:
+    if not (root / ".git").exists():
+        return None
+    proc = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=str(root), capture_output=True, text=True, timeout=30, env=_node_env(),
+    )
+    if proc.returncode != 0:
+        return None
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    if not lines:
+        return None
+    return "build mutated the worktree:\n" + "\n".join(lines[:20])
+
+
 def run_build(
-    repo_root: Path | str, *, timeout: int = 600, install_timeout: int = 900, runner: RunnerFn | None = None,
+    repo_root: Path | str, *, profile: str = "default", selector: str | None = None,
+    timeout: int = 600, install_timeout: int = 900, runner: RunnerFn | None = None,
 ) -> NodeBuildResult:
     runner = runner or _default_runner
     if not node_available():
@@ -206,6 +242,15 @@ def run_build(
         return NodeBuildResult(
             False, False, False, None, _lockfile_error(repo_root), 0.0
         )
+    if profile not in {"default", "zshy"}:
+        return NodeBuildResult(False, False, False, None, f"unknown build profile: {profile}", 0.0)
+    if profile == "zshy" and pm != "pnpm":
+        return NodeBuildResult(False, False, False, None, "zshy profile requires pnpm", 0.0)
+    if profile == "zshy":
+        try:
+            _parse_zshy_selector(selector)
+        except ValueError as exc:
+            return NodeBuildResult(False, False, False, None, str(exc), 0.0)
     root = Path(repo_root).resolve()
     pin_error = _node_version_pin_error(root)
     if pin_error is not None:
@@ -217,11 +262,13 @@ def run_build(
             True, False, False, failed_install.returncode, "dependency install failed",
             round(time.time() - start, 2),
         )
-    proc = _run_fixed(runner, _build_argv(pm), root=root, timeout=timeout)
+    proc = _run_fixed(runner, _build_argv(pm, profile=profile, selector=selector), root=root, timeout=timeout)
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    mutation = _worktree_mutation_summary(root) if profile == "zshy" and proc.returncode == 0 else None
+    passed = proc.returncode == 0 and mutation is None
     return NodeBuildResult(
-        available=True, ran=True, passed=proc.returncode == 0, exit_code=proc.returncode,
-        error_summary="" if proc.returncode == 0 else _build_error_summary(output),
+        available=True, ran=True, passed=passed, exit_code=proc.returncode,
+        error_summary=mutation or ("" if proc.returncode == 0 else _build_error_summary(output)),
         duration_seconds=round(time.time() - start, 2),
     )
 

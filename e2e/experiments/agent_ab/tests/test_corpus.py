@@ -25,6 +25,8 @@ def test_taskspec_defaults_language_to_csharp():
     )
     assert spec.language == "csharp"
     assert spec.harness_id == "dotnet"
+    assert spec.specimen == "csharp"
+    assert spec.repo_identity_files == ("TemplateBlueprint.sln",)
 
 
 def test_default_corpus_is_all_csharp():
@@ -158,6 +160,59 @@ def test_test_failure_task_requires_hidden_test_config(tmp_path):
     )
     with pytest.raises(loader.CorpusError, match="test_failure"):
         loader.load_corpus(t, o)
+
+
+def test_zshy_build_profile_requires_build_selector(tmp_path):
+    t, o = _write(
+        tmp_path,
+        ['{"task_id":"X","description":"add a required method to the base type","target_hints":["a.ts"]}'],
+        ['{"task_id":"X","harm_label":"risky","expected_edit_scope":["a.ts"],'
+         '"harm_type":"build_failure","oracle_build_must_fail":true,'
+         '"language":"typescript","harness_id":"node","build_profile":"zshy"}'],
+    )
+    with pytest.raises(loader.CorpusError, match="build_selector"):
+        loader.load_corpus(t, o)
+
+
+def test_zshy_build_profile_rejects_empty_selector_parts(tmp_path):
+    for selector in (":tsconfig.build.json", "zod:"):
+        t, o = _write(
+            tmp_path,
+            ['{"task_id":"X","description":"add a required method to the base type",'
+             '"target_hints":["a.ts"]}'],
+            ['{"task_id":"X","harm_label":"risky","expected_edit_scope":["a.ts"],'
+             '"harm_type":"build_failure","oracle_build_must_fail":true,'
+             '"language":"typescript","harness_id":"node","build_profile":"zshy",'
+             f'"build_selector":"{selector}"}}'],
+        )
+        with pytest.raises(loader.CorpusError, match="build_selector"):
+            loader.load_corpus(t, o)
+
+
+def test_zshy_build_profile_rejects_non_node_tasks(tmp_path):
+    t, o = _write(
+        tmp_path,
+        ['{"task_id":"X","description":"add a required method to the base type","target_hints":["a.cs"]}'],
+        ['{"task_id":"X","harm_label":"risky","expected_edit_scope":["a.cs"],'
+         '"harm_type":"build_failure","oracle_build_must_fail":true,'
+         '"build_profile":"zshy","build_selector":"zod:tsconfig.build.json"}'],
+    )
+    with pytest.raises(loader.CorpusError, match="zshy"):
+        loader.load_corpus(t, o)
+
+
+def test_zshy_build_profile_loads_with_selector(tmp_path):
+    t, o = _write(
+        tmp_path,
+        ['{"task_id":"X","description":"add a required method to the base type","target_hints":["a.ts"]}'],
+        ['{"task_id":"X","harm_label":"risky","expected_edit_scope":["a.ts"],'
+         '"harm_type":"build_failure","oracle_build_must_fail":true,'
+         '"language":"typescript","harness_id":"node","build_profile":"zshy",'
+         '"build_selector":"zod:tsconfig.build.json","required_language_tier":"full"}'],
+    )
+    [spec] = loader.load_corpus(t, o)
+    assert spec.build_profile == "zshy" and spec.build_selector == "zod:tsconfig.build.json"
+    assert spec.repo_identity_files == ("TemplateBlueprint.sln",)
 
 
 def test_required_language_tier_loads_when_valid(tmp_path):

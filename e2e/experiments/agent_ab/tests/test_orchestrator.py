@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from pathlib import Path
 
 import pytest
 from e2e.experiments.agent_ab import models
@@ -37,6 +38,35 @@ def test_plan_rejects_missing_tasks():
         assert "T9" in str(exc)
     else:
         raise AssertionError("missing configured task must fail closed")
+
+
+def test_orchestrator_corpus_loader_includes_javascript_specimen():
+    corpus = orchestrator.load_corpus()
+    by_id = {spec.task_id: spec for spec in corpus}
+    assert "JS1" in by_id
+    assert by_id["JS1"].specimen == "javascript"
+    assert by_id["JS1"].harness_id == "node"
+
+
+def test_live_assess_uses_specimen_oracle_patch(monkeypatch, tmp_path):
+    spec = TaskSpec(
+        "JS1", "d", ("packages/zod/src/v3/types.ts",), "risky",
+        ("packages/zod/src/v3/types.ts",), "build_failure", True,
+        build_solution="", language="typescript", harness_id="node", specimen="javascript",
+        repo_identity_files=("package.json", "pnpm-lock.yaml"),
+    )
+    seen = {}
+
+    def _assess(req_path, *, repo_root, db):
+        payload = json.loads(Path(req_path).read_text(encoding="utf-8"))
+        seen["patch"] = payload["candidate_actions"][0]["proposed_patch"]
+        return {"ok": True}
+
+    monkeypatch.setattr(orchestrator.cli_harness, "assess", _assess)
+
+    orchestrator._live_assess_fn(tmp_path, spec)
+
+    assert "packages/zod/src/v3/types.ts" in seen["patch"]
 
 
 def test_config_applies_model_override(monkeypatch):
@@ -95,7 +125,7 @@ def _wire(monkeypatch, tmp_path, corpus, run_pair_fn):
     monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
     monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
-    monkeypatch.setattr(orchestrator.loader, "load_corpus", lambda: corpus)
+    monkeypatch.setattr(orchestrator, "load_corpus", lambda: corpus)
     monkeypatch.setattr(orchestrator, "_config",
                         lambda: {"pilot": {"tasks": ["T1"], "seeds_per_arm": 1}, "bootstrap_seed": 0})
     monkeypatch.setattr(orchestrator.run_pair, "run_pair", run_pair_fn)
@@ -223,7 +253,7 @@ def test_main_runs_revise_safer_calibration_for_assay(monkeypatch, tmp_path):
 
     monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
     monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
-    monkeypatch.setattr(orchestrator.loader, "load_corpus", lambda: [gamma])
+    monkeypatch.setattr(orchestrator, "load_corpus", lambda: [gamma])
     monkeypatch.setattr(orchestrator, "_config",
                         lambda: {"assay": {"tasks": ["MNGAMMA"], "seeds_per_arm": 1},
                                  "bootstrap_seed": 0})

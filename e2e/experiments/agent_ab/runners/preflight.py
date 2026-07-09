@@ -51,6 +51,19 @@ class PreflightError(RuntimeError):
     """A pre-flight integrity gate failed; the experiment must not run."""
 
 
+def _corpus_dir(spec: TaskSpec) -> Path:
+    specimen = spec.specimen or "csharp"
+    return Path(__file__).resolve().parents[1] / "specimens" / specimen / "corpus"
+
+
+def _oracle_patch_dir(spec: TaskSpec) -> Path:
+    return _corpus_dir(spec) / "oracle_patches"
+
+
+def _correct_patch_dir(spec: TaskSpec) -> Path:
+    return _corpus_dir(spec) / "correct_fix_patches"
+
+
 def _live_node_counts(repo_path: Path) -> dict[str, Any]:
     """Live default for the graph node-count check: `pebra graph-stats --json` via cli_harness
     (subprocess, no pebra import). Injected with a fake in unit tests."""
@@ -138,15 +151,15 @@ def run_repo_identity_preflight(planned_specs: list[TaskSpec], source_root: Path
     root = Path(source_root).resolve() if source_root is not None else None
     if root is None:
         raise PreflightError(f"repo identity pre-flight failed: set {_REPO_ENV_VAR}=<source repo>")
-    solutions = {spec.build_solution for spec in planned_specs}
-    if len(solutions) > 1:
+    specimens = {spec.specimen for spec in planned_specs}
+    if len(specimens) > 1:
         raise PreflightError(
-            "repo identity pre-flight failed: plan spans multiple repositories/build solutions "
-            f"({', '.join(sorted(solutions))}); split the run by specimen"
+            "repo identity pre-flight failed: plan spans multiple repositories/specimens "
+            f"({', '.join(sorted(specimens))}); split the run by specimen"
         )
     failures: list[str] = []
     for spec in planned_specs:
-        required = [spec.build_solution, *spec.expected_edit_scope]
+        required = [*spec.repo_identity_files, *spec.expected_edit_scope]
         for rel in required:
             if not (root / rel).exists():
                 failures.append(
@@ -224,14 +237,13 @@ def run_oracle_preflight(
     expected scope and must build, proving the widened scope is complete enough to reward a safe fix
     rather than only rewarding refusal.
     """
-    patch_dir = patch_dir or _PATCH_DIR
-    correct_patch_dir = correct_patch_dir or _CORRECT_PATCH_DIR
     failures: list[str] = []
     for spec in corpus:
         # Accumulate ALL failures (missing patch / apply failure / label mismatch / infra) — never
         # first-fail — so one drifted patch does not hide the others.
         try:
-            patch_file = patch_dir / f"{spec.task_id}.patch"
+            spec_patch_dir = patch_dir or _oracle_patch_dir(spec)
+            patch_file = spec_patch_dir / f"{spec.task_id}.patch"
             if not patch_file.exists():
                 failures.append(f"{spec.task_id}: missing oracle patch at {patch_file}")
                 continue
@@ -247,7 +259,8 @@ def run_oracle_preflight(
                 if test_msg:
                     failures.append(test_msg)
             if spec.harm_label == "risky":
-                correct_patch = correct_patch_dir / f"{spec.task_id}.patch"
+                spec_correct_patch_dir = correct_patch_dir or _correct_patch_dir(spec)
+                correct_patch = spec_correct_patch_dir / f"{spec.task_id}.patch"
                 if not correct_patch.exists():
                     failures.append(f"{spec.task_id}: missing correct-fix patch at {correct_patch}")
                     continue
@@ -464,8 +477,6 @@ def run_revise_safer_calibration(
     rather than only a stop/block pathway.
     """
     assess_fn = assess_fn or _live_revise_safer_assess
-    patch_dir = patch_dir or _PATCH_DIR
-    correct_patch_dir = correct_patch_dir or _CORRECT_PATCH_DIR
     failures: list[str] = []
     risky_seen = 0
     checked = 0
@@ -473,8 +484,10 @@ def run_revise_safer_calibration(
         if spec.harm_label != "risky":
             continue
         risky_seen += 1
-        patch_file = patch_dir / f"{spec.task_id}.patch"
-        correct_patch = correct_patch_dir / f"{spec.task_id}.patch"
+        spec_patch_dir = patch_dir or _oracle_patch_dir(spec)
+        spec_correct_patch_dir = correct_patch_dir or _correct_patch_dir(spec)
+        patch_file = spec_patch_dir / f"{spec.task_id}.patch"
+        correct_patch = spec_correct_patch_dir / f"{spec.task_id}.patch"
         missing = [str(p) for p in (patch_file, correct_patch) if not p.exists()]
         if missing:
             failures.append(f"{spec.task_id}: missing revise-safer calibration patch: {', '.join(missing)}")

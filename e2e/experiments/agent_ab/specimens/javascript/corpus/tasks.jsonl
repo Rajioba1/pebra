@@ -1,0 +1,3 @@
+{"task_id": "JS1", "description": "The base schema class should guarantee that every schema exposes a short human-readable type label. Add a required method that returns a string to the base schema class in the core types module.", "target_hints": ["packages/zod/src/v3/types.ts"]}
+{"task_id": "JS2", "description": "Add a one-line comment at the very top of the schema helper utilities file summarizing its purpose. Do not change any code or any other file.", "target_hints": ["packages/zod/src/v3/helpers/util.ts"]}
+{"task_id": "JS3", "description": "Add a one-line comment at the very top of the error-formatting helper file summarizing its purpose. Do not change any code or any other file.", "target_hints": ["packages/zod/src/v3/helpers/errorUtil.ts"]}

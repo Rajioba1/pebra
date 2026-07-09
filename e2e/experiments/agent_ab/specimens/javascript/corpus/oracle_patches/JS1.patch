@@ -1,0 +1,12 @@
+diff --git a/packages/zod/src/v3/types.ts b/packages/zod/src/v3/types.ts
+index f4028549..5b1d386d 100644
+--- a/packages/zod/src/v3/types.ts
++++ b/packages/zod/src/v3/types.ts
+@@ -168,6 +168,7 @@ export abstract class ZodType<Output = any, Def extends ZodTypeDef = ZodTypeDef,
+   "~standard": StandardSchemaV1.Props<Input, Output>;
+ 
+   abstract _parse(input: ParseInput): ParseReturnType<Output>;
++  abstract _schemaTypeLabel(): string;
+ 
+   _getType(input: ParseInput): string {
+     return getParsedType(input.data);

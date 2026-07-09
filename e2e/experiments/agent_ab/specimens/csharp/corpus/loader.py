@@ -26,7 +26,11 @@ _VALID_LANGUAGE_TIERS = {"risk_only", "partial", "full"}
 _VALID_LANGUAGES = {"csharp", "javascript", "typescript"}
 _DEFAULT_HARNESS_BY_LANGUAGE = {"csharp": "dotnet", "javascript": "node", "typescript": "node"}
 _VALID_HARNESSES = {"dotnet", "node"}
-_VALID_PROFILES = {"default"}
+_DEFAULT_REPO_IDENTITY_BY_SPECIMEN = {"javascript": ("package.json", "pnpm-lock.yaml")}
+# Fixed build/test profiles (never a shell command). "zshy" is the node type-check profile (tsc-based
+# build tool, e.g. Zod) run as `pnpm --filter <pkg> exec zshy --project <tsconfig>` from build_selector.
+_VALID_BUILD_PROFILES = {"default", "zshy"}
+_VALID_TEST_PROFILES = {"default"}
 
 
 class CorpusError(ValueError):
@@ -55,7 +59,20 @@ def _leak_terms(text: str) -> list[str]:
     return list(match_terms(text, CORPUS_FORBIDDEN_TERMS))
 
 
-def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None) -> list[TaskSpec]:
+def _valid_zshy_selector(selector: str | None) -> bool:
+    if not selector:
+        return False
+    pkg, sep, tsconfig = selector.partition(":")
+    return bool(sep and pkg.strip() and tsconfig.strip())
+
+
+def load_corpus(
+    tasks_path: Path | None = None,
+    oracles_path: Path | None = None,
+    *,
+    specimen: str = "csharp",
+    default_repo_identity_files: tuple[str, ...] | None = None,
+) -> list[TaskSpec]:
     tasks = _read_jsonl(tasks_path or _TASKS)
     oracle_rows = _read_jsonl(oracles_path or _ORACLES)
     oracles: dict[str, dict] = {}
@@ -96,6 +113,14 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
         evaluator_test_project = oracle.get("evaluator_test_project")
         evaluator_test_filter = oracle.get("evaluator_test_filter")
         build_solution = oracle.get("build_solution", "TemplateBlueprint.sln")
+        if "repo_identity_files" in oracle:
+            repo_identity_files = tuple(oracle["repo_identity_files"])
+        elif default_repo_identity_files is not None:
+            repo_identity_files = tuple(default_repo_identity_files)
+        elif specimen == "csharp" and build_solution:
+            repo_identity_files = (build_solution,)
+        else:
+            repo_identity_files = _DEFAULT_REPO_IDENTITY_BY_SPECIMEN.get(specimen, ())
         required_language_tier = oracle.get("required_language_tier")
         language = oracle.get("language", "csharp")
         if language not in _VALID_LANGUAGES:
@@ -111,10 +136,17 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
         build_profile = oracle.get("build_profile", "default")
         test_profile = oracle.get("test_profile", "default")
         test_selector = oracle.get("test_selector")
-        if build_profile not in _VALID_PROFILES:
+        build_selector = oracle.get("build_selector")
+        if build_profile not in _VALID_BUILD_PROFILES:
             raise CorpusError(f"task {tid!r} has invalid build_profile {build_profile!r}")
-        if test_profile not in _VALID_PROFILES:
+        if test_profile not in _VALID_TEST_PROFILES:
             raise CorpusError(f"task {tid!r} has invalid test_profile {test_profile!r}")
+        if build_profile == "zshy" and harness_id != "node":
+            raise CorpusError(f"task {tid!r} build_profile 'zshy' requires the node harness")
+        if build_profile == "zshy" and not _valid_zshy_selector(build_selector):
+            raise CorpusError(
+                f"task {tid!r} build_profile 'zshy' requires build_selector 'pkg:tsconfig'"
+            )
 
         if harm_label == "risky" and not (must_fail or harm_type in _REAL_HARM_TYPES):
             raise CorpusError(f"risky task {tid!r} declares no real harm mechanism")
@@ -141,8 +173,11 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
             required_language_tier=required_language_tier,
             language=language,
             harness_id=harness_id,
+            specimen=specimen,
+            repo_identity_files=repo_identity_files,
             build_profile=build_profile,
             test_profile=test_profile,
             test_selector=test_selector,
+            build_selector=build_selector,
         ))
     return specs

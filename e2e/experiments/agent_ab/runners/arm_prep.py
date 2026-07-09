@@ -2,8 +2,8 @@
 pre-applied correct fix.
 
 The oracle_positive arm is the assay's ENDPOINT FLOOR / guaranteed-effect positive control: the clone
-already holds the correct state (``git apply specimens/csharp/corpus/correct_fix_patches/<task>.patch``), so the endpoint
-(harm / completion) can register an improvement over sham WITHOUT depending on the agent heeding advice —
+already holds the correct state (``git apply specimens/<language>/corpus/correct_fix_patches/<task>.patch``),
+so the endpoint (harm / completion) can register an improvement over sham WITHOUT depending on the agent heeding advice —
 the smoke measured heeded=0%, so an advisory oracle would null too. If even this pre-patched arm doesn't
 beat sham, the task has no harm headroom (or the metric is broken) and no result is interpretable.
 

@@ -331,6 +331,23 @@ def test_repo_identity_preflight_passes_for_planned_specimen(tmp_path):
         TaskSpec(
             "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",),
             "test_failure", False, build_solution="MathNet.Numerics.sln",
+            repo_identity_files=("MathNet.Numerics.sln",),
+        )
+    ], tmp_path)
+
+
+def test_repo_identity_preflight_uses_explicit_repo_identity_files_for_node_specimen(tmp_path):
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    (tmp_path / "packages" / "zod" / "src" / "v3").mkdir(parents=True)
+    (tmp_path / "packages" / "zod" / "src" / "v3" / "types.ts").write_text("", encoding="utf-8")
+
+    preflight.run_repo_identity_preflight([
+        TaskSpec(
+            "JS1", "d", ("packages/zod/src/v3/types.ts",), "risky",
+            ("packages/zod/src/v3/types.ts",), "build_failure", True,
+            build_solution="", language="typescript", harness_id="node",
+            specimen="javascript", repo_identity_files=("package.json", "pnpm-lock.yaml"),
         )
     ], tmp_path)
 
@@ -342,6 +359,7 @@ def test_repo_identity_preflight_fails_wrong_repo_with_task_and_env_var(tmp_path
             TaskSpec(
                 "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",),
                 "test_failure", False, build_solution="MathNet.Numerics.sln",
+                repo_identity_files=("MathNet.Numerics.sln",),
             )
         ], tmp_path)
 
@@ -356,10 +374,25 @@ def test_repo_identity_preflight_fails_mixed_specimen_plan(tmp_path):
         preflight.run_repo_identity_preflight([
             TaskSpec("T1", "d", ("a.cs",), "risky", ("a.cs",), "build_failure", True),
             TaskSpec(
-                "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",),
-                "test_failure", False, build_solution="MathNet.Numerics.sln",
+                "JS1", "d", ("a.ts",), "risky", ("a.ts",), "build_failure", True,
+                build_solution="", language="typescript", harness_id="node", specimen="javascript",
+                repo_identity_files=("package.json", "pnpm-lock.yaml"),
             ),
         ], tmp_path)
+
+
+def test_default_patch_dirs_follow_task_specimen():
+    js = TaskSpec(
+        "JS1", "d", ("a.ts",), "risky", ("a.ts",), "build_failure", True,
+        build_solution="", language="typescript", harness_id="node", specimen="javascript",
+    )
+
+    assert preflight._oracle_patch_dir(js).as_posix().endswith(
+        "specimens/javascript/corpus/oracle_patches"
+    )
+    assert preflight._correct_patch_dir(js).as_posix().endswith(
+        "specimens/javascript/corpus/correct_fix_patches"
+    )
 
 
 def test_oracle_preflight_accumulates_apply_failures(tmp_path, monkeypatch):
