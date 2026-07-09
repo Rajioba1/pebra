@@ -11,8 +11,10 @@ Design constraints:
   ``pebra.core.decision_engine.candidate_patch_hash`` so the engine's patch-binding check passes.
 - Per-language test-runner switch: validated e2e backends only. Unsupported languages abstain honestly
   (``unavailable``) rather than fabricate a pass.
-- Fail-safe: absent SDK, absent covering tests, or an unsupported language all yield ``unavailable``
-  (never ``passed``), so PEBRA keeps the write blocked instead of proceeding on nothing.
+- Fail-safe: absent SDK, absent covering tests without an explicit build-fallback, or an unsupported
+  language all yield ``unavailable`` (never ``passed``), so PEBRA keeps the write blocked instead of
+  proceeding on nothing. Build fallback is opt-in and used for specimens whose public verifier is a
+  build/typecheck profile rather than a test project.
 
 CONTRACT (caller-enforced, checked at the runner boundary): ``repo_path`` must be the materialization
 of exactly ``patch_text`` and its covering tests must be derived from the patch's touched file(s), not
@@ -31,6 +33,7 @@ from e2e.experiments.agent_ab import backends
 
 _SUPPORTED_LANGUAGES = frozenset({"csharp", "javascript", "typescript"})
 _COVERING_CHECK = "covering_tests"
+_BUILD_CHECK = "candidate_build"
 _DOMAIN = "covering_tests"
 
 
@@ -46,6 +49,8 @@ def _evidence(
     *,
     patch_hash: str,
     checks: dict[str, str] | None = None,
+    required_checks: list[str] | None = None,
+    domain: str = _DOMAIN,
     reason: str | None = None,
     test_project: str | None = None,
     test_filter: str | None = None,
@@ -54,8 +59,8 @@ def _evidence(
     ev: dict[str, Any] = {
         "status": status,
         "checks": dict(checks or {}),
-        "required_checks": [_COVERING_CHECK],
-        "domain": _DOMAIN,
+        "required_checks": list(required_checks or [_COVERING_CHECK]),
+        "domain": domain,
         "verified_patch_hash": patch_hash,
     }
     provenance: dict[str, Any] = {}
@@ -80,6 +85,10 @@ def verify_candidate(
     test_project: str | None = None,
     test_filter: str | None = None,
     build_solution: str = "TemplateBlueprint.sln",
+    harness_id: str | None = None,
+    build_profile: str = "default",
+    build_selector: str | None = None,
+    allow_build_fallback: bool = False,
     timeout: int = 600,
 ) -> dict[str, Any]:
     """Run the candidate's covering tests and return gate-7 evidence bound to ``patch_text``.
@@ -92,16 +101,41 @@ def verify_candidate(
     if language not in _SUPPORTED_LANGUAGES:
         return _evidence("unavailable", patch_hash=patch_hash,
                          reason=f"no validated test runner for language {language!r}")
-    if not test_project:
-        return _evidence("unavailable", patch_hash=patch_hash,
-                         reason="no covering tests declared for this candidate")
-
     try:
         backend = backends.get_backend(language)
     except ValueError:
         return _evidence("unavailable", patch_hash=patch_hash,
                          reason=f"no validated test runner for language {language!r}")
-    spec = type("_Spec", (), {"language": language, "build_solution": build_solution})()
+    spec = type("_Spec", (), {
+        "language": language,
+        "harness_id": harness_id or language,
+        "build_solution": build_solution,
+        "build_profile": build_profile,
+        "build_selector": build_selector,
+    })()
+    if not test_project:
+        if not allow_build_fallback:
+            return _evidence("unavailable", patch_hash=patch_hash,
+                             reason="no covering tests declared for this candidate")
+        result = backend.run_build(Path(repo_path), spec)
+        if not result.available or not result.ran:
+            return _evidence(
+                "unavailable",
+                patch_hash=patch_hash,
+                required_checks=[_BUILD_CHECK],
+                domain=_BUILD_CHECK,
+                reason=result.error_summary or "candidate build did not execute",
+            )
+        status = "passed" if result.passed else "failed"
+        return _evidence(
+            status,
+            patch_hash=patch_hash,
+            checks={_BUILD_CHECK: status},
+            required_checks=[_BUILD_CHECK],
+            domain=_BUILD_CHECK,
+            reason=None if result.passed else (result.error_summary or "candidate build failed"),
+        )
+
     result = backend.run_tests(Path(repo_path), spec, project=test_project, test_filter=test_filter)
     if not result.available or not result.ran:
         return _evidence("unavailable", patch_hash=patch_hash,

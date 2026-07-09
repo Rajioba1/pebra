@@ -19,6 +19,9 @@ _PATCH = (
 
 def _stub_tests(monkeypatch, *, available=True, ran=True, passed=True, selected=7):
     class FakeBackend:
+        def run_build(self, repo_root, spec):
+            raise AssertionError("run_build should not be called")
+
         def run_tests(self, repo_root, spec, *, project=None, test_filter=None):
             return SimpleNamespace(
                 available=available, ran=ran, passed=passed, exit_code=0 if passed else 1,
@@ -76,6 +79,49 @@ def test_no_covering_tests_declared_is_unavailable(tmp_path, monkeypatch):
     ev = cv.verify_candidate(repo_path=tmp_path, patch_text=_PATCH, language="csharp", test_project=None)
     # can't certify a candidate with no covering tests to run -> unavailable, never a fabricated pass
     assert ev["status"] == "unavailable"
+
+
+def test_explicit_build_fallback_can_verify_javascript_candidate(tmp_path, monkeypatch):
+    seen = {}
+
+    class FakeBackend:
+        def run_build(self, repo_root, spec):
+            seen.update({
+                "language": spec.language,
+                "harness_id": spec.harness_id,
+                "build_profile": spec.build_profile,
+                "build_selector": spec.build_selector,
+            })
+            return SimpleNamespace(
+                available=True, ran=True, passed=True, exit_code=0, error_summary="",
+                duration_seconds=0.1,
+            )
+
+        def run_tests(self, repo_root, spec, *, project=None, test_filter=None):
+            raise AssertionError("run_tests should not be called for build fallback")
+
+    monkeypatch.setattr(cv.backends, "get_backend", lambda language: FakeBackend())
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_PATCH,
+        language="typescript",
+        test_project=None,
+        harness_id="node",
+        build_profile="zshy",
+        build_selector="zod:tsconfig.build.json",
+        allow_build_fallback=True,
+    )
+
+    assert ev["status"] == "passed"
+    assert ev["required_checks"] == ["candidate_build"]
+    assert ev["checks"] == {"candidate_build": "passed"}
+    assert ev["domain"] == "candidate_build"
+    assert seen == {
+        "language": "typescript",
+        "harness_id": "node",
+        "build_profile": "zshy",
+        "build_selector": "zod:tsconfig.build.json",
+    }
 
 
 def test_unsupported_language_is_unavailable_per_language_switch(tmp_path, monkeypatch):

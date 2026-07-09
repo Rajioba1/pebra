@@ -160,12 +160,21 @@ def _completed_units(outcomes: list[RunOutcome], specs_by_id: dict[str, TaskSpec
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the blinded agent A/B experiment (gated).")
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--mode", choices=["smoke", "pilot", "powered", "assay"], default="pilot")
+    parser.add_argument("--mode", choices=["smoke", "pilot", "powered", "assay", "assay_js"],
+                        default="pilot")
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="Run deterministic preflights and exit before any subject/model calls.",
+    )
     parser.add_argument("--skip-oracle-preflight", action="store_true")
     parser.add_argument("--skip-graph-preflight", action="store_true")
     args = parser.parse_args(argv)
 
-    run_gate.check_gate()  # fail-closed before ANY clone / model call
+    if not args.preflight_only:
+        run_gate.check_gate()  # fail-closed before ANY clone / model call
+    if args.preflight_only and (args.skip_oracle_preflight or args.skip_graph_preflight):
+        raise ExperimentRunError("--preflight-only cannot be combined with preflight skip flags")
     if (args.skip_oracle_preflight or args.skip_graph_preflight) and os.environ.get(_ALLOW_UNVERIFIED_ENV) != "1":
         raise ExperimentRunError(
             f"preflight skip requested; set {_ALLOW_UNVERIFIED_ENV}=1 for an explicitly unverified debug run"
@@ -173,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = _config()
     mode = cfg[args.mode]
-    is_assay = args.mode == "assay"
+    is_assay = args.mode in {"assay", "assay_js"}
     out_dir = _AB_OUT / args.run_id
     corpus = load_corpus()
     plan = _plan(corpus, mode["tasks"], mode["seeds_per_arm"])
@@ -200,6 +209,9 @@ def main(argv: list[str] | None = None) -> int:
                 out_dir=out_dir,
                 setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
             )
+
+    if args.preflight_only:
+        return 0
 
     specs_by_id = {s.task_id: s for s in corpus}
     outcomes_path = out_dir / "outcomes.json"

@@ -30,6 +30,7 @@ from typing import Any, Callable
 
 from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab.models import TaskSpec
+from e2e.experiments.agent_ab.tools import candidate_materializer, candidate_verifier
 from e2e.external.utils import repo_source as rs
 
 _CORPUS_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus"
@@ -439,6 +440,8 @@ def _live_revise_safer_assess(
     db: Path,
     *,
     revise_safer_attempt: int = 0,
+    max_revise_safer_attempts: int = 1,
+    trusted_candidate_verification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Live revise-route calibration assess via the same CLI boundary as the treatment advisory."""
     from e2e.experiments.agent_ab.tools import advisory_check_real  # noqa: PLC0415
@@ -449,14 +452,53 @@ def _live_revise_safer_assess(
         "target_file": target,
         "change_summary": spec.description,
         "proposed_patch": proposed_patch,
-    }, revise_safer_attempt=revise_safer_attempt)
+    }, revise_safer_attempt=revise_safer_attempt,
+       max_revise_safer_attempts=max_revise_safer_attempts)
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
         json.dump(request, fh)
         req_path = fh.name
+    verification_path: str | None = None
+    if trusted_candidate_verification is not None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+            json.dump(trusted_candidate_verification, fh)
+            verification_path = fh.name
     try:
-        return cli_harness.assess(req_path, repo_root=repo_path, db=db)
+        return cli_harness.assess(
+            req_path,
+            repo_root=repo_path,
+            db=db,
+            trusted_candidate_verification_path=verification_path,
+            extra_env={"PEBRA_CODEGRAPH_SEMANTIC_DIFF": "1"},
+        )
     finally:
         Path(req_path).unlink(missing_ok=True)
+        if verification_path is not None:
+            Path(verification_path).unlink(missing_ok=True)
+
+
+def _live_candidate_verification(repo_path: Path, spec: TaskSpec, patch_text: str) -> dict[str, Any]:
+    scratch = candidate_materializer.materialize_candidate(repo_path, patch_text)
+    if scratch is None:
+        return {
+            "status": "unavailable",
+            "required_checks": ["candidate_build"],
+            "domain": "candidate_build",
+            "verified_patch_hash": candidate_verifier.candidate_patch_hash(patch_text),
+            "reason": "candidate patch did not apply cleanly",
+        }
+    try:
+        return candidate_verifier.verify_candidate(
+            repo_path=scratch,
+            patch_text=patch_text,
+            language=spec.language,
+            build_solution=spec.build_solution,
+            harness_id=spec.harness_id,
+            build_profile=spec.build_profile,
+            build_selector=spec.build_selector,
+            allow_build_fallback=spec.language in {"javascript", "typescript"},
+        )
+    finally:
+        candidate_materializer.cleanup(scratch)
 
 
 def run_revise_safer_calibration(
@@ -465,18 +507,20 @@ def run_revise_safer_calibration(
     *,
     out_dir: Path,
     assess_fn: Callable[..., dict[str, Any]] | None = None,
+    candidate_verification_fn: Callable[[Path, TaskSpec, str], dict[str, Any]] | None = None,
     setup_graph_fn: Callable[[Path], None] | None = None,
     patch_dir: Path | None = None,
     correct_patch_dir: Path | None = None,
 ) -> None:
-    """Assert the MNGAMMA-style route distinction before spending live agent calls.
+    """Assert the revise-safer route before spending live agent calls.
 
     For each risky task with a reference correct-fix patch, the intentional bad route must produce
-    ``revise_safer``. The reference route must then be non-blocking and lower expected loss using the
-    same persisted assessment store. This proves the assay has a real "revise to safer route" pathway,
-    rather than only a stop/block pathway.
+    ``revise_safer``. Legacy tasks then require the reference route to be non-blocking and lower
+    expected loss. JS/TS graph-repair tasks instead require the reference route to pass host-produced
+    candidate verification and proceed at attempt 1 with cap 2, which is the live repair-arm mechanism.
     """
     assess_fn = assess_fn or _live_revise_safer_assess
+    candidate_verification_fn = candidate_verification_fn or _live_candidate_verification
     failures: list[str] = []
     risky_seen = 0
     checked = 0
@@ -515,18 +559,45 @@ def run_revise_safer_calibration(
                     f"{spec.task_id}: expected bad route to return revise_safer, got {bad_decision!r}"
                 )
                 continue
-            fixed = assess_fn(
-                repo_path,
-                spec,
-                correct_patch.read_text(encoding="utf-8"),
-                reference_db,
-                revise_safer_attempt=0,
-            )
+            correct_patch_text = correct_patch.read_text(encoding="utf-8")
+            if spec.language in {"javascript", "typescript"}:
+                verification = candidate_verification_fn(repo_path, spec, correct_patch_text)
+                if verification.get("status") != "passed":
+                    failures.append(
+                        f"{spec.task_id}: reference route candidate verification did not pass "
+                        f"({verification.get('status')!r}: {verification.get('reason', '')})"
+                    )
+                    continue
+                fixed = assess_fn(
+                    repo_path,
+                    spec,
+                    correct_patch_text,
+                    reference_db,
+                    revise_safer_attempt=1,
+                    max_revise_safer_attempts=2,
+                    trusted_candidate_verification=verification,
+                )
+            else:
+                fixed = assess_fn(
+                    repo_path,
+                    spec,
+                    correct_patch_text,
+                    reference_db,
+                    revise_safer_attempt=0,
+                )
             fixed_decision = fixed.get("recommended_decision")
             if fixed_decision in _BLOCKING_DECISIONS:
                 failures.append(
                     f"{spec.task_id}: reference route remained blocked ({fixed_decision!r})"
                 )
+                continue
+            if spec.language in {"javascript", "typescript"}:
+                gates = fixed.get("gates_fired") or []
+                if not any(g.get("name") == "candidate_verification_passed" for g in gates):
+                    failures.append(
+                        f"{spec.task_id}: verified reference route did not prove candidate "
+                        "verification gate 7"
+                    )
                 continue
             bad_loss = _expected_loss(bad)
             fixed_loss = _expected_loss(fixed)

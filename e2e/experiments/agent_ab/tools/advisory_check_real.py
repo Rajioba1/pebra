@@ -27,6 +27,7 @@ _THRESHOLDS = {
     "decision_instability_threshold": 0.10, "high_edit_confidence": 0.75, "low_edit_confidence": 0.50,
     "rau_bands": {"reject_below": 0.0, "borderline_below": 0.15, "strong_at": 0.40},
     "revise_safer_enabled": True, "max_revise_safer_attempts": 1,
+    "codegraph_semantic_diff_enabled": 1.0,
 }
 
 
@@ -172,6 +173,7 @@ def advise(
             repo_root=repo_root,
             db=db,
             trusted_candidate_verification_path=trusted_path,
+            extra_env={"PEBRA_CODEGRAPH_SEMANTIC_DIFF": "1"},
         )
     finally:
         Path(req_path).unlink(missing_ok=True)

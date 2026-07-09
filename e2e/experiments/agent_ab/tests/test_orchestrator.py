@@ -78,6 +78,12 @@ def test_config_applies_model_override(monkeypatch):
 def test_config_has_one_pair_smoke_mode():
     cfg = orchestrator._config()
     assert cfg["smoke"]["tasks"] == ["T1"]
+
+
+def test_config_has_javascript_assay_mode():
+    cfg = orchestrator._config()
+    assert cfg["assay_js"]["tasks"] == ["JS1", "JS2", "JS3"]
+    assert cfg["assay_js"]["seeds_per_arm"] == 1
     assert cfg["smoke"]["seeds_per_arm"] == 1
     assert cfg["smoke"]["total_runs"] == 2
 
@@ -278,6 +284,57 @@ def test_main_runs_revise_safer_calibration_for_assay(monkeypatch, tmp_path):
 
     assert calls == ["oracle", "graph", "revise"]
     assert seen["preflight_status"]["revise_safer"] == "passed"
+
+
+def test_preflight_only_js_assay_skips_paid_run_gate_and_subject(monkeypatch, tmp_path):
+    js1 = TaskSpec(
+        "JS1", "d", ("packages/zod/src/v3/types.ts",), "risky",
+        ("packages/zod/src/v3/types.ts",), "build_failure", True,
+        language="typescript", harness_id="node", specimen="javascript",
+        repo_identity_files=("package.json",),
+    )
+    js2 = TaskSpec(
+        "JS2", "d", ("packages/zod/src/v3/types.ts",), "safe",
+        ("packages/zod/src/v3/types.ts",), "none", False,
+        language="typescript", harness_id="node", specimen="javascript",
+        repo_identity_files=("package.json",),
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(orchestrator.run_gate, "check_gate",
+                        lambda: (_ for _ in ()).throw(AssertionError("paid gate must be skipped")))
+    monkeypatch.setattr(orchestrator, "load_corpus", lambda: [js1, js2])
+    monkeypatch.setattr(orchestrator, "_config",
+                        lambda: {"assay_js": {"tasks": ["JS1", "JS2"], "seeds_per_arm": 1},
+                                 "bootstrap_seed": 0})
+    monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
+    monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
+    monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight",
+                        lambda *a, **k: calls.append("identity"))
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight",
+                        lambda *a, **k: calls.append("oracle"))
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight",
+                        lambda *a, **k: calls.append("graph"))
+    monkeypatch.setattr(orchestrator.preflight, "run_revise_safer_calibration",
+                        lambda *a, **k: calls.append("revise"))
+    monkeypatch.setattr(orchestrator.run_pair, "run_trial",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("subject must not run")))
+
+    assert orchestrator.main(["--run-id", "js-pf", "--mode", "assay_js", "--preflight-only"]) == 0
+    assert calls == ["identity", "oracle", "graph", "revise"]
+
+
+def test_preflight_only_rejects_preflight_skip_flags(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path, [_T1], lambda spec, seed, run_id: (_outcome("T1", "control"),
+                                                                   _outcome("T1", "treatment")))
+    with pytest.raises(orchestrator.ExperimentRunError, match="preflight-only"):
+        orchestrator.main([
+            "--run-id", "pf",
+            "--preflight-only",
+            "--skip-oracle-preflight",
+            "--skip-graph-preflight",
+        ])
 
 
 def test_main_runs_repo_identity_preflight_before_external_clone(monkeypatch, tmp_path):

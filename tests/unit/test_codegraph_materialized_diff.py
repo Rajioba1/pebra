@@ -11,7 +11,7 @@ from pebra.core.models import MaterializedGraphDiffResult
 
 def _make_db(
     path: Path,
-    rows: list[tuple[str, str, str | None, str | None, str | None]],
+    rows: list[tuple[str, str, str | None, str | None, str | None] | dict[str, object]],
     *,
     language: str = "typescript",
     is_exported: int | None = None,
@@ -29,23 +29,41 @@ def _make_db(
             signature TEXT,
             visibility TEXT,
             return_type TEXT,
-            is_exported INTEGER
+            is_exported INTEGER,
+            is_abstract INTEGER
         );
         """
     )
-    for i, (file_path, qualified_name, signature, visibility, return_type) in enumerate(rows):
+    for i, row in enumerate(rows):
+        if isinstance(row, dict):
+            file_path = str(row["file_path"])
+            qualified_name = str(row["qualified_name"])
+            signature = row.get("signature")
+            visibility = row.get("visibility")
+            return_type = row.get("return_type")
+            kind = str(row.get("kind", "function"))
+            row_language = str(row.get("language", language))
+            row_is_exported = row.get("is_exported", is_exported)
+            row_is_abstract = row.get("is_abstract")
+        else:
+            file_path, qualified_name, signature, visibility, return_type = row
+            kind = "function"
+            row_language = language
+            row_is_exported = is_exported
+            row_is_abstract = None
         con.execute(
-            "INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 f"n{i}",
-                "function",
+                kind,
                 qualified_name,
                 file_path,
-                language,
+                row_language,
                 signature,
                 visibility,
                 return_type,
-                is_exported,
+                row_is_exported,
+                row_is_abstract,
             ),
         )
     con.commit()
@@ -267,7 +285,7 @@ def test_materialized_diff_rejects_duplicate_stable_owner_keys(tmp_path: Path) -
     assert result.fallback_reason == "materialized owner key ambiguous"
 
 
-def test_materialized_diff_fails_unavailable_when_owner_sets_do_not_match(tmp_path: Path) -> None:
+def test_materialized_diff_emits_added_removed_rows_when_owner_sets_change(tmp_path: Path) -> None:
     dbs: list[Path] = []
 
     def fake_index(root: Path) -> Path:
@@ -287,8 +305,100 @@ def test_materialized_diff_fails_unavailable_when_owner_sets_do_not_match(tmp_pa
         repo_root=str(tmp_path),
     )
 
-    assert result.available is False
-    assert result.fallback_reason == "materialized owner mismatch"
+    assert result.available is True
+    assert [(r.operation, r.qualified_name) for r in result.rows] == [("added", "g"), ("removed", "f")]
+    assert {r.signature_changed for r in result.rows} == {None}
+
+
+def test_materialized_diff_emits_abstract_member_addition(tmp_path: Path) -> None:
+    calls: list[int] = []
+
+    def fake_index(root: Path) -> Path:
+        calls.append(1)
+        db_path = root / ".codegraph" / "codegraph.db"
+        rows: list[dict[str, object]] = []
+        if len(calls) == 2:
+            rows.append({
+                "file_path": "src/a.ts",
+                "qualified_name": "ZodType._pebraDescribe",
+                "signature": "_pebraDescribe(): string",
+                "visibility": "public",
+                "return_type": "string",
+                "kind": "method",
+                "is_abstract": 1,
+            })
+        _make_db(db_path, rows)
+        return db_path
+
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=fake_index)
+    result = adapter.diff(
+        before_files={"src/a.ts": "before"}, after_files={"src/a.ts": "after"},
+        repo_root=str(tmp_path),
+    )
+
+    assert result.available is True
+    row = result.rows[0]
+    assert row.operation == "added"
+    assert row.kind == "method"
+    assert row.is_abstract is True
+
+
+def test_materialized_diff_compares_abstract_flag_on_existing_owner(tmp_path: Path) -> None:
+    calls: list[int] = []
+
+    def fake_index(root: Path) -> Path:
+        calls.append(1)
+        db_path = root / ".codegraph" / "codegraph.db"
+        _make_db(db_path, [{
+            "file_path": "src/a.ts",
+            "qualified_name": "ZodType._pebraDescribe",
+            "signature": "_pebraDescribe(): string",
+            "visibility": "public",
+            "return_type": "string",
+            "kind": "method",
+            "is_abstract": 1 if len(calls) == 1 else 0,
+        }])
+        return db_path
+
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=fake_index)
+    result = adapter.diff(
+        before_files={"src/a.ts": "before"}, after_files={"src/a.ts": "after"},
+        repo_root=str(tmp_path),
+    )
+
+    assert result.available is True
+    assert result.rows[0].operation == "modified"
+    assert result.rows[0].is_abstract_changed is True
+
+
+def test_truthy_or_none_unknown_sentinel_is_not_fabricated_as_true(tmp_path: Path) -> None:
+    calls: list[int] = []
+
+    def fake_index(root: Path) -> Path:
+        calls.append(1)
+        db_path = root / ".codegraph" / "codegraph.db"
+        rows: list[dict[str, object]] = []
+        if len(calls) == 2:
+            rows.append({
+                "file_path": "src/a.ts",
+                "qualified_name": "ZodType._pebraDescribe",
+                "signature": "_pebraDescribe(): string",
+                "visibility": "public",
+                "return_type": "string",
+                "kind": "method",
+                "is_abstract": "nonabstract",
+            })
+        _make_db(db_path, rows)
+        return db_path
+
+    adapter = CodeGraphMaterializedDiffAdapter(enabled=True, indexer=fake_index)
+    result = adapter.diff(
+        before_files={"src/a.ts": "before"}, after_files={"src/a.ts": "after"},
+        repo_root=str(tmp_path),
+    )
+
+    assert result.available is True
+    assert result.rows[0].is_abstract is None
 
 
 # --- P0: diff_for_patch (materialize the assess-path candidate) + BUG-6 single-tempdir ---

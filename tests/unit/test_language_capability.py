@@ -104,9 +104,11 @@ def test_measured_but_no_callable_nodes_is_risk_only() -> None:
 
 
 def test_export_as_visibility_languages_is_the_curated_source_verified_set() -> None:
-    # Exactly the languages whose extractor emits is_exported but NO real getVisibility, and whose
-    # access model IS module export. A curated fact (like DECLARED_LANGUAGES), never DB-derived.
-    assert EXPORT_AS_VISIBILITY_LANGUAGES == frozenset({"go", "javascript", "jsx"})
+    # Languages whose extractor populates a per-symbol is_exported and whose access model IS module
+    # export. TS is included: its getVisibility is only emitted for explicit modifiers (rare in real
+    # code), and is_exported is empirically per-symbol (verified varying on a real TS index), so filling
+    # visibility from it is honest. tsx is deliberately NOT here yet — no real .tsx index verified.
+    assert EXPORT_AS_VISIBILITY_LANGUAGES == frozenset({"go", "javascript", "jsx", "typescript"})
 
 
 def test_derive_visibility_never_overrides_a_real_emitted_value() -> None:
@@ -120,8 +122,12 @@ def test_derive_visibility_fills_only_allowlisted_languages() -> None:
     assert derive_visibility_from_export("go", None, 0) == "unexported"
     assert derive_visibility_from_export("javascript", "", 1) == "exported"   # empty counts as missing
     assert derive_visibility_from_export("jsx", None, 0) == "unexported"
-    # NOT allowlisted -> never fill, even with is_exported set (guards against TS/Luau/Pascal/etc.)
-    for lang in ("typescript", "tsx", "pascal", "luau", "java", "python", "unknown", None):
+    # TypeScript now derives too (its extractor rarely emits getVisibility on real code, but does
+    # populate a real per-symbol is_exported); an explicit modifier still wins (tested above).
+    assert derive_visibility_from_export("typescript", None, 1) == "exported"
+    assert derive_visibility_from_export("typescript", None, 0) == "unexported"
+    # NOT allowlisted -> never fill (tsx unverified; the rest have no per-symbol is_exported).
+    for lang in ("tsx", "pascal", "luau", "java", "python", "unknown", None):
         assert derive_visibility_from_export(lang, None, 1) is None
 
 

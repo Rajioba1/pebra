@@ -756,6 +756,33 @@ def test_semantic_tier_multi_owner_degrades_to_honest_structural_label() -> None
     assert sse["structure_tier"] == "codegraph_structural"  # degraded -> honest coarse label
 
 
+def test_semantic_tier_enriches_added_abstract_member() -> None:
+    ev = m.FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        node_ids_resolved=("ts:ZodType",), resolved_qualified_names=("ZodType",),
+        resolved_language="typescript", resolved_languages=("typescript",),
+        resolved_file_paths=("src/a.ts",), resolved_symbol_count=1,
+        symbol_fan_in_percentile=0.5,
+    )
+    result = m.MaterializedGraphDiffResult(
+        available=True,
+        rows=(m.MaterializedGraphDiffRow(
+            file_path="src/a.ts",
+            qualified_name="ZodType._pebraDescribe",
+            language="typescript",
+            operation="added",
+            kind="method",
+            signature_changed=True,
+            is_abstract=True,
+        ),),
+    )
+
+    sse = _run_semantic(ev, result).recommended_result.symbol_scope_evidence
+
+    assert sse["structure_tier"] == "codegraph_semantic"
+    assert sse["max_change_kind"] == "CONTRACT"
+
+
 # --- tier-3: derived future_change_exposure credits RCA benefit by default -----------------------
 
 class _MeasuredBenefitEvidence:

@@ -122,6 +122,7 @@ def test_build_request_carries_revise_safer_attempt():
 
     assert req["thresholds"]["revise_safer_attempt"] == 2
     assert req["thresholds"]["max_revise_safer_attempts"] == 1
+    assert req["thresholds"]["codegraph_semantic_diff_enabled"] == 1.0
 
 
 def test_build_request_does_not_carry_candidate_verification_in_untrusted_evidence():
@@ -137,3 +138,21 @@ def test_build_request_does_not_carry_candidate_verification_in_untrusted_eviden
         },
     })
     assert "candidate_verification" not in req["evidence"]
+
+
+def test_real_advise_enables_semantic_diff_in_subprocess_env(monkeypatch, tmp_path):
+    seen = {}
+
+    def _assess(req_path, *, repo_root, db, trusted_candidate_verification_path=None, extra_env=None):
+        seen["extra_env"] = dict(extra_env or {})
+        return {"recommended_decision": "proceed", "scores": {"expected_loss": 0.0}}
+
+    monkeypatch.setattr(real.cli_harness, "assess", _assess)
+    out = real.advise({
+        "target_file": "x.ts",
+        "change_summary": "change x",
+        "proposed_patch": "diff --git a/x.ts b/x.ts\n",
+    }, repo_root=tmp_path, db=tmp_path / "pebra.db")
+
+    assert out["recommended_decision"] == "proceed"
+    assert seen["extra_env"] == {"PEBRA_CODEGRAPH_SEMANTIC_DIFF": "1"}

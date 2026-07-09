@@ -1,6 +1,7 @@
 # PEBRA agent assay experiment (pre-registration)
 
-**STATUS: live-gated and validated on the Math.NET one-seed assay.** The real coding-agent runner is
+**STATUS: live-gated and validated on the Math.NET one-seed assay; JS/Zod Phase 4 is preflight-first.**
+The real coding-agent runner is
 complete and `AnthropicClient.send` is LIVE — the `NotImplementedError` stop is gone. The **only** guard
 against a run is the fail-closed run gate (`E2E_AB_RUN=1` + `E2E_EXTERNAL=1` + a provider API key), and
 nothing in-tree opens it, so the experiment does not run under ordinary CI or by accident. This directory
@@ -8,7 +9,9 @@ is a gated/manual/nightly *experiment* — not production, and not a settled det
 
 Current assay state:
 
-- The Math.NET `MNGAMMA` task is the active risky specimen.
+- The Math.NET `MNGAMMA` task is the validated C# risky specimen and historical smoke lane.
+- The current robustness target is the JavaScript/TypeScript Zod specimen (`assay_js`): `JS1` is the
+  risky repair-route task and `JS2`/`JS3` are safe over-caution checks.
 - The risky-task assay is now six-arm: `sham`, `oracle_positive`, `enforced_control`, `blast_radius`,
   `pebra`, and `pebra_graph_repair`. Safe tasks omit `oracle_positive`/`enforced_control`.
 - Two one-seed DeepSeek/Math.NET assay runs have completed cleanly: one sequential and one with
@@ -48,8 +51,9 @@ the same agent without it?
 - **Blast-radius**: CTXO-style graph/dependent-file information without PEBRA's verdict gate. This is a
   diagnostic information-only comparator.
 - **PEBRA**: real PEBRA advisory + safe-edit protocol + write gate.
-- **PEBRA graph-repair**: PEBRA plus an added repair-context hint. It is intentionally labeled as a
-  hint today; candidate verification is not yet automatically wired into the live arm.
+- **PEBRA graph-repair**: PEBRA plus an added repair-context hint and host-produced candidate
+  verification on the narrowed resubmission. Subject-supplied verification is stripped; only the host
+  can pass hash-bound verification evidence to gate 7.
 - **Blinded**: subjects are unbriefed real coding agents. The prompt never mentions PEBRA, an
   experiment, or arm labels; the trap/benign label is hidden. The evaluator knows the oracle only
   after the fact.
@@ -265,29 +269,60 @@ pnpm audit --audit-level high
 socket scan create --report
 ```
 
-## Running the gated assay (real agents)
+## Running preflights and gated assays
+
+### JS/Zod Phase-4 no-paid preflight
+
+Run this before any paid JS assay. It runs repo identity, oracle labels, fresh graph evidence, language
+tier, semantic-diff request wiring, and `revise_safer` repair-route calibration, then exits before the
+subject/model loop. It does **not** require a provider key or the live run gate. Do not combine it with
+preflight skip flags.
+
+PowerShell:
+
+```powershell
+$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
+python -m e2e.experiments.agent_ab.runners.orchestrator `
+  --run-id js_zod_preflight_001 `
+  --mode assay_js `
+  --preflight-only
+```
+
+Bash:
+
+```bash
+E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
+python -m e2e.experiments.agent_ab.runners.orchestrator \
+  --run-id js_zod_preflight_001 \
+  --mode assay_js \
+  --preflight-only
+```
+
+### Live agent assay
 
 This is the live agent assay. It runs the gated preflight first (repo identity, oracle labels, fresh graph
-evidence, C# node-count check, targeted test-count checks, and `revise_safer` route calibration), then
-runs the configured arms. It needs CodeGraph on `PATH`, `dotnet`, a local checkout of the external repo,
-and a valid provider API key. The
+evidence, language node/tier checks, targeted test-count checks, and `revise_safer` route calibration),
+then runs the configured arms. It needs CodeGraph on `PATH`, the specimen toolchain (`dotnet` for C#;
+`pnpm`/Node for Zod), a local checkout of the external repo, and a valid provider API key. The
 `nox -s e2e-ab` session is the explicit run opt-in: it sets the non-secret gates (`E2E_AB_RUN=1`,
 `E2E_EXTERNAL=1`). The report records the served model(s) echoed by the API response, not just the
 configured request string.
 
-Recommended current lane on this machine: **DeepSeek + Math.NET assay + parallel arms**. This is the
-fast path that reproduced the sequential result in about 17 minutes instead of about 33 minutes.
+Recommended current robustness lane: **DeepSeek + Zod JS assay + parallel arms**, but only after the
+`assay_js --preflight-only` command above passes. The e2e real advisory path injects
+`PEBRA_CODEGRAPH_SEMANTIC_DIFF=1` and sets `codegraph_semantic_diff_enabled=1.0` in the request so the
+paid JS run uses the same semantic-diff deployment posture as the preflight.
 
 PowerShell:
 
 ```powershell
 $env:DEEPSEEK_API_KEY="sk-..."
 $env:E2E_AB_PROVIDER="deepseek"
-$env:E2E_AB_MODE="assay"
-$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\mathnet-numerics"
+$env:E2E_AB_MODE="assay_js"
+$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="5"
-$env:E2E_AB_RUN_ID="mn_gamma_deepseek_assay_parallel_001"
+$env:E2E_AB_RUN_ID="js_zod_deepseek_assay_001"
 nox -s e2e-ab
 ```
 
@@ -303,8 +338,8 @@ Add-Content .pebra\agent_ab.env 'E2E_AB_PROVIDER=deepseek'
 Then set run-shape variables in the shell:
 
 ```powershell
-$env:E2E_AB_MODE="assay"
-$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\mathnet-numerics"
+$env:E2E_AB_MODE="assay_js"
+$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="5"
 nox -s e2e-ab
@@ -326,14 +361,22 @@ Bash:
 ```bash
 DEEPSEEK_API_KEY=sk-... \
 E2E_AB_PROVIDER=deepseek \
-E2E_AB_MODE=assay \
-E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/mathnet-numerics \
+E2E_AB_MODE=assay_js \
+E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
 E2E_AB_PARALLEL_ARMS=1 \
 E2E_AB_MAX_WORKERS=5 \
-E2E_AB_RUN_ID=mn_gamma_deepseek_assay_parallel_001 \
+E2E_AB_RUN_ID=js_zod_deepseek_assay_001 \
 nox -s e2e-ab
 ```
 
 The run writes local artifacts under `e2e/out/ab/<run-id>/`, which is ignored by git. The two validated
 one-seed assay runs were `mn_gamma_deepseek_assay_1seed_20260705_214503` (sequential) and
 `mn_gamma_deepseek_assay_parallel_1seed_20260706_011650` (parallel).
+
+Math.NET remains available as the C# historical lane:
+
+```powershell
+$env:E2E_AB_MODE="assay"
+$env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\mathnet-numerics"
+nox -s e2e-ab
+```

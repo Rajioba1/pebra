@@ -57,14 +57,16 @@ DECLARED_LANGUAGES: tuple[str, ...] = (
 )
 
 
-# Languages whose CodeGraph extractor emits NO real getVisibility but DOES populate is_exported, and
-# whose access-control model IS module export (Go, JavaScript/JSX). ONLY for these is filling visibility
-# from is_exported honest: export is genuinely their entire visibility axis, so no real value is masked
-# (unlike TypeScript, which HAS getVisibility). This is a CURATED, source-verified fact about codegraph's
-# extractors — like DECLARED_LANGUAGES — and must NEVER be re-derived from the DB: is_exported defaults
-# to 0 for every unimplemented extractor, so "unexported" is indistinguishable from "not implemented" in
-# the database, which would wrongly rope in TypeScript/Luau/Pascal/etc.
-EXPORT_AS_VISIBILITY_LANGUAGES: frozenset[str] = frozenset({"go", "javascript", "jsx"})
+# Languages whose CodeGraph extractor populates a REAL per-symbol is_exported and whose access-control
+# model IS module export, so filling a MISSING visibility from is_exported is honest. TypeScript is
+# included: its extractor DOES emit getVisibility, but only for explicit `public`/`private`/`protected`
+# modifiers, which real TS code almost never writes — so on representative code (e.g. Zod: visibility set
+# on 0.2% of nodes) it behaves like Go/JS, and is_exported is empirically a real per-symbol flag (verified
+# varying, not a defaults-0 artifact). The null-only guard in derive_visibility_from_export means any real
+# emitted modifier still wins, so nothing is masked. This is a CURATED, source-verified set (like
+# DECLARED_LANGUAGES) — NEVER DB-derive it: is_exported defaults to 0 for UNIMPLEMENTED extractors, so a
+# language may only be added after confirming its is_exported genuinely varies. (tsx: not yet verified.)
+EXPORT_AS_VISIBILITY_LANGUAGES: frozenset[str] = frozenset({"go", "javascript", "jsx", "typescript"})
 
 
 def derive_visibility_from_export(

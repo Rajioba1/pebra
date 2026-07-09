@@ -19,6 +19,11 @@ _FULL_TIER_TRAP = TaskSpec(
     "TSSEM", "d", ("src/a.ts",), "risky", ("src/a.ts",), "test_failure", False,
     required_language_tier="full",
 )
+_JS_TRAP = TaskSpec(
+    "JS1", "d", ("src/a.ts",), "risky", ("src/a.ts",), "build_failure", True,
+    language="typescript", harness_id="node", specimen="javascript",
+    build_profile="zshy", build_selector="zod:tsconfig.build.json",
+)
 
 
 def _build(ran=True, passed=True, err=""):
@@ -590,6 +595,101 @@ def test_revise_safer_calibration_accepts_bad_revise_then_lower_risk_reference(t
         ("bad route", 0, "bad_revise_calibration.db"),
         ("reference route", 0, "reference_revise_calibration.db"),
     ]
+
+
+def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "JS1.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "JS1.patch").write_text("reference route", encoding="utf-8")
+
+    def _clone(_external, dest):
+        dest.mkdir(parents=True)
+        return dest
+
+    calls: list[dict[str, object]] = []
+
+    def _assess(
+        _repo_path,
+        _spec,
+        proposed_patch,
+        _db,
+        *,
+        revise_safer_attempt=0,
+        max_revise_safer_attempts=1,
+        trusted_candidate_verification=None,
+    ):
+        calls.append({
+            "patch": proposed_patch,
+            "attempt": revise_safer_attempt,
+            "cap": max_revise_safer_attempts,
+            "verification": trusted_candidate_verification,
+        })
+        if proposed_patch == "bad route":
+            return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
+        assert trusted_candidate_verification["status"] == "passed"
+        return {
+            "recommended_decision": "proceed",
+            "scores": {"expected_loss": 0.8},
+            "gates_fired": [{"name": "candidate_verification_passed"}],
+        }
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _clone)
+
+    preflight.run_revise_safer_calibration(
+        [_JS_TRAP],
+        None,
+        out_dir=tmp_path,
+        assess_fn=_assess,
+        candidate_verification_fn=lambda _repo, _spec, _patch: {
+            "status": "passed",
+            "checks": {"candidate_build": "passed"},
+            "required_checks": ["candidate_build"],
+            "verified_patch_hash": "abc",
+        },
+        setup_graph_fn=lambda _repo: None,
+        patch_dir=patch_dir,
+        correct_patch_dir=correct_dir,
+    )
+
+    assert calls[0]["attempt"] == 0
+    assert calls[1]["attempt"] == 1
+    assert calls[1]["cap"] == 2
+    assert calls[1]["verification"] is not None
+
+
+def test_revise_safer_calibration_requires_js_reference_to_hit_gate_7(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "JS1.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "JS1.patch").write_text("reference route", encoding="utf-8")
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    def _assess(_repo_path, _spec, proposed_patch, _db, **_kwargs):
+        if proposed_patch == "bad route":
+            return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
+        return {"recommended_decision": "proceed", "scores": {"expected_loss": 0.8}, "gates_fired": []}
+
+    with pytest.raises(preflight.PreflightError, match="candidate verification gate 7"):
+        preflight.run_revise_safer_calibration(
+            [_JS_TRAP],
+            None,
+            out_dir=tmp_path,
+            assess_fn=_assess,
+            candidate_verification_fn=lambda _repo, _spec, _patch: {
+                "status": "passed",
+                "checks": {"candidate_build": "passed"},
+                "required_checks": ["candidate_build"],
+                "verified_patch_hash": "abc",
+            },
+            setup_graph_fn=lambda _repo: None,
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )
 
 
 def test_revise_safer_calibration_fails_when_no_risky_patch_pair_checked(tmp_path, monkeypatch):

@@ -71,6 +71,8 @@ def classify_symbol(row: dict[str, Any]) -> ChangeKind:
         row.get("signature_changed")
         or row.get("return_shape_changed")
         or row.get("visibility_changed")
+        or row.get("abstract_contract_member_changed")
+        or row.get("abstract_member_changed")
         or (row.get("visibility") in {"exported", "public_api"} and row.get("body_changed"))
     ):
         return ChangeKind.CONTRACT
@@ -199,7 +201,8 @@ def rows_from_materialized_graph_diff(
     result: MaterializedGraphDiffResult, fanin: FanInEvidence
 ) -> list[dict[str, Any]]:
     """The ``codegraph_semantic`` tier: the coarse ``rows_from_fanin`` FLOOR, ENRICHED with proven
-    signature/return-type/visibility change facts from the before/after materialized diff.
+    signature/return-type/visibility/abstract-member change facts from the before/after materialized
+    diff.
 
     It ENRICHES, never replaces: every row keeps the coarse floor (``body_changed=True``, the owner's
     real visibility + fan-in), so a body-only rewrite can never be masked and the tier is provably
@@ -222,17 +225,51 @@ def rows_from_materialized_graph_diff(
         r for r in result.rows
         if r.qualified_name == floor_name
         and r.file_path.replace("\\", "/") == floor_path
-        and any(v is True for v in (r.signature_changed, r.return_type_changed, r.visibility_changed))
+        and r.operation == "modified"
+        and any(
+            v is True for v in (
+                r.signature_changed,
+                r.return_type_changed,
+                r.visibility_changed,
+                r.is_abstract_changed,
+            )
+        )
     ]
-    if len(changed) != 1:
+    if len(changed) == 1:
+        row = dict(floor[0])
+        diff_row = changed[0]
+        # per-field enrichment: only overwrite when the field was actually comparable (not None)
+        if diff_row.signature_changed is not None:
+            row["signature_changed"] = bool(diff_row.signature_changed)
+        if diff_row.return_type_changed is not None:
+            row["return_shape_changed"] = bool(diff_row.return_type_changed)
+        if diff_row.visibility_changed is not None:
+            row["visibility_changed"] = bool(diff_row.visibility_changed)
+        if diff_row.is_abstract_changed is not None:
+            row["abstract_member_changed"] = bool(diff_row.is_abstract_changed)
+        return [row]
+
+    added_removed = [
+        r for r in result.rows
+        if r.operation in {"added", "removed"}
+        and r.file_path.replace("\\", "/") == floor_path
+        and r.kind in {"function", "method", "class", "struct", "interface", "trait", "protocol"}
+        and _qualified_name_belongs_to_owner(r.qualified_name, floor_name)
+        and r.is_abstract is True
+    ]
+    if len(added_removed) != 1:
         return floor  # ambiguous / no proven change for THIS owner -> keep the coarse floor
     row = dict(floor[0])
-    diff_row = changed[0]
-    # per-field enrichment: only overwrite when the field was actually comparable (not None)
-    if diff_row.signature_changed is not None:
-        row["signature_changed"] = bool(diff_row.signature_changed)
-    if diff_row.return_type_changed is not None:
-        row["return_shape_changed"] = bool(diff_row.return_type_changed)
-    if diff_row.visibility_changed is not None:
-        row["visibility_changed"] = bool(diff_row.visibility_changed)
+    diff_row = added_removed[0]
+    row["materialized_operation"] = diff_row.operation
+    row["materialized_owner"] = diff_row.qualified_name
+    if diff_row.kind:
+        row["materialized_kind"] = diff_row.kind
+    row["abstract_contract_member_changed"] = True
     return [row]
+
+
+def _qualified_name_belongs_to_owner(qualified_name: str, owner: str) -> bool:
+    if qualified_name == owner:
+        return True
+    return any(qualified_name.startswith(f"{owner}{sep}") for sep in (".", "::", "#", "$"))

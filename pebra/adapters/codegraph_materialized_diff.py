@@ -100,14 +100,8 @@ class CodeGraphMaterializedDiffAdapter:
 
         before_keys = set(before_nodes)
         after_keys = set(after_nodes)
-        if before_keys != after_keys:
-            return MaterializedGraphDiffResult(
-                fallback_reason="materialized owner mismatch",
-                latency_ms=_elapsed_ms(start),
-            )
-
         rows: list[MaterializedGraphDiffRow] = []
-        for key in sorted(before_keys):
+        for key in sorted(before_keys & after_keys):
             before = before_nodes[key]
             after = after_nodes[key]
             changes = _compare_semantic_fields(before, after)
@@ -117,7 +111,29 @@ class CodeGraphMaterializedDiffAdapter:
                 file_path=key[0],
                 qualified_name=key[1],
                 language=str(after.get("language") or before.get("language") or "unknown"),
+                operation="modified",
+                kind=str(after.get("kind") or before.get("kind") or "") or None,
                 **changes,
+            ))
+        for key in sorted(after_keys - before_keys):
+            after = after_nodes[key]
+            rows.append(MaterializedGraphDiffRow(
+                file_path=key[0],
+                qualified_name=key[1],
+                language=str(after.get("language") or "unknown"),
+                operation="added",
+                kind=str(after.get("kind") or "") or None,
+                is_abstract=_truthy_or_none(after.get("is_abstract")),
+            ))
+        for key in sorted(before_keys - after_keys):
+            before = before_nodes[key]
+            rows.append(MaterializedGraphDiffRow(
+                file_path=key[0],
+                qualified_name=key[1],
+                language=str(before.get("language") or "unknown"),
+                operation="removed",
+                kind=str(before.get("kind") or "") or None,
+                is_abstract=_truthy_or_none(before.get("is_abstract")),
             ))
         if not rows:
             return MaterializedGraphDiffResult(
@@ -238,8 +254,8 @@ def _read_nodes(db_path: Path) -> dict[tuple[str, str], dict[str, Any]]:
     try:
         ph = ",".join("?" * len(_CALLABLE_KINDS))
         rows = con.execute(
-            f"SELECT file_path, qualified_name, language, signature, visibility, return_type, "
-            f"is_exported FROM nodes WHERE kind IN ({ph}) AND file_path IS NOT NULL "
+            f"SELECT file_path, qualified_name, language, kind, signature, visibility, return_type, "
+            f"is_exported, is_abstract FROM nodes WHERE kind IN ({ph}) AND file_path IS NOT NULL "
             f"AND qualified_name IS NOT NULL",
             _CALLABLE_KINDS,
         ).fetchall()
@@ -270,9 +286,14 @@ def _compare_semantic_fields(
         ("signature", "signature_changed"),
         ("return_type", "return_type_changed"),
         ("visibility", "visibility_changed"),
+        ("is_abstract", "is_abstract_changed"),
     ):
-        before_value = before.get(field)
-        after_value = after.get(field)
+        if field == "is_abstract":
+            before_value = _truthy_or_none(before.get(field))
+            after_value = _truthy_or_none(after.get(field))
+        else:
+            before_value = before.get(field)
+            after_value = after.get(field)
         if before_value is None or after_value is None:
             out[changed_key] = None
             continue
@@ -283,3 +304,20 @@ def _compare_semantic_fields(
     if not any(value is not None for value in out.values()):
         return {}
     return out
+
+
+def _truthy_or_none(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"", "none", "null"}:
+        return None
+    if text in {"1", "true", "yes", "y"}:
+        return True
+    if text in {"0", "false", "no", "n"}:
+        return False
+    return None

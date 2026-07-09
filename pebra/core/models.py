@@ -97,9 +97,13 @@ class MaterializedGraphDiffRow:
     file_path: str
     qualified_name: str
     language: str
+    operation: str = "modified"  # modified | added | removed
+    kind: str | None = None
     signature_changed: bool | None = None
     return_type_changed: bool | None = None
     visibility_changed: bool | None = None
+    is_abstract: bool | None = None
+    is_abstract_changed: bool | None = None
 
 
 @dataclass(frozen=True)

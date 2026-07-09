@@ -89,9 +89,13 @@ def _diff_row(**over):
     return MaterializedGraphDiffRow(
         file_path=over.pop("file_path", "src/a.ts"), qualified_name=over.pop("qualified_name", "f"),
         language="typescript",
+        operation=over.pop("operation", "modified"),
+        kind=over.pop("kind", "function"),
         signature_changed=over.pop("signature_changed", False),
         return_type_changed=over.pop("return_type_changed", False),
-        visibility_changed=over.pop("visibility_changed", False))
+        visibility_changed=over.pop("visibility_changed", False),
+        is_abstract=over.pop("is_abstract", None),
+        is_abstract_changed=over.pop("is_abstract_changed", None))
 
 
 def test_semantic_signature_change_enriches_the_coarse_floor_to_contract() -> None:
@@ -161,6 +165,68 @@ def test_semantic_multi_owner_patch_keeps_floor_no_enrichment() -> None:
     rows = cc.rows_from_materialized_graph_diff(result, fanin)
     assert len(rows) == 2 and all(r["body_changed"] is True for r in rows)
     assert all("signature_changed" not in r for r in rows)
+
+
+def test_semantic_added_abstract_member_enriches_floor_to_contract() -> None:
+    result = MaterializedGraphDiffResult(available=True, rows=(
+        _diff_row(
+            qualified_name="ZodType._pebraDescribe",
+            operation="added",
+            kind="method",
+            is_abstract=True,
+            signature_changed=True,
+        ),
+    ))
+    rows = cc.rows_from_materialized_graph_diff(result, _sem_fanin(resolved_qualified_names=("ZodType",)))
+
+    assert rows[0]["abstract_contract_member_changed"] is True
+    assert rows[0]["body_changed"] is True
+    assert rows[0]["materialized_operation"] == "added"
+    assert cc.classify_diff(rows, DEFAULT_THRESHOLDS).max_change_kind == ChangeKind.CONTRACT.value
+
+
+def test_semantic_added_concrete_member_preserves_floor_without_abstract_contract() -> None:
+    result = MaterializedGraphDiffResult(available=True, rows=(
+        _diff_row(
+            qualified_name="ZodType._pebraDescribe",
+            operation="added",
+            kind="method",
+            is_abstract=False,
+            signature_changed=True,
+        ),
+    ))
+    rows = cc.rows_from_materialized_graph_diff(result, _sem_fanin(resolved_qualified_names=("ZodType",)))
+
+    assert rows == cc.rows_from_fanin(_sem_fanin(resolved_qualified_names=("ZodType",)))
+    assert rows[0]["body_changed"] is True
+    assert "abstract_contract_member_changed" not in rows[0]
+    assert cc.classify_diff(rows, DEFAULT_THRESHOLDS).max_change_kind == ChangeKind.BEHAVIORAL.value
+
+
+def test_semantic_same_file_unrelated_added_member_keeps_floor() -> None:
+    result = MaterializedGraphDiffResult(available=True, rows=(
+        _diff_row(
+            qualified_name="Other._pebraDescribe",
+            operation="added",
+            kind="method",
+            is_abstract=True,
+        ),
+    ))
+    fanin = _sem_fanin(resolved_qualified_names=("ZodType",), resolved_file_paths=("src/a.ts",))
+    rows = cc.rows_from_materialized_graph_diff(result, fanin)
+
+    assert rows == cc.rows_from_fanin(fanin)
+
+
+def test_semantic_multiple_added_removed_members_keep_floor() -> None:
+    result = MaterializedGraphDiffResult(available=True, rows=(
+        _diff_row(qualified_name="ZodType.a", operation="added", kind="method", is_abstract=True),
+        _diff_row(qualified_name="ZodType.b", operation="added", kind="method", is_abstract=True),
+    ))
+    fanin = _sem_fanin(resolved_qualified_names=("ZodType",), resolved_file_paths=("src/a.ts",))
+    rows = cc.rows_from_materialized_graph_diff(result, fanin)
+
+    assert rows == cc.rows_from_fanin(fanin)
 
 
 def test_visibility_change_classifies_as_contract_when_signature_is_comparable() -> None:

@@ -210,6 +210,9 @@ def _verify_candidate_for_repair(
         return candidate_verifier.verify_candidate(
             repo_path=scratch, patch_text=patch, language=spec.language,
             test_project=project, test_filter=test_filter, build_solution=spec.build_solution,
+            harness_id=spec.harness_id, build_profile=spec.build_profile,
+            build_selector=spec.build_selector,
+            allow_build_fallback=spec.language in {"javascript", "typescript"},
         )
     finally:
         candidate_materializer.cleanup(scratch)
