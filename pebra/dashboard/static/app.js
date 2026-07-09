@@ -39,7 +39,10 @@
   chainLabels["learned_" + "risk_" + "facts"] = "Learned rules";
 
   async function getJSON(path) {
-    const res = await fetch(path, { headers: { Authorization: "Bearer " + token } });
+    // Send the bearer only when we actually have one — the loopback default runs token-free, and an
+    // empty `Authorization: Bearer` header is pointless (and would 401 a token-required server).
+    const headers = token ? { Authorization: "Bearer " + token } : {};
+    const res = await fetch(path, { headers });
     if (!res.ok) throw new Error("HTTP " + res.status);
     return res.json();
   }

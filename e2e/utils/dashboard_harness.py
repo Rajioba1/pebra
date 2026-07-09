@@ -1,7 +1,8 @@
 """Dashboard harness — launch `pebra dashboard` on an OS-assigned port and discover its URL/token.
 
-The dashboard prints ``PEBRA Risk Observatory: http://127.0.0.1:<port>/?token=<token>&repo=<repo_id>``
-once uvicorn is serving; we parse that line (the only liveness signal — there is no healthcheck route).
+The dashboard prints ``PEBRA Risk Observatory: http://127.0.0.1:<port>/`` with optional query
+parameters once uvicorn is serving; we parse that line (the only liveness signal — there is no
+healthcheck route).
 A reader thread + queue avoids a stdout-readline deadlock; stderr is drained concurrently.
 """
 
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from e2e.utils import cli_harness as ch
 
-_URL_RE = re.compile(r"(http://[^/\s]+:(\d+)/\?\S+)")
+_URL_RE = re.compile(r"(http://[^/\s]+:(\d+)/(?:\?\S*)?)")
 
 
 @dataclass
@@ -40,10 +41,10 @@ def _pump(stream, q: queue.Queue) -> None:
 def _wait_until_ready(port: int, token: str, *, timeout: float) -> None:
     deadline = time.time() + timeout
     last_error: Exception | None = None
+    headers = {"Authorization": f"Bearer {token}"} if token else {}  # token-free on loopback default
     while time.time() < deadline:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/chain-status",
-            headers={"Authorization": f"Bearer {token}"},
+            f"http://127.0.0.1:{port}/api/chain-status", headers=headers
         )
         try:
             with urllib.request.urlopen(req, timeout=1):  # noqa: S310 - loopback only
@@ -55,8 +56,10 @@ def _wait_until_ready(port: int, token: str, *, timeout: float) -> None:
 
 
 @contextmanager
-def running_dashboard(repo_root: Path | str, db: Path | str, *, timeout: float = 30.0):
-    proc = ch.dashboard_proc(repo_root=repo_root, db=db, port=0)
+def running_dashboard(
+    repo_root: Path | str, db: Path | str, *, timeout: float = 30.0, auth: str | None = None
+):
+    proc = ch.dashboard_proc(repo_root=repo_root, db=db, port=0, auth=auth)
     q: queue.Queue = queue.Queue()
     stderr_lines: list[str] = []
     threading.Thread(target=_pump, args=(proc.stdout, q), daemon=True).start()

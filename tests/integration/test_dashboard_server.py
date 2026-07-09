@@ -101,6 +101,102 @@ def test_forbidden_host_is_rejected(tmp_path) -> None:
     assert resp.status_code == 403
 
 
+def test_resolve_token_loopback_auto_and_none_are_none() -> None:
+    from pebra.dashboard.server import resolve_dashboard_token
+
+    assert resolve_dashboard_token("127.0.0.1", "auto") is None
+    assert resolve_dashboard_token("localhost", "auto") is None
+    assert resolve_dashboard_token("::1", "auto") is None
+    assert resolve_dashboard_token("127.0.0.1", "none") is None
+
+
+def test_resolve_token_token_mode_generates_even_on_loopback() -> None:
+    from pebra.dashboard.server import resolve_dashboard_token
+
+    t = resolve_dashboard_token("127.0.0.1", "token")
+    assert isinstance(t, str) and len(t) > 10
+
+
+def test_resolve_token_nonloopback_auto_generates() -> None:
+    from pebra.dashboard.server import resolve_dashboard_token
+
+    assert resolve_dashboard_token("0.0.0.0", "auto")  # a network bind must carry a token
+
+
+def test_resolve_token_nonloopback_none_fails_loudly() -> None:
+    from pebra.dashboard.server import resolve_dashboard_token
+
+    with pytest.raises(ValueError, match="loopback"):
+        resolve_dashboard_token("0.0.0.0", "none")
+
+
+def test_resolve_token_normalizes_empty_explicit_to_none() -> None:
+    # An empty explicit token must never survive as app.state.token="" (which would let an empty
+    # `Bearer ` authenticate); it collapses to None (no-auth) on loopback.
+    from pebra.dashboard.server import resolve_dashboard_token
+
+    assert resolve_dashboard_token("127.0.0.1", "auto", "") is None
+
+
+def test_serve_guard_rejects_network_bind_without_token() -> None:
+    # Defense-in-depth at the bind point: the invariant "network bind => token" is enforced by code,
+    # not just by the CLI happening to route through resolve_dashboard_token.
+    from pebra.dashboard.server import _require_token_for_network_bind
+
+    _require_token_for_network_bind("127.0.0.1", None)  # loopback, no token -> fine
+    _require_token_for_network_bind("0.0.0.0", "tok")   # network + token -> fine
+    with pytest.raises(ValueError, match="token"):
+        _require_token_for_network_bind("0.0.0.0", None)
+    with pytest.raises(ValueError, match="token"):
+        _require_token_for_network_bind("0.0.0.0", "")  # empty == no token
+
+
+def test_no_token_mode_serves_api_without_bearer(tmp_path) -> None:
+    # The loopback-default posture: token=None => require_bearer skips, /api is open on loopback.
+    db, _ = _seed(tmp_path)
+    from fastapi.testclient import TestClient
+
+    from pebra.dashboard.server import create_app
+
+    client = TestClient(create_app(db, None), base_url="http://127.0.0.1")
+    assert client.get("/api/chain-status").status_code == 200  # no Authorization header sent
+
+
+def test_empty_configured_token_normalizes_to_no_auth(tmp_path) -> None:
+    # An empty configured token is not a real bearer. Keep the app state in the explicit no-auth
+    # posture instead of preserving token="" and letting `Authorization: Bearer ` compare equal.
+    db, _ = _seed(tmp_path)
+    from fastapi.testclient import TestClient
+
+    from pebra.dashboard.server import create_app
+
+    app = create_app(db, "")
+    assert app.state.token is None
+    client = TestClient(app, base_url="http://127.0.0.1")
+    assert client.get("/api/chain-status").status_code == 200
+
+
+def test_empty_bearer_does_not_authenticate_when_token_required(tmp_path) -> None:
+    # Guard the empty-string trap: an empty `Authorization: Bearer ` must NOT match a real token.
+    db, _ = _seed(tmp_path)
+    resp = _client(db).get("/api/chain-status", headers={"Authorization": "Bearer "})
+    assert resp.status_code == 401
+
+
+def test_startup_url_omits_token_when_none() -> None:
+    from pebra.dashboard.server import _startup_url
+
+    assert _startup_url("127.0.0.1", 4500, None, "r1") == "http://127.0.0.1:4500/?repo=r1"
+    assert _startup_url("127.0.0.1", 4500, None, None) == "http://127.0.0.1:4500/"
+
+
+def test_startup_url_includes_token_when_present() -> None:
+    from pebra.dashboard.server import _startup_url
+
+    u = _startup_url("127.0.0.1", 4500, "abc", "r1")
+    assert u.startswith("http://127.0.0.1:4500/?") and "token=abc" in u and "repo=r1" in u
+
+
 def test_hostname_parses_ipv4_ipv6_and_ports() -> None:
     from pebra.dashboard.server import _hostname
 

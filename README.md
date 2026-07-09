@@ -69,18 +69,39 @@ pebra record-outcome --assessment-id <assessment_id> --status completed --detail
 pebra learn --assessment-id <assessment_id>
 pebra promote --repo-root <repo_root>
 pebra scorecard --repo-root <repo_root>
-pebra dashboard --port 0
+pebra dashboard --port 4500 --open
 ```
 
-The dashboard is local-only and bearer-guarded. It exposes five browser views:
-overview, score history, calibration, learned facts, and CodeGraph hotspots. Graph views
-are fail-soft when no trusted graph index is bound to the launched repo, and graph
-routes are repo-scoped to avoid replaying one repo's graph under another repo id.
+The dashboard is read-only. On a loopback bind (`localhost`, `127.0.0.1`, `::1`) the default is
+token-free for local convenience; `--auth token` forces a bearer token when you want the old locked
+path. Any non-loopback bind requires a token.
+
+```powershell
+# normal local browser UX
+pebra dashboard --port 4500 --open
+
+# force bearer auth even on loopback
+pebra dashboard --port 4500 --auth token
+
+# expose beyond loopback only with a token
+pebra dashboard --host 0.0.0.0 --port 4500 --auth token
+```
+
+It exposes five browser views: overview, score history, calibration, learned facts, and CodeGraph
+hotspots. Graph views are fail-soft when no trusted graph index is bound to the launched repo, and
+graph routes are repo-scoped to avoid replaying one repo's graph under another repo id.
 
 ## Validation
 
 ```powershell
 .\.venv\Scripts\nox.exe -s tests lint e2e-fast
+```
+
+Dashboard/e2e lanes:
+
+```powershell
+.\.venv\Scripts\nox.exe -s e2e-learning
+.\.venv\Scripts\nox.exe -s e2e-ui
 ```
 
 External real-repo graph lane:

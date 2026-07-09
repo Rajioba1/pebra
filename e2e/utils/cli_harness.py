@@ -169,13 +169,17 @@ def dependents_result(target: str, *, repo_root: Path | str) -> dict:
     return _run_json(["dependents", "--target", str(target), "--repo-root", str(repo_root), "--json"])
 
 
-def dashboard_proc(*, repo_root: Path | str, db: Path | str, port: int = 0) -> subprocess.Popen:
+def dashboard_proc(
+    *, repo_root: Path | str, db: Path | str, port: int = 0, auth: str | None = None
+) -> subprocess.Popen:
     """Start ``pebra dashboard`` as a long-running process. The caller reads stdout for the URL line and
-    is responsible for teardown (see dashboard_harness)."""
+    is responsible for teardown (see dashboard_harness). ``auth`` forwards ``--auth`` (e.g. "token")."""
     cmd = [
         _python(), "-u", "-m", "pebra", "dashboard", "--repo-root", str(repo_root), "--db", str(db),
         "--port", str(port),
     ]
+    if auth is not None:
+        cmd += ["--auth", auth]
     # PYTHONUNBUFFERED + -u: the URL line is print()ed before uvicorn.run() blocks, so it must flush
     # immediately or the reader never sees it (a pipe is block-buffered, unlike a tty).
     env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT), "PYTHONUNBUFFERED": "1"}

@@ -43,9 +43,59 @@ def _hostname(host: str) -> str:
     return host.rsplit(":", 1)[0] if ":" in host else host
 
 
+def resolve_dashboard_token(
+    host: str, auth_mode: str = "auto", explicit_token: str | None = None
+) -> str | None:
+    """Resolve the effective bearer for a bind host + auth mode. Returns None for the no-auth posture.
+
+    - ``auto``  : loopback bind -> no token (convenience); any network bind -> a generated token.
+    - ``token`` : always a token (generated if not supplied), even on loopback (paranoid local use).
+    - ``none``  : no token, but ONLY on a loopback bind; a network bind raises (fail loudly), because
+      serving the store to the LAN with no auth is never what the operator meant.
+    """
+    is_loopback = host in _LOOPBACK
+    if auth_mode == "none":
+        if not is_loopback:
+            raise ValueError(
+                f"--auth none is only allowed on a loopback host; --host {host} would expose the "
+                "dashboard to the network without a token. Use --auth token (or drop --auth none)."
+            )
+        return None
+    if auth_mode == "token":
+        return explicit_token or auth.generate_token()
+    if auth_mode == "auto":
+        if is_loopback:
+            return explicit_token or None  # normalize "" -> None so no-auth never becomes an empty token
+        return explicit_token or auth.generate_token()
+    raise ValueError(f"unknown auth mode {auth_mode!r} (expected auto|token|none)")
+
+
+def _require_token_for_network_bind(host: str, token: str | None) -> None:
+    """Bind-point invariant: a non-loopback bind MUST carry a token. Enforced here (not only in the CLI
+    via resolve_dashboard_token) so a direct ``serve(host="0.0.0.0", token=None)`` can't silently expose
+    the store unauthenticated. Empty string counts as no token."""
+    if host not in _LOOPBACK and not token:
+        raise ValueError(
+            f"refusing to serve on non-loopback host {host!r} without a token; this would expose the "
+            "assessment store to the network unauthenticated"
+        )
+
+
+def _startup_url(host: str, port: int, token: str | None, repo_id: str | None) -> str:
+    """The URL printed at startup (and opened by --open). ``?token=`` appears only when auth is on;
+    ``?repo=`` whenever a repo is bound. If neither is present, the URL is the bare loopback page."""
+    parts: list[str] = []
+    if token is not None:
+        parts.append(f"token={token}")
+    if repo_id:
+        parts.append(f"repo={repo_id}")
+    query = "&".join(parts)
+    return f"http://{host}:{port}/?{query}" if query else f"http://{host}:{port}/"
+
+
 def create_app(
     db_path: str,
-    token: str,
+    token: str | None,
     *,
     allowed_hosts: Iterable[str] | None = None,
     repo_id: str | None = None,
@@ -54,7 +104,7 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="PEBRA Risk Observatory")
     app.state.db_path = db_path
-    app.state.token = token
+    app.state.token = token or None
     app.state.repo_id = repo_id
     # repo_root binds the graph routes to a codebase on disk (the .codegraph index). None (e.g. a
     # replayed db from another machine) makes the graph routes fail-soft, never error.
@@ -74,9 +124,12 @@ def create_app(
         return await call_next(request)
 
     def require_bearer(request: Request) -> None:
+        expected = request.app.state.token
+        if expected is None:
+            return  # no-auth posture (loopback default): the bearer gate is disabled entirely.
         header = request.headers.get("authorization", "")
         provided = header[7:] if header[:7].lower() == "bearer " else None
-        if not auth.token_matches(provided, request.app.state.token):
+        if not auth.token_matches(provided, expected):
             raise HTTPException(status_code=401, detail="unauthorized")
 
     app.include_router(build_router(require_bearer))
@@ -100,12 +153,22 @@ def serve(
     token: str | None = None,
     repo_id: str | None = None,
     repo_root: str | None = None,
+    open_browser: bool = False,
 ) -> None:
     import uvicorn
 
-    token = token or auth.generate_token()
+    # token is authoritative here: None means the no-auth posture (resolved by the caller via
+    # resolve_dashboard_token). serve() no longer invents a token, so loopback-default stays token-free.
+    token = token or None
+    _require_token_for_network_bind(host, token)  # never expose the store to the network unauthenticated
     port = ports.allocate_port(host, requested=requested_port, instance=instance)
     app = create_app(db_path, token, repo_id=repo_id, repo_root=repo_root)
-    repo_q = f"&repo={repo_id}" if repo_id else ""
-    print(f"PEBRA Risk Observatory: http://{host}:{port}/?token={token}{repo_q}")
+    url = _startup_url(host, port, token, repo_id)
+    print(f"PEBRA Risk Observatory: {url}")
+    if open_browser:
+        import threading
+        import webbrowser
+
+        # Fire shortly AFTER uvicorn starts listening so the browser doesn't race a not-yet-bound port.
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=host, port=port, log_level="warning")
