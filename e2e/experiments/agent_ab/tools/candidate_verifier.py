@@ -9,8 +9,8 @@ Design constraints:
 - No ``import pebra`` (e2e reaches PEBRA only via the CLI). ``verified_patch_hash`` is the documented
   wire convention (sha256 hexdigest of the exact UTF-8 patch text) recomputed here; it MUST equal
   ``pebra.core.decision_engine.candidate_patch_hash`` so the engine's patch-binding check passes.
-- Per-language test-runner switch: only ``csharp`` (``dotnet test``) is validated. Other languages
-  abstain honestly (``unavailable``) rather than fabricate a pass.
+- Per-language test-runner switch: validated e2e backends only. Unsupported languages abstain honestly
+  (``unavailable``) rather than fabricate a pass.
 - Fail-safe: absent SDK, absent covering tests, or an unsupported language all yield ``unavailable``
   (never ``passed``), so PEBRA keeps the write blocked instead of proceeding on nothing.
 
@@ -27,9 +27,9 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from e2e.external.utils import dotnet_harness as dn
+from e2e.experiments.agent_ab import backends
 
-_SUPPORTED_LANGUAGES = frozenset({"csharp"})
+_SUPPORTED_LANGUAGES = frozenset({"csharp", "javascript", "typescript"})
 _COVERING_CHECK = "covering_tests"
 _DOMAIN = "covering_tests"
 
@@ -96,9 +96,13 @@ def verify_candidate(
         return _evidence("unavailable", patch_hash=patch_hash,
                          reason="no covering tests declared for this candidate")
 
-    result = dn.run_tests(
-        Path(repo_path), sln=build_solution, project=test_project, test_filter=test_filter,
-        timeout=timeout)
+    try:
+        backend = backends.get_backend(language)
+    except ValueError:
+        return _evidence("unavailable", patch_hash=patch_hash,
+                         reason=f"no validated test runner for language {language!r}")
+    spec = type("_Spec", (), {"language": language, "build_solution": build_solution})()
+    result = backend.run_tests(Path(repo_path), spec, project=test_project, test_filter=test_filter)
     if not result.available or not result.ran:
         return _evidence("unavailable", patch_hash=patch_hash,
                          reason=result.error_summary or "covering-test run did not execute",

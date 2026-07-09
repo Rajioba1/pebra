@@ -2,7 +2,7 @@
 pre-applied correct fix.
 
 The oracle_positive arm is the assay's ENDPOINT FLOOR / guaranteed-effect positive control: the clone
-already holds the correct state (``git apply corpus/correct_fix_patches/<task>.patch``), so the endpoint
+already holds the correct state (``git apply specimens/csharp/corpus/correct_fix_patches/<task>.patch``), so the endpoint
 (harm / completion) can register an improvement over sham WITHOUT depending on the agent heeding advice —
 the smoke measured heeded=0%, so an advisory oracle would null too. If even this pre-patched arm doesn't
 beat sham, the task has no harm headroom (or the metric is broken) and no result is interpretable.
@@ -18,7 +18,9 @@ from pathlib import Path
 
 from e2e.experiments.agent_ab.runners.run_pair import RunPairError
 
-_CORRECT_PATCH_DIR = Path(__file__).resolve().parents[1] / "corpus" / "correct_fix_patches"
+_CORRECT_PATCH_DIR = (
+    Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "correct_fix_patches"
+)
 
 
 def prepare_oracle_patch(repo_path: Path, task_id: str, *, patch_dir: Path | None = None) -> Path:

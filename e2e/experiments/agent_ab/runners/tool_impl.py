@@ -3,7 +3,7 @@
 Every action the agent can take goes through one of these functions, so (a) the diff/adherence are
 captured, (b) the agent can never touch the filesystem or shell outside the isolated clone, and (c)
 blinding is controllable. File tools are confined to the clone by ``_resolve_guarded`` (path-traversal
-fails closed). Build/test go through ``dotnet_harness`` (fixed argv, no shell). Search is python-native
+fails closed). Build/test go through the arm's fixed build backend. Search is python-native
 (no ``rg`` dependency). Tool errors are RETURNED as ``{"error": ...}`` (not raised) so the agent gets a
 coherent response and can react — except a traversal attempt, which is captured as an error result too.
 No pebra import.
@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from e2e.experiments.agent_ab.forbidden import EXPERIMENT_LEAK_TERMS
+from e2e.experiments.agent_ab.backends import CSharpBackend
 from e2e.experiments.agent_ab.tools import advisory_contract
-from e2e.external.utils import dotnet_harness as dn
 
 _MAX_READ_BYTES = 64_000
 _MAX_LIST_ENTRIES = 500
@@ -147,14 +147,24 @@ def search_grep(pattern: str, repo_root: Path, *, path: str | None = None,
     return {"matches": matches}
 
 
-def run_build(repo_root: Path, *, sln: str = "TemplateBlueprint.sln") -> dict[str, Any]:
-    r = dn.run_build(repo_root, sln=sln)
+def run_build(
+    repo_root: Path, *, backend: Any | None = None, spec: Any | None = None,
+    sln: str = "TemplateBlueprint.sln",
+) -> dict[str, Any]:
+    backend = backend or CSharpBackend()
+    spec = spec or type("_Spec", (), {"build_solution": sln})()
+    r = backend.run_build(repo_root, spec)
     return {"available": r.available, "passed": r.passed,
             "error_summary": model_safe_text(r.error_summary)}
 
 
-def run_tests(repo_root: Path, *, sln: str = "TemplateBlueprint.sln") -> dict[str, Any]:
-    r = dn.run_tests(repo_root, sln=sln)
+def run_tests(
+    repo_root: Path, *, backend: Any | None = None, spec: Any | None = None,
+    sln: str = "TemplateBlueprint.sln",
+) -> dict[str, Any]:
+    backend = backend or CSharpBackend()
+    spec = spec or type("_Spec", (), {"build_solution": sln})()
+    r = backend.run_tests(repo_root, spec)
     return {"available": r.available, "passed": r.passed,
             "error_summary": model_safe_text(r.error_summary)}
 

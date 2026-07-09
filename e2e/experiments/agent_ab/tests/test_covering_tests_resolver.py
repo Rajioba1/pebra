@@ -48,6 +48,15 @@ def test_finds_test_project_that_references_the_edited_owner(tmp_path):
     assert test_filter is None  # whole project, no filter
 
 
+def test_javascript_returns_public_test_file_not_csproj(tmp_path):
+    _make_db(tmp_path)
+    project, test_filter = ctr.find_covering_tests(
+        tmp_path, "src/A.cs", "diff x", language="typescript",
+    )
+    assert project == "src/A.Tests/ATests.cs"
+    assert test_filter is None
+
+
 def test_no_test_caller_returns_none(tmp_path):
     _make_db(tmp_path, with_test_caller=False)
     assert ctr.find_covering_tests(tmp_path, "src/A.cs", "diff x") == (None, None)
@@ -61,5 +70,5 @@ def test_resolver_cannot_receive_a_taskspec_by_construction():
     # NON-CONTAMINATION is structural: the function accepts only repo_path/target_file/patch_text, so it
     # has no path to the hidden evaluator_test_project/filter grading fields.
     params = set(inspect.signature(ctr.find_covering_tests).parameters)
-    assert params == {"repo_path", "target_file", "patch_text"}
+    assert params == {"repo_path", "target_file", "patch_text", "language"}
     assert "spec" not in params

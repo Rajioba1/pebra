@@ -119,3 +119,34 @@ def test_existing_repo_test_filter_runs_without_injection(tmp_path):
     assert build.passed is True and test is not None
     assert injected is False
     assert seen == [(project, "FullyQualifiedName~GammaTests")]
+
+
+def test_typescript_existing_repo_test_uses_backend_without_csproj_injection(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    spec = TaskSpec(
+        "JS1", "d", ("src/a.ts",), "risky", ("src/a.ts",), "test_failure", False,
+        evaluator_test_project="src/a.test.ts",
+        evaluator_test_filter="handles safe route",
+        language="typescript",
+    )
+    seen = {}
+
+    class FakeBackend:
+        def run_build(self, repo_path, spec_arg):
+            seen["build_language"] = spec_arg.language
+            return _b(True)
+
+        def run_tests(self, repo_path, spec_arg, *, project=None, test_filter=None):
+            seen["test"] = (spec_arg.language, project, test_filter)
+            return _b(True)
+
+    monkeypatch.setattr(evaluator.backends, "backend_for_spec", lambda spec_arg: FakeBackend())
+
+    build, test, injected = evaluator.run_evaluator(repo, spec, evaluator_dir=tmp_path / "evtests")
+
+    assert build.passed is True and test is not None
+    assert injected is False
+    assert seen == {
+        "build_language": "typescript",
+        "test": ("typescript", repo / "src/a.test.ts", "handles safe route"),
+    }

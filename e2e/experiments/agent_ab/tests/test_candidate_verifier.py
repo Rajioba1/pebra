@@ -1,13 +1,13 @@
 """Candidate verifier: run a revised candidate's covering tests and emit the evidence PEBRA's
 gate 7 consumes (status + required_checks + verified_patch_hash). No `import pebra` (the hash is the
-documented wire convention, recomputed here); dotnet is monkeypatched so these stay pure."""
+documented wire convention, recomputed here); the backend is monkeypatched so these stay pure."""
 
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 
 from e2e.experiments.agent_ab.tools import candidate_verifier as cv
-from e2e.external.utils import dotnet_harness as dn
 
 _PATCH = (
     "diff --git a/src/Numerics/SpecialFunctions/Gamma.cs b/src/Numerics/SpecialFunctions/Gamma.cs\n"
@@ -18,13 +18,15 @@ _PATCH = (
 
 
 def _stub_tests(monkeypatch, *, available=True, ran=True, passed=True, selected=7):
-    def fake_run_tests(repo_root, sln="TemplateBlueprint.sln", *, project=None, test_filter=None,
-                       timeout=600):
-        return dn.DotNetTestResult(
-            available=available, ran=ran, passed=passed, exit_code=0 if passed else 1,
-            error_summary="" if passed else "GammaTests.SomeCase FAILED", duration_seconds=0.1,
-            tests_selected=selected)
-    monkeypatch.setattr(dn, "run_tests", fake_run_tests)
+    class FakeBackend:
+        def run_tests(self, repo_root, spec, *, project=None, test_filter=None):
+            return SimpleNamespace(
+                available=available, ran=ran, passed=passed, exit_code=0 if passed else 1,
+                error_summary="" if passed else "GammaTests.SomeCase FAILED", duration_seconds=0.1,
+                tests_selected=selected,
+            )
+
+    monkeypatch.setattr(cv.backends, "get_backend", lambda language: FakeBackend())
 
 
 def test_hash_matches_wire_convention():
@@ -80,6 +82,27 @@ def test_unsupported_language_is_unavailable_per_language_switch(tmp_path, monke
     _stub_tests(monkeypatch, passed=True)
     ev = cv.verify_candidate(repo_path=tmp_path, patch_text=_PATCH, language="python",
                              test_project="tests/whatever")
-    # per-language test-runner switch: only csharp/dotnet is validated; others honestly abstain
+    # per-language test-runner switch: unvalidated languages honestly abstain
     assert ev["status"] == "unavailable"
     assert ev["verified_patch_hash"] == hashlib.sha256(_PATCH.encode("utf-8")).hexdigest()
+
+
+def test_javascript_covering_test_uses_backend(tmp_path, monkeypatch):
+    seen = {}
+
+    class FakeBackend:
+        def run_tests(self, repo_root, spec, *, project=None, test_filter=None):
+            seen.update({"language": spec.language, "project": project, "filter": test_filter})
+            return SimpleNamespace(
+                available=True, ran=True, passed=True, exit_code=0, error_summary="",
+                duration_seconds=0.1, tests_selected=3,
+            )
+
+    monkeypatch.setattr(cv.backends, "get_backend", lambda language: FakeBackend())
+    ev = cv.verify_candidate(
+        repo_path=tmp_path, patch_text=_PATCH, language="typescript",
+        test_project="src/foo.test.ts", test_filter=None,
+    )
+
+    assert ev["status"] == "passed"
+    assert seen == {"language": "typescript", "project": "src/foo.test.ts", "filter": None}

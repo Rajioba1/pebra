@@ -29,6 +29,23 @@ class _External:
     head_sha = "abc123"
 
 
+class _FakeBackend:
+    def __init__(self, result=None, recorder=None):
+        self.result = result or SimpleNamespace(available=True, ran=True, passed=True, error_summary="")
+        self.recorder = recorder
+
+    def run_build_delta(self, repo_path, spec, *, baseline_keys=None):
+        if self.recorder is not None:
+            self.recorder(repo_path, spec, baseline_keys)
+        return self.result
+
+    def run_build(self, repo_path, spec):
+        return self.result
+
+    def run_tests(self, repo_path, spec, *, project=None, test_filter=None):
+        return self.result
+
+
 def _close_gate(mp):
     mp.delenv("E2E_AB_RUN", raising=False)
     mp.delenv("E2E_EXTERNAL", raising=False)
@@ -148,9 +165,7 @@ def test_prepare_arm_replaces_stale_clone_and_indexes_actual_arm(monkeypatch, tm
     monkeypatch.setattr(run_pair.cli_harness, "setup_graph", _setup_graph)
     monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
                         lambda *, repo_root: {"csharp_callable": 700})
-    monkeypatch.setattr(run_pair.dn, "run_build_delta",
-                        lambda repo, *, sln="TemplateBlueprint.sln": SimpleNamespace(
-                            available=True, ran=True, passed=True, error_summary=""))
+    monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec: _FakeBackend())
     stale = tmp_path / "rid" / f"T1_seed0_{run_pair._arm_token('treatment', 'rid')}" / "repo"
     stale.mkdir(parents=True)
     (stale / "old.txt").write_text("stale")
@@ -226,7 +241,7 @@ def test_repair_arm_verifies_candidate_and_raises_cap(monkeypatch, tmp_path):
 
     monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
     monkeypatch.setattr(run_pair, "_verify_candidate_for_repair",
-                        lambda payload, repo_path, build_solution: {"status": "passed",
+                        lambda payload, repo_path, spec: {"status": "passed",
                         "required_checks": ["covering_tests"], "verified_patch_hash": "h"})
 
     backend = run_pair._advisory_backend(
@@ -253,7 +268,7 @@ def test_subject_forged_candidate_verification_is_stripped_on_every_arm(monkeypa
 
     monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
     monkeypatch.setattr(run_pair, "_verify_candidate_for_repair",
-                        lambda payload, repo_path, build_solution: {"status": "passed",
+                        lambda payload, repo_path, spec: {"status": "passed",
                         "required_checks": ["covering_tests"], "verified_patch_hash": "host"})
     forged = {"status": "passed", "checks": {"covering_tests": "passed"},
               "required_checks": ["covering_tests"], "verified_patch_hash": "forged"}
@@ -295,7 +310,7 @@ def test_repair_candidate_verification_rejects_target_patch_mismatch(monkeypatch
     monkeypatch.setattr(run_pair.covering_tests_resolver, "find_covering_tests", must_not_resolve)
 
     result = run_pair._verify_candidate_for_repair(
-        {"target_file": "src/A.cs", "proposed_patch": patch}, tmp_path, "App.sln"
+        {"target_file": "src/A.cs", "proposed_patch": patch}, tmp_path, _SPEC
     )
 
     assert result["status"] == "unavailable"
@@ -309,9 +324,9 @@ def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):
     monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
     monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
                         lambda *, repo_root: {"csharp_callable": 700})
-    monkeypatch.setattr(run_pair.dn, "run_build_delta",
-                        lambda repo, *, sln="TemplateBlueprint.sln": SimpleNamespace(
-                            available=True, ran=True, passed=False, error_summary="baseline broken"))
+    monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec: _FakeBackend(
+        SimpleNamespace(available=True, ran=True, passed=False, error_summary="baseline broken")
+    ))
 
     with pytest.raises(run_pair.RunPairError, match="baseline"):
         run_pair.prepare_arm(_External(), _SPEC, "control", 0, "rid")
@@ -328,13 +343,37 @@ def test_prepare_arm_does_not_apply_csharp_floor_to_tiered_multilanguage_task(mo
     monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
     monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
                         lambda *, repo_root: {"csharp_callable": 0})
-    monkeypatch.setattr(run_pair.dn, "run_build_delta",
-                        lambda repo, *, sln="TemplateBlueprint.sln": SimpleNamespace(
-                            available=True, ran=True, passed=True, error_summary=""))
+    monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec: _FakeBackend())
 
     setup = run_pair.prepare_arm(_External(), spec, "pebra", 0, "rid")
 
     assert setup.arm == "pebra"
+    assert setup.spec is spec
+    assert setup.build_backend is not None
+
+
+def test_prepare_arm_uses_language_backend_for_baseline(monkeypatch, tmp_path):
+    spec = TaskSpec(
+        "JS1", "d", ("src/a.ts",), "safe", ("src/a.ts",), "none", False,
+        required_language_tier="full", language="typescript",
+    )
+    seen = {}
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",
+                        lambda _external, dest: (dest.mkdir(parents=True), dest)[1])
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
+    monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
+                        lambda *, repo_root: {"csharp_callable": 0})
+
+    def _record(repo_path, spec_arg, baseline_keys):
+        seen["language"] = spec_arg.language
+
+    monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec_arg: _FakeBackend(recorder=_record))
+
+    setup = run_pair.prepare_arm(_External(), spec, "pebra", 0, "rid")
+
+    assert seen == {"language": "typescript"}
+    assert setup.spec is spec
 
 
 def test_prepare_arm_still_applies_csharp_floor_to_legacy_graph_task(monkeypatch, tmp_path):
@@ -361,14 +400,13 @@ def test_oracle_positive_pre_patch_happens_before_baseline_build(monkeypatch, tm
         calls.append(f"patch:{task_id}:{repo_path.name}")
         return repo_path / "patch.diff"
 
-    def _build(repo_path, *, sln="TemplateBlueprint.sln"):
-        calls.append(f"build:{repo_path.name}:{sln}")
-        return SimpleNamespace(available=True, ran=True, passed=True, error_summary="")
+    def _record(repo_path, spec, baseline_keys):
+        calls.append(f"build:{repo_path.name}:{spec.build_solution}")
 
     monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head", _clone)
     monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
     monkeypatch.setattr(arm_prep, "prepare_oracle_patch", _patch)
-    monkeypatch.setattr(run_pair.dn, "run_build_delta", _build)
+    monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec: _FakeBackend(recorder=_record))
 
     setup = run_pair.prepare_arm(_External(), _SPEC, "oracle_positive", 0, "rid")
 
@@ -389,11 +427,10 @@ def test_prepare_arm_passes_task_build_solution_to_baseline(monkeypatch, tmp_pat
     monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
                         lambda *, repo_root: {"csharp_callable": 700})
 
-    def _build(repo_path, *, sln="TemplateBlueprint.sln"):
-        seen["sln"] = sln
-        return SimpleNamespace(available=True, ran=True, passed=True, error_summary="")
+    def _record(repo_path, spec, baseline_keys):
+        seen["sln"] = spec.build_solution
 
-    monkeypatch.setattr(run_pair.dn, "run_build_delta", _build)
+    monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec: _FakeBackend(recorder=_record))
 
     setup = run_pair.prepare_arm(_External(), spec, "sham", 0, "rid")
 
@@ -435,3 +472,12 @@ def test_subject_prompt_does_not_include_absolute_repo_path_or_engine_name(tmp_p
     prompt = run_pair._build_subject_prompt(_SPEC, repo, "pebra")
     assert str(repo) not in prompt
     assert "pebra" not in prompt.lower()
+
+
+def test_subject_prompt_uses_task_language(tmp_path):
+    spec = TaskSpec(
+        "JS1", "d", ("src/a.ts",), "safe", ("src/a.ts",), "none", False, language="typescript",
+    )
+    prompt = run_pair._build_subject_prompt(spec, tmp_path, "sham")
+    assert "TypeScript codebase" in prompt
+    assert "C# codebase" not in prompt

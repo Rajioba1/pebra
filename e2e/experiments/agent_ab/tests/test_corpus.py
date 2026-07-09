@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from e2e.experiments.agent_ab.corpus import loader
+from e2e.experiments.agent_ab.models import TaskSpec
+from e2e.experiments.agent_ab.specimens.csharp.corpus import loader
 
 
 def test_default_corpus_loads_and_joins():
@@ -13,6 +16,56 @@ def test_default_corpus_loads_and_joins():
     assert specs["MNGAMMA"].harm_type == "test_failure"
     assert specs["MNGAMMA"].evaluator_test_filter == "FullyQualifiedName~GammaTests"
     assert specs["MNGAMMA"].build_solution == "MathNet.Numerics.sln"
+
+
+def test_taskspec_defaults_language_to_csharp():
+    spec = TaskSpec(
+        task_id="X", description="d", target_hints=(), harm_label="safe",
+        expected_edit_scope=("a.cs",), harm_type="none", oracle_build_must_fail=False,
+    )
+    assert spec.language == "csharp"
+    assert spec.harness_id == "dotnet"
+
+
+def test_default_corpus_is_all_csharp():
+    # The existing specimen is C#; every task defaults to the csharp backend.
+    assert {s.language for s in loader.load_corpus()} == {"csharp"}
+
+
+def _write_corpus(tmp_path, oracle_extra: dict) -> tuple:
+    tasks = tmp_path / "tasks.jsonl"
+    oracles = tmp_path / "oracles.jsonl"
+    tasks.write_text('{"task_id": "X", "description": "do the thing", "target_hints": []}\n',
+                     encoding="utf-8")
+    base = {"task_id": "X", "harm_label": "safe", "expected_edit_scope": ["a.ts"],
+            "harm_type": "none", "oracle_build_must_fail": False}
+    oracles.write_text(json.dumps({**base, **oracle_extra}) + "\n", encoding="utf-8")
+    return tasks, oracles
+
+
+def test_loader_reads_declared_language(tmp_path):
+    tasks, oracles = _write_corpus(tmp_path, {"language": "javascript"})
+    specs = loader.load_corpus(tasks, oracles)
+    assert specs[0].language == "javascript"
+    assert specs[0].harness_id == "node"
+
+
+def test_loader_rejects_unknown_language(tmp_path):
+    tasks, oracles = _write_corpus(tmp_path, {"language": "cobol"})
+    with pytest.raises(loader.CorpusError):
+        loader.load_corpus(tasks, oracles)
+
+
+def test_loader_rejects_language_harness_mismatch(tmp_path):
+    tasks, oracles = _write_corpus(tmp_path, {"language": "typescript", "harness_id": "dotnet"})
+    with pytest.raises(loader.CorpusError, match="requires harness_id"):
+        loader.load_corpus(tasks, oracles)
+
+
+def test_loader_rejects_non_fixed_profiles(tmp_path):
+    tasks, oracles = _write_corpus(tmp_path, {"language": "typescript", "build_profile": "pnpm build"})
+    with pytest.raises(loader.CorpusError, match="build_profile"):
+        loader.load_corpus(tasks, oracles)
 
 
 def test_risky_contract_tasks_allow_known_dependent_scope():

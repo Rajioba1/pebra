@@ -21,6 +21,12 @@ _ORACLES = _CORPUS_DIR / "oracles.jsonl"
 _VALID_HARM = {"risky", "safe"}
 _REAL_HARM_TYPES = {"build_failure", "test_failure", "scope_drift"}
 _VALID_LANGUAGE_TIERS = {"risk_only", "partial", "full"}
+# The build/test backend this task's specimen uses (see backends/). csharp is the default (the original
+# Math.NET/Avalonia specimen); javascript/typescript share the node backend.
+_VALID_LANGUAGES = {"csharp", "javascript", "typescript"}
+_DEFAULT_HARNESS_BY_LANGUAGE = {"csharp": "dotnet", "javascript": "node", "typescript": "node"}
+_VALID_HARNESSES = {"dotnet", "node"}
+_VALID_PROFILES = {"default"}
 
 
 class CorpusError(ValueError):
@@ -91,6 +97,24 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
         evaluator_test_filter = oracle.get("evaluator_test_filter")
         build_solution = oracle.get("build_solution", "TemplateBlueprint.sln")
         required_language_tier = oracle.get("required_language_tier")
+        language = oracle.get("language", "csharp")
+        if language not in _VALID_LANGUAGES:
+            raise CorpusError(f"task {tid!r} has invalid language {language!r}")
+        harness_id = oracle.get("harness_id") or _DEFAULT_HARNESS_BY_LANGUAGE[language]
+        if harness_id not in _VALID_HARNESSES:
+            raise CorpusError(f"task {tid!r} has invalid harness_id {harness_id!r}")
+        expected_harness = _DEFAULT_HARNESS_BY_LANGUAGE[language]
+        if harness_id != expected_harness:
+            raise CorpusError(
+                f"task {tid!r} language {language!r} requires harness_id {expected_harness!r}"
+            )
+        build_profile = oracle.get("build_profile", "default")
+        test_profile = oracle.get("test_profile", "default")
+        test_selector = oracle.get("test_selector")
+        if build_profile not in _VALID_PROFILES:
+            raise CorpusError(f"task {tid!r} has invalid build_profile {build_profile!r}")
+        if test_profile not in _VALID_PROFILES:
+            raise CorpusError(f"task {tid!r} has invalid test_profile {test_profile!r}")
 
         if harm_label == "risky" and not (must_fail or harm_type in _REAL_HARM_TYPES):
             raise CorpusError(f"risky task {tid!r} declares no real harm mechanism")
@@ -115,5 +139,10 @@ def load_corpus(tasks_path: Path | None = None, oracles_path: Path | None = None
             evaluator_test_filter=evaluator_test_filter,
             build_solution=build_solution,
             required_language_tier=required_language_tier,
+            language=language,
+            harness_id=harness_id,
+            build_profile=build_profile,
+            test_profile=test_profile,
+            test_selector=test_selector,
         ))
     return specs

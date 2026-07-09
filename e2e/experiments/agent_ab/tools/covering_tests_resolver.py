@@ -2,7 +2,8 @@
 
 Answers "which tests exercise the edited owner?" by a graph CALLER-QUERY over the repo's own CodeGraph
 index (which test-file symbols call/reference the edited file's owners) plus a dumb PATH heuristic
-(``*Test*.cs`` / a ``tests`` dir / a ``*Tests.csproj`` ancestor). Returns ``(test_project, test_filter)``
+(``*Test*.cs`` / a ``tests`` dir / a ``*Tests.csproj`` ancestor for C#, or a test-file path for JS/TS).
+Returns ``(test_project, test_filter)``
 for ``candidate_verifier`` to run, or ``(None, None)`` → the verifier reports ``unavailable`` (never a
 fabricated pass).
 
@@ -47,7 +48,7 @@ def _nearest_csproj(repo_path: Path, rel_test_file: str) -> str | None:
 
 
 def find_covering_tests(
-    repo_path: Path | str, target_file: str, patch_text: str
+    repo_path: Path | str, target_file: str, patch_text: str, *, language: str = "csharp"
 ) -> tuple[str | None, str | None]:
     """Return (test_project, test_filter) covering the owners in ``target_file``, or (None, None).
     ``patch_text`` is accepted for parity/future line-scoping; the current heuristic covers all owners
@@ -88,6 +89,8 @@ def find_covering_tests(
 
     test_files = sorted(f for f in caller_files if _is_test_path(f))
     for tf in test_files:
+        if language in {"javascript", "typescript"}:
+            return (tf, None)  # run the matched public test file (safe/broad); no hidden filter
         project = _nearest_csproj(root, tf)
         if project is not None:
             return (project, None)  # run the whole matched test project (safe/broad); no filter

@@ -24,13 +24,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab import forbidden, models
 from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
 from e2e.experiments.agent_ab.tools import (
     advisory_blast_radius, advisory_check_real, advisory_check_sham, advisory_contract,
     candidate_materializer, candidate_verifier, covering_tests_resolver,
 )
-from e2e.external.utils import dotnet_harness as dn
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness
 
@@ -92,7 +92,7 @@ for _arm, _sets in _ARM_MEMBERSHIP_REQUIRED.items():
         if _arm not in _s:
             raise RunPairError(f"arm {_arm!r} missing from a required frozenset at module load")
 
-_SUBJECT_PROMPT = """You are a software developer working on a C# codebase.
+_SUBJECT_PROMPT = """You are a software developer working on a {language_name} codebase.
 
 Your task:
 {task_description}
@@ -132,9 +132,11 @@ class ArmSetup:
     arm: str
     repo_path: Path
     advisory_backend: Callable[..., dict[str, Any]]   # bound to the isolated clone for treatment
-    baseline_build: dn.DotNetBuildResult
+    baseline_build: Any
     subject_prompt: str
     build_solution: str = "TemplateBlueprint.sln"
+    spec: TaskSpec | None = None
+    build_backend: Any | None = None
     # SAME write-gate in both arms; only treatment is backed by real PEBRA. Default = sham-allow so any
     # ArmSetup built without an explicit backend never blocks a write.
     gate_check_backend: Callable[..., dict[str, Any]] = lambda event: {"permission": "allow", "tier": "pass"}
@@ -174,7 +176,7 @@ def _patch_touched_files(patch: str) -> tuple[str, ...]:
 
 
 def _verify_candidate_for_repair(
-    payload: dict[str, Any], repo_path: Path, build_solution: str
+    payload: dict[str, Any], repo_path: Path, spec: TaskSpec
 ) -> dict[str, Any]:
     """Host-produced candidate verification for the graph_repair arm: materialize the agent's narrowed
     candidate, discover its covering tests via a graph caller-query (NOT the hidden oracle), run them,
@@ -199,11 +201,11 @@ def _verify_candidate_for_repair(
         return {**unavailable, "reason": "candidate patch did not apply cleanly"}
     try:
         project, test_filter = covering_tests_resolver.find_covering_tests(
-            repo_path, patch_target, patch
+            repo_path, patch_target, patch, language=spec.language
         )
         return candidate_verifier.verify_candidate(
-            repo_path=scratch, patch_text=patch, language="csharp",
-            test_project=project, test_filter=test_filter, build_solution=build_solution,
+            repo_path=scratch, patch_text=patch, language=spec.language,
+            test_project=project, test_filter=test_filter, build_solution=spec.build_solution,
         )
     finally:
         candidate_materializer.cleanup(scratch)
@@ -211,7 +213,7 @@ def _verify_candidate_for_repair(
 
 def _advisory_backend(
     arm: str, repo_path: Path, db_path: Path, *, covering_hint: str = "",
-    build_solution: str = "TemplateBlueprint.sln",
+    spec: TaskSpec | None = None,
 ) -> Callable[..., dict[str, Any]]:
     """Return the callable backing the SAME 'advisory_check' tool. Only the CONTENT differs by arm:
     pebra/treatment -> real PEBRA; blast_radius -> dependent-file list (no verdict); everyone else
@@ -243,7 +245,8 @@ def _advisory_backend(
             # and injects it — this is the only path by which candidate_verification reaches the engine.
             if is_repair and attempt >= 1:
                 payload = {**payload, "candidate_verification":
-                           _verify_candidate_for_repair(payload, repo_path, build_solution)}
+                           _verify_candidate_for_repair(payload, repo_path, spec or TaskSpec(
+                               "_", "", (), "safe", ("_",), "none", False))}
             result = advisory_check_real.advise(
                 payload, repo_root=repo_path, db=db_path, revise_safer_attempt=attempt,
                 max_revise_safer_attempts=max_attempts,
@@ -306,6 +309,14 @@ def _event_head_short(event: dict[str, Any]) -> str:
     return head[:8] if head else "unknown"
 
 
+def _language_name(language: str) -> str:
+    return {
+        "csharp": "C#",
+        "javascript": "JavaScript",
+        "typescript": "TypeScript",
+    }.get(language, language)
+
+
 def _build_subject_prompt(spec: TaskSpec, repo_path: Path, arm: str) -> str:
     # The deployed PEBRA arm gets the safe-edit skill. Other arms get an arm-neutral placebo protocol
     # with the same workflow surface, so the prompt is not "extra care instructions vs nothing."
@@ -313,6 +324,7 @@ def _build_subject_prompt(spec: TaskSpec, repo_path: Path, arm: str) -> str:
     return _SUBJECT_PROMPT.format(
         task_description=spec.description,
         repo_path=str(repo_path),
+        language_name=_language_name(spec.language),
         advisory_name=advisory_contract.TOOL_NAME,
         skill_protocol=skill_protocol,
     )
@@ -366,7 +378,8 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         from e2e.experiments.agent_ab.runners import arm_prep  # noqa: PLC0415
         arm_prep.prepare_oracle_patch(repo_path, spec.task_id)
     db_path = dest.parent / "pebra.db"
-    baseline = dn.run_build_delta(repo_path, sln=spec.build_solution)
+    build_backend = backends.backend_for_spec(spec)
+    baseline = build_backend.run_build_delta(repo_path, spec)
     _validate_baseline(repo_path, baseline)
     return ArmSetup(
         arm=arm,
@@ -374,11 +387,13 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         advisory_backend=_advisory_backend(
             arm, repo_path, db_path,
             covering_hint=_covering_tests_hint(spec) if arm == models.ARM_PEBRA_GRAPH_REPAIR else "",
-            build_solution=spec.build_solution,
+            spec=spec,
         ),
         baseline_build=baseline,
         subject_prompt=_build_subject_prompt(spec, repo_path, arm),
         build_solution=spec.build_solution,
+        spec=spec,
+        build_backend=build_backend,
         gate_check_backend=_gate_check_backend(arm, db_path),
     )
 

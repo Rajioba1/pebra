@@ -110,9 +110,11 @@ def _dispatch(name: str, args: dict[str, Any], setup: "ArmSetup") -> dict[str, A
         return tool_impl.search_grep(args.get("pattern", ""), repo,
                                      path=args.get("path"), file_glob=args.get("file_glob"))
     if name == "run_build":
-        return tool_impl.run_build(repo, sln=setup.build_solution)
+        return tool_impl.run_build(repo, backend=getattr(setup, "build_backend", None),
+                                   spec=getattr(setup, "spec", None), sln=setup.build_solution)
     if name == "run_tests":
-        return tool_impl.run_tests(repo, sln=setup.build_solution)
+        return tool_impl.run_tests(repo, backend=getattr(setup, "build_backend", None),
+                                   spec=getattr(setup, "spec", None), sln=setup.build_solution)
     if name == advisory_contract.TOOL_NAME:
         return tool_impl.advisory_check(args, setup.advisory_backend)
     return {"error": f"unknown tool {name!r}"}
@@ -207,7 +209,7 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
     try:
         while True:
             # Wall-clock is checked BETWEEN turns (not during a tool call). A single tool is still
-            # bounded: dotnet_harness.run_build/run_tests pass their own subprocess timeout=, so a hung
+            # bounded: build backends pass their own subprocess timeout=, so a hung
             # build/test cannot run unbounded past this guard.
             if time.monotonic() - start >= config.max_wall_seconds_per_run:
                 timed_out = True

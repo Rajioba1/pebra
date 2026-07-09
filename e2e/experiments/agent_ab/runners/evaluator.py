@@ -6,9 +6,9 @@ is captured), so it cannot read them (teach-to-test), delete them, or infer the 
 post-hoc and running ``dotnet build`` + ``dotnet test`` answers the strong endpoint: did the agent ship
 code that still passes the real project checks?
 
-A task with no ``corpus/evaluator_tests/<task_id>/`` directory gets build-only scoring (build-break
-efficacy); one with an evaluator project gets build+test scoring (build+test+scope efficacy). Build/test
-are injectable for unit tests. No pebra import.
+A C# task with no ``specimens/csharp/corpus/evaluator_tests/<task_id>/`` directory gets build-only
+scoring (build-break efficacy); one with an evaluator project gets build+test scoring
+(build+test+scope efficacy). Build/test are injectable for unit tests. No pebra import.
 """
 
 from __future__ import annotations
@@ -17,10 +17,12 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
+from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab.models import TaskSpec
-from e2e.external.utils import dotnet_harness as dn
 
-_EVALUATOR_DIR = Path(__file__).resolve().parents[1] / "corpus" / "evaluator_tests"
+_EVALUATOR_DIR = (
+    Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "evaluator_tests"
+)
 
 
 def inject_evaluator_tests(
@@ -57,8 +59,8 @@ def _existing_test_project(repo_path: Path, task: str | TaskSpec) -> tuple[Path 
 def _run_build(repo_path: Path, task: str | TaskSpec, build_fn: Callable[[Path], Any] | None):
     if build_fn is not None:
         return build_fn(repo_path)
-    sln = task.build_solution if isinstance(task, TaskSpec) else "TemplateBlueprint.sln"
-    return dn.run_build(repo_path, sln=sln)
+    backend = backends.backend_for_spec(task) if isinstance(task, TaskSpec) else backends.get_backend("csharp")
+    return backend.run_build(repo_path, task)
 
 
 def run_evaluator(
@@ -73,16 +75,19 @@ def run_evaluator(
     passed, run ``dotnet test`` against THAT project (not the solution).
 
     Returns (build_result, test_result_or_None, injected)."""
-    test_fn = test_fn or dn.run_tests
+    backend = backends.backend_for_spec(task) if isinstance(task, TaskSpec) else backends.get_backend("csharp")
     project, test_filter = _existing_test_project(repo_path, task)
     injected = False
-    if project is None:
+    if project is None and (not isinstance(task, TaskSpec) or task.language == "csharp"):
         project = inject_evaluator_tests(repo_path, _task_id(task), evaluator_dir=evaluator_dir)
         injected = project is not None
     build = _run_build(repo_path, task, build_fn)
     if project is not None and build.ran and build.passed:
-        test = (test_fn(repo_path, project=project, test_filter=test_filter)
-                if test_filter else test_fn(repo_path, project=project))
+        if test_fn is not None:
+            test = (test_fn(repo_path, project=project, test_filter=test_filter)
+                    if test_filter else test_fn(repo_path, project=project))
+        else:
+            test = backend.run_tests(repo_path, task, project=project, test_filter=test_filter)
     else:
         test = None
     return build, test, injected

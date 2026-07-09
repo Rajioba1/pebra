@@ -150,7 +150,7 @@ def test_main_fails_fast_on_errored_run(monkeypatch, tmp_path):
 
 
 def test_scoring_mode_build_break_when_no_evaluator_tests():
-    # No corpus/evaluator_tests/<id>/ dirs exist for these -> build_break_scope.
+    # No specimen evaluator_tests/<id>/ dirs exist for these -> build_break_scope.
     assert orchestrator._scoring_mode([_T1, _B1]) == "build_break_scope"
 
 

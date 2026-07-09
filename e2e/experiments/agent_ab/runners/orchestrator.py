@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from e2e.experiments.agent_ab.corpus import loader
+from e2e.experiments.agent_ab.specimens.csharp.corpus import loader
 from e2e.experiments.agent_ab.metrics import oracle, scorecard
 from e2e.experiments.agent_ab.models import ARM_CONTROL, ARM_TREATMENT, RunOutcome, TaskSpec
 from e2e.experiments.agent_ab.reports import render_report
@@ -28,8 +28,8 @@ from e2e.utils import cli_harness
 
 _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
-_PATCH_DIR = Path(__file__).resolve().parents[1] / "corpus" / "oracle_patches"
-_EVAL_DIR = Path(__file__).resolve().parents[1] / "corpus" / "evaluator_tests"
+_PATCH_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "oracle_patches"
+_EVAL_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "evaluator_tests"
 _ALLOW_UNVERIFIED_ENV = "E2E_AB_ALLOW_UNVERIFIED"
 
 

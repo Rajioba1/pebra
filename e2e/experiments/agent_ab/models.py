@@ -21,7 +21,7 @@ ARM_BLAST_RADIUS = "blast_radius"        # CTXO-style graph-guidance diagnostic 
 ARM_ENFORCED_CONTROL = "enforced_control"  # sensitivity control: write gate blocks known-risky edits
 ARM_PEBRA = "pebra"                      # experimental treatment
 ARM_ORACLE_POSITIVE = "oracle_positive"  # endpoint floor: correct fix pre-applied before the agent runs
-ARM_PEBRA_GRAPH_REPAIR = "pebra_graph_repair"  # PEBRA + repair-context hint (candidate verifier not wired)
+ARM_PEBRA_GRAPH_REPAIR = "pebra_graph_repair"  # PEBRA + repair context + host candidate verification
 
 # The full assay arm universe. Every arm-membership frozenset in run_pair.py is validated against this
 # at import (fail loud on a missing/unregistered arm) so a mis-wired arm can never run as a silent
@@ -67,6 +67,11 @@ class TaskSpec:
     evaluator_test_filter: str | None = None   # hidden: optional dotnet test filter for that project
     build_solution: str = "TemplateBlueprint.sln"  # hidden: solution passed to dotnet build/test tools
     required_language_tier: str | None = None  # hidden: "risk_only" | "partial" | "full" preflight floor
+    language: str = "csharp"  # hidden: selects the build/test backend (csharp | javascript | typescript)
+    harness_id: str = "dotnet"  # hidden: fixed backend profile family (dotnet | node)
+    build_profile: str = "default"  # hidden: fixed profile name, never a shell command
+    test_profile: str = "default"  # hidden: fixed profile name, never a shell command
+    test_selector: str | None = None  # hidden: optional profile-specific selector
 
 
 # ---- one subject run (what the runner captures; scoring consumes it) --------------------------

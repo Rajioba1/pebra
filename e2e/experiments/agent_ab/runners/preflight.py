@@ -28,11 +28,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab.models import TaskSpec
-from e2e.external.utils import dotnet_harness as dn
 from e2e.external.utils import repo_source as rs
 
-_CORPUS_DIR = Path(__file__).resolve().parents[1] / "corpus"
+_CORPUS_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus"
 _PATCH_DIR = _CORPUS_DIR / "oracle_patches"
 _CORRECT_PATCH_DIR = _CORPUS_DIR / "correct_fix_patches"
 
@@ -160,15 +160,18 @@ def _run_spec_test(spec: TaskSpec, repo_path: Path, test_fn: Callable[..., Any])
     if not spec.evaluator_test_project:
         return None
     project = (repo_path / spec.evaluator_test_project).resolve()
-    if spec.evaluator_test_filter:
-        return test_fn(repo_path, project=project, test_filter=spec.evaluator_test_filter)
-    return test_fn(repo_path, project=project)
+    if test_fn is not None:
+        if spec.evaluator_test_filter:
+            return test_fn(repo_path, project=project, test_filter=spec.evaluator_test_filter)
+        return test_fn(repo_path, project=project)
+    backend = backends.backend_for_spec(spec)
+    return backend.run_tests(repo_path, spec, project=project, test_filter=spec.evaluator_test_filter)
 
 
 def _run_spec_build(spec: TaskSpec, repo_path: Path, build_fn: Callable[[Path], Any] | None):
     if build_fn is not None:
         return build_fn(repo_path)
-    return dn.run_build(repo_path, sln=spec.build_solution)
+    return backends.backend_for_spec(spec).run_build(repo_path, spec)
 
 
 def _zero_selected_tests_failure(spec: TaskSpec, test, label: str) -> str | None:
@@ -221,7 +224,6 @@ def run_oracle_preflight(
     expected scope and must build, proving the widened scope is complete enough to reward a safe fix
     rather than only rewarding refusal.
     """
-    test_fn = test_fn or dn.run_tests
     patch_dir = patch_dir or _PATCH_DIR
     correct_patch_dir = correct_patch_dir or _CORRECT_PATCH_DIR
     failures: list[str] = []

@@ -8,7 +8,7 @@ Two consumers, one module:
     false-exclude nearly every run. Arm identity is instead caught via PHRASES ("control arm",
     "treatment group", …). This is a deliberate divergence from the literal review note (which suggested
     bare "control"/"treatment"); documented here so it is a decision, not an oversight.
-  - ``corpus/loader.py`` validates AUTHOR-WRITTEN task text, which is short and fully under our control,
+  - specimen ``corpus/loader.py`` validates AUTHOR-WRITTEN task text, which is short and fully under our control,
     so it uses the stricter ``CORPUS_FORBIDDEN_TERMS`` (adds the bare arm words + trap descriptors).
 
 Matching: a single alphabetic word is matched on word boundaries (so "trial" != "industrial" and

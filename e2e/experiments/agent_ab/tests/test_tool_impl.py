@@ -102,11 +102,15 @@ def test_build_and_test_summaries_are_safe_for_model_when_paths_contain_repo_nam
             error_summary=str(tmp_path / "pebra" / "repo" / "src" / "Gamma.cs") + "(1,1): error CS1002",
         )
 
-    monkeypatch.setattr(tool_impl.dn, "run_build", lambda *_args, **_kwargs: _result())
-    monkeypatch.setattr(tool_impl.dn, "run_tests", lambda *_args, **_kwargs: _result())
+    class FakeBackend:
+        def run_build(self, repo_root, spec):
+            return _result()
 
-    build = tool_impl.run_build(tmp_path)
-    tests = tool_impl.run_tests(tmp_path)
+        def run_tests(self, repo_root, spec):
+            return _result()
+
+    build = tool_impl.run_build(tmp_path, backend=FakeBackend())
+    tests = tool_impl.run_tests(tmp_path, backend=FakeBackend())
 
     assert blinding.scan_text(build["error_summary"]) == (False, ())
     assert blinding.scan_text(tests["error_summary"]) == (False, ())
