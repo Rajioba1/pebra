@@ -531,7 +531,39 @@ def test_graph_preflight_uses_language_node_count_for_non_csharp_tiered_task(tmp
                                   node_count_fn=lambda p: {"csharp_callable": 0})
 
 
+def test_graph_preflight_writes_coverage_artifact(tmp_path, monkeypatch):
+    # Additive observability: run_graph_preflight records the measured per-language capability to
+    # out_dir/preflight/coverage.json so the run observatory can render a coverage panel (the
+    # language_capability payload is otherwise in-memory only and dropped after the run).
+    import json
+
+    ts_full = TaskSpec(
+        "TSSEM", "d", ("a.ts",), "safe", ("a.ts",), "none", False,
+        required_language_tier="full",
+    )
+
+    def _assess(_repo_path, _spec):
+        payload = _payload("fresh", "location")
+        payload["graph_provenance"] = {
+            "language_capability": {
+                "language": "typescript", "tier": "full", "node_count": 12,
+            }
+        }
+        return payload
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
+
+    preflight.run_graph_preflight([ts_full], None, out_dir=tmp_path,
+                                  assess_fn=_assess, setup_graph_fn=None,
+                                  node_count_fn=lambda p: {"csharp_callable": 0})
+
+    coverage = json.loads((tmp_path / "preflight" / "coverage.json").read_text(encoding="utf-8"))
+    assert coverage["by_language"]["typescript"] == {"tier": "full", "node_count": 12}
+
+
 def test_graph_preflight_fails_non_csharp_tiered_task_with_zero_language_nodes(tmp_path, monkeypatch):
+    import json
+
     ts_full = TaskSpec(
         "TSSEM", "d", ("a.ts",), "safe", ("a.ts",), "none", False,
         required_language_tier="full",
@@ -552,6 +584,33 @@ def test_graph_preflight_fails_non_csharp_tiered_task_with_zero_language_nodes(t
         preflight.run_graph_preflight([ts_full], None, out_dir=tmp_path,
                                       assess_fn=_assess, setup_graph_fn=None,
                                       node_count_fn=lambda p: {"csharp_callable": 0})
+
+    coverage = json.loads((tmp_path / "preflight" / "coverage.json").read_text(encoding="utf-8"))
+    assert coverage["by_language"]["typescript"] == {"tier": "full", "node_count": 0}
+
+
+def test_graph_preflight_coverage_write_is_best_effort(tmp_path, monkeypatch):
+    ts_full = TaskSpec(
+        "TSSEM", "d", ("a.ts",), "safe", ("a.ts",), "none", False,
+        required_language_tier="full",
+    )
+
+    def _assess(_repo_path, _spec):
+        payload = _payload("fresh", "location")
+        payload["graph_provenance"] = {
+            "language_capability": {
+                "language": "typescript", "tier": "full", "node_count": 12,
+            }
+        }
+        return payload
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
+    monkeypatch.setattr(preflight.run_artifacts, "atomic_write_json",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")))
+
+    preflight.run_graph_preflight([ts_full], None, out_dir=tmp_path,
+                                  assess_fn=_assess, setup_graph_fn=None,
+                                  node_count_fn=lambda p: {"csharp_callable": 0})
 
 
 # ---- revise-safer route calibration -----------------------------------------------------------

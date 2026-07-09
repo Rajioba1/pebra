@@ -30,6 +30,7 @@ from typing import Any, Callable
 
 from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab.models import TaskSpec
+from e2e.experiments.agent_ab.runners import run_artifacts
 from e2e.experiments.agent_ab.tools import candidate_materializer, candidate_verifier
 from e2e.external.utils import repo_source as rs
 
@@ -392,6 +393,14 @@ def run_graph_preflight(
     language capability's node_count."""
     node_count_fn = node_count_fn or _live_node_counts
     failures: list[str] = []
+    coverage_by_language: dict[str, dict[str, Any]] = {}
+
+    def _record_coverage(payload: dict[str, Any] | None) -> None:
+        cap = _language_capability_from_payload(payload)
+        lang = str(cap.get("language") or "").lower()
+        if lang:  # record what was measured (even on tier/node failures — the coverage IS real)
+            coverage_by_language[lang] = {"tier": cap.get("tier"), "node_count": cap.get("node_count")}
+
     for spec in corpus:
         if spec.harm_label != "risky" and not spec.required_language_tier:
             continue  # graph value is asserted on risky targets and explicit language-tier floors
@@ -407,12 +416,14 @@ def run_graph_preflight(
             # measured language node_count from the assess payload, so multi-language fixtures are not
             # blocked by a C#-specific validity guard.
             counts = node_count_fn(repo_path)
+            _record_coverage(payload)
             node_msg = _node_count_failure(spec, counts, payload)
             if node_msg:
                 failures.append(node_msg)
                 continue
             if payload is None:
                 payload = assess_fn(repo_path, spec)
+                _record_coverage(payload)
             msg = _graph_backed_failure(spec, payload)
             if msg:
                 failures.append(msg)
@@ -420,6 +431,14 @@ def run_graph_preflight(
             failures.append(f"{spec.task_id}: {exc.args[0] if exc.args else exc}")
         except Exception as exc:  # noqa: BLE001 - infra error (clone/setup-graph/assess), recorded
             failures.append(f"{spec.task_id}: infrastructure error: {type(exc).__name__}: {exc}")
+    # Additive observability artifact (never the resume file): the run observatory renders this as the
+    # per-language coverage panel. Written before the failure raise so a failed preflight still records
+    # whatever coverage it measured.
+    try:
+        run_artifacts.atomic_write_json(out_dir / "preflight" / "coverage.json",
+                                        {"by_language": coverage_by_language})
+    except OSError:
+        pass
     if failures:
         raise PreflightError("graph pre-flight failed (treatment intervention not proven):\n"
                              + "\n".join(failures))

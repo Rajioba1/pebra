@@ -120,8 +120,15 @@ task is added.
   **live, Phase G**), `tool_impl` (7 confined tools + path guard), `agent_loop` (turn loop, capture,
   limits, blinding pre-send check), `evaluator` (post-agent hidden-test injection + build/test),
   `preflight` (oracle-label + graph-freshness gates), `orchestrator` (gated task×arm×seed loop),
-  `run_pair` (arm setup + the loop, run only under the gate).
+  `run_pair` (arm setup + the loop, run only under the gate), `run_artifacts` (atomic JSON writer),
+  `launch_dashboard` (prints a `pebra dashboard` command for one arm's store), `watch_dashboard` +
+  `observatory/` (the read-only Run Observatory — see below).
 - `tests/` — TDD for every deterministic module (all via ScriptedClient/mock; no LLM, no dotnet).
+
+The orchestrator additionally writes two **additive, observability-only** artifacts under
+`e2e/out/ab/<run-id>/` (never the crash-survivable `outcomes.json`): `run_status.json` (mode + coarse
+phase) and `preflight/coverage.json` (measured per-language capability). Absence of either degrades the
+observatory gracefully; they are safe to delete.
 
 ## Runner status (this slice)
 The real-agent runner is COMPLETE and `AnthropicClient.send` is LIVE (Phase G). The `NotImplementedError`
@@ -232,6 +239,39 @@ contract-break trap invisible from the interface file alone). Oracle patches for
 ```
 python -m pytest e2e/experiments/agent_ab/tests -q
 ```
+
+## Watching a run (Run Observatory)
+
+A dev-only, **read-only** web shell over `e2e/out/ab/<run-id>/`. It renders a live run index, arm-vs-arm
+scoreboard, a task×seed×arm status matrix, and a per-language coverage panel, and it drills down into the
+**real `pebra dashboard`** per arm. It never runs an agent, is **not** gated, never imports pebra (it
+shells the dashboard as a subprocess), and never writes into a run dir. Uses only the Python stdlib.
+
+Launch the live server (opens a browser; polls every 5s — safe to run during a live assay):
+
+```bash
+python -m e2e.experiments.agent_ab.runners.watch_dashboard --run-id <run-id> --open
+```
+
+Land on the run index instead of a specific run, pick a port, or set the mode used for the planned/pending
+grid when `run_status.json` is absent:
+
+```bash
+python -m e2e.experiments.agent_ab.runners.watch_dashboard --port 8787 --open
+python -m e2e.experiments.agent_ab.runners.watch_dashboard --run-id <run-id> --mode assay_js --open
+```
+
+No-browser / scripting mode — dump the same JSON the UI consumes and exit (no server):
+
+```bash
+python -m e2e.experiments.agent_ab.runners.watch_dashboard --once --run-id <run-id>   # one run's view
+python -m e2e.experiments.agent_ab.runners.watch_dashboard --once                     # the run index
+```
+
+Each `pebra` / `pebra_graph_repair` / legacy `treatment` arm row shows a copy-paste `pebra dashboard …`
+command that opens the real product dashboard for that arm's store. (An assay verdict is de-emphasized in
+the UI until the `pebra`-vs-`sham` matched-pair count clears a minimum, so early-run zeros are not read as
+a finding.)
 
 ## JavaScript/TypeScript specimen prerequisites
 

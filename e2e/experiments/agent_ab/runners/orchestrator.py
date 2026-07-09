@@ -15,13 +15,14 @@ import argparse
 import dataclasses
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from e2e.experiments.agent_ab.metrics import oracle, scorecard
 from e2e.experiments.agent_ab.models import ARM_CONTROL, ARM_TREATMENT, RunOutcome, TaskSpec
 from e2e.experiments.agent_ab.reports import render_report
-from e2e.experiments.agent_ab.runners import preflight, run_gate, run_pair
+from e2e.experiments.agent_ab.runners import preflight, run_artifacts, run_gate, run_pair
 from e2e.experiments.agent_ab.specimens import loader as specimen_loader
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness
@@ -103,11 +104,44 @@ def _live_assess_fn(repo_path: Path, spec: TaskSpec) -> dict[str, Any]:
 
 
 def _write_outcomes(path: Path, outcomes: list[RunOutcome], run_id: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"run_id": run_id, "outcomes": [dataclasses.asdict(o) for o in outcomes]}
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    run_artifacts.atomic_write_json(path, payload)
+
+
+def _write_run_status(
+    out_dir: Path,
+    mode: str,
+    phase: str,
+    *,
+    preflight_status: dict[str, str] | None = None,
+    scoring_mode: str | None = None,
+    served_models: list[str] | None = None,
+    error: str | None = None,
+) -> None:
+    """Additive observability artifact (out_dir/run_status.json) — lets the run observatory read the
+    authoritative mode + coarse phase instead of guessing from artifact presence. NEVER touches
+    outcomes.json (the crash-survivable resume file). Best-effort: a write failure must not abort a run."""
+    try:
+        payload: dict[str, Any] = {
+            "run_id": out_dir.name,
+            "mode": mode,
+            "phase": phase,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if preflight_status is not None:
+            payload["preflight_status"] = preflight_status
+        if scoring_mode is not None:
+            payload["scoring_mode"] = scoring_mode
+        if served_models is not None:
+            payload["served_models"] = served_models
+        if error is not None:
+            payload["error"] = error
+        run_artifacts.atomic_write_json(
+            out_dir / "run_status.json",
+            payload,
+        )
+    except OSError:
+        pass
 
 
 def _outcome_from_dict(d: dict[str, Any]) -> RunOutcome:
@@ -195,58 +229,82 @@ def main(argv: list[str] | None = None) -> int:
         "graph": "skipped" if args.skip_graph_preflight else "passed",
         "revise_safer": "skipped" if (args.skip_graph_preflight or not is_assay) else "passed",
     }
-    if not args.skip_oracle_preflight:
-        preflight.run_oracle_preflight(planned_specs, external, out_dir=out_dir)
-    if not args.skip_graph_preflight:
-        preflight.run_graph_preflight(planned_specs, external, out_dir=out_dir,
-                                      assess_fn=_live_assess_fn,
-                                      setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
-                                      node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p))
-        if is_assay:
-            preflight.run_revise_safer_calibration(
-                planned_specs,
-                external,
-                out_dir=out_dir,
-                setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
-            )
+    scoring_mode = _scoring_mode(planned_specs)
+    _write_run_status(out_dir, args.mode, "preflight",
+                      preflight_status=preflight_status, scoring_mode=scoring_mode)
+
+    try:
+        if not args.skip_oracle_preflight:
+            preflight.run_oracle_preflight(planned_specs, external, out_dir=out_dir)
+        if not args.skip_graph_preflight:
+            preflight.run_graph_preflight(planned_specs, external, out_dir=out_dir,
+                                          assess_fn=_live_assess_fn,
+                                          setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
+                                          node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p))
+            if is_assay:
+                preflight.run_revise_safer_calibration(
+                    planned_specs,
+                    external,
+                    out_dir=out_dir,
+                    setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
+                )
+    except Exception as exc:
+        _write_run_status(out_dir, args.mode, "failed",
+                          preflight_status=preflight_status, scoring_mode=scoring_mode,
+                          error=f"{type(exc).__name__}: {exc}")
+        raise
 
     if args.preflight_only:
+        _write_run_status(out_dir, args.mode, "finished",
+                          preflight_status=preflight_status, scoring_mode=scoring_mode)
         return 0
 
-    specs_by_id = {s.task_id: s for s in corpus}
-    outcomes_path = out_dir / "outcomes.json"
-    existing = _load_existing_outcomes(outcomes_path)
-    completed = _completed_units(existing, specs_by_id) if is_assay else _completed_pairs(existing)
-    # Keep only outcomes from fully-completed units; drop any partial unit so it is re-run cleanly.
-    outcomes: list[RunOutcome] = [o for o in existing if (o.task_id, o.seed) in completed]
-    for spec, seed in plan:
-        if (spec.task_id, seed) in completed:
-            continue  # resume: this unit already has all its arms recorded
-        results = (run_pair.run_trial(spec, seed, args.run_id) if is_assay
-                   else run_pair.run_pair(spec, seed, args.run_id))
-        for res in results:
-            if res.error:
-                raise ExperimentRunError(
-                    f"{res.arm} run for {spec.task_id} seed {seed} errored: {res.error}. "
-                    "Fix the cause (e.g. ANTHROPIC_API_KEY) and re-run — resume skips completed units."
-                )
-        for res in results:
-            outcomes.append(oracle.score_run(res, spec))
-        _write_outcomes(outcomes_path, outcomes, args.run_id)  # incremental / crash-survivable
+    try:
+        _write_run_status(out_dir, args.mode, "running",
+                          preflight_status=preflight_status, scoring_mode=scoring_mode)
+        specs_by_id = {s.task_id: s for s in corpus}
+        outcomes_path = out_dir / "outcomes.json"
+        existing = _load_existing_outcomes(outcomes_path)
+        completed = _completed_units(existing, specs_by_id) if is_assay else _completed_pairs(existing)
+        # Keep only outcomes from fully-completed units; drop any partial unit so it is re-run cleanly.
+        outcomes: list[RunOutcome] = [o for o in existing if (o.task_id, o.seed) in completed]
+        for spec, seed in plan:
+            if (spec.task_id, seed) in completed:
+                continue  # resume: this unit already has all its arms recorded
+            results = (run_pair.run_trial(spec, seed, args.run_id) if is_assay
+                       else run_pair.run_pair(spec, seed, args.run_id))
+            for res in results:
+                if res.error:
+                    raise ExperimentRunError(
+                        f"{res.arm} run for {spec.task_id} seed {seed} errored: {res.error}. "
+                        "Fix the cause (e.g. ANTHROPIC_API_KEY) and re-run — resume skips completed units."
+                    )
+            for res in results:
+                outcomes.append(oracle.score_run(res, spec))
+            _write_outcomes(outcomes_path, outcomes, args.run_id)  # incremental / crash-survivable
 
-    if is_assay:
-        assay = scorecard.aggregate_assay(outcomes, arms=list(run_pair.arms_for("risky")),
-                                          bootstrap_seed=cfg.get("bootstrap_seed", 0))
-        render_report.write_assay_report(assay, out_dir=out_dir / "reports", run_id=args.run_id,
-                                         scoring_mode=_scoring_mode(planned_specs),
-                                         preflight_status=preflight_status,
-                                         served_models=_served_models(outcomes))
-    else:
-        ab = scorecard.aggregate(outcomes, bootstrap_seed=cfg.get("bootstrap_seed", 0))
-        render_report.write_report(ab, out_dir=out_dir / "reports", run_id=args.run_id,
-                                   scoring_mode=_scoring_mode(planned_specs),
-                                   preflight_status=preflight_status,
-                                   served_models=_served_models(outcomes))
+        served_models = _served_models(outcomes)
+        if is_assay:
+            assay = scorecard.aggregate_assay(outcomes, arms=list(run_pair.arms_for("risky")),
+                                              bootstrap_seed=cfg.get("bootstrap_seed", 0))
+            render_report.write_assay_report(assay, out_dir=out_dir / "reports", run_id=args.run_id,
+                                             scoring_mode=scoring_mode,
+                                             preflight_status=preflight_status,
+                                             served_models=served_models)
+        else:
+            ab = scorecard.aggregate(outcomes, bootstrap_seed=cfg.get("bootstrap_seed", 0))
+            render_report.write_report(ab, out_dir=out_dir / "reports", run_id=args.run_id,
+                                       scoring_mode=scoring_mode,
+                                       preflight_status=preflight_status,
+                                       served_models=served_models)
+        _write_run_status(out_dir, args.mode, "finished",
+                          preflight_status=preflight_status, scoring_mode=scoring_mode,
+                          served_models=served_models)
+    except Exception as exc:
+        _write_run_status(out_dir, args.mode, "failed",
+                          preflight_status=preflight_status, scoring_mode=scoring_mode,
+                          error=f"{type(exc).__name__}: {exc}")
+        raise
     return 0
 
 

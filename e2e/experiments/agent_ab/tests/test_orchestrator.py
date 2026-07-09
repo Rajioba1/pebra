@@ -151,6 +151,21 @@ def test_main_end_to_end_writes_report(monkeypatch, tmp_path):
     assert (tmp_path / "t1" / "reports" / "ab_t1.json").exists()
 
 
+def test_main_writes_finished_run_status(monkeypatch, tmp_path):
+    def _fake_pair(spec, seed, run_id):
+        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
+                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+
+    _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
+    monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
+    orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
+    status = json.loads((tmp_path / "t1" / "run_status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "finished"
+    assert status["mode"] == "pilot"
+    assert status["run_id"] == "t1"
+    assert status["updated_at"]  # an ISO timestamp is stamped
+
+
 def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):
     # Pre-seed a completed pair for (T1, 0); run_pair must NOT be called again.
     out_path = tmp_path / "t1" / "outcomes.json"
@@ -183,6 +198,9 @@ def test_main_fails_fast_on_errored_run(monkeypatch, tmp_path):
     else:
         raise AssertionError("errored run must fail-fast, not be silently scored")
     assert not (tmp_path / "t1" / "outcomes.json").exists()  # aborted pair not written
+    status = json.loads((tmp_path / "t1" / "run_status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "failed"
+    assert "invalid x-api-key" in status["error"]
 
 
 def test_scoring_mode_build_break_when_no_evaluator_tests():
