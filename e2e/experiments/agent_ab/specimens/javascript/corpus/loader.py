@@ -1,15 +1,10 @@
-"""Load the JavaScript/TypeScript (Zod) corpus using the shared, language-agnostic validator.
-
-The validation logic lives in the (legacy-located) csharp corpus loader; it is language-neutral (JSON +
-leak-scan + harm/label/profile checks). This module only binds it to the JS corpus files. TODO: promote
-the shared loader to the framework root so neither specimen imports the other.
-"""
+"""Load the JavaScript/TypeScript (Zod) corpus using the shared specimen validator."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from e2e.experiments.agent_ab.specimens.csharp.corpus import loader as _base
+from e2e.experiments.agent_ab.specimens import corpus_loader as _base
 
 CorpusError = _base.CorpusError
 _CORPUS_DIR = Path(__file__).resolve().parent

@@ -229,6 +229,42 @@ contract-break trap invisible from the interface file alone). Oracle patches for
 python -m pytest e2e/experiments/agent_ab/tests -q
 ```
 
+## JavaScript/TypeScript specimen prerequisites
+
+The Zod specimen uses Zod's own `zshy` typecheck/build path:
+
+```text
+pnpm --filter zod exec zshy --project tsconfig.build.json
+```
+
+On Windows, Corepack may not be allowed to install shims under Program Files. Put pnpm on a user-writable
+PATH location before running JS/TS specimen checks:
+
+```powershell
+corepack enable --install-directory "$HOME\.local\bin" pnpm
+$env:PATH="$HOME\.local\bin;$env:PATH"
+pnpm --version
+```
+
+Bash:
+
+```bash
+corepack enable --install-directory "$HOME/.local/bin" pnpm
+export PATH="$HOME/.local/bin:$PATH"
+pnpm --version
+```
+
+Before a paid JS/TS Phase-4 run, clone the pinned Zod SHA, run the deterministic oracle preflight, and
+record a dependency-security check on the pinned dependency tree. This is a pre-run review item, not a
+hard CI gate:
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm audit --audit-level high
+# Optional, if Socket CLI and an API token are configured locally:
+socket scan create --report
+```
+
 ## Running the gated assay (real agents)
 
 This is the live agent assay. It runs the gated preflight first (repo identity, oracle labels, fresh graph

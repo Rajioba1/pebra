@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from e2e.experiments.agent_ab.models import TaskSpec
+from e2e.experiments.agent_ab.specimens.corpus_loader import CorpusError
 from e2e.experiments.agent_ab.specimens.csharp.corpus import loader as csharp_loader
 from e2e.experiments.agent_ab.specimens.javascript.corpus import loader as javascript_loader
 
@@ -16,7 +17,7 @@ def load_corpus() -> list[TaskSpec]:
             duplicates.add(spec.task_id)
         seen.add(spec.task_id)
     if duplicates:
-        raise csharp_loader.CorpusError(
+        raise CorpusError(
             f"duplicate task_id across specimens: {', '.join(sorted(duplicates))}"
         )
     return specs
