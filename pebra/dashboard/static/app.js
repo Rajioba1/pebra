@@ -155,6 +155,13 @@
     view.appendChild(tcard);
     drawSeries(chartBox, series.items);
 
+    // Measured (post-verify) RCA benefit drill-in — the History `benefit` column is the assess-time
+    // projected benefit; this panel shows the MEASURED maintainability delta persisted by `verify`.
+    const bcard = card("Measured benefit detail");
+    const bbody = el("div");
+    bbody.appendChild(el("p", "chart-note", "Select a row to see its measured RCA benefit (post-verify)."));
+    bcard.appendChild(bbody);
+
     const hcard = card("Recent assessments");
     if (!data.items.length) { hcard.appendChild(emptyMsg("No assessments recorded yet.")); }
     else {
@@ -163,7 +170,7 @@
       const tb = el("tbody");
       data.items.forEach((it) => {
         const s = it.scores || {};
-        const tr = el("tr");
+        const tr = el("tr", "clickable");
         tr.appendChild(cell(it.assessment_id, "mono"));
         const dcell = el("td"); dcell.appendChild(pill(it.decision)); tr.appendChild(dcell);
         tr.appendChild(cell(fmt(s.expected_loss), "num"));
@@ -171,12 +178,52 @@
         tr.appendChild(cell(fmt(s.rau), "num"));
         tr.appendChild(cell(fmt(s.edit_confidence, 2), "num"));
         tr.appendChild(cell(it.terminal_status || "pending", "mono"));
+        tr.addEventListener("click", function () { showMeasuredBenefit(it.assessment_id, bbody); });
         tb.appendChild(tr);
       });
       table.appendChild(tb);
       hcard.appendChild(table);
     }
     view.appendChild(hcard);
+    view.appendChild(bcard);
+  }
+
+  // Fetch one assessment's detail and render its measured (verify-time) RCA benefit. The measured signal
+  // lives on a post_assessment_guardrails row (measured_benefit + measured_benefit_deltas), exposed by
+  // GET /api/repos/{repo}/assessments/{id}. Distinct from the assess-time projected `benefit` in the
+  // table.
+  async function showMeasuredBenefit(id, box) {
+    clear(box);
+    box.appendChild(el("p", "chart-note", "loading " + id + "…"));
+    try {
+      const d = await getJSON(rp("/assessments/" + encodeURIComponent(id)));
+      const rows = (d.guardrails || []);
+      const g = rows.filter(function (x) {
+        return x && x.measured_benefit_deltas && Object.keys(x.measured_benefit_deltas).length;
+      }).pop();
+      clear(box);
+      if (!g || g.measured_benefit == null) {
+        box.appendChild(emptyMsg("No verify / measured-benefit recorded for " + id + " yet."));
+        return;
+      }
+      const dl = g.measured_benefit_deltas || {};
+      const t = el("table");
+      t.appendChild(headRow(["measure", "value"]));
+      const tb = el("tbody");
+      [["assessment", id], ["measured_benefit", fmt(g.measured_benefit)],
+       ["complexity_delta", fmt(dl.complexity_delta)],
+       ["maintainability_index_delta", fmt(dl.maintainability_index_delta)]].forEach(function (kv) {
+        const tr = el("tr");
+        tr.appendChild(cell(kv[0], "mono"));
+        tr.appendChild(cell(kv[1], "num"));
+        tb.appendChild(tr);
+      });
+      t.appendChild(tb);
+      box.appendChild(t);
+    } catch (e) {
+      clear(box);
+      box.appendChild(emptyMsg("Error loading " + id + ": " + e.message));
+    }
   }
 
   // ---- Calibration ----

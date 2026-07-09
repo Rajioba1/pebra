@@ -181,6 +181,7 @@ tbody td {
   overflow-wrap: anywhere;
 }
 tbody tr:hover { background: var(--surface-2); }
+tbody tr.clickable { cursor: pointer; }
 td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
 td.mono { font-family: var(--mono); color: var(--muted); }
 

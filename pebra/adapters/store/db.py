@@ -1198,14 +1198,20 @@ class SqliteStore:
             "ORDER BY id DESC LIMIT 1",
             (row_id,),
         ).fetchone()
-        guardrails = [
-            json.loads(g)
-            for (g,) in self._con.execute(
-                "SELECT guardrails_json FROM post_assessment_guardrails "
-                "WHERE assessment_id = ? ORDER BY id ASC",
-                (row_id,),
-            )
-        ]
+        guardrails: list[dict[str, Any]] = []
+        for gid, recorded_at, guardrails_json, prev_hash, row_hash in self._con.execute(
+            "SELECT id, recorded_at, guardrails_json, prev_hash, row_hash "
+            "FROM post_assessment_guardrails WHERE assessment_id = ? ORDER BY id ASC",
+            (row_id,),
+        ):
+            g = json.loads(guardrails_json)
+            g["_store"] = {
+                "id": f"pag_{gid}",
+                "recorded_at": recorded_at,
+                "prev_hash": prev_hash,
+                "row_hash": row_hash,
+            }
+            guardrails.append(g)
         return {
             "assessment_id": assessment_id,
             "content": content,

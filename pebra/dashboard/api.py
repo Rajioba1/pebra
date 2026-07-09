@@ -189,15 +189,17 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
             }
         return request.app.state.graph_reader.file_overview(repo_root, top_n=top_n)
 
+    @router.get("/repos/{repo_id}/assessments/{assessment_id}")
+    def repo_detail(repo_id: str, assessment_id: str, request: Request) -> dict[str, Any]:
+        _require_bound_repo(request, repo_id)
+        return _assessment_detail_for_repo(request, assessment_id, repo_id)
+
     @router.get("/assessments/{assessment_id}")
     def detail(assessment_id: str, request: Request) -> dict[str, Any]:
-        store = _open(request)
-        try:
-            return store.assessment_detail(assessment_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="assessment not found") from exc
-        finally:
-            store.close()
+        bound_repo = getattr(request.app.state, "repo_id", None)
+        if bound_repo is not None:
+            return _assessment_detail_for_repo(request, assessment_id, bound_repo)
+        return _assessment_detail(request, assessment_id)
 
     @router.get("/chain-status")
     def chain_status(request: Request) -> dict[str, Any]:
@@ -208,6 +210,23 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
             store.close()
 
     return router
+
+
+def _assessment_detail(request: Request, assessment_id: str) -> dict[str, Any]:
+    store = SqliteStore(request.app.state.db_path)
+    try:
+        return store.assessment_detail(assessment_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="assessment not found") from exc
+    finally:
+        store.close()
+
+
+def _assessment_detail_for_repo(request: Request, assessment_id: str, repo_id: str) -> dict[str, Any]:
+    detail = _assessment_detail(request, assessment_id)
+    if (detail.get("content") or {}).get("repo_id") != repo_id:
+        raise HTTPException(status_code=404, detail="assessment not found")
+    return detail
 
 
 def _graph_unavailable(reason: str) -> dict[str, Any]:

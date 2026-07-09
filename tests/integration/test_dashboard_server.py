@@ -22,21 +22,25 @@ pytestmark = pytest.mark.skipif(
 def _seed(tmp_path) -> tuple[str, str]:
     db = str(tmp_path / "pebra.db")
     store = SqliteStore(db)
-    asm = store.persist_assessment(
+    asm = _persist_assessment(store, repo_id="r")
+    store.close()
+    return db, asm
+
+
+def _persist_assessment(store: SqliteStore, *, repo_id: str = "r") -> str:
+    return store.persist_assessment(
         AssessmentResult(
             recommended_decision=Decision.PROCEED,
             requires_confirmation=False,
             action_status=ActionStatus.PENDING,
             risk_mode=RiskMode.NORMAL,
             scores={"edit_confidence": 0.83},
-            repo_id="r",
+            repo_id=repo_id,
             repo_root="/x",
             model_guidance_packet={"decision": "proceed"},
         ),
         {"task": "t"},
     )
-    store.close()
-    return db, asm
 
 
 def _client(db: str, token: str = "tok", base: str = "http://127.0.0.1"):
@@ -93,6 +97,31 @@ def test_detail_unknown_assessment_404(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/api/assessments/asm_999", headers=_AUTH)
     assert resp.status_code == 404
+
+
+def test_repo_scoped_assessment_detail_rejects_foreign_repo(tmp_path) -> None:
+    db, asm = _seed(tmp_path)
+    store = SqliteStore(db)
+    other = _persist_assessment(store, repo_id="other")
+    store.close()
+
+    client = _client(db)
+    assert client.get(f"/api/repos/r/assessments/{asm}", headers=_AUTH).status_code == 200
+    assert client.get(f"/api/repos/r/assessments/{other}", headers=_AUTH).status_code == 404
+
+
+def test_bound_global_assessment_detail_rejects_foreign_repo(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    store = SqliteStore(db)
+    other = _persist_assessment(store, repo_id="other")
+    store.close()
+
+    from fastapi.testclient import TestClient
+
+    from pebra.dashboard.server import create_app
+
+    client = TestClient(create_app(db, "tok", repo_id="r"), base_url="http://127.0.0.1")
+    assert client.get(f"/api/assessments/{other}", headers=_AUTH).status_code == 404
 
 
 def test_forbidden_host_is_rejected(tmp_path) -> None:
@@ -212,6 +241,39 @@ def test_static_served_without_bearer(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/static/app.js")
     assert resp.status_code == 200
+
+
+def test_assessment_detail_exposes_measured_benefit(tmp_path) -> None:
+    # The History "Measured benefit detail" drill-in reads measured_benefit / measured_benefit_deltas
+    # from a persisted guardrails row via the repo-scoped assessment detail route.
+    db, asm = _seed(tmp_path)
+    store = SqliteStore(db)
+    store.persist_guardrails(asm, {
+        "decision": "proceed", "measured_benefit": 0.4,
+        "measured_benefit_deltas": {"complexity_delta": -2.0, "maintainability_index_delta": 3.0},
+    })
+    store.close()
+    body = _client(db).get(f"/api/repos/r/assessments/{asm}", headers=_AUTH).json()
+    g = body["guardrails"][-1]
+    assert g["measured_benefit"] == 0.4
+    assert g["measured_benefit_deltas"]["complexity_delta"] == -2.0
+    assert g["_store"]["id"].startswith("pag_")
+    assert g["_store"]["row_hash"]
+
+
+def test_dashboard_static_wires_measured_benefit_drilldown(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+    assert "showMeasuredBenefit" in text
+    assert 'rp("/assessments/"' in text
+    assert 'getJSON("/api/assessments/"' not in text
+    assert "measured_benefit_deltas" in text
+
+
+def test_dashboard_static_does_not_render_empty_guardrail_as_measured_benefit(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+    assert "rows[rows.length - 1]" not in text
 
 
 def test_dashboard_static_uses_human_metric_labels(tmp_path) -> None:
