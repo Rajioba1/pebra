@@ -5,6 +5,7 @@
 const POLL_MS = 5000;
 const MIN_PAIRS_FOR_VERDICT = 3; // below this an assay verdict is structural noise, not a finding
 let timer = null;
+const launchState = new Map(); // key: run_id|clone -> {state, text}
 
 function el(tag, props = {}, children = []) {
   const n = document.createElement(tag);
@@ -205,19 +206,63 @@ function renderCoverage(cov) {
   return el("div", {}, [el("h2", { text: "Language coverage" }), el("div", { class: "panel" }, [t])]);
 }
 
-function renderDashboards(dashboards) {
+function launchKey(runId, clone) { return runId + "|" + clone; }
+function setLaunchState(key, state, text) { launchState.set(key, { state, text }); }
+function applyLaunchState(key, openBtn, status) {
+  const current = launchState.get(key);
+  openBtn.disabled = current && current.state === "launching";
+  status.textContent = current ? current.text : "";
+}
+
+function renderDashboards(runId, dashboards) {
   const wrap = el("div", {});
   wrap.appendChild(el("h2", { text: "Open real PEBRA dashboard (per arm)" }));
-  if (!dashboards.length) { wrap.appendChild(el("p", { class: "dim", text: "No PEBRA stores yet — only the pebra / pebra_graph_repair arms write one." })); return wrap; }
+  if (!dashboards.length) { wrap.appendChild(el("p", { class: "dim", text: "No PEBRA stores yet — only the pebra / pebra_graph_repair / treatment arms write one." })); return wrap; }
   const panel = el("div", { class: "panel" });
   for (const d of dashboards) {
     const armTag = el("span", { class: "tag arm", text: d.arm || "unattributed" });
     const cmd = el("input", { class: "mono", readonly: true, value: d.launch_command || "(no repo/ dir — cannot resolve --repo-root)" });
-    const btn = el("button", { class: "btn", text: "copy" });
-    btn.addEventListener("click", () => { cmd.select(); navigator.clipboard && navigator.clipboard.writeText(cmd.value); btn.textContent = "copied"; setTimeout(() => (btn.textContent = "copy"), 1200); });
-    panel.appendChild(el("div", { class: "dash-cmd" }, [armTag, cmd, btn]));
+    const openBtn = el("button", { class: "btn", text: "Open" });
+    const copyBtn = el("button", { class: "btn ghost", text: "copy" });
+    const status = el("span", { class: "dim launch-status" });
+    const key = launchKey(runId, d.clone);
+    applyLaunchState(key, openBtn, status);
+    openBtn.addEventListener("click", async () => {
+      if (!d.repo) { status.textContent = "no repo/ dir"; return; }
+      if (launchState.get(key)?.state === "launching") return;
+      const tab = window.open("about:blank", "_blank", "noopener");
+      setLaunchState(key, "launching", "launching…");
+      applyLaunchState(key, openBtn, status);
+      try {
+        const r = await fetch("/api/launch", { method: "POST", headers: { "Content-Type": "application/json", "X-PEBRA-Observatory": "1" }, body: JSON.stringify({ run_id: runId, clone: d.clone }) });
+        const j = await r.json();
+        if (r.ok && j.url) {
+          if (tab) tab.location = j.url;
+          setLaunchState(key, "opened", tab ? (j.status === "already_running" ? "already open ↗" : "opened ↗") : "popup blocked — use copy");
+        } else {
+          if (tab) tab.close();
+          setLaunchState(key, "failed", "failed: " + (j.reason || r.status));
+        }
+      } catch (e) {
+        if (tab) tab.close();
+        setLaunchState(key, "failed", "launch error — use copy");
+      }
+      applyLaunchState(key, openBtn, status);
+    });
+    copyBtn.addEventListener("click", async () => {
+      cmd.select();
+      try {
+        if (!navigator.clipboard) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(cmd.value);
+        copyBtn.textContent = "copied";
+      } catch (e) {
+        copyBtn.textContent = "copy failed";
+      }
+      setTimeout(() => (copyBtn.textContent = "copy"), 1200);
+    });
+    panel.appendChild(el("div", { class: "dash-cmd" }, [armTag, openBtn, copyBtn, cmd, status]));
   }
-  panel.appendChild(el("p", { class: "dim", text: "Paste into a terminal — it launches the real product dashboard for that arm's store." }));
+  panel.appendChild(el("p", { class: "dim", text: "Open spawns the real product dashboard on its own port and opens a tab (each arm gets a distinct port). Copy gives the equivalent terminal command." }));
   wrap.appendChild(panel);
   return wrap;
 }
@@ -235,7 +280,7 @@ async function renderRun(runId, mode) {
     renderGroups(v.groups),
     renderMatrix(v.matrix),
     renderCoverage(v.coverage),
-    renderDashboards(v.dashboards),
+    renderDashboards(v.run_id, v.dashboards),
   );
 }
 

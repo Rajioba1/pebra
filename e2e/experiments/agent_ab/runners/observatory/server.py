@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from e2e.experiments.agent_ab.runners import launch_dashboard
-from e2e.experiments.agent_ab.runners.observatory import aggregate
+from e2e.experiments.agent_ab.runners.observatory import aggregate, launch
 
 _STATIC = Path(__file__).resolve().parent / "static"
 _STATIC_FILES = {
@@ -89,11 +89,68 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "not found"}, 404)
 
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/api/launch":
+            self._send_json({"error": "not found"}, 404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._send_json({"error": "invalid content-length"}, 400)
+            return
+        raw_body = self.rfile.read(length) if length else b"{}"
+        if self.headers.get("X-PEBRA-Observatory") != "1":
+            self._send_json({"error": "missing observatory launch header"}, 403)
+            return
+        if self.headers.get_content_type() != "application/json":
+            self._send_json({"error": "content-type must be application/json"}, 415)
+            return
+        try:
+            body = json.loads(raw_body or b"{}")
+        except ValueError:
+            self._send_json({"error": "invalid json"}, 400)
+            return
+        if not isinstance(body, dict):
+            self._send_json({"error": "json body must be an object"}, 400)
+            return
+        run_id = str(body.get("run_id", ""))
+        clone = str(body.get("clone", ""))
+        # clone is matched by exact string against discovered stores (never used as a path), but reject
+        # path-y input and bad run-ids up front — nothing is spawned for invalid input.
+        if (not launch_dashboard._RUN_ID_RE.fullmatch(run_id) or run_id in (".", "..")  # noqa: SLF001
+                or not clone or "/" in clone or "\\" in clone):
+            self._send_json({"error": "invalid run-id or clone"}, 400)
+            return
+        result = self.server.registry.launch(run_id, clone, ab_out=self.server.ab_out)  # type: ignore[attr-defined]
+        ok = result.get("status") in ("launched", "already_running")
+        status = 200 if ok else _launch_error_status(result)
+        self._send_json(result, status)
 
-def build_server(*, ab_out: Path, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
+
+def _launch_error_status(result: dict) -> int:
+    reason = str(result.get("reason") or "")
+    if reason.startswith("no such store"):
+        return 404
+    if "shutting down" in reason:
+        return 503
+    return 502
+
+
+class _ObservatoryServer(ThreadingHTTPServer):
+    def server_close(self) -> None:
+        registry = getattr(self, "registry", None)
+        if registry is not None:
+            registry.shutdown_all()
+        super().server_close()
+
+
+def build_server(*, ab_out: Path, host: str = "127.0.0.1", port: int = 0,
+                 registry: "launch.DashboardRegistry | None" = None) -> ThreadingHTTPServer:
     """Create (but do not start) the observatory server bound to ``ab_out``. port=0 => OS-assigned."""
-    server = ThreadingHTTPServer((host, port), _Handler)
+    server = _ObservatoryServer((host, port), _Handler)
     server.ab_out = Path(ab_out)  # type: ignore[attr-defined]
+    server.registry = registry if registry is not None else launch.DashboardRegistry()  # type: ignore[attr-defined]
     return server
 
 

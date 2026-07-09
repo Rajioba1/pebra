@@ -244,8 +244,10 @@ python -m pytest e2e/experiments/agent_ab/tests -q
 
 A dev-only, **read-only** web shell over `e2e/out/ab/<run-id>/`. It renders a live run index, arm-vs-arm
 scoreboard, a task×seed×arm status matrix, and a per-language coverage panel, and it drills down into the
-**real `pebra dashboard`** per arm. It never runs an agent, is **not** gated, never imports pebra (it
-shells the dashboard as a subprocess), and never writes into a run dir. Uses only the Python stdlib.
+**real `pebra dashboard`** per arm. It never runs an agent, is **not** gated, never imports pebra in the
+observatory process, and never writes into a run dir. The one-click drilldown shells a child Python process
+that serves the product dashboard directly from the existing `pebra.db` and clone repo path; it does not
+initialize `.pebra/` in the clone. Uses only the Python stdlib.
 
 Launch the live server (opens a browser; polls every 5s — safe to run during a live assay):
 
@@ -268,10 +270,11 @@ python -m e2e.experiments.agent_ab.runners.watch_dashboard --once --run-id <run-
 python -m e2e.experiments.agent_ab.runners.watch_dashboard --once                     # the run index
 ```
 
-Each `pebra` / `pebra_graph_repair` / legacy `treatment` arm row shows a copy-paste `pebra dashboard …`
-command that opens the real product dashboard for that arm's store. (An assay verdict is de-emphasized in
-the UI until the `pebra`-vs-`sham` matched-pair count clears a minimum, so early-run zeros are not read as
-a finding.)
+Each `pebra` / `pebra_graph_repair` / legacy `treatment` arm row has an **Open** button and a copy fallback.
+Open spawns the real product dashboard on an OS-assigned loopback port for that arm's store, so multiple
+arms can be opened side by side without port collisions. The copy field remains available when popup
+blocking or local browser policy gets in the way. (An assay verdict is de-emphasized in the UI until the
+`pebra`-vs-`sham` matched-pair count clears a minimum, so early-run zeros are not read as a finding.)
 
 ## JavaScript/TypeScript specimen prerequisites
 
