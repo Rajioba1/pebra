@@ -9,10 +9,8 @@ This is the leg the seeded-learning scenario doesn't cover (it never calls `veri
 from __future__ import annotations
 
 import difflib
-import hashlib
 import json
 import os
-import shutil
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -21,20 +19,11 @@ import pytest
 
 from e2e.utils import cli_harness as ch
 from e2e.utils import dashboard_harness as dh
+from e2e.utils import rca_probe
 
-
-def _rca_present() -> bool:
-    override = os.environ.get("PEBRA_RCA_BIN", "").strip()
-    if override:
-        p = Path(override)
-        if p.is_file():
-            return True
-        if p.is_dir():
-            return any((p / n).is_file() for n in ("rust-code-analysis-cli.exe", "rust-code-analysis-cli"))
-    return shutil.which("rust-code-analysis-cli") is not None
-
-
-pytestmark = pytest.mark.skipif(not _rca_present(), reason="rust-code-analysis-cli not installed")
+pytestmark = pytest.mark.skipif(
+    rca_probe.find_rca() is None, reason="rust-code-analysis-cli not installed"
+)
 _E2E_UI = os.environ.get("E2E_UI") == "1"
 
 _BEFORE = "def f(x):\n    if x > 0:\n        return x\n    return -x\n"
@@ -62,13 +51,13 @@ def _patch(filename: str, before: str, after: str) -> str:
         fromfile=filename, tofile=filename))
 
 
-def _repo_id(repo: Path) -> str:
-    return "repo_" + hashlib.sha1(str(repo.resolve()).encode("utf-8")).hexdigest()[:12]
-
-
-def _request(path: Path, repo: Path, filename: str, patch: str) -> Path:
+def _request(path: Path, filename: str, patch: str) -> Path:
+    # repo_id in the request body is inert: the assess path resolves repo_id from --repo-root and never
+    # reads this field (it only requires presence), so a literal placeholder avoids duplicating the
+    # production hash formula (which would silently drift). The real repo_id used below comes from the
+    # dashboard's own printed URL (info.repo_id), i.e. genuine production output.
     request = {
-        "schema_version": "0.1", "task": "measured benefit dashboard", "repo_id": _repo_id(repo),
+        "schema_version": "0.1", "task": "measured benefit dashboard", "repo_id": "repo_e2e_placeholder",
         "candidate_actions": [{"id": "a1", "label": "edit", "action_type": "edit",
                                "expected_files": [filename], "proposed_patch": patch}],
         "evidence": {"p_success": 0.9, "immediate_benefit": 0.3, "review_cost": 0.1,
@@ -90,7 +79,7 @@ def _api_get(port: int, token: str, path: str) -> dict:
 def test_dashboard_exposes_measured_rca_benefit(tmp_path):
     repo = _repo(tmp_path / "repo", "calc.py", _BEFORE)
     db = tmp_path / "p.db"
-    req = _request(tmp_path / "r.json", repo, "calc.py", _patch("calc.py", _BEFORE, _SIMPLER))
+    req = _request(tmp_path / "r.json", "calc.py", _patch("calc.py", _BEFORE, _SIMPLER))
     asm = ch.assess(req, repo_root=repo, db=db)["assessment_id"]
 
     (repo / "calc.py").write_text(_SIMPLER, encoding="utf-8")  # apply the simplification for real
@@ -115,7 +104,7 @@ def test_dashboard_history_renders_measured_benefit_detail(tmp_path):
 
     repo = _repo(tmp_path / "repo", "calc.py", _BEFORE)
     db = tmp_path / "p.db"
-    req = _request(tmp_path / "r.json", repo, "calc.py", _patch("calc.py", _BEFORE, _SIMPLER))
+    req = _request(tmp_path / "r.json", "calc.py", _patch("calc.py", _BEFORE, _SIMPLER))
     asm = ch.assess(req, repo_root=repo, db=db)["assessment_id"]
 
     (repo / "calc.py").write_text(_SIMPLER, encoding="utf-8")

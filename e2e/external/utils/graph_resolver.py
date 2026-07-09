@@ -18,12 +18,18 @@ Pure stdlib.
 
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 import subprocess
 import json
 from dataclasses import dataclass
 from pathlib import Path
+
+_CODEGRAPH_ENGINE = "codegraph"
+# Boundary-safe twin of pebra.core.graph_version.CODEGRAPH_DEFAULT_VERSION. Kept in sync by
+# tests/unit/test_codegraph_launcher_parity.py because e2e/ may not import pebra.
+_CODEGRAPH_DEFAULT_VERSION = "1.1.1"
 
 _CALLABLE_KINDS = ("function", "method", "class", "struct", "interface", "trait", "protocol")
 _CALL_EDGE_KINDS = ("calls", "references")
@@ -70,19 +76,56 @@ def _unresolved(edited_symbol: str, reason: str) -> AttributionResult:
     )
 
 
+def _codegraph_launcher_names() -> tuple[str, ...]:
+    # mirrors pebra.core.engine_paths: .cmd then .exe on Windows; bare name on POSIX.
+    return (f"{_CODEGRAPH_ENGINE}.cmd", f"{_CODEGRAPH_ENGINE}.exe") if os.name == "nt" else (_CODEGRAPH_ENGINE,)
+
+
+def _codegraph_launcher_in(bindir: Path) -> str | None:
+    for name in _codegraph_launcher_names():
+        cand = bindir / name
+        if cand.is_file():
+            return str(cand)
+    return None
+
+
+def _resolve_codegraph_launcher() -> str | None:
+    """Boundary-safe twin of ``pebra.core.engine_paths.find_engine`` for locating the codegraph launcher.
+
+    Mirrors production order so this fallback DB locator honors the same install conventions the CLI uses:
+    PEBRA_CODEGRAPH_BIN override (launcher FILE or bin DIR) -> PATH -> PEBRA's pinned managed install.
+    Pinned to find_engine by tests/unit/test_codegraph_launcher_parity.py. Pure stdlib.
+    """
+    override = os.environ.get("PEBRA_CODEGRAPH_BIN", "").strip()
+    if override:
+        p = Path(override)
+        if p.is_file():
+            return str(p)
+        if p.is_dir():
+            hit = _codegraph_launcher_in(p)
+            if hit:
+                return hit
+        # misconfigured override -> fall through to PATH / managed install
+    found = shutil.which(_CODEGRAPH_ENGINE)
+    if found:
+        return found
+    return _codegraph_launcher_in(Path.home() / ".codegraph" / "pebra" / _CODEGRAPH_DEFAULT_VERSION / "bin")
+
+
 def find_codegraph_db(repo_root: Path, hint_db_path: Path | None = None) -> Path | None:
     """Best-effort DB discovery. The e2e conftest supplies the explicit path; this is the fallback."""
     if hint_db_path and Path(hint_db_path).is_file():
         return Path(hint_db_path)
-    cg = shutil.which("codegraph")
+    cg = _resolve_codegraph_launcher()
     if cg:
         try:
             proc = subprocess.run(
                 [cg, "status", str(repo_root), "--json"], capture_output=True, text=True, timeout=60
             )
             if proc.returncode == 0:
-                index_path = json.loads(proc.stdout).get("indexPath")
-                if index_path:
+                payload = json.loads(proc.stdout)
+                index_path = payload.get("indexPath") if isinstance(payload, dict) else None
+                if isinstance(index_path, str) and index_path:
                     db = Path(index_path) / "codegraph.db"
                     if db.is_file():
                         return db

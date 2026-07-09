@@ -9,7 +9,9 @@ soft to ``unresolved`` instead of raising. No pebra import.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from types import SimpleNamespace
 
 from e2e.external.utils import diagnostic_parser as dp
 from e2e.external.utils import graph_resolver as gr
@@ -178,6 +180,21 @@ def test_missing_db_file_returns_unresolved(tmp_path):
     assert r.attribution_method == "unresolved"
     assert r.attribution_confidence == 0.0
     assert r.graph_freshness == "unknown"
+
+
+def test_find_codegraph_db_falls_back_on_malformed_status_shape(tmp_path, monkeypatch):
+    fallback = tmp_path / ".codegraph" / "codegraph.db"
+    fallback.parent.mkdir()
+    fallback.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(gr, "_resolve_codegraph_launcher", lambda: "/usr/bin/codegraph")
+    monkeypatch.setattr(
+        gr.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(["not", "an", "object"])),
+    )
+
+    assert gr.find_codegraph_db(tmp_path) == fallback
 
 
 def test_schema_below_v5_returns_unresolved(tmp_path):
