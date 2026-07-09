@@ -8,6 +8,7 @@ fail-soft (200 with ``available:false`` when the graph or repo binding is missin
 
 from __future__ import annotations
 
+import sqlite3
 from collections import Counter
 from typing import Any, Callable
 
@@ -24,7 +25,11 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
     router = APIRouter(prefix="/api", dependencies=[Depends(require_bearer)])
 
     def _open(request: Request) -> SqliteStore:
-        return SqliteStore(request.app.state.db_path)
+        try:
+            return SqliteStore(request.app.state.db_path,
+                               read_only=getattr(request.app.state, "read_only", False))
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=503, detail="assessment store unavailable") from exc
 
     @router.get("/repos/{repo_id}/assessments")
     def assessments(
@@ -213,7 +218,11 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
 
 
 def _assessment_detail(request: Request, assessment_id: str) -> dict[str, Any]:
-    store = SqliteStore(request.app.state.db_path)
+    try:
+        store = SqliteStore(request.app.state.db_path,
+                            read_only=getattr(request.app.state, "read_only", False))
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=503, detail="assessment store unavailable") from exc
     try:
         return store.assessment_detail(assessment_id)
     except KeyError as exc:

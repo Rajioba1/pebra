@@ -221,7 +221,7 @@ function renderDashboards(runId, dashboards) {
   const panel = el("div", { class: "panel" });
   for (const d of dashboards) {
     const armTag = el("span", { class: "tag arm", text: d.arm || "unattributed" });
-    const cmd = el("input", { class: "mono", readonly: true, value: d.launch_command || "(no repo/ dir — cannot resolve --repo-root)" });
+    const cmd = el("input", { class: "mono", readonly: true, value: d.launch_command || "(no repo/ dir — cannot derive --repo-id)" });
     const openBtn = el("button", { class: "btn", text: "Open" });
     const copyBtn = el("button", { class: "btn ghost", text: "copy" });
     const status = el("span", { class: "dim launch-status" });
@@ -262,7 +262,7 @@ function renderDashboards(runId, dashboards) {
     });
     panel.appendChild(el("div", { class: "dash-cmd" }, [armTag, openBtn, copyBtn, cmd, status]));
   }
-  panel.appendChild(el("p", { class: "dim", text: "Open spawns the real product dashboard on its own port and opens a tab (each arm gets a distinct port). Copy gives the equivalent terminal command." }));
+  panel.appendChild(el("p", { class: "dim", text: "Open serves a validated temp copy on its own port. Copy gives a direct read-only fallback command for after-run inspection." }));
   wrap.appendChild(panel);
   return wrap;
 }

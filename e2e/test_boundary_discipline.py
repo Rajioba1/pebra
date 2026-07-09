@@ -28,7 +28,48 @@ def _pebra_imports(path: Path) -> list[str]:
             mod = node.module or ""
             if mod == "pebra" or mod.startswith("pebra."):
                 hits.append(mod)
+        elif isinstance(node, ast.Call):
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "import_module"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "importlib"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and (node.args[0].value == "pebra" or node.args[0].value.startswith("pebra."))
+            ):
+                hits.append(node.args[0].value)
+            elif (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "__import__"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and (node.args[0].value == "pebra" or node.args[0].value.startswith("pebra."))
+            ):
+                hits.append(node.args[0].value)
     return hits
+
+
+def test_pebra_import_scanner_rejects_dynamic_in_process_imports(tmp_path):
+    py = tmp_path / "bad.py"
+    py.write_text(
+        "import importlib\n"
+        "importlib.import_module('pebra.dashboard.server')\n"
+        "__import__('pebra.adapters.store.db')\n",
+        encoding="utf-8",
+    )
+    assert _pebra_imports(py) == ["pebra.dashboard.server", "pebra.adapters.store.db"]
+
+
+def test_pebra_import_scanner_allows_subprocess_code_strings(tmp_path):
+    py = tmp_path / "ok.py"
+    py.write_text(
+        "CODE = 'from pebra.dashboard.server import serve\\n'\n",
+        encoding="utf-8",
+    )
+    assert _pebra_imports(py) == []
 
 
 def test_no_e2e_module_imports_pebra_internals():

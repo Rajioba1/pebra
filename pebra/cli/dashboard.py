@@ -23,6 +23,12 @@ def register(subparsers: Any) -> None:
         "--repo-id", default=None,
         help="Override the resolved repo_id (for replaying a db copied from another path/machine).",
     )
+    p.add_argument(
+        "--read-only", action="store_true",
+        help="Serve the db with SQLite mode=ro: no schema/data writes and NO .pebra/ init. "
+             "Requires --db and --repo-id (skips repo-root resolution). For strict filesystem isolation "
+             "from a WAL db, serve a copied db instead of the live clone file.",
+    )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument(
         "--port", type=int, default=None,
@@ -44,9 +50,25 @@ def register(subparsers: Any) -> None:
 
 
 def run(args: Any) -> int:
-    registry = RepositoryRegistry()
-    repo = registry.resolve(args.repo_root or ".")
-    db_path = args.db or str(Path(repo.repo_root) / ".pebra" / "pebra.db")
+    if args.read_only:
+        # Read-only viewer: skip RepositoryRegistry.resolve() entirely so NO .pebra/ is initialized
+        # anywhere (resolve() would create one under --repo-root or the cwd). The caller supplies the
+        # identity directly; --repo-root, if supplied, is graph context and is not resolved/initialized.
+        if not args.db or not args.repo_id:
+            print("error: --read-only requires --db and --repo-id", file=sys.stderr)
+            return 1
+        if not Path(args.db).is_file():
+            print(f"error: --read-only db does not exist: {args.db}", file=sys.stderr)
+            return 1
+        db_path = args.db
+        repo_id = args.repo_id
+        repo_root = args.repo_root
+    else:
+        registry = RepositoryRegistry()
+        repo = registry.resolve(args.repo_root or ".")
+        db_path = args.db or str(Path(repo.repo_root) / ".pebra" / "pebra.db")
+        repo_id = args.repo_id or repo.repo_id
+        repo_root = repo.repo_root
     # lazy: FastAPI/uvicorn are only needed to actually serve — never at CLI import time.
     from pebra.dashboard.server import resolve_dashboard_token, serve
 
@@ -63,8 +85,9 @@ def run(args: Any) -> int:
         requested_port=args.port,
         instance=args.instance,
         token=token,
-        repo_id=args.repo_id or repo.repo_id,
-        repo_root=repo.repo_root,
+        repo_id=repo_id,
+        repo_root=repo_root,
+        read_only=args.read_only,
         open_browser=args.open,
     )
     return 0

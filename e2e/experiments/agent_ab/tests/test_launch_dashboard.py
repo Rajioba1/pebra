@@ -43,14 +43,17 @@ def test_list_run_dbs_rejects_path_like_run_id(tmp_path):
 def test_dashboard_command_shape():
     cmd = ld.dashboard_command("/r", "/r/../pebra.db", 4500)
     assert cmd[:4] == [sys.executable, "-m", "pebra", "dashboard"]
-    assert "--open" in cmd and "4500" in cmd and "--repo-root" in cmd
+    assert "--open" in cmd and "4500" in cmd
+    # write-free posture: --db + --repo-id + --read-only, and NO --repo-root (which would init .pebra/).
+    assert "--db" in cmd and "--repo-id" in cmd and "--read-only" in cmd
+    assert "--repo-root" not in cmd
+    assert ld.repo_id_for("/r") in cmd  # the repo_id is derived from the repo, not passed as --repo-root
 
 
 def test_render_command_quotes_paths_with_spaces():
     cmd = ld.dashboard_command("C:/with space/repo", "C:/with space/pebra.db", 4500)
     rendered = ld.render_command(cmd)
-    assert '"C:/with space/repo"' in rendered
-    assert '"C:/with space/pebra.db"' in rendered
+    assert '"C:/with space/pebra.db"' in rendered  # the db path (the only path in the command) is quoted
 
 
 def test_main_prints_command_for_a_real_store(tmp_path, capsys):

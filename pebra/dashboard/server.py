@@ -101,11 +101,15 @@ def create_app(
     repo_id: str | None = None,
     repo_root: str | None = None,
     graph_reader: object | None = None,
+    read_only: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="PEBRA Risk Observatory")
     app.state.db_path = db_path
     app.state.token = token or None
     app.state.repo_id = repo_id
+    # read_only opens each per-request SqliteStore mode=ro (no schema/WAL/data writes) — the posture for
+    # viewing a db we must not mutate, e.g. the observatory drilldown against an experiment clone.
+    app.state.read_only = read_only
     # repo_root binds the graph routes to a codebase on disk (the .codegraph index). None (e.g. a
     # replayed db from another machine) makes the graph routes fail-soft, never error.
     app.state.repo_root = repo_root
@@ -154,6 +158,7 @@ def serve(
     repo_id: str | None = None,
     repo_root: str | None = None,
     open_browser: bool = False,
+    read_only: bool = False,
 ) -> None:
     import uvicorn
 
@@ -162,7 +167,7 @@ def serve(
     token = token or None
     _require_token_for_network_bind(host, token)  # never expose the store to the network unauthenticated
     port = ports.allocate_port(host, requested=requested_port, instance=instance)
-    app = create_app(db_path, token, repo_id=repo_id, repo_root=repo_root)
+    app = create_app(db_path, token, repo_id=repo_id, repo_root=repo_root, read_only=read_only)
     url = _startup_url(host, port, token, repo_id)
     print(f"PEBRA Risk Observatory: {url}")
     if open_browser:

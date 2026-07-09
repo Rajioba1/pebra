@@ -245,9 +245,14 @@ python -m pytest e2e/experiments/agent_ab/tests -q
 A dev-only, **read-only** web shell over `e2e/out/ab/<run-id>/`. It renders a live run index, arm-vs-arm
 scoreboard, a task×seed×arm status matrix, and a per-language coverage panel, and it drills down into the
 **real `pebra dashboard`** per arm. It never runs an agent, is **not** gated, never imports pebra in the
-observatory process, and never writes into a run dir. The one-click drilldown shells a child Python process
-that serves the product dashboard directly from the existing `pebra.db` and clone repo path; it does not
-initialize `.pebra/` in the clone. Uses only the Python stdlib.
+observatory process, and never writes into a run dir. The one-click "Open" drilldown shells a child Python
+process that serves the product dashboard **read-only against a validated throwaway file-copy of the arm's
+`pebra.db`** — the clone DB is never opened (even a read-only SQLite open of a WAL db can leave `-wal`/`-shm`
+sidecars), no `.pebra/` is initialized, and the live assay writer is not contended by the dashboard. The
+temp copy is removed when the observatory exits. The copy-paste fallback command uses
+`pebra dashboard --db … --repo-id … --read-only` (no CLI `--repo-root` resolution, which would init
+`.pebra/`), but it opens the original db directly; use **Open** for strict clone isolation. Uses only the
+Python stdlib in the observatory process.
 
 Launch the live server (opens a browser; polls every 5s — safe to run during a live assay):
 

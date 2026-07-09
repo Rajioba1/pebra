@@ -17,6 +17,7 @@ import hashlib
 import json
 import math
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from pebra.core.constants import MIN_CALIBRATION_SAMPLES
@@ -305,8 +306,20 @@ def _path_scope_entries(files: Any) -> set[str]:
 
 
 class SqliteStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, read_only: bool = False) -> None:
         self._db_path = db_path
+        self._read_only = read_only
+        if read_only:
+            # Read-only viewer posture (dashboard): open the db mode=ro. This NEVER creates or writes the
+            # db file's data/schema, and any write raises at the SQLite engine level ("attempt to write a
+            # readonly database"). WAL-mode SQLite can still create reader sidecars in the db directory; use
+            # a copied db when the surrounding directory must stay untouched. We do NOT pass immutable=1
+            # because that would be unsafe if a concurrent writer is modifying the db.
+            uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
+            self._con = sqlite3.connect(uri, uri=True, isolation_level=None)
+            self._con.execute("PRAGMA busy_timeout=5000")
+            self._con.execute("PRAGMA foreign_keys=ON")
+            return
         # isolation_level=None: disable Python's implicit transaction management so our explicit
         # BEGIN IMMEDIATE / COMMIT fully owns the write transaction (no "transaction within a
         # transaction" race; concurrent writers serialize on the IMMEDIATE lock — §10).

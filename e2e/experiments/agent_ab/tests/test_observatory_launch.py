@@ -5,7 +5,9 @@ missing store / no-bind, and tears every child down on shutdown_all(). Popen is 
 
 from __future__ import annotations
 
+import sqlite3
 import subprocess
+from pathlib import Path
 
 from e2e.experiments.agent_ab.runners.observatory import launch as launch_mod
 
@@ -48,9 +50,16 @@ class _StubbornProc(_FakeProc):
         return 0
 
 
+def _stub_copy(monkeypatch):
+    # The launch-LOGIC tests stub the file-copy (returning the source db path unchanged) so they don't
+    # need real db files; _copy_db_to_temp itself is covered by test_copy_db_to_temp_leaves_clone_untouched.
+    monkeypatch.setattr(launch_mod, "_copy_db_to_temp", lambda db: ("/fake/obs-tmp", db))
+
+
 def _patch(monkeypatch, *, stores, proc, calls):
     monkeypatch.setattr(launch_mod.launch_dashboard, "list_run_dbs",
                         lambda run_id, ab_out: stores)
+    _stub_copy(monkeypatch)
     def _popen(cmd, **kwargs):
         calls.append(cmd)
         return proc
@@ -70,8 +79,11 @@ def test_launch_spawns_and_returns_bound_url(tmp_path, monkeypatch):
     cmd = calls[0]
     assert cmd[:3] == [launch_mod.sys.executable, "-u", "-c"]
     assert "pebra.dashboard.server" in cmd[3]
-    assert "dashboard" not in cmd[4:]  # bypasses `pebra dashboard`, which initializes .pebra
-    assert "/x/db" in cmd and "/x/repo" in cmd
+    assert "read_only=True" in cmd[3]                  # serves the copy read-only
+    assert "dashboard" not in cmd[4:]                  # bypasses `pebra dashboard`, which inits .pebra
+    assert "/x/db" in cmd                              # the (stub) copied db path
+    assert launch_mod.repo_id_for("/x/repo") in cmd    # the clone's repo_id is passed...
+    assert "/x/repo" in cmd                            # ...and repo_root is passed for graph routes
 
 
 def test_launch_is_idempotent_per_clone(tmp_path, monkeypatch):
@@ -91,6 +103,7 @@ def test_same_clone_name_in_different_runs_spawns_distinct_dashboards(tmp_path, 
     monkeypatch.setattr(launch_mod.launch_dashboard, "list_run_dbs",
                         lambda run_id, ab_out: [{"clone": "same", "db": f"/{run_id}/db",
                                                  "repo": f"/{run_id}/repo"}])
+    _stub_copy(monkeypatch)
     procs = [
         _FakeProc(["PEBRA Risk Observatory: http://127.0.0.1:5555/\n"], pid=1),
         _FakeProc(["PEBRA Risk Observatory: http://127.0.0.1:5556/\n"], pid=2),
@@ -146,6 +159,25 @@ def test_no_bound_url_kills_stubborn_child(tmp_path, monkeypatch):
     assert proc.killed is True
 
 
+def test_popen_failure_cleans_temp_copy(tmp_path, monkeypatch):
+    stores = [{"clone": "c", "db": "/db", "repo": "/repo"}]
+    tmp_dir = tmp_path / "obs-tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setattr(launch_mod.launch_dashboard, "list_run_dbs",
+                        lambda run_id, ab_out: stores)
+    monkeypatch.setattr(launch_mod, "_copy_db_to_temp",
+                        lambda db: (str(tmp_dir), str(tmp_dir / "pebra.db")))
+
+    def _raise(*_args, **_kwargs):
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(launch_mod.subprocess, "Popen", _raise)
+    res = launch_mod.DashboardRegistry().launch("r1", "c", ab_out=tmp_path, bind_timeout=1)
+    assert res["status"] == "error"
+    assert "spawn failed" in res["reason"]
+    assert not tmp_dir.exists()
+
+
 def test_launch_after_shutdown_is_refused_without_spawning(tmp_path, monkeypatch):
     calls = []
     _patch(monkeypatch, stores=[{"clone": "c", "db": "/db", "repo": "/repo"}],
@@ -162,6 +194,7 @@ def test_concurrent_same_clone_launch_does_not_double_spawn(tmp_path, monkeypatc
 
     monkeypatch.setattr(launch_mod.launch_dashboard, "list_run_dbs",
                         lambda run_id, ab_out: [{"clone": "c", "db": "/db", "repo": "/repo"}])
+    _stub_copy(monkeypatch)
     gate = threading.Event()       # released to let the first launch's URL read complete
     in_read = threading.Event()    # signals the first launch is mid-read, holding the clone lock
 
@@ -205,6 +238,123 @@ def test_concurrent_same_clone_launch_does_not_double_spawn(tmp_path, monkeypatc
     assert sorted([results["a"]["status"], results["b"]["status"]]) == ["already_running", "launched"]
 
 
+def test_copy_db_to_temp_leaves_clone_untouched(tmp_path):
+    # The db (+ WAL sidecars) is file-copied without opening the clone db, so no reader-created
+    # -wal/-shm appear in the clone dir, and the copied snapshot is readable by SQLite.
+    clone = tmp_path / "JS1_seed0_x"
+    clone.mkdir()
+    db = clone / "pebra.db"
+    con = sqlite3.connect(db, isolation_level=None)
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("CREATE TABLE t(v TEXT)")
+        con.execute("INSERT INTO t(v) VALUES ('ok')")
+        assert (clone / "pebra.db-wal").exists()
+        assert (clone / "pebra.db-shm").exists()
+        before = {p.name for p in clone.iterdir()}
+
+        tmp_dir, tmp_db = launch_mod._copy_db_to_temp(str(db))
+        try:
+            copied = Path(tmp_db)
+            assert copied.read_bytes()
+            assert (Path(tmp_dir) / "pebra.db-wal").exists()
+            assert (Path(tmp_dir) / "pebra.db-shm").exists()
+            ro = sqlite3.connect(copied.resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                assert ro.execute("SELECT v FROM t").fetchone()[0] == "ok"
+                assert ro.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            finally:
+                ro.close()
+            assert {p.name for p in clone.iterdir()} == before  # clone dir NOT written to
+        finally:
+            launch_mod._rmtree(tmp_dir)
+    finally:
+        con.close()
+
+
+def test_copy_db_to_temp_cleans_up_on_copy_failure(tmp_path, monkeypatch):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    db = clone / "pebra.db"
+    db.write_bytes(b"not copied")
+    tmp_dir = tmp_path / "copy-target"
+
+    def _mkdtemp(prefix):
+        tmp_dir.mkdir()
+        return str(tmp_dir)
+
+    monkeypatch.setattr(launch_mod.tempfile, "mkdtemp", _mkdtemp)
+
+    def _raise(*_args, **_kwargs):
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(launch_mod.shutil, "copy2", _raise)
+
+    try:
+        launch_mod._copy_db_to_temp(str(db))
+        raise AssertionError("expected copy failure")
+    except OSError as exc:
+        assert "copy failed" in str(exc)
+    assert not tmp_dir.exists()
+
+
+def test_launch_serves_temp_copy_not_the_clone_db(tmp_path, monkeypatch):
+    # At the launch level: the served db is a temp COPY (not the clone's pebra.db), the clone
+    # dir is never written, and the temp copy is removed on shutdown. Real _copy_db_to_temp (not stubbed).
+    clone = tmp_path / "JS1_seed0_x"
+    clone.mkdir()
+    db = clone / "pebra.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE t(v TEXT)")
+    con.execute("INSERT INTO t(v) VALUES ('data')")
+    con.commit()
+    con.close()
+    stores = [{"clone": clone.name, "db": str(db), "repo": str(tmp_path / "repo")}]
+    monkeypatch.setattr(launch_mod.launch_dashboard, "list_run_dbs", lambda run_id, ab_out: stores)
+    proc = _FakeProc(["PEBRA Risk Observatory: http://127.0.0.1:5555/\n"])
+    calls = []
+    monkeypatch.setattr(launch_mod.subprocess, "Popen", lambda cmd, **kw: (calls.append(cmd) or proc))
+    before = {p.name for p in clone.iterdir()}
+
+    reg = launch_mod.DashboardRegistry()
+    res = reg.launch("r1", clone.name, ab_out=tmp_path, bind_timeout=5)
+    assert res["status"] == "launched"
+    served_db = Path(calls[0][4])                       # cmd = [exe,-u,-c,CODE, <db>, <repo_id>]
+    ro = sqlite3.connect(served_db.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        assert ro.execute("SELECT v FROM t").fetchone()[0] == "data"
+    finally:
+        ro.close()
+    assert clone not in served_db.parents               # served from temp, NOT the clone dir
+    assert {p.name for p in clone.iterdir()} == before  # clone dir untouched (no -wal/-shm added)
+
+    reg.shutdown_all()
+    assert not served_db.exists()                       # temp copy reaped on shutdown
+
+
+def test_relaunch_after_dead_child_reaps_old_temp_copy(tmp_path, monkeypatch):
+    monkeypatch.setattr(launch_mod.launch_dashboard, "list_run_dbs",
+                        lambda run_id, ab_out: [{"clone": "c", "db": "/db", "repo": "/repo"}])
+    tmp1 = tmp_path / "tmp1"
+    tmp2 = tmp_path / "tmp2"
+    tmp1.mkdir()
+    tmp2.mkdir()
+    copies = [(str(tmp1), str(tmp1 / "pebra.db")), (str(tmp2), str(tmp2 / "pebra.db"))]
+    monkeypatch.setattr(launch_mod, "_copy_db_to_temp", lambda db: copies.pop(0))
+    first = _FakeProc(["PEBRA Risk Observatory: http://127.0.0.1:5555/\n"], pid=1)
+    second = _FakeProc(["PEBRA Risk Observatory: http://127.0.0.1:5556/\n"], pid=2)
+    procs = [first, second]
+    monkeypatch.setattr(launch_mod.subprocess, "Popen", lambda cmd, **kwargs: procs.pop(0))
+    reg = launch_mod.DashboardRegistry()
+
+    assert reg.launch("r1", "c", ab_out=tmp_path, bind_timeout=5)["pid"] == 1
+    first._alive = False
+    assert reg.launch("r1", "c", ab_out=tmp_path, bind_timeout=5)["pid"] == 2
+
+    assert not tmp1.exists()
+    assert tmp2.exists()
+
+
 def test_shutdown_all_terminates_children(tmp_path, monkeypatch):
     stores = [{"clone": "c", "db": "/db", "repo": "/repo"}]
     proc = _FakeProc(["PEBRA Risk Observatory: http://127.0.0.1:5555/\n"])
@@ -221,6 +371,7 @@ def test_shutdown_all_terminates_inflight_child(tmp_path, monkeypatch):
 
     monkeypatch.setattr(launch_mod.launch_dashboard, "list_run_dbs",
                         lambda run_id, ab_out: [{"clone": "c", "db": "/db", "repo": "/repo"}])
+    _stub_copy(monkeypatch)
     in_read = threading.Event()
     release = threading.Event()
 
