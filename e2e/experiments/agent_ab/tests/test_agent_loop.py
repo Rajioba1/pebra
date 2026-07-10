@@ -37,6 +37,7 @@ def test_end_turn_no_tools(tmp_path, monkeypatch):
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
                        client=ScriptedClient([ModelTurn(text="done", stop_reason="end_turn")]), config=_CFG)
     assert r.tool_calls == () and r.task_id == "T1" and r.arm == "control"
+    assert r.limit_reason == "model_stop"
 
 
 def test_tool_call_captured_with_sequence(tmp_path, monkeypatch):
@@ -61,6 +62,7 @@ def test_max_tool_calls_limit(tmp_path, monkeypatch):
     client = ScriptedClient([_tool("list_dir")] * 10 + [ModelTurn(stop_reason="end_turn")])
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0, client=client, config=cfg)
     assert len(r.tool_calls) == 2
+    assert r.limit_reason == "tool_call_limit"
 
 
 def test_wall_time_timeout(tmp_path, monkeypatch):
@@ -72,6 +74,7 @@ def test_wall_time_timeout(tmp_path, monkeypatch):
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
                        client=ScriptedClient([_tool("list_dir")] * 5), config=cfg)
     assert r.timed_out is True
+    assert r.limit_reason == "wall_clock"
 
 
 def test_prompt_leak_aborts_before_first_send(tmp_path, monkeypatch):

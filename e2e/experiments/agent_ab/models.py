@@ -42,6 +42,7 @@ REAL_ADVISORY_ARMS = frozenset({ARM_TREATMENT, ARM_PEBRA, ARM_PEBRA_GRAPH_REPAIR
 # Pre-registered assay verdicts (checked in order; see metrics/assay_interpret.py).
 VERDICT_NO_HEADROOM = "INVALID_NO_HEADROOM"
 VERDICT_ASSAY_INSENSITIVE = "INVALID_ASSAY_INSENSITIVE"
+VERDICT_INSUFFICIENT_DATA = "INVALID_INSUFFICIENT_DATA"
 VERDICT_PEBRA_INFERIOR = "PEBRA_INFERIOR"
 VERDICT_PEBRA_PARTIAL = "PEBRA_EFFICACY_PARTIAL"
 VERDICT_PEBRA_SUPERIOR = "PEBRA_SUPERIOR"
@@ -113,6 +114,7 @@ class SubjectResult:
     timed_out: bool = False
     error: str | None = None
     final_stop_reason: str | None = None
+    limit_reason: str | None = None
     turn_count: int = 0
     served_models: tuple[str, ...] = ()
     protocol_file_read: bool = False
@@ -154,8 +156,9 @@ class RunOutcome:
     blinding_leak: bool
     blinding_terms: tuple[str, ...]
     timed_out: bool
-    no_attempt: bool = False             # timed out / stopped without an edit attempt or restrictive gate
+    no_attempt: bool = False             # stopped without an edit attempt or restrictive gate
     error: str | None = None            # non-None => run failed (e.g. live client error); excluded from metrics
+    limit_reason: str | None = None
     advisory_effective: bool = False
     served_models: tuple[str, ...] = ()
     over_caution_cause: str | None = None

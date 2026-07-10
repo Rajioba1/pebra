@@ -306,7 +306,7 @@ def run(
         task_id=spec.task_id, arm=setup.arm, seed=seed,
         transcript=tuple(transcript), tool_calls=tuple(records), modified_files=modified,
         duration_seconds=round(time.monotonic() - start, 2), timed_out=timed_out, error=error,
-        final_stop_reason=final_stop_reason, turn_count=turn_count,
+        final_stop_reason=final_stop_reason, limit_reason=limit_reason, turn_count=turn_count,
         served_models=tuple(served_models),
         protocol_file_read=protocol_read,
     )

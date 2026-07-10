@@ -161,7 +161,7 @@ function renderMatrix(matrix) {
       else {
         const s = m.outcome_summary || {};
         let cls = "cell done", title = "done";
-        if (s.no_attempt) { cls = "cell noattempt"; title = "no attempt"; }
+        if (s.no_attempt) { cls = "cell noattempt"; title = "no attempt" + (s.limit_reason ? ": " + s.limit_reason : ""); }
         else if (s.harm_materialized) { cls = "cell harm"; title = "harm materialized"; }
         else if (s.over_cautious) { cls = "cell caution"; title = "over-cautious"; }
         else if (s.error) { title = "error: " + s.error; }

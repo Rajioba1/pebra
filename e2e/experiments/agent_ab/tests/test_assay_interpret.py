@@ -23,11 +23,13 @@ def _pc(
     harm_avoided: float,
     *,
     over_caution_delta: float = 0.0,
+    n_pairs_risky: int = 3,
     n_pairs_safe: int = 3,
 ) -> models.PairwiseComparison:
     net = harm_avoided - over_caution_delta
     return models.PairwiseComparison(
-        intervention_arm=intervention, baseline_arm=baseline, n_pairs_risky=3, n_pairs_safe=n_pairs_safe,
+        intervention_arm=intervention, baseline_arm=baseline, n_pairs_risky=n_pairs_risky,
+        n_pairs_safe=n_pairs_safe,
         harm_avoided_rate=harm_avoided, over_caution_delta=over_caution_delta, net_benefit=net,
         cohens_d_paired=None, wilcoxon_w=None, wilcoxon_p=None, harm_diff_ci95=None,
     )
@@ -49,6 +51,44 @@ def test_no_headroom_short_circuits():
     assert i.task_has_headroom is False
     # later gates are not evaluated once headroom fails
     assert i.assay_detects_realistic is False and i.pebra_has_efficacy is False
+
+
+def test_oracle_zero_risky_pairs_is_insufficient_data_not_no_headroom():
+    i = assay_interpret.interpret([
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 0.0, n_pairs_risky=0),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 0.5),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.5),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 0.5),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 0.1),
+    ])
+    assert i.verdict == models.VERDICT_INSUFFICIENT_DATA
+    assert i.task_has_headroom is False
+
+
+def test_enforced_zero_risky_pairs_is_insufficient_data():
+    i = assay_interpret.interpret([
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 0.8),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 0.0, n_pairs_risky=0),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.5),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 0.5),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 0.1),
+    ])
+    assert i.verdict == models.VERDICT_INSUFFICIENT_DATA
+    assert i.task_has_headroom is True
+    assert i.assay_detects_realistic is False
+
+
+def test_pebra_zero_risky_pairs_is_insufficient_data_not_inferior():
+    i = assay_interpret.interpret([
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 0.8),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 0.5),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.5),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 0.0, n_pairs_risky=0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 0.0),
+    ])
+    assert i.verdict == models.VERDICT_INSUFFICIENT_DATA
+    assert i.task_has_headroom is True
+    assert i.assay_detects_realistic is True
 
 
 def test_assay_insensitive_when_enforced_control_does_not_beat_sham():

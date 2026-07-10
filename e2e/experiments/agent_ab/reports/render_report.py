@@ -213,6 +213,9 @@ _VERDICT_NOTE = {
                          "verdict for validity or efficacy claims.",
     "INVALID_NO_HEADROOM": "Oracle did not beat sham → the task cannot register improvement (no harm "
                            "headroom). Fix the corpus; do NOT interpret any other arm.",
+    "INVALID_INSUFFICIENT_DATA": "No scorable risky pairs for a required comparison → the run did not "
+                                 "produce enough baseline/intervention data. Diagnose no-attempt/error "
+                                 "runs; do NOT interpret efficacy.",
     "INVALID_ASSAY_INSENSITIVE": "Enforced control did not beat sham → the assay cannot detect "
                                  "mechanically preventable harm. PEBRA's result is uninterpretable.",
     "PEBRA_INFERIOR": "PEBRA did not beat sham (net benefit) → weaker than baseline.",
