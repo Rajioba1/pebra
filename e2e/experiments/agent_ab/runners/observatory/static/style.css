@@ -99,6 +99,11 @@ table.matrix th.rowh { text-align: left; color: var(--ink-dim); position: sticky
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .groups { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 
+/* traces */
+.trace-wrap { overflow-x: auto; }
+.trace-table { min-width: 980px; }
+.trace-table tr.trace-timeout td { color: var(--caution); }
+
 /* generic tables */
 table.data { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
 table.data th, table.data td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--edge); }

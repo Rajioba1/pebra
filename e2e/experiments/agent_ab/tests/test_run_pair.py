@@ -83,7 +83,7 @@ def test_invoke_subject_agent_honors_model_env_override(monkeypatch, tmp_path):
         }
     })
     monkeypatch.setattr(model_client, "AnthropicClient", CapturingClient)
-    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config: SubjectResult(
+    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config, trace_path=None: SubjectResult(
         task_id=spec.task_id, arm=setup.arm, seed=seed,
     ))
     monkeypatch.setattr(evaluator, "run_evaluator", lambda repo_path, task_id: (
@@ -122,7 +122,7 @@ def test_invoke_subject_agent_can_use_deepseek_provider(monkeypatch, tmp_path):
         }
     })
     monkeypatch.setattr(model_client, "AnthropicClient", CapturingClient)
-    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config: SubjectResult(
+    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config, trace_path=None: SubjectResult(
         task_id=spec.task_id, arm=setup.arm, seed=seed,
     ))
     monkeypatch.setattr(evaluator, "run_evaluator", lambda repo_path, task_id: (

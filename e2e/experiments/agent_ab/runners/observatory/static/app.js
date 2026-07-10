@@ -200,6 +200,57 @@ function renderGroups(groups) {
   return wrap;
 }
 
+function renderTraces(traces) {
+  const wrap = el("div", {});
+  wrap.appendChild(el("h2", { text: "Subject traces" }));
+  if (!traces || !traces.length) {
+    wrap.appendChild(el("p", { class: "dim", text: "No subject_trace.json sidecars yet. New runs write one per arm clone." }));
+    return wrap;
+  }
+  const rows = traces.slice().sort((a, b) => (
+    String(a.task_id || "").localeCompare(String(b.task_id || ""))
+    || Number(a.seed || 0) - Number(b.seed || 0)
+    || String(a.arm || "").localeCompare(String(b.arm || ""))
+  ));
+  const table = el("table", { class: "data trace-table" });
+  table.appendChild(el("tr", {}, [
+    el("th", { text: "task" }),
+    el("th", { text: "arm" }),
+    el("th", { class: "num", text: "turns" }),
+    el("th", { class: "num", text: "tools" }),
+    el("th", { text: "timeout" }),
+    el("th", { text: "protocol" }),
+    el("th", { text: "advisory" }),
+    el("th", { text: "writes" }),
+    el("th", { text: "last" }),
+    el("th", { class: "num", text: "duration" }),
+  ]));
+  for (const t of rows) {
+    const decisions = (t.advisory_decisions || []).join(", ") || "—";
+    const timeoutText = t.timed_out ? (t.limit_reason || "timeout") : "no";
+    const writeText = String(t.write_count || 0) + (t.blocked_write_count ? " · blocked " + t.blocked_write_count : "");
+    const lastText = [t.last_tool_name || "—", t.last_turn_stop_reason || ""].filter(Boolean).join(" · ");
+    const rowClass = t.timed_out ? "trace-timeout" : "";
+    table.appendChild(el("tr", { class: rowClass }, [
+      el("td", { text: String(t.task_id || "—") + " · seed " + String(t.seed ?? "—") }),
+      el("td", { text: t.arm || "—" }),
+      el("td", { class: "num", text: t.turn_count ?? "—" }),
+      el("td", { class: "num", text: t.tool_call_count ?? "—" }),
+      el("td", { text: timeoutText }),
+      el("td", { text: t.protocol_file_read ? "read" : "not read" }),
+      el("td", { text: String(t.advisory_count || 0) + " · " + decisions }),
+      el("td", { text: writeText }),
+      el("td", { text: lastText }),
+      el("td", { class: "num", text: t.duration_seconds == null ? "—" : Number(t.duration_seconds).toFixed(1) + "s" }),
+    ]));
+  }
+  wrap.appendChild(el("div", { class: "panel trace-wrap" }, [
+    table,
+    el("p", { class: "dim", text: "Trace rows summarize subject_trace.json sidecars: model turns, tool calls, protocol-file reads, advisory decisions, write blocks, and timeout reason." }),
+  ]));
+  return wrap;
+}
+
 function renderCoverage(cov) {
   if (!cov || !cov.available) return el("div", {}, [el("h2", { text: "Language coverage" }), el("p", { class: "dim", text: cov && cov.reason ? cov.reason : "not available" })]);
   const t = el("table", { class: "data" });
@@ -281,6 +332,7 @@ async function renderRun(runId, mode) {
     renderScoreboard(v.scoreboard),
     renderGroups(v.groups),
     renderMatrix(v.matrix),
+    renderTraces(v.traces),
     renderCoverage(v.coverage),
     renderDashboards(v.run_id, v.dashboards),
   );

@@ -27,3 +27,15 @@ def test_numeric_headers_align_with_numeric_cells():
     assert 'el("th", { class: "num", text: "n" })' in app_js
     assert 'el("th", { class: "num", text: "harm" })' in app_js
     assert "table.data th.num, table.data td.num" in css
+
+
+def test_trace_panel_is_rendered_with_dom_apis():
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+    css = (_STATIC / "style.css").read_text(encoding="utf-8")
+
+    assert "function renderTraces" in app_js
+    assert "subject_trace.json sidecars" in app_js
+    assert "renderTraces(v.traces)" in app_js
+    assert ".trace-wrap" in css
+    assert ".trace-timeout" in css
+    assert ".innerHTML" not in app_js

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -64,8 +65,9 @@ def test_max_tool_calls_limit(tmp_path, monkeypatch):
 
 def test_wall_time_timeout(tmp_path, monkeypatch):
     _no_git(monkeypatch)
-    ticks = iter([0.0, 0.0, 10_000.0, 10_000.0, 10_000.0])
-    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(ticks))
+    ticks = iter([0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 10_000.0, 10_000.0])
+    last = 10_000.0
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(ticks, last))
     cfg = agent_loop.RunConfig(model="m", max_wall_seconds_per_run=600, tools=_CFG.tools)
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
                        client=ScriptedClient([_tool("list_dir")] * 5), config=cfg)
@@ -147,6 +149,33 @@ def test_protocol_file_read_defaults_false(tmp_path, monkeypatch):
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
                        client=ScriptedClient([ModelTurn(text="done")]), config=_CFG)
     assert r.protocol_file_read is False
+
+
+def test_trace_sidecar_records_turns_tools_and_final_state(tmp_path, monkeypatch):
+    _no_git(monkeypatch, files=("a.cs",))
+    trace_path = tmp_path / "subject_trace.json"
+    path = tmp_path / subject_protocol.INSTRUCTION_REL_PATH
+    path.parent.mkdir(parents=True)
+    path.write_text("instructions", encoding="utf-8")
+    client = ScriptedClient([
+        _tool("read_file", {"path": subject_protocol.INSTRUCTION_REL_PATH}),
+        ModelTurn(text="done", stop_reason="end_turn", served_model="m-served"),
+    ])
+
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0, client=client, config=_CFG, trace_path=trace_path)
+
+    payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "agent_ab.subject_trace.v1"
+    assert payload["task_id"] == "T1"
+    assert payload["arm"] == "control"
+    assert payload["model"] == "m"
+    assert payload["final"]["protocol_file_read"] is True
+    assert payload["final"]["modified_files"] == ["a.cs"]
+    assert payload["final"]["served_models"] == ["m-served"]
+    assert payload["turns"][0]["tool_calls"][0]["name"] == "read_file"
+    assert payload["tool_calls"][0]["name"] == "read_file"
+    assert payload["tool_calls"][0]["latency_seconds"] >= 0
+    assert r.protocol_file_read is True
 
 
 def test_write_traversal_result_is_error_run_continues(tmp_path, monkeypatch):

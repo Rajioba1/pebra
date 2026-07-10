@@ -23,7 +23,7 @@ from typing import Any
 
 from e2e.experiments.agent_ab.metrics import blinding
 from e2e.experiments.agent_ab.models import SubjectResult, ToolCallRecord
-from e2e.experiments.agent_ab.runners import subject_protocol, tool_impl
+from e2e.experiments.agent_ab.runners import run_artifacts, subject_protocol, tool_impl
 from e2e.experiments.agent_ab.runners.model_client import ScriptExhausted
 from e2e.experiments.agent_ab.tools import advisory_contract
 
@@ -190,7 +190,15 @@ def _turn_to_content(turn) -> list[dict[str, Any]]:
     return content
 
 
-def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> SubjectResult:
+def run(
+    setup: "ArmSetup",
+    spec,
+    seed: int,
+    *,
+    client,
+    config: RunConfig,
+    trace_path: Path | None = None,
+) -> SubjectResult:
     """Drive one blinded subject run. Returns a SubjectResult with build/test fields UNSET (the
     orchestrator fills them after injecting the hidden evaluator tests)."""
     blinding_presend_check([setup.subject_prompt, _SEED_USER])  # only harness-authored strings
@@ -205,6 +213,9 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
     error: str | None = None
     final_stop_reason: str | None = None
     served_models: list[str] = []
+    turns: list[dict[str, Any]] = []
+    tools_seen: list[dict[str, Any]] = []
+    limit_reason: str | None = None
 
     try:
         while True:
@@ -213,34 +224,70 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
             # build/test cannot run unbounded past this guard.
             if time.monotonic() - start >= config.max_wall_seconds_per_run:
                 timed_out = True
+                limit_reason = "wall_clock"
                 break
             if seq >= config.max_tool_calls_per_run:
+                limit_reason = "tool_call_limit"
                 break
+            turn_started = time.monotonic()
             turn = client.send(messages, tools, setup.subject_prompt,
                                max_tokens=config.max_output_tokens_per_turn)
+            turn_ended = time.monotonic()
             turn_count += 1
             final_stop_reason = turn.stop_reason
             if turn.served_model and turn.served_model not in served_models:
                 served_models.append(turn.served_model)
+            turns.append({
+                "turn_index": turn_count - 1,
+                "started_seconds": round(turn_started - start, 6),
+                "ended_seconds": round(turn_ended - start, 6),
+                "latency_seconds": round(turn_ended - turn_started, 6),
+                "stop_reason": turn.stop_reason,
+                "served_model": turn.served_model,
+                "text": turn.text,
+                "tool_calls": [
+                    {"id": tc.get("id"), "name": tc.get("name"), "input": tc.get("input", {})}
+                    for tc in turn.tool_calls
+                ],
+            })
             if turn.text:
                 transcript.append(turn.text)
             messages.append({"role": "assistant", "content": _turn_to_content(turn)})
             if not turn.tool_calls:
+                limit_reason = "model_stop"
                 break
 
             results_content: list[dict[str, Any]] = []
             for tc in turn.tool_calls:
                 if seq >= config.max_tool_calls_per_run:
+                    limit_reason = "tool_call_limit"
                     results_content.append({"type": "tool_result", "tool_use_id": tc["id"],
                                             "content": json.dumps({"error": "tool-call limit reached"})})
                     continue
                 name, args = tc["name"], tc.get("input", {})
+                tool_started = time.monotonic()
                 result = _dispatch(name, args, setup)
+                tool_ended = time.monotonic()
                 # Blinding: scan harness-authored outputs (advisory result AND any write reason — a gate
                 # deny or a write error), never file reads/content. Any reason text reaches the model.
                 if name == advisory_contract.TOOL_NAME or (name == "write_file" and result.get("reason")):
                     blinding_presend_check([json.dumps(result)])
                 records.append(ToolCallRecord(sequence=seq, name=name, arguments=args, result=result))
+                tools_seen.append({
+                    "sequence": seq,
+                    "turn_index": turn_count - 1,
+                    "name": name,
+                    "arguments": args,
+                    "result": result,
+                    "started_seconds": round(tool_started - start, 6),
+                    "ended_seconds": round(tool_ended - start, 6),
+                    "latency_seconds": round(tool_ended - tool_started, 6),
+                    "blocked": result.get("blocked") if isinstance(result, dict) else None,
+                    "advisory_decision": (
+                        result.get("recommended_decision") if name == advisory_contract.TOOL_NAME
+                        and isinstance(result, dict) else None
+                    ),
+                })
                 seq += 1
                 results_content.append({"type": "tool_result", "tool_use_id": tc["id"],
                                         "content": json.dumps(result)})
@@ -251,16 +298,59 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
         raise  # a genuine unimplemented path is a programmer error — surface it, don't mask as errored
     except Exception as exc:  # noqa: BLE001 - a live client/API error (auth/rate/network) is captured
         error = f"{type(exc).__name__}: {exc}"  # into the result so one run's failure doesn't crash the batch
+        limit_reason = "error"
 
     modified = _git_diff_name_only(setup.repo_path)
-    return SubjectResult(
+    protocol_read = _protocol_file_read(records)
+    result = SubjectResult(
         task_id=spec.task_id, arm=setup.arm, seed=seed,
         transcript=tuple(transcript), tool_calls=tuple(records), modified_files=modified,
         duration_seconds=round(time.monotonic() - start, 2), timed_out=timed_out, error=error,
         final_stop_reason=final_stop_reason, turn_count=turn_count,
         served_models=tuple(served_models),
-        protocol_file_read=_protocol_file_read(records),
+        protocol_file_read=protocol_read,
     )
+    if trace_path is not None:
+        _write_subject_trace(trace_path, result, config, turns, tools_seen, limit_reason)
+    return result
+
+
+def _write_subject_trace(
+    path: Path,
+    result: SubjectResult,
+    config: RunConfig,
+    turns: list[dict[str, Any]],
+    tools_seen: list[dict[str, Any]],
+    limit_reason: str | None,
+) -> None:
+    """Persist raw agent evidence beside the clone. This is debug-only; scoring reads RunOutcome."""
+    payload = {
+        "schema_version": "agent_ab.subject_trace.v1",
+        "task_id": result.task_id,
+        "arm": result.arm,
+        "seed": result.seed,
+        "model": config.model,
+        "limits": {
+            "max_tool_calls_per_run": config.max_tool_calls_per_run,
+            "max_wall_seconds_per_run": config.max_wall_seconds_per_run,
+            "max_output_tokens_per_turn": config.max_output_tokens_per_turn,
+        },
+        "final": {
+            "timed_out": result.timed_out,
+            "limit_reason": limit_reason,
+            "error": result.error,
+            "final_stop_reason": result.final_stop_reason,
+            "turn_count": result.turn_count,
+            "duration_seconds": result.duration_seconds,
+            "served_models": list(result.served_models),
+            "protocol_file_read": result.protocol_file_read,
+            "modified_files": list(result.modified_files),
+        },
+        "transcript": list(result.transcript),
+        "turns": turns,
+        "tool_calls": tools_seen,
+    }
+    run_artifacts.atomic_write_json(Path(path), payload)
 
 
 def _protocol_file_read(records: list[ToolCallRecord]) -> bool:

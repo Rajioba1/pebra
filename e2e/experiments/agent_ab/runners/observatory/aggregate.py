@@ -112,6 +112,10 @@ def _summary(o: models.RunOutcome) -> dict:
     return {"harm_materialized": o.harm_materialized, "task_completed": o.task_completed,
             "over_cautious": o.over_cautious, "blinding_leak": o.blinding_leak,
             "quality_failure": o.quality_failure, "error": o.error,
+            "timed_out": o.timed_out,
+            "advisory_called": o.advisory_called,
+            "advisory_decision": o.advisory_decision,
+            "over_caution_cause": o.over_caution_cause,
             "protocol_file_read": o.protocol_file_read}
 
 
@@ -202,6 +206,65 @@ def _dashboards(run_id: str, ab_out: Path, outcomes: list[models.RunOutcome]) ->
     return result
 
 
+def _trace_summary(path: Path) -> dict | None:
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return None
+    final = payload.get("final") if isinstance(payload.get("final"), dict) else {}
+    tool_calls = payload.get("tool_calls") if isinstance(payload.get("tool_calls"), list) else []
+    turns = payload.get("turns") if isinstance(payload.get("turns"), list) else []
+    advisory_calls = [
+        c for c in tool_calls
+        if isinstance(c, dict) and c.get("name") == "advisory_check"
+    ]
+    write_calls = [
+        c for c in tool_calls
+        if isinstance(c, dict) and c.get("name") == "write_file"
+    ]
+    blocked_writes = [
+        c for c in write_calls
+        if isinstance(c, dict) and c.get("blocked") is True
+    ]
+    last_turn = turns[-1] if turns and isinstance(turns[-1], dict) else {}
+    last_tool = tool_calls[-1] if tool_calls and isinstance(tool_calls[-1], dict) else {}
+    return {
+        "clone": path.parent.name,
+        "task_id": payload.get("task_id"),
+        "seed": payload.get("seed"),
+        "arm": payload.get("arm"),
+        "model": payload.get("model"),
+        "timed_out": final.get("timed_out"),
+        "limit_reason": final.get("limit_reason"),
+        "error": final.get("error"),
+        "final_stop_reason": final.get("final_stop_reason"),
+        "turn_count": final.get("turn_count"),
+        "duration_seconds": final.get("duration_seconds"),
+        "protocol_file_read": final.get("protocol_file_read"),
+        "served_models": final.get("served_models") or [],
+        "modified_files": final.get("modified_files") or [],
+        "tool_call_count": len(tool_calls),
+        "advisory_count": len(advisory_calls),
+        "write_count": len(write_calls),
+        "blocked_write_count": len(blocked_writes),
+        "last_turn_stop_reason": last_turn.get("stop_reason"),
+        "last_turn_latency_seconds": last_turn.get("latency_seconds"),
+        "last_tool_name": last_tool.get("name"),
+        "last_tool_latency_seconds": last_tool.get("latency_seconds"),
+        "advisory_decisions": [
+            c.get("advisory_decision") for c in advisory_calls if c.get("advisory_decision")
+        ],
+    }
+
+
+def _traces(run_dir: Path) -> list[dict]:
+    traces: list[dict] = []
+    for path in sorted(run_dir.glob("*_seed*_*/subject_trace.json")):
+        summary = _trace_summary(path)
+        if summary is not None:
+            traces.append(summary)
+    return traces
+
+
 def _coverage(run_dir: Path) -> dict:
     data = _read_json(run_dir / "preflight" / "coverage.json")
     if not isinstance(data, dict) or "by_language" not in data:
@@ -251,6 +314,7 @@ def build_run_view(run_id: str, *, ab_out: Path, mode: str | None = None,
         "matrix": matrix,
         "coverage": _coverage(run_dir),
         "dashboards": _dashboards(run_id, ab_out, outcomes),
+        "traces": _traces(run_dir),
     }
 
 

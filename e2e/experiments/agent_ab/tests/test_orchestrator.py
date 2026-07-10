@@ -164,6 +164,11 @@ def test_main_writes_finished_run_status(monkeypatch, tmp_path):
     assert status["mode"] == "pilot"
     assert status["run_id"] == "t1"
     assert status["updated_at"]  # an ISO timestamp is stamped
+    assert status["run_metadata"]["git_commit"]
+    assert status["run_metadata"]["provider"] == "anthropic"
+    assert status["run_metadata"]["parallel_arms"] is False
+    assert status["run_metadata"]["protocol_file"] == ".agent-instructions/edit_protocol.md"
+    assert set(status["run_metadata"]["protocol_hashes"]) >= {"sham", "pebra"}
 
 
 def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):

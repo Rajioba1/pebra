@@ -117,6 +117,67 @@ def test_pending_cells_keep_language_specimen_and_harm_label(tmp_path):
     )
 
 
+def test_trace_sidecars_are_summarized(tmp_path):
+    run_id = "r1"
+    run_dir = _write_run(tmp_path, run_id, [_oc("JS1", models.ARM_PEBRA, 0)])
+    token = run_pair._arm_token(models.ARM_PEBRA, run_id)
+    clone = run_dir / f"JS1_seed0_{token}"
+    clone.mkdir(parents=True)
+    (clone / "subject_trace.json").write_text(json.dumps({
+        "schema_version": "agent_ab.subject_trace.v1",
+        "task_id": "JS1",
+        "arm": models.ARM_PEBRA,
+        "seed": 0,
+        "model": "deepseek-v4-flash",
+        "final": {
+            "timed_out": True,
+            "limit_reason": "wall_clock",
+            "final_stop_reason": "tool_use",
+            "turn_count": 3,
+            "duration_seconds": 600.1,
+            "protocol_file_read": True,
+            "served_models": ["deepseek-v4-flash"],
+            "modified_files": ["packages/zod/src/v3/types.ts"],
+        },
+        "turns": [{"stop_reason": "tool_use", "latency_seconds": 11.2}],
+        "tool_calls": [
+            {"sequence": 0, "name": "read_file", "latency_seconds": 0.1},
+            {"sequence": 1, "name": "advisory_check", "advisory_decision": "revise_safer",
+             "latency_seconds": 0.2},
+            {"sequence": 2, "name": "write_file", "blocked": True, "latency_seconds": 0.3},
+        ],
+    }), encoding="utf-8")
+
+    view = aggregate.build_run_view(run_id, ab_out=tmp_path, mode=None, corpus=[],
+                                    config={"bootstrap_seed": 0})
+
+    assert view["traces"] == [{
+        "clone": clone.name,
+        "task_id": "JS1",
+        "seed": 0,
+        "arm": models.ARM_PEBRA,
+        "model": "deepseek-v4-flash",
+        "timed_out": True,
+        "limit_reason": "wall_clock",
+        "error": None,
+        "final_stop_reason": "tool_use",
+        "turn_count": 3,
+        "duration_seconds": 600.1,
+        "protocol_file_read": True,
+        "served_models": ["deepseek-v4-flash"],
+        "modified_files": ["packages/zod/src/v3/types.ts"],
+        "tool_call_count": 3,
+        "advisory_count": 1,
+        "write_count": 1,
+        "blocked_write_count": 1,
+        "last_turn_stop_reason": "tool_use",
+        "last_turn_latency_seconds": 11.2,
+        "last_tool_name": "write_file",
+        "last_tool_latency_seconds": 0.3,
+        "advisory_decisions": ["revise_safer"],
+    }]
+
+
 def test_assay_scoreboard_surfaces_verdict_and_pair_counts(tmp_path):
     arms = run_pair.arms_for("risky")
     outcomes = [_oc("T1", a, 0, harm=(a == models.ARM_SHAM)) for a in arms]

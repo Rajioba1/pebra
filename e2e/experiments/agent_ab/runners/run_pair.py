@@ -447,7 +447,14 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         api_key=_subject_api_key(provider),
         **client_kwargs,
     )
-    result = agent_loop.run(setup, spec, seed, client=client, config=run_cfg)
+    result = agent_loop.run(
+        setup,
+        spec,
+        seed,
+        client=client,
+        config=run_cfg,
+        trace_path=setup.repo_path.parent / "subject_trace.json",
+    )
 
     # HIDDEN oracle: inject evaluator tests post-agent, then build + test.
     build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec)

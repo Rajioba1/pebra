@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,7 +24,7 @@ from typing import Any
 from e2e.experiments.agent_ab.metrics import oracle, scorecard
 from e2e.experiments.agent_ab.models import ARM_CONTROL, ARM_TREATMENT, RunOutcome, TaskSpec
 from e2e.experiments.agent_ab.reports import render_report
-from e2e.experiments.agent_ab.runners import preflight, run_artifacts, run_gate, run_pair
+from e2e.experiments.agent_ab.runners import preflight, run_artifacts, run_gate, run_pair, subject_protocol
 from e2e.experiments.agent_ab.specimens import loader as specimen_loader
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness
@@ -116,6 +118,7 @@ def _write_run_status(
     preflight_status: dict[str, str] | None = None,
     scoring_mode: str | None = None,
     served_models: list[str] | None = None,
+    run_metadata: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
     """Additive observability artifact (out_dir/run_status.json) — lets the run observatory read the
@@ -134,6 +137,8 @@ def _write_run_status(
             payload["scoring_mode"] = scoring_mode
         if served_models is not None:
             payload["served_models"] = served_models
+        if run_metadata is not None:
+            payload["run_metadata"] = run_metadata
         if error is not None:
             payload["error"] = error
         run_artifacts.atomic_write_json(
@@ -142,6 +147,54 @@ def _write_run_status(
         )
     except OSError:
         pass
+
+
+def _git_commit() -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[4],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = proc.stdout.strip()
+    return commit or None
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _run_metadata(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
+    provider = os.environ.get("E2E_AB_PROVIDER", "anthropic").strip().lower() or "anthropic"
+    subject_cfg = cfg.get("subject", {})
+    model = os.environ.get("E2E_AB_MODEL")
+    if not model:
+        model = "deepseek-v4-flash" if provider == "deepseek" else subject_cfg.get("model")
+    return {
+        "git_commit": _git_commit(),
+        "mode": args.mode,
+        "provider": provider,
+        "model": model,
+        "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
+        "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
+        "env": {
+            "E2E_AB_PARALLEL_ARMS": os.environ.get("E2E_AB_PARALLEL_ARMS"),
+            "E2E_AB_MAX_WORKERS": os.environ.get("E2E_AB_MAX_WORKERS"),
+            "E2E_AB_MODEL": os.environ.get("E2E_AB_MODEL"),
+            "E2E_AB_PROVIDER": os.environ.get("E2E_AB_PROVIDER"),
+            "PEBRA_CODEGRAPH_SEMANTIC_DIFF": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF"),
+        },
+        "subject_prompt_template_sha256": _sha256_text(run_pair._SUBJECT_PROMPT),  # noqa: SLF001
+        "protocol_file": subject_protocol.INSTRUCTION_REL_PATH,
+        "protocol_hashes": {
+            arm: _sha256_text(subject_protocol.protocol_for_arm(arm))
+            for arm in run_pair.arms_for("risky")
+        },
+    }
 
 
 def _outcome_from_dict(d: dict[str, Any]) -> RunOutcome:
@@ -230,8 +283,10 @@ def main(argv: list[str] | None = None) -> int:
         "revise_safer": "skipped" if (args.skip_graph_preflight or not is_assay) else "passed",
     }
     scoring_mode = _scoring_mode(planned_specs)
+    run_metadata = _run_metadata(args, cfg)
     _write_run_status(out_dir, args.mode, "preflight",
-                      preflight_status=preflight_status, scoring_mode=scoring_mode)
+                      preflight_status=preflight_status, scoring_mode=scoring_mode,
+                      run_metadata=run_metadata)
 
     try:
         if not args.skip_oracle_preflight:
@@ -251,17 +306,20 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         _write_run_status(out_dir, args.mode, "failed",
                           preflight_status=preflight_status, scoring_mode=scoring_mode,
+                          run_metadata=run_metadata,
                           error=f"{type(exc).__name__}: {exc}")
         raise
 
     if args.preflight_only:
         _write_run_status(out_dir, args.mode, "finished",
-                          preflight_status=preflight_status, scoring_mode=scoring_mode)
+                          preflight_status=preflight_status, scoring_mode=scoring_mode,
+                          run_metadata=run_metadata)
         return 0
 
     try:
         _write_run_status(out_dir, args.mode, "running",
-                          preflight_status=preflight_status, scoring_mode=scoring_mode)
+                          preflight_status=preflight_status, scoring_mode=scoring_mode,
+                          run_metadata=run_metadata)
         specs_by_id = {s.task_id: s for s in corpus}
         outcomes_path = out_dir / "outcomes.json"
         existing = _load_existing_outcomes(outcomes_path)
@@ -299,10 +357,11 @@ def main(argv: list[str] | None = None) -> int:
                                        served_models=served_models)
         _write_run_status(out_dir, args.mode, "finished",
                           preflight_status=preflight_status, scoring_mode=scoring_mode,
-                          served_models=served_models)
+                          served_models=served_models, run_metadata=run_metadata)
     except Exception as exc:
         _write_run_status(out_dir, args.mode, "failed",
                           preflight_status=preflight_status, scoring_mode=scoring_mode,
+                          run_metadata=run_metadata,
                           error=f"{type(exc).__name__}: {exc}")
         raise
     return 0
