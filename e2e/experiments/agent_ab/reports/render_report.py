@@ -38,6 +38,28 @@ def _preflight_passed(preflight_status: dict) -> bool:
     return all(v == "passed" for v in preflight_status.values())
 
 
+def _find_pair(m: AssayMetrics, intervention: str, baseline: str):
+    for p in m.pairwise:
+        if p.intervention_arm == intervention and p.baseline_arm == baseline:
+            return p
+    return None
+
+
+def _graph_repair_increment(m: AssayMetrics) -> dict:
+    p = _find_pair(m, "pebra_graph_repair", "pebra")
+    if p is None:
+        return {"available": False}
+    return {
+        "available": True,
+        "exceeds_plain_pebra": p.net_benefit > 0.0,
+        "harm_avoided_rate": p.harm_avoided_rate,
+        "over_caution_delta": p.over_caution_delta,
+        "net_benefit": p.net_benefit,
+        "n_pairs_risky": p.n_pairs_risky,
+        "n_pairs_safe": p.n_pairs_safe,
+    }
+
+
 def conclusion(m: ABMetrics, *, preflight_status: dict | None = None) -> str:
     if preflight_status and any(v != "passed" for v in preflight_status.values()):
         return f"INVALID DEBUG RUN: preflight status was {preflight_status}; do not use for efficacy claims."
@@ -231,6 +253,7 @@ def assay_to_json(m: AssayMetrics, *, scoring_mode: str = "build_break_scope",
                       "cohens_d_paired": p.cohens_d_paired, "wilcoxon_p": p.wilcoxon_p,
                       "harm_diff_ci95": list(p.harm_diff_ci95) if p.harm_diff_ci95 else None}
                      for p in m.pairwise],
+        "graph_repair_increment": _graph_repair_increment(m),
         "conclusion": (_VERDICT_NOTE[verdict] if not claim_valid else _VERDICT_NOTE.get(verdict, "")),
     }
 
@@ -268,6 +291,16 @@ def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "
         lines.append(f"| {p.intervention_arm} | {p.baseline_arm} | {_num(p.harm_avoided_rate)} | "
                      f"{_num(p.over_caution_delta)} | {_num(p.net_benefit)} | {p.n_pairs_risky} | "
                      f"{p.n_pairs_safe} | {_num(p.cohens_d_paired)} | {_num(p.wilcoxon_p)} |")
+    repair = _graph_repair_increment(m)
+    if repair["available"]:
+        lines += [
+            "",
+            "## Graph-repair increment",
+            "",
+            "This is reported independently of the pre-registered plain-PEBRA verdict.",
+            f"- pebra_graph_repair vs pebra net_benefit: {_num(repair['net_benefit'])}",
+            f"- exceeds_plain_pebra: {repair['exceeds_plain_pebra']}",
+        ]
     if not claim_valid:
         lines += ["", f"Raw assay verdict: {i.verdict}"]
     errs = sum(a.error_run_count for a in m.arm_metrics.values())

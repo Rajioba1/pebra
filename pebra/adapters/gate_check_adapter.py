@@ -8,10 +8,9 @@ Phase 2 = MUST-CONSULT: a graph-IMPACTFUL target with no fresh assessment for th
 (repo_id, HEAD, path) is DENIED once (the agent must run ``pebra assess``, then re-issue).
 
 Phase 6 = ASK-ONLY verdict tier: once a matching assessment exists, ``reject`` / ``ask_human`` become
-host-overridable ASK, not hard-deny. ``consult_only`` disables that verdict tier for humanless hosts
-such as the A/B runner, keeping the intervention to must-consult only. ``revise_safer`` is different:
-it blocks the current write and asks the agent to resubmit a narrower candidate, so it remains active
-even in consult-only hosts.
+host-overridable ASK in interactive hosts. In humanless ``consult_only`` hosts, there is no approver to
+ask, so the conservative fallback is DENY. ``revise_safer`` is different: it blocks the current write
+and asks the agent to resubmit a narrower candidate, so it remains active in both modes.
 
 Hard invariants:
 - **Read-only**: computes repo_id via ``paths.find_repo_root`` + sha1 directly; it must NEVER call
@@ -136,10 +135,13 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
         return GateDecision("deny", "must_consult", reason=_deny_reason(targets, head))
     if str(matched.get("decision")) in _REVISE_DECISIONS:
         return GateDecision("deny", "consulted_revise", reason=_revise_reason(targets, head))
-    # Phase 6 verdict tier: once consulted, if the assessment's own decision was ask_human/reject,
-    # escalate to ASK (overridable by a host approval prompt) — never a hard deny, never a blind allow.
-    # ``consult_only`` (the A/B experiment, which has no human approver) keeps the Phase 5 allow.
-    if not consult_only and str(matched.get("decision")) in _REVIEW_DECISIONS:
+    # Phase 6 verdict tier: interactive hosts can ask for approval; consult-only hosts have no
+    # approver, so they must stay conservative instead of silently allowing exhausted review verdicts.
+    if str(matched.get("decision")) in _REVIEW_DECISIONS:
+        if consult_only:
+            return GateDecision(
+                "deny", "consulted_review_unavailable", reason=_review_unavailable_reason(targets, head)
+            )
         return GateDecision("ask", "consulted_review", reason=_review_reason(targets, head))
     return GateDecision("allow", "consulted")
 
@@ -154,6 +156,12 @@ def _review_reason(targets: list[str], head: str) -> str:
     names = ", ".join(os.path.basename(t) for t in targets[:3])
     return (f"A pre-edit check assessed editing {names} as high-risk (commit {head[:8]}). Approve in the host "
             "prompt to proceed, or reconsider a narrower or safer change.")
+
+
+def _review_unavailable_reason(targets: list[str], head: str) -> str:
+    names = ", ".join(os.path.basename(t) for t in targets[:3])
+    return (f"A pre-edit check assessed editing {names} as high-risk (commit {head[:8]}). "
+            "No approval prompt is available in this host; reconsider a narrower or safer change.")
 
 
 def _revise_reason(targets: list[str], head: str) -> str:

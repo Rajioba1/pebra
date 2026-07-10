@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+_STATIC = Path(__file__).resolve().parents[1] / "runners" / "observatory" / "static"
+
+
+def test_matrix_distinguishes_not_planned_from_pending():
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+    css = (_STATIC / "style.css").read_text(encoding="utf-8")
+
+    assert 'class: "cell na", title: "not planned"' in app_js
+    assert 'class: "cell pending", title: "pending"' in app_js
+    assert ".cell.na" in css
+    assert "not planned" in app_js
+
+
+def test_data_tables_use_fixed_layout_for_stable_columns():
+    css = (_STATIC / "style.css").read_text(encoding="utf-8")
+    assert "table.data { width: 100%; table-layout: fixed;" in css

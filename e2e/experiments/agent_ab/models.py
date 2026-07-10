@@ -121,6 +121,12 @@ ADH_HEEDED = "called_heeded"
 ADH_IGNORED = "called_ignored"
 ADH_NO_RESTRICTION = "called_no_restriction"  # advisory said proceed / gave no restriction
 
+# over-caution causes
+OCC_GATE_BLOCKED = "gate_blocked"
+OCC_ADVISORY_DISCOURAGED = "advisory_discouraged"
+OCC_MODEL_DECLINED_UNPROMPTED = "model_declined_unprompted"
+OCC_TIMEOUT = "timeout"
+
 
 @dataclass(frozen=True)
 class RunOutcome:
@@ -146,6 +152,7 @@ class RunOutcome:
     error: str | None = None            # non-None => run failed (e.g. live client error); excluded from metrics
     advisory_effective: bool = False
     served_models: tuple[str, ...] = ()
+    over_caution_cause: str | None = None
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------

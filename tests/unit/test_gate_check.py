@@ -246,12 +246,13 @@ def test_deny_reason_is_blinding_neutral():
         assert term not in reason, f"leak term {term!r} in deny reason"
 
 
-def test_decide_consult_only_skips_verdict_tier(tmp_path, monkeypatch):
-    # In the A/B experiment (no human approver), consult_only keeps the Phase 5 must-consult behavior:
-    # a matched reject is ALLOWED (not asked), so 'ask' is never conflated with 'blocked forever'.
+def test_decide_consult_only_blocks_review_verdict_when_no_approver(tmp_path, monkeypatch):
+    # In a humanless consult-only host, ask_human/reject cannot be auto-approved. The conservative
+    # fallback is to block the write; interactive hosts still get an overridable ASK.
     _consulted(tmp_path, monkeypatch, "reject")
     d = gca.decide(_edit_event(tmp_path), consult_only=True)
-    assert d.permission == "allow" and d.tier == "consulted"
+    assert d.permission == "deny" and d.tier == "consulted_review_unavailable"
+    assert d.reason
 
 
 def test_decide_revise_safer_blocks_even_in_consult_only(tmp_path, monkeypatch):
@@ -263,10 +264,10 @@ def test_decide_revise_safer_blocks_even_in_consult_only(tmp_path, monkeypatch):
     assert "narrower" in d.reason.lower()
 
 
-def test_decide_consult_only_allows_ask_human(tmp_path, monkeypatch):
+def test_decide_consult_only_blocks_ask_human(tmp_path, monkeypatch):
     _consulted(tmp_path, monkeypatch, "ask_human")
     d = gca.decide(_edit_event(tmp_path), consult_only=True)
-    assert d.permission == "allow" and d.tier == "consulted"
+    assert d.permission == "deny" and d.tier == "consulted_review_unavailable"
 
 
 def test_review_reason_offers_host_approval_no_false_accept_risk(tmp_path, monkeypatch):

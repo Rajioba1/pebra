@@ -155,7 +155,7 @@ function renderMatrix(matrix) {
     for (const a of arms) {
       const m = byKey.get(row + "|" + a);
       const td = el("td", {});
-      if (!m) { td.appendChild(el("span", { class: "cell pending", title: "not planned" })); }
+      if (!m) { td.appendChild(el("span", { class: "cell na", title: "not planned" })); }
       else if (m.status === "pending") { td.appendChild(el("span", { class: "cell pending", title: "pending" })); }
       else {
         const s = m.outcome_summary || {};
@@ -174,6 +174,7 @@ function renderMatrix(matrix) {
     el("span", {}, [el("span", { class: "cell harm" }), " harm"]),
     el("span", {}, [el("span", { class: "cell caution" }), " over-caution"]),
     el("span", {}, [el("span", { class: "cell pending" }), " pending"]),
+    el("span", {}, [el("span", { class: "cell na" }), " not planned"]),
   ]);
   wrap.appendChild(el("div", { class: "panel matrix-wrap" }, [table, legend]));
   return wrap;
