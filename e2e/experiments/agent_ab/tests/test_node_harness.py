@@ -59,7 +59,8 @@ def test_build_argv_is_the_fixed_pm_build_script():
 
 def test_build_argv_zshy_profile_is_a_filtered_typecheck():
     assert nh._build_argv("pnpm", profile="zshy", selector="zod:tsconfig.build.json") == [
-        "pnpm", "--filter", "zod", "exec", "zshy", "--project", "tsconfig.build.json"
+        "pnpm", "--filter", "zod", "exec", "zshy", "--project", "tsconfig.build.json",
+        "--dry-run",
     ]
 
 
@@ -113,7 +114,29 @@ def test_run_build_zshy_dispatches_the_typecheck(tmp_path, monkeypatch):
     runner = _fake_runner([_proc(0)])
     r = nh.run_build(tmp_path, profile="zshy", selector="zod:tsconfig.build.json", runner=runner)
     assert r.passed is True
-    assert runner.calls == [["pnpm", "--filter", "zod", "exec", "zshy", "--project", "tsconfig.build.json"]]
+    assert runner.calls == [[
+        "pnpm", "--filter", "zod", "exec", "zshy", "--project", "tsconfig.build.json",
+        "--dry-run",
+    ]]
+
+
+def test_run_build_uses_corepack_for_declared_package_manager(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    (tmp_path / "package.json").write_text(
+        '{"packageManager":"pnpm@10.12.1","engines":{"node":">=20"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "node_modules").mkdir()
+    runner = _fake_runner([_proc(0)])
+
+    r = nh.run_build(tmp_path, profile="zshy", selector="zod:tsconfig.build.json", runner=runner)
+
+    assert r.passed is True
+    assert runner.calls == [[
+        "corepack", "pnpm", "--filter", "zod", "exec", "zshy", "--project",
+        "tsconfig.build.json", "--dry-run",
+    ]]
 
 
 def test_run_build_zshy_fails_if_build_mutates_worktree(tmp_path, monkeypatch):
@@ -139,6 +162,32 @@ def test_run_build_zshy_fails_if_build_mutates_worktree(tmp_path, monkeypatch):
 
     assert r.passed is False
     assert "mutated" in r.error_summary
+
+
+def test_run_build_zshy_allows_preexisting_patch_when_build_does_not_mutate(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    monkeypatch.setattr(nh.shutil, "which", lambda name: f"/bin/{name}")
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    _pin_node(tmp_path)
+    (tmp_path / "node_modules").mkdir()
+    source = tmp_path / "src.ts"
+    source.write_text("before\n", encoding="utf-8")
+    nh.subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, text=True)
+    nh.subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, text=True)
+    nh.subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-m", "base"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    source.write_text("oracle patch\n", encoding="utf-8")
+
+    r = nh.run_build(
+        tmp_path,
+        profile="zshy",
+        selector="zod:tsconfig.build.json",
+        runner=_fake_runner([_proc(0)]),
+    )
+
+    assert r.passed is True
 
 
 def test_test_argv_is_vitest_json_with_optional_file_and_filter():

@@ -56,7 +56,12 @@ def materialize_candidate(repo_path: Path | str, patch_text: str) -> Path | None
         return None
     # git-style -p1, then plain -p0. Inside a real work tree git refuses absolute/.. paths, so a
     # (model-supplied) patch cannot escape the scratch dir.
-    if _git(dest, "apply", "-p1", str(patch_file)) or _git(dest, "apply", "-p0", str(patch_file)):
+    if (
+        _git(dest, "apply", "-p1", str(patch_file))
+        or _git(dest, "apply", "-p0", str(patch_file))
+        or _git(dest, "apply", "--ignore-space-change", "-p1", str(patch_file))
+        or _git(dest, "apply", "--ignore-space-change", "-p0", str(patch_file))
+    ):
         patch_file.unlink(missing_ok=True)
         return dest
     cleanup(scratch)

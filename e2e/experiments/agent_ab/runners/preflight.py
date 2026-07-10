@@ -73,6 +73,12 @@ def _live_node_counts(repo_path: Path) -> dict[str, Any]:
     return cli_harness.graph_node_counts(repo_root=repo_path)
 
 
+def _live_language_capabilities(repo_path: Path) -> dict[str, Any]:
+    """Live default for repo-level language capability checks: `pebra capabilities --json`."""
+    from e2e.utils import cli_harness  # noqa: PLC0415 - lazy; keeps unit tests import-light
+    return cli_harness.capabilities(repo_root=repo_path)
+
+
 # ---- oracle-outcome preflight -----------------------------------------------------------------
 
 
@@ -354,8 +360,9 @@ def _node_count_failure(
     spec: TaskSpec,
     counts: dict[str, Any],
     assess_payload: dict[str, Any] | None = None,
+    capability: dict[str, Any] | None = None,
 ) -> str | None:
-    cap = _language_capability_from_payload(assess_payload)
+    cap = capability or _language_capability_from_payload(assess_payload)
     language = str(cap.get("language") or "").lower()
     if spec.required_language_tier and language and language != "csharp":
         lang_nodes = int(cap.get("node_count") or 0)
@@ -363,6 +370,12 @@ def _node_count_failure(
             return (
                 f"{spec.task_id}: CodeGraph has {lang_nodes} {language} callable nodes; "
                 "index is empty/degraded for the required language"
+            )
+        measured_tier = cap.get("tier")
+        if _LANGUAGE_TIER_RANK.get(str(measured_tier), 0) < _LANGUAGE_TIER_RANK[spec.required_language_tier]:
+            return (
+                f"{spec.task_id}: requires language tier {spec.required_language_tier}, "
+                f"but capability probe proved {measured_tier!r}"
             )
         return None
     cs_nodes = int(counts.get("csharp_callable", 0))
@@ -382,6 +395,7 @@ def run_graph_preflight(
     assess_fn: Callable[[Path, TaskSpec], dict[str, Any]],
     setup_graph_fn: Callable[[Path], None] | None = None,
     node_count_fn: Callable[[Path], dict[str, Any]] | None = None,
+    capability_fn: Callable[[Path], dict[str, Any]] | None = None,
 ) -> None:
     """Prove each task's target resolves on a fresh CodeGraph and yields graph-backed assess evidence.
 
@@ -392,14 +406,34 @@ def run_graph_preflight(
     tasks require C# callable nodes, while explicit multi-language tier floors use the assessed
     language capability's node_count."""
     node_count_fn = node_count_fn or _live_node_counts
+    capability_fn = capability_fn or _live_language_capabilities
     failures: list[str] = []
     coverage_by_language: dict[str, dict[str, Any]] = {}
 
     def _record_coverage(payload: dict[str, Any] | None) -> None:
         cap = _language_capability_from_payload(payload)
+        _record_capability(cap)
+
+    def _record_capability(cap: dict[str, Any]) -> None:
         lang = str(cap.get("language") or "").lower()
         if lang:  # record what was measured (even on tier/node failures — the coverage IS real)
             coverage_by_language[lang] = {"tier": cap.get("tier"), "node_count": cap.get("node_count")}
+
+    def _capability_for_spec(repo_path: Path, spec: TaskSpec) -> dict[str, Any]:
+        if not spec.required_language_tier:
+            return {}
+        try:
+            payload = capability_fn(repo_path)
+        except Exception:  # noqa: BLE001 - graph preflight records the tier failure below
+            return {}
+        measured = payload.get("measured") if isinstance(payload, dict) else None
+        if not isinstance(measured, list):
+            return {}
+        wanted = spec.language.lower()
+        for row in measured:
+            if isinstance(row, dict) and str(row.get("language") or "").lower() == wanted:
+                return row
+        return {}
 
     for spec in corpus:
         if spec.harm_label != "risky" and not spec.required_language_tier:
@@ -412,14 +446,18 @@ def run_graph_preflight(
             if setup_graph_fn is not None:
                 setup_graph_fn(repo_path)
             payload = assess_fn(repo_path, spec) if spec.required_language_tier else None
+            repo_capability = _capability_for_spec(repo_path, spec)
+            _record_capability(repo_capability)
             # Independent validity: legacy C# tasks keep the C# node floor; tiered non-C# tasks use the
             # measured language node_count from the assess payload, so multi-language fixtures are not
             # blocked by a C#-specific validity guard.
             counts = node_count_fn(repo_path)
             _record_coverage(payload)
-            node_msg = _node_count_failure(spec, counts, payload)
+            node_msg = _node_count_failure(spec, counts, payload, repo_capability)
             if node_msg:
                 failures.append(node_msg)
+                continue
+            if spec.harm_label != "risky" and spec.required_language_tier:
                 continue
             if payload is None:
                 payload = assess_fn(repo_path, spec)

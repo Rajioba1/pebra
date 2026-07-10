@@ -126,7 +126,7 @@ def _build_argv(pm: str, *, profile: str = "default", selector: str | None = Non
         }[pm]
     if profile == "zshy":
         pkg, tsconfig = _parse_zshy_selector(selector)
-        return ["pnpm", "--filter", pkg, "exec", "zshy", "--project", tsconfig]
+        return ["pnpm", "--filter", pkg, "exec", "zshy", "--project", tsconfig, "--dry-run"]
     raise ValueError(f"unknown build profile: {profile}")
 
 
@@ -192,9 +192,28 @@ def _resolve_argv(argv: list[str]) -> list[str]:
     return [resolved, *argv[1:]]
 
 
+def _declares_package_manager(root: Path, pm: str) -> bool:
+    package_json = root / "package.json"
+    if not package_json.is_file():
+        return False
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    package_manager = data.get("packageManager") if isinstance(data, dict) else None
+    return isinstance(package_manager, str) and package_manager.startswith(f"{pm}@")
+
+
+def _pin_package_manager(root: Path, argv: list[str]) -> list[str]:
+    if argv and argv[0] in {"pnpm", "yarn", "npm"} and _declares_package_manager(root, argv[0]):
+        return ["corepack", *argv]
+    return argv
+
+
 def _default_runner(argv: list[str], *, cwd: str, timeout: int, env: dict[str, str]):
     return subprocess.run(
         _resolve_argv(argv), cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env,
+        encoding="utf-8", errors="replace",
     )
 
 
@@ -208,6 +227,7 @@ def _ensure_installed(root: Path, pm: str, runner: RunnerFn, timeout: int) -> An
 
 def _run_fixed(runner: RunnerFn, argv: list[str], *, root: Path, timeout: int) -> Any:
     """Run a fixed profile command; normalize missing executables to a CompletedProcess-like object."""
+    argv = _pin_package_manager(root, argv)
     try:
         return runner(argv, cwd=str(root), timeout=timeout, env=_node_env())
     except FileNotFoundError as exc:
@@ -215,18 +235,31 @@ def _run_fixed(runner: RunnerFn, argv: list[str], *, root: Path, timeout: int) -
         return subprocess.CompletedProcess(argv, 127, "", f"executable not found: {missing}")
 
 
-def _worktree_mutation_summary(root: Path) -> str | None:
+def _git_diff(root: Path) -> str | None:
     if not (root / ".git").exists():
+        return None
+    proc = subprocess.run(
+        ["git", "diff", "--no-ext-diff", "--binary"],
+        cwd=str(root), capture_output=True, text=True, timeout=30, env=_node_env(),
+        encoding="utf-8", errors="replace",
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout or ""
+
+
+def _worktree_mutation_summary(root: Path, baseline_diff: str | None) -> str | None:
+    current_diff = _git_diff(root)
+    if current_diff is None or current_diff == (baseline_diff or ""):
         return None
     proc = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"],
         cwd=str(root), capture_output=True, text=True, timeout=30, env=_node_env(),
+        encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:
-        return None
+        return "build mutated the worktree"
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
-    if not lines:
-        return None
     return "build mutated the worktree:\n" + "\n".join(lines[:20])
 
 
@@ -262,9 +295,13 @@ def run_build(
             True, False, False, failed_install.returncode, "dependency install failed",
             round(time.time() - start, 2),
         )
+    baseline_diff = _git_diff(root) if profile == "zshy" else None
     proc = _run_fixed(runner, _build_argv(pm, profile=profile, selector=selector), root=root, timeout=timeout)
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    mutation = _worktree_mutation_summary(root) if profile == "zshy" and proc.returncode == 0 else None
+    mutation = (
+        _worktree_mutation_summary(root, baseline_diff)
+        if profile == "zshy" and proc.returncode == 0 else None
+    )
     passed = proc.returncode == 0 and mutation is None
     return NodeBuildResult(
         available=True, ran=True, passed=passed, exit_code=proc.returncode,

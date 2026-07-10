@@ -156,6 +156,11 @@ def graph_node_counts(*, repo_root: Path | str) -> dict:
     return _run_json(["graph-stats", "--json", "--repo-root", str(repo_root)])
 
 
+def capabilities(*, repo_root: Path | str) -> dict:
+    """`pebra capabilities --json` → measured per-language capability tiers for the indexed repo."""
+    return _run_json(["capabilities", "--json", "--repo-root", str(repo_root)])
+
+
 def dependents(target: str, *, repo_root: Path | str) -> list[str]:
     """`pebra dependents --json` → the list of files that depend on ``target`` (file-level blast radius).
     Backs the blast_radius positive-control advisory. Empty list when the graph is absent."""

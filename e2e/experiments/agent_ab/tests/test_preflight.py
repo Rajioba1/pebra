@@ -487,7 +487,7 @@ def test_graph_preflight_passes_with_enough_nodes_and_fresh(tmp_path, monkeypatc
 def test_graph_preflight_checks_safe_task_when_language_tier_is_required(tmp_path, monkeypatch):
     safe_full = TaskSpec(
         "BSEM", "d", ("a.ts",), "safe", ("a.ts",), "none", False,
-        required_language_tier="full",
+        language="typescript", required_language_tier="full",
     )
     calls: list[str] = []
 
@@ -504,7 +504,11 @@ def test_graph_preflight_checks_safe_task_when_language_tier_is_required(tmp_pat
     with pytest.raises(preflight.PreflightError, match="requires language tier full"):
         preflight.run_graph_preflight([safe_full], None, out_dir=tmp_path,
                                       assess_fn=_assess, setup_graph_fn=None,
-                                      node_count_fn=lambda p: {"csharp_callable": 700})
+                                      node_count_fn=lambda p: {"csharp_callable": 0},
+                                      capability_fn=lambda p: {"measured": [{
+                                          "language": "typescript", "tier": "partial",
+                                          "node_count": 12,
+                                      }]})
 
     assert calls == ["BSEM"]
 

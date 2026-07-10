@@ -104,7 +104,17 @@ def _has_narrowing_headroom(assessment: Assessment) -> bool:
     file_op = str(sse.get("file_operation_kind", "NONE"))
     changed_symbols = sse.get("changed_symbols") or []
     expected_files = action.expected_files or []
+    events = {str(c.get("event")) for c in assessment.scores["loss_components"]}
     if file_op in {"DELETE", "RENAME", "MOVE"}:
+        return True
+    # Public contract/API breaks can be revised without changing files or owners: preserve the
+    # existing interface, add a wrapper/default, or move the risky requirement behind a compatible
+    # route. Candidate verification then decides whether the revised route is good enough.
+    if (
+        events & {"api_contract_break", "public_api_break"}
+        and str(sse.get("max_change_kind", "")).upper() == "CONTRACT"
+        and (sse.get("consequential_symbol_changed") or sse.get("visibility") == "public_api")
+    ):
         return True
     # Non-Python hosts may not provide semantic SymbolDiff rows on the assess path, but CodeGraph still
     # parses the unified diff hunks and resolves the touched old-side line ranges to owner nodes. Treat

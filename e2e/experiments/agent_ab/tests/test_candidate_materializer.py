@@ -33,6 +33,16 @@ def test_materialize_non_applying_patch_fails_closed(tmp_path):
     assert cm.materialize_candidate(repo, _MODIFY) is None
 
 
+def test_materialize_handles_crlf_source_with_lf_patch(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "src" / "A.cs").write_bytes(b"old\r\n")
+    scratch = cm.materialize_candidate(repo, _MODIFY)
+    assert scratch is not None
+    assert (scratch / "src" / "A.cs").read_text(encoding="utf-8").strip() == "new"
+    assert (repo / "src" / "A.cs").read_bytes() == b"old\r\n"
+    cm.cleanup(scratch)
+
+
 def test_materialize_excludes_build_and_vcs_dirs(tmp_path):
     repo = _repo(tmp_path)
     (repo / ".git").mkdir()

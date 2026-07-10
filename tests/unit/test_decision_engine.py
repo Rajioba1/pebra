@@ -107,6 +107,33 @@ def test_gate3_structural_dependency_risk_requests_safer_revision() -> None:
     assert any(g["name"] == "revise_safer" for g in result.gates_fired)
 
 
+def test_gate3_single_symbol_public_api_break_requests_safer_revision() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    action = replace(inp.action, expected_files=["packages/zod/src/v3/types.ts"], proposed_patch=_CANDIDATE_PATCH)
+    inp = replace(
+        inp,
+        action=action,
+        events=[{"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80}],
+        immediate_benefit=0.5,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["packages/zod/src/v3/types.ts::ZodType"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+            structure_tier="codegraph_structural",
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.scores["expected_loss"] > result.scores["effective_threshold"]
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
 def test_gate3_unparsed_single_file_structural_risk_requests_safer_revision() -> None:
     from pebra.core import models as m
 
@@ -182,6 +209,41 @@ def test_gate3_verified_safer_candidate_can_proceed_pre_edit() -> None:
 
     result = de.decide(ab.build_assessment(inp))
 
+    assert result.recommended_decision is Decision.PROCEED
+    assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
+    assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
+def test_gate3_verified_single_symbol_candidate_can_proceed_pre_edit() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    action = replace(inp.action, expected_files=["packages/zod/src/v3/types.ts"], proposed_patch=_CANDIDATE_PATCH)
+    inp = replace(
+        inp,
+        action=action,
+        events=[{"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80}],
+        immediate_benefit=0.5,
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["packages/zod/src/v3/types.ts::ZodType"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+            structure_tier="codegraph_structural",
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"public_typecheck": "passed"},
+            required_checks=["public_typecheck"],
+            domain="covering_tests",
+            verified_patch_hash=de.candidate_patch_hash(_CANDIDATE_PATCH),
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.scores["expected_loss"] > result.scores["effective_threshold"]
     assert result.recommended_decision is Decision.PROCEED
     assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
     assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
