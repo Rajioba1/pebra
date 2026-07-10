@@ -18,3 +18,12 @@ def test_matrix_distinguishes_not_planned_from_pending():
 def test_data_tables_use_fixed_layout_for_stable_columns():
     css = (_STATIC / "style.css").read_text(encoding="utf-8")
     assert "table.data { width: 100%; table-layout: fixed;" in css
+
+
+def test_numeric_headers_align_with_numeric_cells():
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+    css = (_STATIC / "style.css").read_text(encoding="utf-8")
+
+    assert 'el("th", { class: "num", text: "n" })' in app_js
+    assert 'el("th", { class: "num", text: "harm" })' in app_js
+    assert "table.data th.num, table.data td.num" in css

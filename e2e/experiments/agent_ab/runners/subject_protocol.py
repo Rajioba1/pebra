@@ -30,11 +30,8 @@ _PLACEBO_PROTOCOL = """# Repository edit protocol
 4. After writing, run the relevant build or tests before stopping.
 """
 
-_REAL_ADVISORY_ARMS = frozenset({models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR})
-
-
 def protocol_for_arm(arm: str) -> str:
-    return _SAFE_EDIT_PROTOCOL if arm in _REAL_ADVISORY_ARMS else _PLACEBO_PROTOCOL
+    return _SAFE_EDIT_PROTOCOL if arm in models.REAL_ADVISORY_ARMS else _PLACEBO_PROTOCOL
 
 
 def install(repo_path: Path, arm: str) -> Path:

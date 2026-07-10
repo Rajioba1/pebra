@@ -110,7 +110,7 @@ function num(x) { return x == null ? "—" : Number(x).toFixed(3); }
 
 function renderArmTable(arms) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { text: "n" }), el("th", { text: "harm" }), el("th", { text: "over-caution" }), el("th", { text: "completion" }), el("th", { text: "adherence" }), el("th", { text: "errors" }), el("th", { text: "leaks" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "n" }), el("th", { class: "num", text: "harm" }), el("th", { class: "num", text: "over-caution" }), el("th", { class: "num", text: "completion" }), el("th", { class: "num", text: "adherence" }), el("th", { class: "num", text: "errors" }), el("th", { class: "num", text: "leaks" })]));
   for (const [arm, a] of Object.entries(arms || {})) {
     t.appendChild(el("tr", {}, [
       el("td", { text: arm }), el("td", { class: "num", text: a.n_runs }),
@@ -123,7 +123,7 @@ function renderArmTable(arms) {
 }
 function renderPairwiseTable(pairwise) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { text: "harm avoided" }), el("th", { text: "over-caution Δ" }), el("th", { text: "net benefit" }), el("th", { text: "risky pairs" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "harm avoided" }), el("th", { class: "num", text: "over-caution Δ" }), el("th", { class: "num", text: "net benefit" }), el("th", { class: "num", text: "risky pairs" })]));
   for (const p of pairwise || []) {
     t.appendChild(el("tr", {}, [
       el("td", { text: p.intervention }), el("td", { text: p.baseline }),
@@ -136,7 +136,7 @@ function renderPairwiseTable(pairwise) {
 function abEndpointTable(e) {
   const rows = [["harm rate", pct(e.harm_rate.control), pct(e.harm_rate.treatment)], ["over-caution", pct(e.over_caution_rate.control), pct(e.over_caution_rate.treatment)], ["completion", pct(e.task_completion_rate.control), pct(e.task_completion_rate.treatment)]];
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "endpoint" }), el("th", { text: "control" }), el("th", { text: "treatment" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "endpoint" }), el("th", { class: "num", text: "control" }), el("th", { class: "num", text: "treatment" })]));
   for (const r of rows) t.appendChild(el("tr", {}, [el("td", { text: r[0] }), el("td", { class: "num", text: r[1] }), el("td", { class: "num", text: r[2] })]));
   t.appendChild(el("tr", {}, [el("td", { text: "net benefit" }), el("td", { class: "num dim", text: "" }), el("td", { class: "num", text: num(e.net_benefit) })]));
   return t;
@@ -163,6 +163,7 @@ function renderMatrix(matrix) {
         if (s.harm_materialized) { cls = "cell harm"; title = "harm materialized"; }
         else if (s.over_cautious) { cls = "cell caution"; title = "over-cautious"; }
         else if (s.error) { title = "error: " + s.error; }
+        title += s.protocol_file_read ? " · protocol read" : " · protocol not read";
         td.appendChild(el("span", { class: cls, title }));
       }
       tr.appendChild(td);
@@ -186,7 +187,7 @@ function renderGroups(groups) {
   const panel = el("div", { class: "panel groups" });
   for (const [title, rows] of [["language", groups && groups.by_language], ["specimen", groups && groups.by_specimen]]) {
     const table = el("table", { class: "data" });
-    table.appendChild(el("tr", {}, [el("th", { text: title }), el("th", { text: "done" }), el("th", { text: "pending" }), el("th", { text: "planned" })]));
+    table.appendChild(el("tr", {}, [el("th", { text: title }), el("th", { class: "num", text: "done" }), el("th", { class: "num", text: "pending" }), el("th", { class: "num", text: "planned" })]));
     for (const [name, counts] of Object.entries(rows || {})) {
       table.appendChild(el("tr", {}, [
         el("td", { text: name }), el("td", { class: "num", text: counts.done }),
@@ -202,7 +203,7 @@ function renderGroups(groups) {
 function renderCoverage(cov) {
   if (!cov || !cov.available) return el("div", {}, [el("h2", { text: "Language coverage" }), el("p", { class: "dim", text: cov && cov.reason ? cov.reason : "not available" })]);
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "language" }), el("th", { text: "tier" }), el("th", { text: "nodes" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "language" }), el("th", { text: "tier" }), el("th", { class: "num", text: "nodes" })]));
   for (const [lang, c] of Object.entries(cov.by_language || {})) t.appendChild(el("tr", {}, [el("td", { text: lang }), el("td", { text: c.tier }), el("td", { class: "num", text: c.node_count })]));
   return el("div", {}, [el("h2", { text: "Language coverage" }), el("div", { class: "panel" }, [t])]);
 }

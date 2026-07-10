@@ -74,6 +74,7 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         error=result.error,
         served_models=result.served_models,
         over_caution_cause=_over_caution_cause(result, over_cautious, decision),
+        protocol_file_read=result.protocol_file_read,
     )
 
 
@@ -91,6 +92,7 @@ def _error_outcome(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         advisory_effective=False,
         served_models=result.served_models,
         over_caution_cause=None,
+        protocol_file_read=result.protocol_file_read,
     )
 
 

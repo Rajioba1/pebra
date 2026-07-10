@@ -48,7 +48,8 @@ def _write_run(ab_out, run_id, outcomes, *, run_status=None, coverage=None, repo
 
 
 def test_build_run_view_basic_ab(tmp_path):
-    outcomes = [_oc("T1", models.ARM_CONTROL, 0, harm=True),
+    outcomes = [dataclasses.replace(_oc("T1", models.ARM_CONTROL, 0, harm=True),
+                                    protocol_file_read=True),
                 _oc("T1", models.ARM_TREATMENT, 0, harm=False)]
     _write_run(tmp_path, "r1", outcomes)
     view = aggregate.build_run_view("r1", ab_out=tmp_path, mode="pilot",
@@ -64,6 +65,7 @@ def test_build_run_view_basic_ab(tmp_path):
     cells = {(m["task_id"], m["seed"], m["arm"]): m for m in view["matrix"]}
     assert cells[("T1", 0, models.ARM_CONTROL)]["status"] == "done"
     assert cells[("T1", 0, models.ARM_CONTROL)]["outcome_summary"]["harm_materialized"] is True
+    assert cells[("T1", 0, models.ARM_CONTROL)]["outcome_summary"]["protocol_file_read"] is True
 
 
 def test_mode_absent_gives_observed_only_matrix(tmp_path):

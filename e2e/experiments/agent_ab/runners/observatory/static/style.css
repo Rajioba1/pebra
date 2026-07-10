@@ -104,7 +104,7 @@ table.data { width: 100%; table-layout: fixed; border-collapse: collapse; font-s
 table.data th, table.data td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--edge); }
 table.data th, table.data td { overflow-wrap: anywhere; }
 table.data th { color: var(--ink-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-table.data td.num { font-family: var(--mono); text-align: right; }
+table.data th.num, table.data td.num { font-family: var(--mono); text-align: right; }
 
 /* dashboards */
 .dash-cmd { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }

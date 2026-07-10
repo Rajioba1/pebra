@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from e2e.experiments.agent_ab.models import TaskSpec
-from e2e.experiments.agent_ab.runners import agent_loop
+from e2e.experiments.agent_ab.runners import agent_loop, subject_protocol
 from e2e.experiments.agent_ab.runners.model_client import ModelTurn, ScriptedClient
 
 _SPEC = TaskSpec("T1", "add a param", ("a.cs",), "risky", ("a.cs",), "build_failure", True)
@@ -125,6 +125,28 @@ def test_file_read_with_forbidden_word_does_not_abort(tmp_path, monkeypatch):
                              ModelTurn(text="done", stop_reason="end_turn")])
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0, client=client, config=_CFG)
     assert r.error is None and len(r.tool_calls) == 1
+
+
+def test_protocol_file_read_is_recorded(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    path = tmp_path / subject_protocol.INSTRUCTION_REL_PATH
+    path.parent.mkdir(parents=True)
+    path.write_text("instructions", encoding="utf-8")
+    client = ScriptedClient([
+        _tool("read_file", {"path": subject_protocol.INSTRUCTION_REL_PATH}),
+        ModelTurn(text="done", stop_reason="end_turn"),
+    ])
+
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0, client=client, config=_CFG)
+
+    assert r.protocol_file_read is True
+
+
+def test_protocol_file_read_defaults_false(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
+                       client=ScriptedClient([ModelTurn(text="done")]), config=_CFG)
+    assert r.protocol_file_read is False
 
 
 def test_write_traversal_result_is_error_run_continues(tmp_path, monkeypatch):

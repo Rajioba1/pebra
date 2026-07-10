@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
 from e2e.experiments.agent_ab.runners import (
     agent_loop, arm_prep, evaluator, model_client, run_control, run_gate, run_pair,
@@ -469,8 +470,8 @@ def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
     assert "before significant edits" in prompt.lower()
     assert "intended patch" in prompt.lower()
     lower = prompt.lower()
-    assert "if advisory_check returns recommended_decision=reject" in lower
-    assert "do not edit" in lower
+    assert "recommended_decision=reject" not in lower
+    assert "revise_safer" not in lower
 
 
 def test_pebra_arm_prompt_points_to_file_without_embedding_safe_edit_protocol(tmp_path):
@@ -505,6 +506,12 @@ def test_prepare_arm_writes_blinded_protocol_file_for_every_arm(tmp_path, monkey
     sham_protocol = (sham.repo_path / subject_protocol.INSTRUCTION_REL_PATH).read_text(encoding="utf-8")
     assert "resubmit a narrower candidate" in pebra_protocol
     assert "Draft the intended patch" in sham_protocol
+
+
+def test_real_advisory_arm_membership_has_one_source_of_truth():
+    assert run_pair._REAL_ADVISORY_ARMS == models.REAL_ADVISORY_ARMS
+    for arm in models.REAL_ADVISORY_ARMS:
+        assert "resubmit a narrower candidate" in subject_protocol.protocol_for_arm(arm)
 
 
 def test_subject_prompt_does_not_include_absolute_repo_path_or_engine_name(tmp_path):

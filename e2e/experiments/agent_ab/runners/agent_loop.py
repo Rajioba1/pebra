@@ -23,7 +23,7 @@ from typing import Any
 
 from e2e.experiments.agent_ab.metrics import blinding
 from e2e.experiments.agent_ab.models import SubjectResult, ToolCallRecord
-from e2e.experiments.agent_ab.runners import tool_impl
+from e2e.experiments.agent_ab.runners import subject_protocol, tool_impl
 from e2e.experiments.agent_ab.runners.model_client import ScriptExhausted
 from e2e.experiments.agent_ab.tools import advisory_contract
 
@@ -259,4 +259,20 @@ def run(setup: "ArmSetup", spec, seed: int, *, client, config: RunConfig) -> Sub
         duration_seconds=round(time.monotonic() - start, 2), timed_out=timed_out, error=error,
         final_stop_reason=final_stop_reason, turn_count=turn_count,
         served_models=tuple(served_models),
+        protocol_file_read=_protocol_file_read(records),
     )
+
+
+def _protocol_file_read(records: list[ToolCallRecord]) -> bool:
+    expected = subject_protocol.INSTRUCTION_REL_PATH.replace("\\", "/")
+    return any(
+        call.name == "read_file"
+        and _strip_current_dir(str(call.arguments.get("path", "")).replace("\\", "/")) == expected
+        for call in records
+    )
+
+
+def _strip_current_dir(path: str) -> str:
+    while path.startswith("./"):
+        path = path[2:]
+    return path

@@ -111,7 +111,8 @@ def _planned_grid(mode: str | None, is_assay: bool, corpus: list, config: dict) 
 def _summary(o: models.RunOutcome) -> dict:
     return {"harm_materialized": o.harm_materialized, "task_completed": o.task_completed,
             "over_cautious": o.over_cautious, "blinding_leak": o.blinding_leak,
-            "quality_failure": o.quality_failure, "error": o.error}
+            "quality_failure": o.quality_failure, "error": o.error,
+            "protocol_file_read": o.protocol_file_read}
 
 
 def _matrix(outcomes: list[models.RunOutcome], planned: dict | None, task_meta: dict[str, dict]) -> list[dict]:

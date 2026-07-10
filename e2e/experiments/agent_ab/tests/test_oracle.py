@@ -105,6 +105,11 @@ def test_successful_treatment_advisory_is_effective():
     assert out.advisory_effective is True
 
 
+def test_protocol_file_read_propagates_to_outcome():
+    out = oracle.score_run(_result("B1", protocol_file_read=True), SAFE)
+    assert out.protocol_file_read is True
+
+
 def test_safe_build_failure_is_quality_failure_not_over_caution():
     out = oracle.score_run(_result("B1", modified_files=("src/A.cs",), build_ran=True,
                                    build_passed=False), SAFE)

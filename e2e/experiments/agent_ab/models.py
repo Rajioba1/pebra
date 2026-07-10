@@ -35,6 +35,10 @@ ALL_ASSAY_ARMS: tuple[str, ...] = (
     ARM_PEBRA_GRAPH_REPAIR,
 )
 
+# Arms backed by the real advisory backend/protocol. Centralized so adding a future real-advisory arm
+# cannot silently get the placebo protocol while still receiving real gate/advisory plumbing.
+REAL_ADVISORY_ARMS = frozenset({ARM_TREATMENT, ARM_PEBRA, ARM_PEBRA_GRAPH_REPAIR})
+
 # Pre-registered assay verdicts (checked in order; see metrics/assay_interpret.py).
 VERDICT_NO_HEADROOM = "INVALID_NO_HEADROOM"
 VERDICT_ASSAY_INSENSITIVE = "INVALID_ASSAY_INSENSITIVE"
@@ -111,6 +115,7 @@ class SubjectResult:
     final_stop_reason: str | None = None
     turn_count: int = 0
     served_models: tuple[str, ...] = ()
+    protocol_file_read: bool = False
 
 
 # ---- scored outcome ---------------------------------------------------------------------------
@@ -153,6 +158,7 @@ class RunOutcome:
     advisory_effective: bool = False
     served_models: tuple[str, ...] = ()
     over_caution_cause: str | None = None
+    protocol_file_read: bool = False
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------
