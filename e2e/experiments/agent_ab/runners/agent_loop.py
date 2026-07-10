@@ -250,6 +250,10 @@ def run(
                     for tc in turn.tool_calls
                 ],
             })
+            if turn_ended - start >= config.max_wall_seconds_per_run:
+                timed_out = True
+                limit_reason = "wall_clock"
+                break
             if turn.text:
                 transcript.append(turn.text)
             messages.append({"role": "assistant", "content": _turn_to_content(turn)})

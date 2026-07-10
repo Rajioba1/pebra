@@ -11,7 +11,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from e2e.experiments.agent_ab import models
-from e2e.experiments.agent_ab.runners import run_pair
+from e2e.experiments.agent_ab.metrics import oracle
+from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec, ToolCallRecord
+from e2e.experiments.agent_ab.runners import evaluator, run_pair
 from e2e.experiments.agent_ab.tools import advisory_blast_radius, advisory_check_real, advisory_check_sham
 from e2e.utils import cli_harness
 
@@ -115,6 +117,9 @@ def _stub_runner(monkeypatch):
                         lambda external, spec, arm, seed, run_id: SimpleNamespace(arm=arm))
     monkeypatch.setattr(run_pair, "_invoke_subject_agent",
                         lambda setup, spec, seed: SimpleNamespace(arm=setup.arm, error=None))
+    monkeypatch.setattr(run_pair, "_invoke_oracle_positive",
+                        lambda setup, spec, seed: SimpleNamespace(arm=setup.arm, error=None),
+                        raising=False)
 
 
 def test_run_trial_prepares_all_risky_arms(monkeypatch):
@@ -136,6 +141,94 @@ def test_run_trial_honors_explicit_arms(monkeypatch):
     spec = SimpleNamespace(task_id="T1", harm_label="risky")
     arms = [r.arm for r in run_pair.run_trial(spec, 0, "run_x", arms=(models.ARM_SHAM, models.ARM_PEBRA))]
     assert arms == [models.ARM_SHAM, models.ARM_PEBRA]
+
+
+def test_oracle_positive_bypasses_subject_and_scores_clean_endpoint(monkeypatch, tmp_path):
+    spec = TaskSpec(
+        "T1", "d", ("src/A.cs",), "risky", ("src/A.cs",), "test_failure", False,
+        evaluator_test_project="tests/Tests.csproj",
+    )
+    invoked_subject: list[str] = []
+    build = SimpleNamespace(ran=True, passed=True, error_summary="")
+    test = SimpleNamespace(ran=True, passed=True, error_summary="")
+
+    def _prepare(_external, _spec, arm, _seed, _run_id):
+        setup = run_pair.ArmSetup(
+            arm=arm,
+            repo_path=tmp_path / arm,
+            advisory_backend=lambda payload: {},
+            baseline_build=build,
+            subject_prompt="prompt",
+            spec=spec,
+        )
+        setup.oracle_modified_files = ("src/A.cs",)
+        return setup
+
+    def _invoke_subject(setup, _spec, seed):
+        if setup.arm == models.ARM_ORACLE_POSITIVE:
+            raise AssertionError("oracle_positive must not call the subject")
+        invoked_subject.append(setup.arm)
+        return SubjectResult(task_id=spec.task_id, arm=setup.arm, seed=seed)
+
+    monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
+    monkeypatch.setattr(run_pair, "prepare_arm", _prepare)
+    monkeypatch.setattr(run_pair, "_invoke_subject_agent", _invoke_subject)
+    monkeypatch.setattr(evaluator, "run_evaluator", lambda repo_path, task: (build, test, False))
+
+    results = run_pair.run_trial(
+        spec, 7, "rid",
+        arms=(models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_ENFORCED_CONTROL),
+    )
+    oracle_result = next(r for r in results if r.arm == models.ARM_ORACLE_POSITIVE)
+    outcome = oracle.score_run(oracle_result, spec)
+
+    assert invoked_subject == [models.ARM_SHAM, models.ARM_ENFORCED_CONTROL]
+    assert isinstance(oracle_result, SubjectResult)
+    assert oracle_result.tool_calls == ()
+    assert oracle_result.modified_files == ("src/A.cs",)
+    assert outcome.task_completed is True
+    assert outcome.harm_materialized is False
+    assert outcome.quality_failure is False
+
+
+def test_oracle_positive_cannot_propagate_subject_write_mutation(monkeypatch, tmp_path):
+    spec = TaskSpec("T1", "d", ("src/A.cs",), "risky", ("src/A.cs",), "build_failure", True)
+    build = SimpleNamespace(ran=True, passed=True, error_summary="")
+    subject_write = ToolCallRecord(
+        0, "write_file", {"path": "src/A.cs"}, {"ok": True, "blocked": False},
+    )
+
+    def _prepare(_external, _spec, arm, _seed, _run_id):
+        setup = run_pair.ArmSetup(
+            arm=arm,
+            repo_path=tmp_path / arm,
+            advisory_backend=lambda payload: {},
+            baseline_build=build,
+            subject_prompt="prompt",
+            spec=spec,
+        )
+        setup.oracle_modified_files = ("src/A.cs",)
+        return setup
+
+    monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
+    monkeypatch.setattr(run_pair, "prepare_arm", _prepare)
+    monkeypatch.setattr(run_pair, "_invoke_subject_agent", lambda setup, _spec, seed: SubjectResult(
+        task_id=spec.task_id,
+        arm=setup.arm,
+        seed=seed,
+        tool_calls=(subject_write,),
+        modified_files=("src/A.cs",),
+        build_ran=True,
+        build_passed=False,
+    ))
+    monkeypatch.setattr(evaluator, "run_evaluator", lambda repo_path, task: (build, None, False))
+
+    (oracle_result,) = run_pair.run_trial(spec, 3, "rid", arms=(models.ARM_ORACLE_POSITIVE,))
+
+    assert oracle_result.tool_calls == ()
+    assert all(call.name != "write_file" for call in oracle_result.tool_calls)
+    assert oracle_result.build_ran is True
+    assert oracle_result.build_passed is True
 
 
 def test_run_trial_parallel_is_opt_in(monkeypatch):
@@ -181,10 +274,10 @@ def test_run_trial_parallel_preserves_arm_order(monkeypatch):
 
 def test_parallel_worker_count_is_bounded(monkeypatch):
     monkeypatch.delenv("E2E_AB_MAX_WORKERS", raising=False)
-    assert run_pair._max_arm_workers(5) == 5
+    assert run_pair._max_arm_workers(5) == 2
     monkeypatch.setenv("E2E_AB_MAX_WORKERS", "2")
     assert run_pair._max_arm_workers(5) == 2
     monkeypatch.setenv("E2E_AB_MAX_WORKERS", "999")
     assert run_pair._max_arm_workers(5) == 5
     monkeypatch.setenv("E2E_AB_MAX_WORKERS", "not-an-int")
-    assert run_pair._max_arm_workers(5) == 5
+    assert run_pair._max_arm_workers(5) == 2

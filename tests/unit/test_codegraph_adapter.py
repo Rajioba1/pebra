@@ -956,7 +956,7 @@ def test_gamma_style_multisymbol_graph_scope_routes_to_revise_safer(tmp_path) ->
         inp,
         action=action,
         events=[{"event": "dependency_break", "p_event": 0.45, "elicited_disutility": 0.80}],
-        immediate_benefit=0.5,
+        immediate_benefit=2.0,
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=False,
             changed_symbols=[],

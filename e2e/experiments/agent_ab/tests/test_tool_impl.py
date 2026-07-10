@@ -25,6 +25,38 @@ def test_write_then_read_roundtrip(tmp_path):
     assert tool_impl.read_file("src/A.cs", tmp_path) == {"content": "hello"}
 
 
+def test_write_file_rejects_prose_overwrite_for_typescript_source(tmp_path):
+    src = tmp_path / "packages" / "zod" / "src" / "v3" / "types.ts"
+    src.parent.mkdir(parents=True)
+    src.write_text("export const existing = 1;\n", encoding="utf-8")
+
+    out = tool_impl.write_file(
+        "packages/zod/src/v3/types.ts",
+        "Here is the fix. We should update the parser to handle this case and then run the tests.",
+        tmp_path,
+    )
+
+    assert "error" in out
+    assert "rejected" in out["error"]
+    assert src.read_text(encoding="utf-8") == "export const existing = 1;\n"
+
+
+def test_write_file_rejects_shell_script_overwrite_for_typescript_source(tmp_path):
+    src = tmp_path / "packages" / "zod" / "src" / "v3" / "types.ts"
+    src.parent.mkdir(parents=True)
+    src.write_text("export const existing = 1;\n", encoding="utf-8")
+
+    out = tool_impl.write_file(
+        "packages/zod/src/v3/types.ts",
+        "import { execSync } from 'node:child_process';\nexecSync('git checkout -- packages/zod/src/v3/types.ts');\n",
+        tmp_path,
+    )
+
+    assert "error" in out
+    assert "rejected" in out["error"]
+    assert src.read_text(encoding="utf-8") == "export const existing = 1;\n"
+
+
 def test_write_traversal_returns_error_not_raises(tmp_path):
     res = tool_impl.write_file("../../evil.txt", "x", tmp_path)
     assert "error" in res

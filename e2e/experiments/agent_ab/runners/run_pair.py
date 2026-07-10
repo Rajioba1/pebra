@@ -38,6 +38,7 @@ from e2e.utils import cli_harness
 _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _MIN_CSHARP_NODES = 50
 _DIFF_GIT = re.compile(r"^diff --git a/(.*) b/(.*)$")
+_DEFAULT_MAX_ARM_WORKERS = 2
 
 # ---- assay arm sets (legacy 2-arm control/treatment map onto sham/pebra behavior) ---------------
 _RISKY_ARMS = (
@@ -117,6 +118,7 @@ class ArmSetup:
     build_solution: str = "TemplateBlueprint.sln"
     spec: TaskSpec | None = None
     build_backend: Any | None = None
+    oracle_modified_files: tuple[str, ...] = ()
     # SAME write-gate in both arms; only treatment is backed by real PEBRA. Default = sham-allow so any
     # ArmSetup built without an explicit backend never blocks a write.
     gate_check_backend: Callable[..., dict[str, Any]] = lambda event: {"permission": "allow", "tier": "pass"}
@@ -365,11 +367,13 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
                 f"{arm} arm CodeGraph has {counts.get('csharp_callable', 0)} C# callable nodes "
                 f"(< {_MIN_CSHARP_NODES})"
             )
+    oracle_modified_files: tuple[str, ...] = ()
     if arm == models.ARM_ORACLE_POSITIVE:
         # Endpoint floor: pre-apply the known correct fix BEFORE the baseline build, so the (correct)
         # baseline passes. Lazy import: arm_prep imports RunPairError from this module (avoid a cycle).
         from e2e.experiments.agent_ab.runners import arm_prep  # noqa: PLC0415
-        arm_prep.prepare_oracle_patch(repo_path, spec.task_id, patch_dir=_correct_patch_dir(spec))
+        patch = arm_prep.prepare_oracle_patch(repo_path, spec.task_id, patch_dir=_correct_patch_dir(spec))
+        oracle_modified_files = _patch_touched_files(patch.read_text(encoding="utf-8"))
     db_path = dest.parent / "pebra.db"
     build_backend = backends.backend_for_spec(spec)
     baseline = build_backend.run_build_delta(repo_path, spec)
@@ -387,6 +391,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         build_solution=spec.build_solution,
         spec=spec,
         build_backend=build_backend,
+        oracle_modified_files=oracle_modified_files,
         gate_check_backend=_gate_check_backend(arm, db_path),
     )
 
@@ -468,6 +473,25 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
     )
 
 
+def _invoke_oracle_positive(setup: ArmSetup, spec: TaskSpec, seed: int) -> SubjectResult:
+    """Evaluate the pre-applied correct repo directly; no subject/model/tools may mutate it."""
+    from e2e.experiments.agent_ab.runners import evaluator  # noqa: PLC0415
+
+    build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec)
+    return SubjectResult(
+        task_id=spec.task_id,
+        arm=setup.arm,
+        seed=seed,
+        modified_files=tuple(setup.oracle_modified_files),
+        build_ran=build.ran,
+        build_passed=(build.passed if build.ran else None),
+        build_error_summary=build.error_summary,
+        test_ran=bool(test and test.ran),
+        test_passed=(test.passed if (test and test.ran) else None),
+        final_stop_reason="oracle_positive_baseline",
+    )
+
+
 def run_pair(spec: TaskSpec, seed: int, run_id: str) -> tuple[SubjectResult, SubjectResult]:
     """Legacy 2-arm (control/treatment) trial — unchanged; kept for the pilot/smoke/powered modes."""
     external = rs.prepare_external_repo()
@@ -488,18 +512,24 @@ def _max_arm_workers(arm_count: int) -> int:
         return 1
     raw = os.environ.get("E2E_AB_MAX_WORKERS")
     try:
-        requested = int(raw) if raw else 5
+        requested = int(raw) if raw else _DEFAULT_MAX_ARM_WORKERS
     except ValueError:
-        requested = 5
+        requested = _DEFAULT_MAX_ARM_WORKERS
     return max(1, min(arm_count, requested))
 
 
 def _invoke_trial_setups(setups: list[ArmSetup], spec: TaskSpec, seed: int) -> tuple[SubjectResult, ...]:
     if not _parallel_arms_enabled() or len(setups) <= 1:
-        return tuple(_invoke_subject_agent(setup, spec, seed) for setup in setups)
+        return tuple(_invoke_trial_setup(setup, spec, seed) for setup in setups)
     with ThreadPoolExecutor(max_workers=_max_arm_workers(len(setups))) as executor:
-        futures = [executor.submit(_invoke_subject_agent, setup, spec, seed) for setup in setups]
+        futures = [executor.submit(_invoke_trial_setup, setup, spec, seed) for setup in setups]
         return tuple(future.result() for future in futures)
+
+
+def _invoke_trial_setup(setup: ArmSetup, spec: TaskSpec, seed: int) -> SubjectResult:
+    if setup.arm == models.ARM_ORACLE_POSITIVE:
+        return _invoke_oracle_positive(setup, spec, seed)
+    return _invoke_subject_agent(setup, spec, seed)
 
 
 def run_trial(spec: TaskSpec, seed: int, run_id: str, *, arms: tuple[str, ...] | None = None,

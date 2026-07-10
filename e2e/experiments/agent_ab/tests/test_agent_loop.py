@@ -77,6 +77,22 @@ def test_wall_time_timeout(tmp_path, monkeypatch):
     assert r.limit_reason == "wall_clock"
 
 
+def test_late_turn_write_is_not_dispatched_after_wall_clock_expires(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    (tmp_path / "a.ts").write_text("export const existing = 1;\n", encoding="utf-8")
+    ticks = iter([0.0, 0.0, 0.0, 601.0])
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(ticks, 601.0))
+    cfg = agent_loop.RunConfig(model="m", max_wall_seconds_per_run=600, tools=_CFG.tools)
+    turn = _tool("write_file", {"path": "a.ts", "content": "export const changed = 2;\n"})
+
+    r = agent_loop.run(_setup(tmp_path), _SPEC, 0, client=ScriptedClient([turn]), config=cfg)
+
+    assert r.timed_out is True
+    assert r.limit_reason == "wall_clock"
+    assert r.tool_calls == ()
+    assert (tmp_path / "a.ts").read_text(encoding="utf-8") == "export const existing = 1;\n"
+
+
 def test_prompt_leak_aborts_before_first_send(tmp_path, monkeypatch):
     _no_git(monkeypatch)
     with pytest.raises(agent_loop.BlindingViolationError):

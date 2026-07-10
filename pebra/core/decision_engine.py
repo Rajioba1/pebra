@@ -138,6 +138,8 @@ def _should_revise_safer(assessment: Assessment) -> bool:
         return False
     if _revision_exhausted(thresholds):
         return False
+    if assessment.scores["expected_utility"] <= 0:
+        return False
     events = {str(c.get("event")) for c in assessment.scores["loss_components"]}
     if events & _HARD_TERMINAL_EVENTS:
         return False

@@ -400,7 +400,9 @@ def test_oracle_positive_pre_patch_happens_before_baseline_build(monkeypatch, tm
 
     def _patch(repo_path, task_id, **_kwargs):
         calls.append(f"patch:{task_id}:{repo_path.name}")
-        return repo_path / "patch.diff"
+        patch = repo_path / "patch.diff"
+        patch.write_text("diff --git a/a.cs b/a.cs\n", encoding="utf-8")
+        return patch
 
     def _record(repo_path, spec, baseline_keys):
         calls.append(f"build:{repo_path.name}:{spec.build_solution}")
@@ -427,8 +429,16 @@ def test_oracle_positive_uses_specimen_correct_fix_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",
                         lambda _external, dest: (dest.mkdir(parents=True), dest)[1])
     monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
-    monkeypatch.setattr(arm_prep, "prepare_oracle_patch",
-                        lambda repo_path, task, **kw: seen.setdefault("patch_dir", kw["patch_dir"]))
+    def _patch(repo_path, task, **kw):
+        seen.setdefault("patch_dir", kw["patch_dir"])
+        patch = repo_path / f"{task}.patch"
+        patch.write_text(
+            "diff --git a/packages/zod/src/v3/types.ts b/packages/zod/src/v3/types.ts\n",
+            encoding="utf-8",
+        )
+        return patch
+
+    monkeypatch.setattr(arm_prep, "prepare_oracle_patch", _patch)
     monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec_arg: _FakeBackend())
 
     run_pair.prepare_arm(_External(), spec, "oracle_positive", 0, "rid")
