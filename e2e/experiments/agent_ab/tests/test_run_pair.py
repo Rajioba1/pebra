@@ -12,6 +12,7 @@ import pytest
 from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
 from e2e.experiments.agent_ab.runners import (
     agent_loop, arm_prep, evaluator, model_client, run_control, run_gate, run_pair,
+    subject_protocol,
 )
 
 _SPEC = TaskSpec("T1", "d", ("a.cs",), "risky", ("a.cs",), "build_failure", True)
@@ -463,6 +464,8 @@ def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
     for name in ("read_file", "write_file", "list_dir", "search_grep", "run_build", "run_tests",
                  "advisory_check"):
         assert name in prompt
+    assert subject_protocol.INSTRUCTION_REL_PATH in prompt
+    assert "read" in prompt.lower()
     assert "before significant edits" in prompt.lower()
     assert "intended patch" in prompt.lower()
     lower = prompt.lower()
@@ -470,21 +473,38 @@ def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
     assert "do not edit" in lower
 
 
-def test_pebra_arm_prompt_includes_blinded_safe_edit_skill(tmp_path):
+def test_pebra_arm_prompt_points_to_file_without_embedding_safe_edit_protocol(tmp_path):
     prompt = run_pair._build_subject_prompt(_SPEC, tmp_path, "pebra")
 
-    assert "Safe-edit protocol" in prompt
-    assert "resubmit a narrower candidate" in prompt
-    assert "write only after" in prompt.lower()
-
-
-def test_non_pebra_arm_prompt_gets_placebo_protocol(tmp_path):
-    prompt = run_pair._build_subject_prompt(_SPEC, tmp_path, "sham")
-
+    assert subject_protocol.INSTRUCTION_REL_PATH in prompt
     assert "Safe-edit protocol" not in prompt
-    assert "Edit protocol" in prompt
-    assert "Draft the intended patch" in prompt
     assert "resubmit a narrower candidate" not in prompt
+    assert "write only after" not in prompt.lower()
+
+
+def test_pebra_and_sham_prompts_are_identical_except_task_fields(tmp_path):
+    pebra_prompt = run_pair._build_subject_prompt(_SPEC, tmp_path, "pebra")
+    sham_prompt = run_pair._build_subject_prompt(_SPEC, tmp_path, "sham")
+
+    assert pebra_prompt == sham_prompt
+
+
+def test_prepare_arm_writes_blinded_protocol_file_for_every_arm(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head",
+                        lambda _external, dest: (dest.mkdir(parents=True), dest)[1])
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
+    monkeypatch.setattr(run_pair.cli_harness, "graph_node_counts",
+                        lambda *, repo_root: {"csharp_callable": 700})
+    monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec: _FakeBackend())
+
+    pebra = run_pair.prepare_arm(_External(), _SPEC, "pebra", 0, "rid")
+    sham = run_pair.prepare_arm(_External(), _SPEC, "sham", 0, "rid")
+
+    pebra_protocol = (pebra.repo_path / subject_protocol.INSTRUCTION_REL_PATH).read_text(encoding="utf-8")
+    sham_protocol = (sham.repo_path / subject_protocol.INSTRUCTION_REL_PATH).read_text(encoding="utf-8")
+    assert "resubmit a narrower candidate" in pebra_protocol
+    assert "Draft the intended patch" in sham_protocol
 
 
 def test_subject_prompt_does_not_include_absolute_repo_path_or_engine_name(tmp_path):

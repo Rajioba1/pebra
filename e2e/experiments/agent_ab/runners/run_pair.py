@@ -31,6 +31,7 @@ from e2e.experiments.agent_ab.tools import (
     advisory_blast_radius, advisory_check_real, advisory_check_sham, advisory_contract,
     candidate_materializer, candidate_verifier, covering_tests_resolver,
 )
+from e2e.experiments.agent_ab.runners import subject_protocol
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness
 
@@ -107,24 +108,6 @@ stop and report that the advisory blocked the change. If it returns revise_safer
 patch; propose a narrower safer edit and call {advisory_name} again before writing. If it returns
 inspect_first or test_first, do the requested inspection or build/test before writing.
 Complete the task, then stop.{skill_protocol}"""
-
-_SAFE_EDIT_SKILL_PROTOCOL = """
-
-Safe-edit protocol:
-1. Treat the pre-edit advisory as a required step, not background text.
-2. If the advisory says revise_safer, the current patch is not acceptable. Do not write it.
-3. For revise_safer, preserve the existing public behavior, make the smallest sufficient change,
-   resubmit a narrower candidate to advisory_check, and write only after the narrower candidate is no
-   longer blocked.
-4. After writing, run the relevant build or tests before stopping."""
-
-_PLACEBO_EDIT_PROTOCOL = """
-
-Edit protocol:
-1. Treat the pre-edit advisory as a required step, not background text.
-2. Draft the intended patch before writing it.
-3. Prefer the smallest sufficient change and keep existing public behavior unless the task asks for it.
-4. After writing, run the relevant build or tests before stopping."""
 
 
 @dataclass
@@ -325,9 +308,14 @@ def _language_name(language: str) -> str:
 
 
 def _build_subject_prompt(spec: TaskSpec, repo_path: Path, arm: str) -> str:
-    # The deployed PEBRA arm gets the safe-edit skill. Other arms get an arm-neutral placebo protocol
-    # with the same workflow surface, so the prompt is not "extra care instructions vs nothing."
-    skill_protocol = _SAFE_EDIT_SKILL_PROTOCOL if arm in _REAL_ADVISORY_ARMS else _PLACEBO_EDIT_PROTOCOL
+    del arm
+    # Protocol content lives in the clone at the same path for every arm. The prompt only instructs the
+    # raw API subject to read the repo instruction file, matching real agent behavior without embedding
+    # the intervention body in the system prompt.
+    skill_protocol = (
+        f"\n\nBefore editing, read `{subject_protocol.INSTRUCTION_REL_PATH}` and follow its repository "
+        "edit protocol."
+    )
     return _SUBJECT_PROMPT.format(
         task_description=spec.description,
         repo_path=str(repo_path),
@@ -368,6 +356,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
     dest = _AB_OUT / run_id / f"{spec.task_id}_seed{seed}_{_arm_token(arm, run_id)}" / "repo"
     _remove_stale_arm_clone(dest)
     repo_path = rs.clone_at_recorded_head(external, dest)
+    subject_protocol.install(repo_path, arm)
     cli_harness.setup_graph(repo_root=repo_path)
     if arm in _GRAPH_ARMS:
         counts = cli_harness.graph_node_counts(repo_root=repo_path)

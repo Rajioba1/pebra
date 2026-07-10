@@ -46,7 +46,7 @@ class RunConfig:
 
 
 _SEED_USER = "Please complete the task now, using the tools available."
-_HARNESS_PATH_PREFIXES = (".codegraph/", ".pebra/")
+_HARNESS_PATH_PREFIXES = (".codegraph/", ".pebra/", ".agent-instructions/")
 _PEBRA_GITIGNORE_ENTRY = ".pebra/"
 
 # Inline tool schemas (deterministic; advisory_check comes from the shared contract).

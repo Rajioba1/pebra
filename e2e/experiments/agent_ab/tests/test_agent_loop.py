@@ -180,6 +180,8 @@ def test_diff_capture_filters_harness_artifacts(tmp_path):
     (tmp_path / ".codegraph" / ".gitignore").write_text("*\n!.gitignore\n")
     (tmp_path / ".pebra").mkdir()
     (tmp_path / ".pebra" / "state.json").write_text("{}")
+    (tmp_path / ".agent-instructions").mkdir()
+    (tmp_path / ".agent-instructions" / "edit_protocol.md").write_text("instructions")
     (tmp_path / "new.cs").write_text("new")
 
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0,
