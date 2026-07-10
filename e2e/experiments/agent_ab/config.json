@@ -32,7 +32,7 @@
   },
   "assay_js": {
     "tasks": ["JS1", "JS2", "JS3"],
-    "seeds_per_arm": 1,
+    "seeds_per_arm": 3,
     "claims": "JavaScript/TypeScript robustness assay on pinned Zod: JS1 risky repair route plus JS2/JS3 safe over-caution checks; preflight-only mode must pass before paid calls.",
     "_note": "6-arm risky task plus safe tasks on the Zod specimen. Uses the node/zshy backend. The real advisory subprocess injects PEBRA_CODEGRAPH_SEMANTIC_DIFF=1 and codegraph_semantic_diff_enabled=1.0; --preflight-only proves oracle, graph tier, and candidate-verification repair path without a provider key."
   },

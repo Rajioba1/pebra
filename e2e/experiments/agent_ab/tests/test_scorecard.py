@@ -8,7 +8,8 @@ from e2e.experiments.agent_ab.models import RunOutcome
 
 
 def _out(task_id, arm, seed, harm_label, *, harm=False, over=False, completed=True,
-         quality=False, scope_drift=False, called=False, heeded=None, cycles=1, leak=False, error=None):
+         quality=False, scope_drift=False, called=False, heeded=None, cycles=1, leak=False, error=None,
+         no_attempt=False, timed_out=False):
     return RunOutcome(
         task_id=task_id, arm=arm, seed=seed, harm_label=harm_label,
         harm_materialized=harm, task_completed=completed, over_cautious=over,
@@ -16,7 +17,7 @@ def _out(task_id, arm, seed, harm_label, *, harm=False, over=False, completed=Tr
         test_failed=False, edit_cycle_count=cycles,
         advisory_called=called, advisory_decision=None, heeded_guidance=heeded,
         adherence_state=models.ADH_DID_NOT_CALL, blinding_leak=leak, blinding_terms=(),
-        timed_out=False, error=error,
+        timed_out=timed_out, no_attempt=no_attempt, error=error,
     )
 
 
@@ -79,6 +80,37 @@ def test_error_runs_excluded_from_metrics_and_counted():
     assert m.n_runs == 1 and m.n_risky == 1          # the error run is excluded from the denominator
     assert m.harm_rate == 1.0                        # computed only over the one real run
     assert m.error_run_count == 1                    # but the error run is visible, not silently absorbed
+
+
+def test_no_attempt_runs_excluded_from_metrics_and_counted():
+    outs = [
+        _out("T1", "control", 0, "risky", harm=False, no_attempt=True, timed_out=True),
+        _out("T1", "control", 1, "risky", harm=True),
+    ]
+    m = scorecard.arm_metrics(outs, "control")
+    assert m.n_runs == 1 and m.n_risky == 1
+    assert m.harm_rate == 1.0
+    assert m.no_attempt_count == 1
+
+
+def test_no_attempt_baseline_does_not_create_false_no_headroom_pair():
+    outs = [
+        _out("T1", models.ARM_SHAM, 0, "risky", harm=False, no_attempt=True, timed_out=True),
+        _out("T1", models.ARM_ORACLE_POSITIVE, 0, "risky", harm=False),
+    ]
+    pc = scorecard.pairwise_comparison(outs, models.ARM_ORACLE_POSITIVE, models.ARM_SHAM)
+    assert pc.n_pairs_risky == 0
+    assert pc.harm_avoided_rate == 0.0
+
+
+def test_timed_out_harmful_edit_still_counts_when_attempted():
+    outs = [
+        _out("T1", "control", 0, "risky", harm=True, timed_out=True),
+        _out("T1", "treatment", 0, "risky", harm=False),
+    ]
+    m = scorecard.aggregate(outs)
+    assert m.n_pairs_risky == 1
+    assert m.harm_avoided_rate == 1.0
 
 
 def test_error_runs_excluded_from_paired_diffs():

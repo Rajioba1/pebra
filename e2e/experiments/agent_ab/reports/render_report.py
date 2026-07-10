@@ -112,6 +112,8 @@ def to_json(
         "error_runs": {"control": m.control.error_run_count, "treatment": m.treatment.error_run_count},
         "blinding_leak_runs": {"control": m.control.blinding_leak_count,
                                "treatment": m.treatment.blinding_leak_count},
+        "no_attempt_runs": {"control": m.control.no_attempt_count,
+                            "treatment": m.treatment.no_attempt_count},
         "conclusion": conclusion(m, preflight_status=preflight_status),
     }
 
@@ -157,6 +159,8 @@ def render_markdown(
         f"- excluded error runs: control={m.control.error_run_count}, treatment={m.treatment.error_run_count}",
         f"- excluded blinding-leak runs: control={m.control.blinding_leak_count}, "
         f"treatment={m.treatment.blinding_leak_count}",
+        f"- excluded no-attempt runs: control={m.control.no_attempt_count}, "
+        f"treatment={m.treatment.no_attempt_count}",
         "",
         "## Statistics (directional)",
         f"- paired Cohen's d: {_num(m.cohens_d_paired)}",
@@ -244,7 +248,8 @@ def assay_to_json(m: AssayMetrics, *, scoring_mode: str = "build_break_scope",
                        "over_caution_rate": a.over_caution_rate, "quality_failure_rate": a.quality_failure_rate,
                        "scope_drift_rate": a.scope_drift_rate, "task_completion_rate": a.task_completion_rate,
                        "adherence_rate": a.adherence_rate, "error_run_count": a.error_run_count,
-                       "blinding_leak_count": a.blinding_leak_count}
+                       "blinding_leak_count": a.blinding_leak_count,
+                       "no_attempt_count": a.no_attempt_count}
                  for arm, a in m.arm_metrics.items()},
         "pairwise": [{"intervention": p.intervention_arm, "baseline": p.baseline_arm,
                       "harm_avoided_rate": p.harm_avoided_rate, "over_caution_delta": p.over_caution_delta,
@@ -276,14 +281,15 @@ def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "
         f"pebra_efficacy={i.pebra_has_efficacy}, pebra_exceeds_blast={i.pebra_exceeds_blast}, "
         f"graph_repair_exceeds_pebra={i.graph_repair_exceeds_pebra}", "",
         "## Per-arm endpoints", "",
-        "| arm | n | harm_rate | over_caution | quality_fail | scope_drift | completion | adherence |",
-        "|---|---|---|---|---|---|---|---|",
+        "| arm | n | harm_rate | over_caution | quality_fail | scope_drift | completion | adherence | no_attempt |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for arm in sorted(m.arm_metrics):
         a = m.arm_metrics[arm]
         lines.append(f"| {arm} | {a.n_runs} | {_pct(a.harm_rate)} | {_pct(a.over_caution_rate)} | "
                      f"{_pct(a.quality_failure_rate)} | {_pct(a.scope_drift_rate)} | "
-                     f"{_pct(a.task_completion_rate)} | {_pct(a.adherence_rate)} |")
+                     f"{_pct(a.task_completion_rate)} | {_pct(a.adherence_rate)} | "
+                     f"{a.no_attempt_count} |")
     lines += ["", "## Pairwise (intervention vs baseline)", "",
               "| intervention | baseline | harm_avoided | over_caution_delta | net_benefit | risky_pairs | "
               "safe_pairs | Cohen's d | Wilcoxon p |", "|---|---|---|---|---|---|---|---|---|"]
@@ -305,7 +311,13 @@ def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "
         lines += ["", f"Raw assay verdict: {i.verdict}"]
     errs = sum(a.error_run_count for a in m.arm_metrics.values())
     leaks = sum(a.blinding_leak_count for a in m.arm_metrics.values())
-    lines += ["", f"- excluded error runs: {errs}; excluded blinding-leak runs: {leaks}", ""]
+    no_attempts = sum(a.no_attempt_count for a in m.arm_metrics.values())
+    lines += [
+        "",
+        f"- excluded error runs: {errs}; excluded blinding-leak runs: {leaks}; "
+        f"excluded no-attempt runs: {no_attempts}",
+        "",
+    ]
     return "\n".join(lines)
 
 

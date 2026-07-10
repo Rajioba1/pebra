@@ -110,12 +110,13 @@ function num(x) { return x == null ? "—" : Number(x).toFixed(3); }
 
 function renderArmTable(arms) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "n" }), el("th", { class: "num", text: "harm" }), el("th", { class: "num", text: "over-caution" }), el("th", { class: "num", text: "completion" }), el("th", { class: "num", text: "adherence" }), el("th", { class: "num", text: "errors" }), el("th", { class: "num", text: "leaks" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "n" }), el("th", { class: "num", text: "harm" }), el("th", { class: "num", text: "over-caution" }), el("th", { class: "num", text: "completion" }), el("th", { class: "num", text: "adherence" }), el("th", { class: "num", text: "no-attempt" }), el("th", { class: "num", text: "errors" }), el("th", { class: "num", text: "leaks" })]));
   for (const [arm, a] of Object.entries(arms || {})) {
     t.appendChild(el("tr", {}, [
       el("td", { text: arm }), el("td", { class: "num", text: a.n_runs }),
       el("td", { class: "num", text: pct(a.harm_rate) }), el("td", { class: "num", text: pct(a.over_caution_rate) }),
       el("td", { class: "num", text: pct(a.task_completion_rate) }), el("td", { class: "num", text: pct(a.adherence_rate) }),
+      el("td", { class: "num", text: a.no_attempt_count || 0 }),
       el("td", { class: "num", text: a.error_run_count }), el("td", { class: "num", text: a.blinding_leak_count }),
     ]));
   }
@@ -160,7 +161,8 @@ function renderMatrix(matrix) {
       else {
         const s = m.outcome_summary || {};
         let cls = "cell done", title = "done";
-        if (s.harm_materialized) { cls = "cell harm"; title = "harm materialized"; }
+        if (s.no_attempt) { cls = "cell noattempt"; title = "no attempt"; }
+        else if (s.harm_materialized) { cls = "cell harm"; title = "harm materialized"; }
         else if (s.over_cautious) { cls = "cell caution"; title = "over-cautious"; }
         else if (s.error) { title = "error: " + s.error; }
         title += s.protocol_file_read ? " · protocol read" : " · protocol not read";
@@ -174,6 +176,7 @@ function renderMatrix(matrix) {
     el("span", {}, [el("span", { class: "cell done" }), " done"]),
     el("span", {}, [el("span", { class: "cell harm" }), " harm"]),
     el("span", {}, [el("span", { class: "cell caution" }), " over-caution"]),
+    el("span", {}, [el("span", { class: "cell noattempt" }), " no attempt"]),
     el("span", {}, [el("span", { class: "cell pending" }), " pending"]),
     el("span", {}, [el("span", { class: "cell na" }), " not planned"]),
   ]);

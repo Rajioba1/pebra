@@ -113,6 +113,7 @@ def _summary(o: models.RunOutcome) -> dict:
             "over_cautious": o.over_cautious, "blinding_leak": o.blinding_leak,
             "quality_failure": o.quality_failure, "error": o.error,
             "timed_out": o.timed_out,
+            "no_attempt": o.no_attempt,
             "advisory_called": o.advisory_called,
             "advisory_decision": o.advisory_decision,
             "over_caution_cause": o.over_caution_cause,

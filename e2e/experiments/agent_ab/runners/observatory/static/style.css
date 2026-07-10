@@ -95,6 +95,7 @@ table.matrix th.rowh { text-align: left; color: var(--ink-dim); position: sticky
 .cell.na { background: transparent; border: 1px dashed var(--ink-dim); }
 .cell.harm { background: var(--harm); box-shadow: 0 0 0 2px rgba(229,72,77,.3); }
 .cell.caution { background: var(--caution); }
+.cell.noattempt { background: transparent; border: 2px solid var(--caution); }
 .legend { display: flex; gap: 16px; color: var(--ink-dim); font-size: 12px; margin-top: 8px; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .groups { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }

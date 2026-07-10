@@ -154,6 +154,7 @@ class RunOutcome:
     blinding_leak: bool
     blinding_terms: tuple[str, ...]
     timed_out: bool
+    no_attempt: bool = False             # timed out / stopped without an edit attempt or restrictive gate
     error: str | None = None            # non-None => run failed (e.g. live client error); excluded from metrics
     advisory_effective: bool = False
     served_models: tuple[str, ...] = ()
@@ -180,6 +181,7 @@ class ArmMetrics:
     effective_adherence_rate: float | None = None  # successful advisory / n_runs
     error_run_count: int = 0            # runs excluded due to SubjectResult.error (e.g. live client failure)
     blinding_leak_count: int = 0        # runs excluded due to transcript/tool visibility leaks
+    no_attempt_count: int = 0            # runs excluded because the subject never made a scorable attempt
     scope_drift_rate: float = 0.0       # over all non-error, non-leaked runs
 
 
