@@ -7,6 +7,7 @@ time (CS0535/CS7036) — a real materialized risk the build surfaces. Pure stdli
 
 from __future__ import annotations
 
+import difflib
 import subprocess
 from pathlib import Path
 
@@ -42,13 +43,20 @@ def reset_signature_change(copy_path: Path | str) -> None:
 
 
 def _patch(copy_path: Path | str) -> str:
-    lines = (Path(copy_path) / IWORKSPACE_REL).read_text(encoding="utf-8").splitlines()
-    idx = lines.index(_ORIG) + 1  # 1-based line of the declaration
-    return (
-        f"diff --git a/{IWORKSPACE_REL} b/{IWORKSPACE_REL}\n--- a/{IWORKSPACE_REL}\n"
-        f"+++ b/{IWORKSPACE_REL}\n@@ -{idx},1 +{idx},1 @@\n{_ORIG.replace(_ORIG, '-' + _ORIG)}\n"
-        f"+{_BREAK}\n"
+    before = (Path(copy_path) / IWORKSPACE_REL).read_text(encoding="utf-8")
+    if before.count(_ORIG) != 1:
+        raise RuntimeError(f"could not find exactly one {_ORIG!r} in {IWORKSPACE_REL}")
+    after = before.replace(_ORIG, _BREAK)
+    body = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{IWORKSPACE_REL}",
+            tofile=f"b/{IWORKSPACE_REL}",
+            n=2,
+        )
     )
+    return f"diff --git a/{IWORKSPACE_REL} b/{IWORKSPACE_REL}\n{body}"
 
 
 def _request(copy_path: Path | str, *, action_id: str, task: str) -> dict:
@@ -73,7 +81,7 @@ def _request(copy_path: Path | str, *, action_id: str, task: str) -> dict:
             "symbol_diff": {
                 "parsed_patch_available": True,
                 "changed_symbols": [f"{IWORKSPACE_REL}::CanCloseAsync"],
-                "max_change_kind": "BEHAVIORAL", "visibility": "public",
+                "max_change_kind": "CONTRACT", "visibility": "public",
                 "consequential_symbol_changed": True,
             },
         },

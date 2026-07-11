@@ -41,8 +41,15 @@ def _git(cwd: Path, *args: str) -> None:
 
 
 def _repo(dest: Path, filename: str, content: str) -> Path:
+    return _repo_files(dest, {filename: content})
+
+
+def _repo_files(dest: Path, files: dict[str, str]) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
-    (dest / filename).write_text(content, encoding="utf-8")
+    for filename, content in files.items():
+        path = dest / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     _git(dest, "init", "-q")
     _git(dest, "config", "user.email", "e2e@pebra.test")
     _git(dest, "config", "user.name", "pebra-e2e")
@@ -58,13 +65,21 @@ def _patch(filename: str, before: str, after: str) -> str:
 
 
 def _write_request(path: Path, repo_id: str, filename: str, patch: str, *, exposure: float) -> Path:
+    return _write_multifile_request(
+        path, repo_id, [filename], patch, exposure=exposure
+    )
+
+
+def _write_multifile_request(
+    path: Path, repo_id: str, filenames: list[str], patch: str, *, exposure: float
+) -> Path:
     request = {
         "schema_version": "0.1",
         "task": "rca benefit e2e",
         "repo_id": repo_id,
         "candidate_actions": [{
             "id": "a1", "label": "edit", "action_type": "edit",
-            "expected_files": [filename], "proposed_patch": patch,
+            "expected_files": filenames, "proposed_patch": patch,
         }],
         "evidence": {
             "p_success": 0.9,
@@ -138,3 +153,48 @@ def test_verify_json_exposes_measured_benefit_for_simplification(require_rca, tm
     assert deltas["complexity_delta"] < 0            # fewer branches
     assert deltas["maintainability_index_delta"] > 0  # more maintainable
     assert payload["measured_benefit"] > 0
+
+
+def test_multilanguage_multifile_benefit_survives_assess_and_verify(require_rca, tmp_path) -> None:
+    repo = _repo_files(
+        tmp_path / "repo",
+        {"calc.py": _PY_BEFORE, "calc.ts": _TS_BEFORE},
+    )
+    patch = _patch("calc.py", _PY_BEFORE, _PY_SIMPLER) + _patch(
+        "calc.ts", _TS_BEFORE, _TS_SIMPLER
+    )
+    db = tmp_path / "p.db"
+    req = _write_multifile_request(
+        tmp_path / "r.json",
+        "rca_multifile_e2e",
+        ["calc.py", "calc.ts"],
+        patch,
+        exposure=0.1,
+    )
+
+    assessed = ch.assess(req, repo_root=repo, db=db)
+    aggregate = assessed["scores"]["candidate_aggregate"]
+    breakdown = assessed["scores"]["benefit_breakdown"]
+    assert aggregate["file_count"] == 2
+    assert breakdown["source_type"] == "measured"
+    assert set(assessed["scores"]["benefit_file_deltas"]) == {"calc.py", "calc.ts"}
+    assert all(
+        values["complexity_delta"] < 0
+        for values in assessed["scores"]["benefit_file_deltas"].values()
+    )
+    assert all(
+        values["maintainability_index_delta"] > 0
+        for values in assessed["scores"]["benefit_file_deltas"].values()
+    )
+
+    (repo / "calc.py").write_text(_PY_SIMPLER, encoding="utf-8")
+    (repo / "calc.ts").write_text(_TS_SIMPLER, encoding="utf-8")
+    _git(repo, "add", "calc.py", "calc.ts")
+
+    _passed, verified = ch.verify(
+        assessed["assessment_id"], repo_root=repo, db=db, scope="staged"
+    )
+    deltas = verified["measured_benefit_deltas"]
+    assert deltas["complexity_delta"] < 0
+    assert deltas["maintainability_index_delta"] > 0
+    assert verified["measured_benefit"] > 0

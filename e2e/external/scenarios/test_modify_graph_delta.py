@@ -64,11 +64,13 @@ def test_codegraph_changes_public_signature_modify_decision(indexed_copy, nograp
     n_pub = _event(nograph, "public_api_break")
     assert g_pub is not None and n_pub is not None
     assert g_pub["p_event"] > n_pub["p_event"]
-    assert _event(graph, "dependency_break") is not None
+    # Correlated structural labels collapse to one dominant event. A public contract uses
+    # public_api_break rather than double-counting the same fault as dependency_break too.
+    assert _event(graph, "dependency_break") is None
     assert _event(nograph, "dependency_break") is None
     assert _event(nograph, "api_contract_break") is None
     assert n_pub["p_event"] == 0.10
 
     assert nograph["recommended_decision"] == "proceed"
-    assert graph["recommended_decision"] in {"ask_human", "reject"}
+    assert graph["recommended_decision"] == "revise_safer"
     assert graph["scores"]["expected_loss"] > graph["scores"]["effective_threshold"]

@@ -59,8 +59,9 @@ def write_request(request: dict, dest: Path | str) -> Path:
     return dest
 
 
-def dependency_break_p(payload: dict) -> float | None:
+def destructive_risk(payload: dict) -> tuple[str, float] | None:
+    """Return the dominant structural DELETE event selected by the production risk model."""
     for component in payload["scores"].get("loss_components", []):
-        if component["event"] == "dependency_break":
-            return component["p_event"]
+        if component["event"] in {"api_contract_break", "public_api_break", "dependency_break"}:
+            return component["event"], component["p_event"]
     return None

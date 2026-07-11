@@ -40,9 +40,11 @@ def test_graph_vs_nograph_delta_escalates_risk(indexed_copy, nograph_copy, nogra
         req, repo_root=nograph_copy, db=tmp_path / "nograph.db", extra_env=nograph_env
     )
 
-    g_dep, n_dep = dr.dependency_break_p(graph), dr.dependency_break_p(nograph)
-    assert g_dep is not None and n_dep is not None
-    assert g_dep > n_dep  # CodeGraph's fan-in boosts the destructive-op event above the baseline floor
+    graph_risk, nograph_risk = dr.destructive_risk(graph), dr.destructive_risk(nograph)
+    assert graph_risk is not None and nograph_risk is not None
+    graph_event, graph_p = graph_risk
+    _nograph_event, nograph_p = nograph_risk
+    assert graph_p > nograph_p
 
     g_loss = graph["scores"]["expected_loss"]
     n_loss = nograph["scores"]["expected_loss"]
@@ -56,7 +58,7 @@ def test_graph_vs_nograph_delta_escalates_risk(indexed_copy, nograph_copy, nogra
     assert no_rollup["resolution_method"] == "unresolved"
     assert no_rollup["graph_freshness"] == "unknown"
     assert no_rollup["fallback_reason"]
-    assert graph["recommended_decision"] in {"reject", "ask_human", "inspect_first"}
+    assert graph["recommended_decision"] == "revise_safer"
 
     report = rg.write_report(
         [
@@ -76,9 +78,9 @@ def test_graph_vs_nograph_delta_escalates_risk(indexed_copy, nograph_copy, nogra
                     "caller_count": graph["scores"]["symbol_scope_evidence"]["file_fanin_rollup"][
                         "distinct_caller_count"
                     ],
-                    "risk_event": "dependency_break",
-                    "risk_boost": g_dep - n_dep,
-                    "final_probability": g_dep,
+                    "risk_event": graph_event,
+                    "risk_boost": graph_p - nograph_p,
+                    "final_probability": graph_p,
                 },
             )
         ],
