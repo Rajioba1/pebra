@@ -76,7 +76,7 @@ def _phase_and_mode(run_dir: Path, cli_mode: str | None) -> tuple[str, str | Non
                               if newest else None),
         "stale_seconds": (round(time.time() - newest) if newest else None),
     }
-    for key in ("preflight_status", "served_models", "scoring_mode", "error"):
+    for key in ("preflight_status", "served_models", "scoring_mode", "error", "failure_kind"):
         if key in status:
             detail[key] = status[key]
     return phase, mode, detail

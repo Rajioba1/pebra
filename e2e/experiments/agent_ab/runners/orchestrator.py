@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 _EVAL_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "evaluator_tests"
 _ALLOW_UNVERIFIED_ENV = "E2E_AB_ALLOW_UNVERIFIED"
+_TERMINAL_PHASES = frozenset({"finished", "failed", "insufficient_data", "no_headroom"})
 
 
 class ExperimentRunError(RuntimeError):
@@ -40,6 +42,15 @@ class ExperimentRunError(RuntimeError):
     score it: a systematic misconfiguration (bad API key) errors on the very first run, so stopping
     avoids silently scoring a whole batch of no-op error runs as a valid null result. The incremental
     resume means fixing the cause and re-running only redoes the aborted (and any unstarted) pair."""
+
+
+class ShamAdmissionError(ExperimentRunError):
+    """A sham-stage stop with a machine-readable cause for the run observatory."""
+
+    def __init__(self, message: str, *, phase: str, failure_kind: str) -> None:
+        super().__init__(message)
+        self.phase = phase
+        self.failure_kind = failure_kind
 
 
 def load_corpus() -> list[TaskSpec]:
@@ -119,6 +130,7 @@ def _write_run_status(
     served_models: list[str] | None = None,
     run_metadata: dict[str, Any] | None = None,
     error: str | None = None,
+    failure_kind: str | None = None,
 ) -> None:
     """Additive observability artifact (out_dir/run_status.json) — lets the run observatory read the
     authoritative mode + coarse phase instead of guessing from artifact presence. NEVER touches
@@ -140,11 +152,18 @@ def _write_run_status(
             payload["run_metadata"] = run_metadata
         if error is not None:
             payload["error"] = error
-        run_artifacts.atomic_write_json(
-            out_dir / "run_status.json",
-            payload,
-        )
-    except OSError:
+        if failure_kind is not None:
+            payload["failure_kind"] = failure_kind
+        attempts = 3 if phase in _TERMINAL_PHASES else 1
+        for attempt in range(attempts):
+            try:
+                run_artifacts.atomic_write_json(out_dir / "run_status.json", payload)
+                return
+            except OSError:
+                if attempt + 1 == attempts:
+                    return
+                time.sleep(0.05 * (attempt + 1))
+    except (OSError, TypeError, ValueError):
         pass
 
 
@@ -245,9 +264,10 @@ def _completed_units(outcomes: list[RunOutcome], specs_by_id: dict[str, TaskSpec
 
 def _sham_admission_failures(
     outcomes: list[RunOutcome], plan: list[tuple[TaskSpec, int]]
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Require observed sham harm per risky task before spending on the remaining assay arms."""
-    failures: list[str] = []
+    insufficient_data: list[str] = []
+    no_headroom: list[str] = []
     risky_ids = sorted({spec.task_id for spec, _seed in plan if spec.harm_label == "risky"})
     for task_id in risky_ids:
         rows = [
@@ -259,13 +279,17 @@ def _sham_admission_failures(
             if not outcome.error and not outcome.blinding_leak and not outcome.no_attempt
         ]
         harmed = sum(outcome.harm_materialized for outcome in scorable)
-        if harmed <= 0:
-            excluded = len(rows) - len(scorable)
-            failures.append(
+        excluded = len(rows) - len(scorable)
+        if not scorable:
+            insufficient_data.append(
+                f"{task_id}: 0 scorable sham runs ({excluded} excluded of {len(rows)} total)"
+            )
+        elif harmed <= 0:
+            no_headroom.append(
                 f"{task_id}: {harmed}/{len(scorable)} scorable sham runs materialized harm "
                 f"({excluded} excluded of {len(rows)} total)"
             )
-    return failures
+    return insufficient_data, no_headroom
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -357,6 +381,9 @@ def main(argv: list[str] | None = None) -> int:
                 o for o in existing
                 if (o.task_id, o.seed) not in completed
                 and o.arm == ARM_SHAM
+                and not o.error
+                and not o.blinding_leak
+                and not o.no_attempt
                 and (spec := planned.get((o.task_id, o.seed))) is not None
                 and spec.harm_label == "risky"
             )
@@ -375,9 +402,20 @@ def main(argv: list[str] | None = None) -> int:
                 outcomes.append(oracle.score_run(subject, spec))
                 present_sham.add(key)
                 _write_outcomes(outcomes_path, outcomes, args.run_id)
-            if failures := _sham_admission_failures(outcomes, plan):
-                raise ExperimentRunError(
-                    "sham admission failed; full assay arms were not run: " + "; ".join(failures)
+            insufficient_data, no_headroom = _sham_admission_failures(outcomes, plan)
+            if insufficient_data:
+                raise ShamAdmissionError(
+                    "sham admission has insufficient data; full assay arms were not run: "
+                    + "; ".join(insufficient_data),
+                    phase="insufficient_data",
+                    failure_kind="sham_no_scorable_runs",
+                )
+            if no_headroom:
+                raise ShamAdmissionError(
+                    "sham admission found no headroom; full assay arms were not run: "
+                    + "; ".join(no_headroom),
+                    phase="no_headroom",
+                    failure_kind="sham_no_headroom",
                 )
         for spec, seed in plan:
             if (spec.task_id, seed) in completed:
@@ -423,10 +461,13 @@ def main(argv: list[str] | None = None) -> int:
                           preflight_status=preflight_status, scoring_mode=scoring_mode,
                           served_models=served_models, run_metadata=run_metadata)
     except Exception as exc:
-        _write_run_status(out_dir, args.mode, "failed",
+        phase = exc.phase if isinstance(exc, ShamAdmissionError) else "failed"
+        failure_kind = exc.failure_kind if isinstance(exc, ShamAdmissionError) else None
+        _write_run_status(out_dir, args.mode, phase,
                           preflight_status=preflight_status, scoring_mode=scoring_mode,
                           run_metadata=run_metadata,
-                          error=f"{type(exc).__name__}: {exc}")
+                          error=f"{type(exc).__name__}: {exc}",
+                          failure_kind=failure_kind)
         raise
     return 0
 

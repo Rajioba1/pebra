@@ -67,6 +67,10 @@ function renderHeader(v) {
     ]),
   ]);
   if (v.mode == null) head.appendChild(el("div", { class: "banner", text: "No mode known (run_status.json absent and no ?mode= given) — the matrix shows observed arms only; pending is unknown." }));
+  if (v.phase_detail.error) {
+    const kind = v.phase_detail.failure_kind ? v.phase_detail.failure_kind + ": " : "";
+    head.appendChild(el("div", { class: "banner failure", text: kind + v.phase_detail.error }));
+  }
   return head;
 }
 

@@ -1,4 +1,4 @@
-"""`pebra capabilities` — report PEBRA's MEASURED per-language support for a repo (read-only).
+"""`pebra capabilities` — report measured language and enforcement posture for a repo (read-only).
 
 Honest DECLARED ∩ MEASURED reporting: for each language actually present in the CodeGraph index, show
 the support tier PEBRA can back with graph facts (full / partial / risk_only) and the coverage that
@@ -19,7 +19,7 @@ from pebra.core.language_capability import DECLARED_LANGUAGES
 def register(subparsers: Any) -> None:
     p = subparsers.add_parser(
         "capabilities",
-        help="Report measured per-language support (tier + coverage) for a repo's CodeGraph index.",
+        help="Report measured language support and observed host-enforcement posture for a repo.",
     )
     p.add_argument("--repo-root", default=".")
     p.add_argument("--json", action="store_true", dest="as_json")

@@ -12,6 +12,7 @@ decision logic lives entirely in the adapter; this module is only the host-speci
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from typing import Any
@@ -25,10 +26,21 @@ def register(subparsers: Any) -> None:
         help="Claude PreToolUse enforcement shim: deny/ask an unassessed high-impact edit via gate-check.",
     )
     p.add_argument("--db", default=None, help="Override the assessment store path.")
+    p.add_argument(
+        "--capabilities",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     p.set_defaults(func=run_gate_hook)
 
 
 def run_gate_hook(args: Any) -> int:
+    if getattr(args, "capabilities", False):
+        print(json.dumps({
+            "candidate_binding_protocol": "sha256-normalized-content-v1",
+            "complete_candidate_event_required": True,
+        }, sort_keys=True))
+        return 0
     try:
         raw = sys.stdin.read()
         event = json.loads(raw) if raw.strip() else {}

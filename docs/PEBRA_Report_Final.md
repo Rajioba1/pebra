@@ -1819,6 +1819,12 @@ Required shape:
 
 Binding fields are the pre-edit autonomy envelope. `pebra_verify` must enforce them after the edit by checking actual diff scope, contract-surface changes, dependency/schema/migration changes, required controls, and required checks. Advisory fields guide the editing model but do not create new hard gates.
 
+The shipped pre-edit gate also binds supported host events to the normalized resulting content of the
+assessed candidate. A different digest, an unmaterializable edit, or a partial multi-file candidate is
+denied and requires reassessment. Multi-file approval requires one complete patch event; hosts exposing
+only single-file edits must assess each file as a separate candidate. Host capability reporting is
+configuration evidence, not proof that an external host delivered every event.
+
 Trigger flags in the guidance packet are advisory evidence for the model. Required controls are binding. This distinction keeps PEBRA understandable without letting the model decide that a high-risk trigger is optional.
 
 `risky_scope` is assessment-invalidating by default, not banned by default. The risk score was computed under assumptions about scope; touching a `requires_reassessment` item makes the assessment stale and forces a new assessment. Only `action: forbidden` is a hard reject.

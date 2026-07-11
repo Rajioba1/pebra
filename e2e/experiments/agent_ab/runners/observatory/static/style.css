@@ -124,3 +124,5 @@ table.data th.num, table.data td.num { font-family: var(--mono); text-align: rig
 .tag { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--edge); color: var(--ink-dim); }
 .tag.arm { color: var(--accent); border-color: var(--accent); }
 .dim { color: var(--ink-dim); }
+.pill.failed, .pill.insufficient_data, .pill.no_headroom { color: #ff9b8d; border-color: #8f3f3a; }
+.banner.failure { color: #ffb3a9; border-color: #8f3f3a; background: #241517; }

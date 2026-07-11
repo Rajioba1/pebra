@@ -66,6 +66,14 @@ class GateDecision:
                 "reason": self.reason, "warn": self.warn}
 
 
+@dataclass(frozen=True)
+class ImpactEvidence:
+    """Graph impact result plus the reason an unavailable graph could not answer."""
+
+    impactful: bool | None
+    fallback_reason: str | None = None
+
+
 # ---- host event -> target paths -----------------------------------------------------------
 
 def extract_target_paths(event: dict[str, Any]) -> list[str]:
@@ -124,9 +132,21 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
     except Exception as exc:  # noqa: BLE001 - resolution failure must fail open, never crash a host edit
         return GateDecision("allow", "fail_open", warn=f"gate: repo root unresolved: {exc}")
 
-    impactful = _any_impactful(targets, repo_root)
+    impact_result = _any_impactful(targets, repo_root)
+    # Keep compatibility with simple injected bools in host tests while the real adapter always
+    # returns ImpactEvidence so an unavailable graph retains its diagnostic reason.
+    if isinstance(impact_result, ImpactEvidence):
+        impactful = impact_result.impactful
+        impact_reason = impact_result.fallback_reason
+    else:
+        impactful = impact_result
+        impact_reason = None
     if impactful is None:
-        return GateDecision("allow", "fail_open", warn="gate: graph unavailable; skipping consult check")
+        detail = f": {impact_reason}" if impact_reason else ""
+        return GateDecision(
+            "allow", "fail_open",
+            warn=f"gate: graph unavailable{detail}; skipping consult check",
+        )
     if not impactful:
         return GateDecision("allow", "pass")
 
@@ -151,11 +171,11 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
         )
     attempted_files = attempted_candidate.get("files") or {}
     expected_files = expected_candidate.get("files") or {}
-    if (
-        attempted_candidate.get("algorithm") != expected_candidate.get("algorithm")
-        or not attempted_files
-        or any(expected_files.get(path) != digest for path, digest in attempted_files.items())
-    ):
+    if attempted_candidate.get("algorithm") != expected_candidate.get("algorithm") or not attempted_files:
+        return GateDecision("deny", "candidate_mismatch", reason=_candidate_reason(targets, head))
+    if set(attempted_files) != set(expected_files):
+        return GateDecision("deny", "candidate_incomplete", reason=_candidate_incomplete_reason(targets, head))
+    if any(expected_files.get(path) != digest for path, digest in attempted_files.items()):
         return GateDecision("deny", "candidate_mismatch", reason=_candidate_reason(targets, head))
     if str(matched.get("decision")) in _REVISE_DECISIONS:
         return GateDecision("deny", "consulted_revise", reason=_revise_reason(targets, head))
@@ -184,6 +204,15 @@ def _candidate_reason(targets: list[str], head: str) -> str:
     )
 
 
+def _candidate_incomplete_reason(targets: list[str], head: str) -> str:
+    names = ", ".join(os.path.basename(t) for t in targets[:3])
+    return (
+        f"The assessed candidate for {names} at commit {head[:8]} changes multiple files and must "
+        "be applied atomically. Assess a single-file candidate or use an atomic patch event containing "
+        "the complete assessed candidate."
+    )
+
+
 def _review_reason(targets: list[str], head: str) -> str:
     names = ", ".join(os.path.basename(t) for t in targets[:3])
     return (f"A pre-edit check assessed editing {names} as high-risk (commit {head[:8]}). Approve in the host "
@@ -204,22 +233,27 @@ def _revise_reason(targets: list[str], head: str) -> str:
 
 # ---- impact pre-filter ---------------------------------------------------------------------
 
-def _any_impactful(targets: list[str], repo_root: str) -> bool | None:
-    """True if any target is graph-impactful; False if all are below threshold; None if NO impact
-    evidence is available at all (graph + import-graph both absent) -> caller fails open."""
+def _any_impactful(targets: list[str], repo_root: str) -> ImpactEvidence:
+    """Return impact plus degradation reason; unavailable evidence tells the caller to fail open."""
     evidence_seen = False
+    fallback_reasons: list[str] = []
     for target in targets:
-        pctl = _fanin_percentile(target, repo_root)
+        pctl, fallback_reason = _fanin_probe(target, repo_root)
         if pctl is not None:
             evidence_seen = True
             if pctl >= _IMPACT_THRESHOLD:
-                return True
+                return ImpactEvidence(True)
+        elif fallback_reason:
+            fallback_reasons.append(fallback_reason)
         anchor = _god_node_score(target, repo_root)
         if anchor is not None:
             evidence_seen = True
             if anchor >= _ANCHOR_THRESHOLD:
-                return True
-    return False if evidence_seen else None
+                return ImpactEvidence(True)
+    if evidence_seen:
+        return ImpactEvidence(False)
+    reason = "; ".join(dict.fromkeys(fallback_reasons)) or "no graph evidence available"
+    return ImpactEvidence(None, reason)
 
 
 def _fanin_percentile(target: str, repo_root: str) -> float | None:
@@ -329,6 +363,43 @@ def _candidate_binding(row: dict[str, Any]) -> dict[str, Any] | None:
         return {"algorithm": algorithm, "files": dict(files)}
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
+
+
+def _fanin_probe(target: str, repo_root: str) -> tuple[float | None, str | None]:
+    """Return the percentile or the adapter's concrete degradation reason.
+
+    ``highest_file_fanin_percentile`` predates provenance and returns only ``None``. On that path,
+    query the same adapter's rollup to distinguish a valid zero-fan-in file from an unavailable graph.
+    """
+    pctl = _fanin_percentile(target, repo_root)
+    if pctl is not None:
+        return pctl, None
+    try:
+        rollup = CodeGraphAdapter().file_fanin_rollup(target, repo_root)
+    except Exception:  # noqa: BLE001 - gate failure remains fail-open with a useful warning
+        return None, "CodeGraph probe failed"
+    if rollup.fallback_reason:
+        return None, _safe_graph_fallback_reason(rollup.fallback_reason)
+    return 0.0, None
+
+
+def _safe_graph_fallback_reason(reason: str) -> str:
+    """Map adapter diagnostics to stable, path-free model-facing messages."""
+    lowered = reason.lower()
+    mappings = (
+        ("cli not found", "CodeGraph CLI not found"),
+        ("out of range", "CodeGraph version unsupported"),
+        ("not initialized", "CodeGraph index not initialized"),
+        ("index stale", "CodeGraph index stale"),
+        ("db not found", "CodeGraph database not found"),
+        ("could not be opened", "CodeGraph database unreadable"),
+        ("schema below", "CodeGraph schema unsupported"),
+        ("query failed", "CodeGraph query failed"),
+    )
+    for marker, safe_message in mappings:
+        if marker in lowered:
+            return safe_message
+    return "CodeGraph evidence unavailable"
 
 
 def _fresh_match(rows: list[dict[str, Any]], targets: list[str], head_sha: str, repo_root: str) -> bool:

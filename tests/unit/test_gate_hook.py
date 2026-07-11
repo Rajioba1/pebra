@@ -28,6 +28,17 @@ def test_gate_hook_is_registered():
     assert args.func is gh_cmd.run_gate_hook
 
 
+def test_gate_hook_capability_handshake_reports_candidate_binding_contract(capsys):
+    args = build_parser().parse_args(["gate-hook", "--capabilities"])
+
+    assert gh_cmd.run_gate_hook(args) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "candidate_binding_protocol": "sha256-normalized-content-v1",
+        "complete_candidate_event_required": True,
+    }
+
+
 def test_deny_emits_permission_decision(monkeypatch, capsys):
     monkeypatch.setattr(gca, "decide",
                         lambda event, db_path=None: gca.GateDecision("deny", "must_consult", reason="run assess first"))

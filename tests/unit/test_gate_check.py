@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 from pebra.adapters import candidate_binding
 from pebra.adapters import gate_check_adapter as gca
@@ -309,7 +310,7 @@ def test_decide_denies_unencodable_content_instead_of_raising_to_hook_fail_open(
     assert decision.tier == "candidate_unverifiable"
 
 
-def test_decide_allows_each_file_of_assessed_multifile_candidate_and_denies_extra(
+def test_decide_requires_assessed_multifile_candidate_in_one_complete_event(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: True)
@@ -338,8 +339,16 @@ def test_decide_allows_each_file_of_assessed_multifile_candidate_and_denies_extr
             "tool_input": {"file_path": f"src/{name}", "content": content},
         }
 
-    assert gca.decide(event("a.py", "new-a\n")).permission == "allow"
-    assert gca.decide(event("b.py", "new-b\n")).permission == "allow"
+    partial_a = gca.decide(event("a.py", "new-a\n"))
+    partial_b = gca.decide(event("b.py", "new-b\n"))
+    assert partial_a.permission == partial_b.permission == "deny"
+    assert partial_a.tier == partial_b.tier == "candidate_incomplete"
+
+    atomic = gca.decide({
+        "tool_name": "apply_patch", "cwd": str(tmp_path),
+        "tool_input": {"command": patch},
+    })
+    assert atomic.permission == "allow" and atomic.tier == "consulted"
     extra = gca.decide(event("c.py", "new-c\n"))
     assert extra.permission == "deny"
     assert extra.tier == "must_consult"
@@ -482,12 +491,47 @@ def test_god_node_score_no_crash_on_non_dict_json(tmp_path):
 def test_any_impactful_true_via_anchor(tmp_path, monkeypatch):
     monkeypatch.setattr(gca, "_fanin_percentile", lambda t, r: None)  # no codegraph evidence
     _write_import_graph(tmp_path, {"src/a.py": 0.95})
-    assert gca._any_impactful([_abs(tmp_path, "src/a.py")], str(tmp_path)) is True
+    result = gca._any_impactful([_abs(tmp_path, "src/a.py")], str(tmp_path))
+    assert result.impactful is True
 
 
 def test_any_impactful_none_when_no_evidence(tmp_path, monkeypatch):
     monkeypatch.setattr(gca, "_fanin_percentile", lambda t, r: None)  # no codegraph, no import graph
-    assert gca._any_impactful([_abs(tmp_path, "src/a.py")], str(tmp_path)) is None
+    result = gca._any_impactful([_abs(tmp_path, "src/a.py")], str(tmp_path))
+    assert result.impactful is None
+    assert result.fallback_reason
+
+
+def test_decide_graph_fail_open_warning_preserves_adapter_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        gca,
+        "_any_impactful",
+        lambda targets, root: gca.ImpactEvidence(
+            None, "codegraph index stale; run pebra setup-graph --fix"
+        ),
+    )
+
+    decision = gca.decide(_edit_event(tmp_path))
+
+    assert decision.permission == "allow" and decision.tier == "fail_open"
+    assert "index stale" in decision.warn
+
+
+def test_graph_warning_never_echoes_raw_adapter_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(gca, "_fanin_percentile", lambda target, root: None)
+
+    class _Adapter:
+        def file_fanin_rollup(self, target, root):
+            return SimpleNamespace(
+                fallback_reason=r"codegraph DB could not be opened: C:\\secret\\pebra\\graph.db"
+            )
+
+    monkeypatch.setattr(gca, "CodeGraphAdapter", _Adapter)
+
+    result = gca._any_impactful([_abs(tmp_path, "src/a.py")], str(tmp_path))
+
+    assert result.fallback_reason == "CodeGraph database unreadable"
+    assert "secret" not in result.fallback_reason
 
 
 # ---- corrupt store rows must fail-open, not crash -----------------------------------------

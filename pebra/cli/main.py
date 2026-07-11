@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from typing import Sequence
 
 from pebra.cli import accept_risk as accept_risk_cmd
@@ -43,7 +44,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_output_streams() -> None:
+    """Make CLI rendering fail-soft on legacy consoles without changing UTF-8 output elsewhere."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_output_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

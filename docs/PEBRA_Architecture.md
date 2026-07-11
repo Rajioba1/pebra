@@ -576,8 +576,10 @@ Binding fields are enforced later by `pebra_verify`; advisory fields steer the m
 The pre-edit gate also binds the assessment to the normalized resulting contents of the proposed
 candidate. Supported `Write`, `Edit`, `MultiEdit`, and `apply_patch` events must match the assessed
 per-file digest; repository, HEAD, and path matching alone never authorizes different content. A
-multi-file candidate may be applied one assessed file at a time, but each attempted file must match
-its own digest. Missing legacy bindings, ambiguous edits, and mismatches require reassessment.
+multi-file candidate must be submitted as one complete patch event containing every assessed file and digest.
+Hosts that expose only single-file edit events must assess each file as its own candidate instead; a
+partial application cannot reuse the multi-file approval. Missing legacy bindings, ambiguous edits,
+partial candidates, and mismatches require reassessment.
 
 The packet may render trigger flags as prompt text, MCP fields, or PR-card rows, but the content must be reconstructable from canonical JSON. Trigger flags are advisory evidence; required controls and binding scope/check fields are what `pebra_verify` enforces.
 

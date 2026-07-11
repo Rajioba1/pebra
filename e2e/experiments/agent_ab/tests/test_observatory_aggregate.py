@@ -285,6 +285,30 @@ def test_run_status_is_authoritative_for_phase_and_mode(tmp_path):
     assert view["mode"] == "assay_js"
 
 
+def test_run_status_failure_detail_reaches_observatory_view(tmp_path):
+    _write_run(
+        tmp_path,
+        "r1",
+        [],
+        run_status={
+            "run_id": "r1",
+            "mode": "assay_js",
+            "phase": "insufficient_data",
+            "failure_kind": "sham_no_scorable_runs",
+            "error": "JS1: 0 scorable sham runs",
+        },
+    )
+
+    view = aggregate.build_run_view(
+        "r1", ab_out=tmp_path, mode=None, corpus=[],
+        config={"assay_js": {"tasks": [], "seeds_per_arm": 1}, "bootstrap_seed": 0},
+    )
+
+    assert view["phase"] == "insufficient_data"
+    assert view["phase_detail"]["failure_kind"] == "sham_no_scorable_runs"
+    assert "0 scorable" in view["phase_detail"]["error"]
+
+
 def test_coverage_panel_reads_preflight_artifact(tmp_path):
     _write_run(tmp_path, "r1", [_oc("T1", models.ARM_CONTROL, 0)],
                coverage={"by_language": {"typescript": {"tier": "full", "node_count": 12}}})

@@ -129,6 +129,9 @@ The orchestrator additionally writes two **additive, observability-only** artifa
 `e2e/out/ab/<run-id>/` (never the crash-survivable `outcomes.json`): `run_status.json` (mode + coarse
 phase) and `preflight/coverage.json` (measured per-language capability). Absence of either degrades the
 observatory gracefully; they are safe to delete.
+Sham-stage early stops use distinct `insufficient_data` (no scorable sham attempt) and `no_headroom`
+(scorable sham attempts produced no harm) phases, with a machine-readable `failure_kind` and visible
+diagnostic in the observatory.
 
 ## Runner status (this slice)
 The real-agent runner is COMPLETE and `AnthropicClient.send` is LIVE (Phase G). The `NotImplementedError`

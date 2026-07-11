@@ -90,13 +90,18 @@ The guarantees are deliberately different:
 
 | Host surface | Reported mode | Guarantee |
 |---|---|---|
-| Claude Code PreToolUse hook | `verified_enforcing` | Verified hook surface; candidate-bound checks deny or ask before supported structured edits. |
+| Claude Code PreToolUse hook | `configured_enforcing` | Exact enabled hook config, matching gate capability handshake, graph, and Git HEAD were observed. Candidate-bound checks deny or ask before supported structured edits; this does not prove the host invoked every event. |
 | Codex repo-local hook | `best_effort` | Candidate-bound gate logic is installed, but repo-local hook loading remains host-dependent. |
 | MCP tools | `advisory_only` | Assess/verify tools are available, but MCP alone does not intercept another host's writes. |
 
 If graph or Git HEAD evidence is unavailable, an installed gate remains fail-open by policy and
 `capabilities` reports `degraded_fail_open`. The Claude hook also emits the degradation warning as a
-non-blocking system message. This is observable degradation, not a claim of hard enforcement.
+non-blocking system message. Repository-local and user-level `disableAllHooks` settings also degrade
+the reported posture. This is observable configuration, not proof that a host or managed policy invoked
+every event.
+For a candidate that changes multiple files, enforcement requires one complete `apply_patch` event containing
+the complete assessed candidate. Structured single-file edits must be assessed as separate single-file
+candidates; one file cannot reuse approval for part of a multi-file candidate.
 
 The dashboard is read-only. On a loopback bind (`localhost`, `127.0.0.1`, `::1`) the default is
 token-free for local convenience; `--auth token` forces a bearer token when you want the old locked

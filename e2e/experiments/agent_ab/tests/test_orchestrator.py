@@ -422,8 +422,125 @@ def test_assay_js_stops_after_sham_stage_when_no_headroom(monkeypatch, tmp_path)
 
     assert calls == [(models.ARM_SHAM,)]
     status = json.loads((tmp_path / "js-no-headroom" / "run_status.json").read_text())
-    assert status["phase"] == "failed"
+    assert status["phase"] == "no_headroom"
+    assert status["failure_kind"] == "sham_no_headroom"
     assert "0/1 scorable" in status["error"]
+
+
+def test_assay_js_distinguishes_all_no_attempt_sham_from_no_headroom(monkeypatch, tmp_path):
+    js1 = TaskSpec(
+        "JS1", "d", ("src/a.ts",), "risky", ("src/a.ts",), "build_failure", True,
+        language="typescript", harness_id="node", specimen="javascript",
+        repo_identity_files=("package.json",),
+    )
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(orchestrator, "load_corpus", lambda: [js1])
+    monkeypatch.setattr(
+        orchestrator,
+        "_config",
+        lambda: {"assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1}, "bootstrap_seed": 0},
+    )
+    monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
+    monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
+    monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_revise_safer_calibration", lambda *a, **k: None)
+    monkeypatch.setattr(
+        orchestrator.run_pair,
+        "run_trial",
+        lambda spec, seed, run_id, *, arms=None: (
+            SubjectResult(
+                task_id=spec.task_id,
+                arm=models.ARM_SHAM,
+                seed=seed,
+                timed_out=True,
+                limit_reason="wall_clock",
+            ),
+        ),
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="insufficient data"):
+        orchestrator.main(["--run-id", "js-no-data", "--mode", "assay_js"])
+
+    status = json.loads((tmp_path / "js-no-data" / "run_status.json").read_text())
+    assert status["phase"] == "insufficient_data"
+    assert status["failure_kind"] == "sham_no_scorable_runs"
+    assert "0 scorable" in status["error"]
+
+
+def test_assay_js_resume_retries_unscorable_sham(monkeypatch, tmp_path):
+    js1 = TaskSpec(
+        "JS1", "d", ("src/a.ts",), "risky", ("src/a.ts",), "build_failure", True,
+        language="typescript", harness_id="node", specimen="javascript",
+        repo_identity_files=("package.json",),
+    )
+    run_dir = tmp_path / "retry-sham"
+    orchestrator._write_outcomes(
+        run_dir / "outcomes.json",
+        [dataclasses.replace(_outcome("JS1", models.ARM_SHAM), no_attempt=True, timed_out=True)],
+        "retry-sham",
+    )
+    calls: list[tuple[str, ...] | None] = []
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(orchestrator, "load_corpus", lambda: [js1])
+    monkeypatch.setattr(
+        orchestrator,
+        "_config",
+        lambda: {"assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1}, "bootstrap_seed": 0},
+    )
+    monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
+    monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
+    monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_revise_safer_calibration", lambda *a, **k: None)
+
+    def _trial(spec, seed, run_id, *, arms=None):
+        calls.append(arms)
+        if arms == (models.ARM_SHAM,):
+            return (SubjectResult(
+                task_id=spec.task_id, arm=models.ARM_SHAM, seed=seed,
+                tool_calls=(models.ToolCallRecord(sequence=1, name="write_file"),),
+                modified_files=("src/a.ts",), build_ran=True, build_passed=False,
+            ),)
+        return tuple(SubjectResult(task_id=spec.task_id, arm=arm, seed=seed) for arm in arms)
+
+    monkeypatch.setattr(orchestrator.run_pair, "run_trial", _trial)
+    monkeypatch.setattr(
+        orchestrator.oracle,
+        "score_run",
+        lambda subject, spec: dataclasses.replace(
+            _outcome(spec.task_id, subject.arm, subject.seed),
+            harm_materialized=subject.arm == models.ARM_SHAM,
+        ),
+    )
+
+    assert orchestrator.main(["--run-id", "retry-sham", "--mode", "assay_js"]) == 0
+    assert calls[0] == (models.ARM_SHAM,)
+
+
+def test_terminal_run_status_retries_transient_windows_replace_error(monkeypatch, tmp_path):
+    calls = 0
+
+    def _flaky_write(path, payload):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("temporarily held by dashboard reader")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(orchestrator.run_artifacts, "atomic_write_json", _flaky_write)
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda seconds: None)
+
+    orchestrator._write_run_status(tmp_path, "assay_js", "no_headroom", error="no headroom")
+
+    assert calls == 2
+    status = json.loads((tmp_path / "run_status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "no_headroom"
 
 
 def test_assay_js_reuses_passing_sham_stage_without_running_sham_twice(monkeypatch, tmp_path):

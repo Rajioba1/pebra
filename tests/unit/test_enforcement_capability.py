@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from pebra.adapters import enforcement_capability
@@ -27,19 +28,25 @@ def test_unconfigured_hosts_are_reported_as_advisory_only(tmp_path: Path) -> Non
     assert result["mcp"]["mode"] == "advisory_only"
 
 
-def test_claude_hook_is_verified_enforcing_when_prerequisites_are_live(tmp_path: Path) -> None:
+def test_claude_hook_is_configured_enforcing_when_prerequisites_are_live(tmp_path: Path) -> None:
     _hook(tmp_path, ".claude/settings.json")
 
-    result = enforcement_capability.probe(tmp_path, graph_available=True, git_available=True)
+    result = enforcement_capability.probe(
+        tmp_path, graph_available=True, git_available=True, hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )
 
-    assert result["claude"]["mode"] == "verified_enforcing"
+    assert result["claude"]["mode"] == "configured_enforcing"
     assert result["claude"]["candidate_bound"] is True
 
 
 def test_installed_hook_reports_degraded_fail_open_without_graph(tmp_path: Path) -> None:
     _hook(tmp_path, ".claude/settings.json")
 
-    result = enforcement_capability.probe(tmp_path, graph_available=False, git_available=True)
+    result = enforcement_capability.probe(
+        tmp_path, graph_available=False, git_available=True, hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )
 
     assert result["claude"]["mode"] == "degraded_fail_open"
     assert result["claude"]["candidate_bound"] is False
@@ -49,7 +56,10 @@ def test_installed_hook_reports_degraded_fail_open_without_graph(tmp_path: Path)
 def test_codex_hook_is_best_effort_not_verified(tmp_path: Path) -> None:
     _hook(tmp_path, ".codex/hooks.json", matcher="apply_patch")
 
-    result = enforcement_capability.probe(tmp_path, graph_available=True, git_available=True)
+    result = enforcement_capability.probe(
+        tmp_path, graph_available=True, git_available=True, hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )
 
     assert result["codex"]["mode"] == "best_effort"
     assert result["codex"]["candidate_bound"] is True
@@ -72,3 +82,110 @@ def test_malformed_valid_json_fails_safe_to_advisory_only(tmp_path: Path) -> Non
     result = enforcement_capability.probe(tmp_path, graph_available=True, git_available=True)
 
     assert result["claude"]["mode"] == "advisory_only"
+
+
+def test_installed_hook_degrades_when_pebra_command_is_not_runnable(tmp_path: Path) -> None:
+    _hook(tmp_path, ".claude/settings.json")
+
+    result = enforcement_capability.probe(
+        tmp_path, graph_available=True, git_available=True, hook_runtime_available=False,
+        user_hooks_disabled=False,
+    )
+
+    assert result["claude"]["mode"] == "degraded_fail_open"
+    assert "gate_hook_runtime" in result["claude"]["reasons"]
+
+
+def test_conflicting_claude_local_hook_config_degrades_posture(tmp_path: Path) -> None:
+    _hook(tmp_path, ".claude/settings.json")
+    _hook(tmp_path, ".claude/settings.local.json", matcher="Read", command="echo local")
+
+    result = enforcement_capability.probe(
+        tmp_path, graph_available=True, git_available=True, hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )
+
+    assert result["claude"]["mode"] == "degraded_fail_open"
+    assert "local_hook_override" in result["claude"]["reasons"]
+
+
+def test_installed_hook_degrades_without_git_head(tmp_path: Path) -> None:
+    _hook(tmp_path, ".claude/settings.json")
+
+    result = enforcement_capability.probe(
+        tmp_path, graph_available=True, git_available=False, hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )
+
+    assert result["claude"]["mode"] == "degraded_fail_open"
+    assert "git_head" in result["claude"]["reasons"]
+
+
+def test_hook_runtime_probe_requires_matching_candidate_binding_handshake(monkeypatch) -> None:
+    monkeypatch.setattr(enforcement_capability.shutil, "which", lambda name: None)
+    assert enforcement_capability._hook_runtime_available() is False
+
+    monkeypatch.setattr(enforcement_capability.shutil, "which", lambda name: "/bin/pebra")
+    monkeypatch.setattr(
+        enforcement_capability.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0,
+            stdout=json.dumps({
+                "candidate_binding_protocol": "sha256-normalized-content-v1",
+                "complete_candidate_event_required": True,
+            }),
+        ),
+    )
+    assert enforcement_capability._hook_runtime_available() is True
+
+    monkeypatch.setattr(
+        enforcement_capability.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="{}"),
+    )
+    assert enforcement_capability._hook_runtime_available() is False
+
+
+def test_malformed_local_hook_config_degrades_configured_posture(tmp_path: Path) -> None:
+    _hook(tmp_path, ".claude/settings.json")
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.write_text("{broken", encoding="utf-8")
+
+    result = enforcement_capability.probe(
+        tmp_path, graph_available=True, git_available=True, hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )
+
+    assert result["claude"]["mode"] == "degraded_fail_open"
+    assert "local_hook_override" in result["claude"]["reasons"]
+
+
+def test_disabled_claude_hooks_do_not_claim_enforcement(tmp_path: Path) -> None:
+    _hook(tmp_path, ".claude/settings.json")
+    path = tmp_path / ".claude" / "settings.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["disableAllHooks"] = True
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = enforcement_capability.probe(
+        tmp_path, graph_available=True, git_available=True, hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )
+
+    assert result["claude"]["mode"] == "degraded_fail_open"
+    assert result["claude"]["candidate_bound"] is False
+    assert "hooks_disabled" in result["claude"]["reasons"]
+
+
+def test_user_level_disable_all_hooks_degrades_project_posture(tmp_path: Path) -> None:
+    _hook(tmp_path, ".claude/settings.json")
+
+    result = enforcement_capability.probe(
+        tmp_path, graph_available=True, git_available=True, hook_runtime_available=True,
+        user_hooks_disabled=True,
+    )
+
+    assert result["claude"]["mode"] == "degraded_fail_open"
+    assert result["claude"]["candidate_bound"] is False
+    assert "hooks_disabled" in result["claude"]["reasons"]

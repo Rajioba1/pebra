@@ -48,3 +48,12 @@ def test_trace_panel_is_rendered_with_dom_apis():
     assert ".trace-wrap" in css
     assert ".trace-timeout" in css
     assert ".innerHTML" not in app_js
+
+
+def test_run_failure_kinds_are_visible_in_the_observatory():
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+    css = (_STATIC / "style.css").read_text(encoding="utf-8")
+
+    assert "v.phase_detail.error" in app_js
+    assert ".pill.insufficient_data" in css
+    assert ".pill.no_headroom" in css

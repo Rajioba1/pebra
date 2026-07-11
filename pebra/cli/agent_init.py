@@ -3,7 +3,7 @@
 By default this writes the passive ``pebra-safe-edit`` skill and host rules that tell an agent to
 CONSULT PEBRA before edits (assess -> read risk -> edit -> verify -> record). With ``--with-hook`` it
 also writes a host hook config that calls ``pebra gate-hook`` before structured edits. Claude's
-``.claude/settings.json`` hook is the verified enforcement surface; Codex's repo-local
+``.claude/settings.json`` hook is the supported enforcement surface; Codex's repo-local
 ``.codex/hooks.json`` is best-effort because Codex hook loading differs by host/plugin install.
 Templates are inline string constants so nothing depends on package-data being shipped.
 
