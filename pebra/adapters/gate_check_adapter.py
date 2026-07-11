@@ -40,6 +40,7 @@ from typing import Any
 
 from pebra.adapters import candidate_binding, paths
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
+from pebra.adapters.patch_header_adapter import touched_files
 
 _IMPACT_THRESHOLD = 0.90  # matches modify_risk_model._HIGH_FANIN_THRESHOLD
 _ANCHOR_THRESHOLD = 0.75  # matches destructive_op_model._GOD_NODE_THRESHOLD (import-graph god_node)
@@ -51,7 +52,6 @@ _REVIEW_DECISIONS = frozenset({"ask_human", "reject"})
 _REVISE_DECISIONS = frozenset({"revise_safer"})
 _EDIT_TOOLS = ("Edit", "Write")
 _APPLY_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$", re.MULTILINE)
-_GIT_DIFF_FILE_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -111,13 +111,10 @@ def extract_target_paths(event: dict[str, Any]) -> list[str]:
         command = ti.get("command") or ""
         if not isinstance(command, str):
             return []
-        paths = [p for p in _APPLY_PATCH_FILE_RE.findall(command) if p]
-        if not paths:
-            for old_path, new_path in _GIT_DIFF_FILE_RE.findall(command):
-                for path in (old_path, new_path):
-                    if path and path not in paths:
-                        paths.append(path)
-        return [_abs(p) for p in paths]
+        patch_paths = [p for p in _APPLY_PATCH_FILE_RE.findall(command) if p]
+        if not patch_paths:
+            patch_paths = list(touched_files(command))
+        return [_abs(p) for p in patch_paths]
     return []
 
 
@@ -126,6 +123,19 @@ def extract_target_paths(event: dict[str, Any]) -> list[str]:
 def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: bool = False) -> GateDecision:
     targets = extract_target_paths(event)
     if not targets:
+        tool_input = event.get("tool_input") if isinstance(event, dict) else None
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if (
+            isinstance(event, dict)
+            and event.get("tool_name") == "apply_patch"
+            and isinstance(command, str)
+            and command.strip()
+        ):
+            return GateDecision(
+                "deny", "candidate_unverifiable",
+                reason="The attempted patch could not be parsed into a complete, safe file scope. "
+                "Assess and apply a well-formed atomic patch.",
+            )
         return GateDecision("allow", "pass")
     try:
         repo_root = str(paths.find_repo_root(event.get("cwd") or "."))

@@ -226,6 +226,32 @@ def test_natural_safe_route_accepts_equal_positive_measured_benefit():
     assert preflight._benefit_discrimination_failure(spec, bad, fixed) is None
 
 
+def test_natural_safe_route_rejects_unequal_modeled_benefit():
+    spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
+    bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0,
+    }}}
+    fixed = {"scores": {"benefit": 0.650000001, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0,
+    }}}
+
+    msg = preflight._benefit_discrimination_failure(spec, bad, fixed)
+
+    assert msg and "modeled benefit differs" in msg
+
+
+def test_natural_safe_route_accepts_modeled_benefit_within_tolerance():
+    spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
+    bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0,
+    }}}
+    fixed = {"scores": {"benefit": 0.6500000000005, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0,
+    }}}
+
+    assert preflight._benefit_discrimination_failure(spec, bad, fixed) is None
+
+
 def test_natural_safe_route_rejects_nonpositive_reference_benefit():
     spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
     bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
@@ -826,6 +852,7 @@ def test_revise_safer_calibration_requires_natural_safe_route_to_proceed(tmp_pat
         requires_natural_safe_route=True,
     )
     calls = []
+    verification_calls = []
 
     def _assess(_repo_path, _spec, proposed_patch, _db, **kwargs):
         calls.append((proposed_patch, kwargs))
@@ -837,8 +864,9 @@ def test_revise_safer_calibration_requires_natural_safe_route_to_proceed(tmp_pat
 
     preflight.run_revise_safer_calibration(
         [spec], None, out_dir=tmp_path, assess_fn=_assess,
-        candidate_verification_fn=lambda *_args: (_ for _ in ()).throw(
-            AssertionError("natural route must not rely on candidate verification")
+        candidate_verification_fn=lambda repo, checked_spec, patch: (
+            verification_calls.append((repo, checked_spec.task_id, patch))
+            or {"status": "passed"}
         ),
         setup_graph_fn=lambda _repo: None,
         patch_dir=patch_dir,
@@ -849,6 +877,7 @@ def test_revise_safer_calibration_requires_natural_safe_route_to_proceed(tmp_pat
         "reference route",
         {"revise_safer_attempt": 1, "max_revise_safer_attempts": 2},
     )
+    assert verification_calls and verification_calls[0][2] == "reference route"
 
 
 def test_revise_safer_calibration_rejects_blocked_natural_safe_route(tmp_path, monkeypatch):
@@ -872,6 +901,7 @@ def test_revise_safer_calibration_rejects_blocked_natural_safe_route(tmp_path, m
                 "recommended_decision": "revise_safer",
                 "scores": {"expected_loss": 0.8 if patch == "bad route" else 0.1},
             },
+            candidate_verification_fn=lambda *_args: {"status": "passed"},
             setup_graph_fn=lambda _repo: None,
             patch_dir=patch_dir,
             correct_patch_dir=correct_dir,

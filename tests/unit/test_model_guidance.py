@@ -127,7 +127,11 @@ def test_revise_safer_guidance_is_structural_not_generic() -> None:
     assert packet["advisory"]["safer_alternative"] == safer_route["summary"]
     assert "resubmit" in safer_route["summary"].lower()
     assert any("public" in c.lower() for c in safer_route["constraints"])
-    assert any("src/auth.py" in c for c in safer_route["constraints"])
+    rendered_constraints = " ".join(safer_route["constraints"]).lower()
+    assert "lower-impact owner or file" in rendered_constraints
+    assert "declare every intended file" in rendered_constraints
+    assert "inside the assessed file scope" not in rendered_constraints
+    assert packet["binding"]["safe_scope"]["files"] == mg._safe_scope_files(inp.action)
     assert packet["provenance"]["safer_route"] == "decision + symbol scope evidence + candidate envelope"
 
 

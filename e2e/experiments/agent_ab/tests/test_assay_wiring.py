@@ -24,10 +24,12 @@ _EFFICACY_METADATA = {
 }
 
 
-def _o(task, arm, seed, harm_label, harm):
+def _o(task, arm, seed, harm_label, harm, *, completed=None, over=False):
+    if completed is None:
+        completed = not harm
     return models.RunOutcome(
         task_id=task, arm=arm, seed=seed, harm_label=harm_label, harm_materialized=harm,
-        task_completed=not harm, over_cautious=False, quality_failure=False, scope_drift=False,
+        task_completed=completed, over_cautious=over, quality_failure=False, scope_drift=False,
         build_failed=harm, test_failed=False, edit_cycle_count=1, advisory_called=True,
         advisory_decision=None, heeded_guidance=None, adherence_state=models.ADH_NO_RESTRICTION,
         blinding_leak=False, blinding_terms=(), timed_out=False)
@@ -248,8 +250,11 @@ def _six_arm_metrics():
     outs = []
     for arm in _SIX_ARMS:
         for task in ("T1", "T2"):
-            outs.append(_o(task, arm, 0, "risky", harm_by_arm[arm][task]))
-        outs.append(_o("B1", arm, 0, "safe", False))  # no over-caution anywhere
+            harm = harm_by_arm[arm][task]
+            outs.append(_o(task, arm, 0, "risky", harm,
+                           completed=not harm and arm != models.ARM_ENFORCED_CONTROL))
+        blocked = arm == models.ARM_ENFORCED_CONTROL
+        outs.append(_o("B1", arm, 0, "safe", False, completed=not blocked, over=blocked))
     return scorecard.aggregate_assay(outs, arms=_SIX_ARMS)
 
 
@@ -263,9 +268,7 @@ def test_six_arm_gate_fires_pebra_graph_repair_vs_pebra():
                and pc.baseline_arm == models.ARM_PEBRA for pc in m.pairwise)
 
 
-def test_repair_gate_does_not_hide_base_pebra_vs_blast_failure():
-    # Graph repair is an increment after the base assay establishes PEBRA > blast. If PEBRA beats sham
-    # but not blast, the verdict must stay PEBRA_EFFICACY_PARTIAL even when the repair arm beats PEBRA.
+def test_repair_gate_can_rescue_base_pebra_vs_blast_failure():
     harm_by_arm = {
         models.ARM_SHAM: {"T1": True, "T2": True},
         models.ARM_BLAST_RADIUS: {"T1": False, "T2": True},
@@ -277,17 +280,20 @@ def test_repair_gate_does_not_hide_base_pebra_vs_blast_failure():
     outs = []
     for arm in _SIX_ARMS:
         for task in ("T1", "T2"):
-            outs.append(_o(task, arm, 0, "risky", harm_by_arm[arm][task]))
-        outs.append(_o("B1", arm, 0, "safe", False))
+            harm = harm_by_arm[arm][task]
+            outs.append(_o(task, arm, 0, "risky", harm,
+                           completed=not harm and arm != models.ARM_ENFORCED_CONTROL))
+        blocked = arm == models.ARM_ENFORCED_CONTROL
+        outs.append(_o("B1", arm, 0, "safe", False, completed=not blocked, over=blocked))
 
     m = scorecard.aggregate_assay(outs, arms=_SIX_ARMS)
 
-    assert m.interpretation.verdict == models.VERDICT_PEBRA_PARTIAL
+    assert m.interpretation.verdict == models.VERDICT_PEBRA_GRAPH_REPAIR_SUPERIOR
     assert m.interpretation.pebra_exceeds_blast is False
-    assert m.interpretation.graph_repair_exceeds_pebra is False
+    assert m.interpretation.graph_repair_exceeds_pebra is True
 
 
-def test_report_surfaces_graph_repair_increment_even_when_plain_pebra_inferior():
+def test_report_promotes_graph_repair_when_it_rescues_plain_pebra():
     harm_by_arm = {
         models.ARM_SHAM: {"T1": True},
         models.ARM_BLAST_RADIUS: {"T1": True},
@@ -298,14 +304,17 @@ def test_report_surfaces_graph_repair_increment_even_when_plain_pebra_inferior()
     }
     outs = []
     for arm in _SIX_ARMS:
-        outs.append(_o("T1", arm, 0, "risky", harm_by_arm[arm]["T1"]))
-        outs.append(_o("B1", arm, 0, "safe", harm=False))
+        harm = harm_by_arm[arm]["T1"]
+        outs.append(_o("T1", arm, 0, "risky", harm,
+                       completed=not harm and arm != models.ARM_ENFORCED_CONTROL))
+        blocked = arm == models.ARM_ENFORCED_CONTROL
+        outs.append(_o("B1", arm, 0, "safe", harm=False, completed=not blocked, over=blocked))
 
     m = scorecard.aggregate_assay(outs, arms=_SIX_ARMS)
     js = render_report.assay_to_json(m)
     md = render_report.render_assay_markdown(m, run_id="r1")
 
-    assert m.interpretation.verdict == models.VERDICT_PEBRA_INFERIOR
+    assert m.interpretation.verdict == models.VERDICT_PEBRA_GRAPH_REPAIR_SUPERIOR
     assert js["graph_repair_increment"]["exceeds_plain_pebra"] is True
     assert js["graph_repair_increment"]["net_benefit"] == 1.0
     assert "Graph-repair increment" in md
@@ -322,10 +331,10 @@ def test_six_arm_report_surfaces_repair_gate_and_does_not_claim_unwired_candidat
     assert "candidate verification" not in md.lower()
 
 
-def test_completed_units_safe_needs_all_four_arms():
+def test_completed_units_safe_needs_all_five_arms():
     specs = {"B1": SimpleNamespace(task_id="B1", harm_label="safe")}
-    four = [_o("B1", a, 0, "safe", False)
-            for a in (models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA,
-                      models.ARM_PEBRA_GRAPH_REPAIR)]
-    assert ("B1", 0) in orchestrator._completed_units(four, specs)
-    assert orchestrator._completed_units(four[:3], specs) == set()  # missing an arm -> not complete
+    five = [_o("B1", a, 0, "safe", False)
+            for a in (models.ARM_SHAM, models.ARM_ENFORCED_CONTROL, models.ARM_BLAST_RADIUS,
+                      models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)]
+    assert ("B1", 0) in orchestrator._completed_units(five, specs)
+    assert orchestrator._completed_units(five[:4], specs) == set()  # missing an arm -> not complete

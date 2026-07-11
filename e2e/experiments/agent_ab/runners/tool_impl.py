@@ -12,6 +12,8 @@ No pebra import.
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,7 +26,18 @@ _MAX_LIST_ENTRIES = 500
 _MAX_MATCHES = 200
 _MAX_GREP_FILE_BYTES = 1_000_000
 _HIDDEN_DIRS = {".git", ".codegraph", ".pebra"}
+_WRITE_PROTECTED_DIRS = _HIDDEN_DIRS | {".agent-instructions"}
 _REDACTION = "[redacted]"
+_PATCH_PATH_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
+_PATCH_OLD_RE = re.compile(r"^--- (.+)$")
+_PATCH_NEW_RE = re.compile(r"^\+\+\+ (.+)$")
+_PATCH_RENAME_FROM_RE = re.compile(r"^rename from (.+)$")
+_PATCH_RENAME_TO_RE = re.compile(r"^rename to (.+)$")
+_PATCH_COPY_FROM_RE = re.compile(r"^copy from (.+)$")
+_PATCH_COPY_TO_RE = re.compile(r"^copy to (.+)$")
+_UNSUPPORTED_PATCH_MODE_RE = re.compile(
+    r"^(?:old mode|new mode)\s+|^new file mode\s+(?!100644\s*$)", re.MULTILINE
+)
 
 
 def model_safe_text(text: str) -> str:
@@ -59,6 +72,10 @@ def _contains_hidden_part(path: Path) -> bool:
     return any(part in _HIDDEN_DIRS for part in path.parts)
 
 
+def _contains_write_protected_part(path: Path) -> bool:
+    return any(part in _WRITE_PROTECTED_DIRS for part in path.parts)
+
+
 def read_file(path: str, repo_root: Path) -> dict[str, Any]:
     try:
         target = _resolve_guarded(path, repo_root)
@@ -80,14 +97,142 @@ def write_file(path: str, content: str, repo_root: Path) -> dict[str, Any]:
         target = _resolve_guarded(path, repo_root)
     except PathTraversalError:
         return {"error": "path escapes repo boundary"}
-    if _contains_hidden_part(target.relative_to(repo_root.resolve())):
+    if _contains_write_protected_part(target.relative_to(repo_root.resolve())):
         return {"error": "hidden path requested"}
+    try:
+        if target.is_file() and target.stat().st_size > _MAX_READ_BYTES:
+            return {"error": "existing file is too large to replace safely; use edit_file"}
+    except OSError as exc:
+        detail = exc.strerror or type(exc).__name__
+        return {"error": model_safe_text(f"write failed for {path!r}: {detail}")}
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     except OSError as exc:
         detail = exc.strerror or type(exc).__name__
         return {"error": model_safe_text(f"write failed for {path!r}: {detail}")}
+    return {"ok": True}
+
+
+def edit_file(
+    path: str,
+    old_string: str,
+    new_string: str,
+    repo_root: Path,
+    *,
+    replace_all: bool = False,
+) -> dict[str, Any]:
+    """Replace one unique string, or every match when explicitly requested."""
+    try:
+        target = _resolve_guarded(path, repo_root)
+    except PathTraversalError:
+        return {"error": "path escapes repo boundary"}
+    if _contains_write_protected_part(target.relative_to(repo_root.resolve())):
+        return {"error": "hidden path requested"}
+    if not old_string:
+        return {"error": "old_string must not be empty"}
+    if not target.is_file():
+        return {"error": model_safe_text(f"not a file: {path}")}
+    try:
+        content = target.read_bytes()
+        old = old_string.encode("utf-8")
+        new = new_string.encode("utf-8")
+        matches = content.count(old)
+        if matches == 0:
+            return {"error": "old_string was not found"}
+        if not replace_all and matches != 1:
+            return {"error": "old_string is not unique; set replace_all to true"}
+        target.write_bytes(content.replace(old, new, -1 if replace_all else 1))
+    except OSError as exc:
+        detail = exc.strerror or type(exc).__name__
+        return {"error": model_safe_text(f"edit failed for {path!r}: {detail}")}
+    return {"ok": True}
+
+
+def _safe_patch_path(value: str) -> bool:
+    normalized = value.replace("\\", "/")
+    path = Path(normalized)
+    return bool(normalized) and not path.is_absolute() and ":" not in normalized and ".." not in path.parts
+
+
+def _validated_patch_paths(patch_text: str) -> list[str] | None:
+    paths: list[str] = []
+    current: tuple[str, str] | None = None
+    old_seen = new_seen = False
+    for line in (patch_text or "").splitlines():
+        if match := _PATCH_PATH_RE.match(line):
+            if current is not None and old_seen != new_seen:
+                return None
+            current = (match.group(1), match.group(2))
+            paths.extend(current)
+            old_seen = new_seen = False
+            continue
+        if match := _PATCH_OLD_RE.match(line):
+            if current is None or old_seen:
+                return None
+            value = match.group(1).split("\t", 1)[0]
+            if value not in {f"a/{current[0]}", "/dev/null"}:
+                return None
+            old_seen = True
+        elif match := _PATCH_NEW_RE.match(line):
+            if current is None or new_seen:
+                return None
+            value = match.group(1).split("\t", 1)[0]
+            if value not in {f"b/{current[1]}", "/dev/null"}:
+                return None
+            new_seen = True
+        elif match := _PATCH_RENAME_FROM_RE.match(line):
+            if current is None or match.group(1) != current[0]:
+                return None
+        elif match := _PATCH_RENAME_TO_RE.match(line):
+            if current is None or match.group(1) != current[1]:
+                return None
+        elif match := _PATCH_COPY_FROM_RE.match(line):
+            if current is None or match.group(1) != current[0]:
+                return None
+        elif match := _PATCH_COPY_TO_RE.match(line):
+            if current is None or match.group(1) != current[1]:
+                return None
+    if current is None or old_seen != new_seen:
+        return None
+    return paths
+
+
+def apply_patch(patch_text: str, repo_root: Path) -> dict[str, Any]:
+    """Apply one git-style patch atomically inside the confined clone."""
+    paths = _validated_patch_paths(patch_text)
+    if not paths:
+        return {"error": "patch has invalid or undeclared file headers"}
+    if any(not _safe_patch_path(path) for path in paths):
+        return {"error": "patch contains an unsafe path"}
+    if any(_contains_write_protected_part(Path(path)) for path in paths):
+        return {"error": "patch contains a protected path"}
+    if _UNSUPPORTED_PATCH_MODE_RE.search(patch_text):
+        return {"error": "patch contains unsupported file-mode changes"}
+
+    patch_path: Path | None = None
+    try:
+        fd, raw_path = tempfile.mkstemp(prefix="agent-ab-", suffix=".patch")
+        patch_path = Path(raw_path)
+        with open(fd, "wb", closefd=True) as stream:
+            stream.write(patch_text.encode("utf-8"))
+        argv = ["git", "apply", "--whitespace=nowarn", str(patch_path)]
+        check = subprocess.run(
+            ["git", "apply", "--check", "--whitespace=nowarn", str(patch_path)],
+            cwd=str(repo_root), capture_output=True, text=True, timeout=60,
+        )
+        if check.returncode != 0:
+            return {"error": "patch does not apply cleanly"}
+        applied = subprocess.run(
+            argv, cwd=str(repo_root), capture_output=True, text=True, timeout=60,
+        )
+        if applied.returncode != 0:
+            return {"error": "patch could not be applied"}
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        return {"error": model_safe_text(f"patch failed: {type(exc).__name__}")}
+    finally:
+        if patch_path is not None:
+            patch_path.unlink(missing_ok=True)
     return {"ok": True}
 
 

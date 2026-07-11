@@ -46,13 +46,14 @@ def _safer_route(result: AssessmentResult, action: CandidateAction) -> dict[str,
         str(sse.get("max_change_kind", "")) == "CONTRACT"
     ):
         constraints.append("Preserve the public surface and existing public signatures unless explicitly authorized.")
-    files: list[str] = []
-    for entry in _safe_scope_files(action):
-        file_part = entry.split("::", 1)[0]
-        if file_part and file_part not in files:
-            files.append(file_part)
-    if files:
-        constraints.append(f"Keep the next candidate inside the assessed file scope: {', '.join(files)}.")
+    constraints.append(
+        "Consider moving the implementation to a lower-impact owner or file when that preserves "
+        "the goal and public behavior."
+    )
+    constraints.append(
+        "Declare every intended file in the resubmitted assessment so the revised candidate is "
+        "reassessed and bound to its complete file scope."
+    )
     rollup = sse.get("file_fanin_rollup") or {}
     callers = rollup.get("distinct_caller_count")
     if isinstance(callers, int) and callers > 0:

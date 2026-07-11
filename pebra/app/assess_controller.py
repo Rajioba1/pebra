@@ -475,6 +475,7 @@ def _thresholds_with_revise_attempt(
     repo_id: str,
     assessed_commit: str | None,
     action: CandidateAction,
+    task: str | None = None,
 ) -> dict[str, Any]:
     caller_attempt = 0
     caller_supplied = "revise_safer_attempt" in thresholds
@@ -489,7 +490,13 @@ def _thresholds_with_revise_attempt(
     store_attempt = 0
     try:
         if counter is not None:
-            store_attempt = counter(repo_id, assessed_commit, list(action.expected_files or []))
+            store_attempt = counter(
+                repo_id,
+                assessed_commit,
+                list(action.expected_files or []),
+                action.id,
+                task,
+            )
     except Exception:  # noqa: BLE001 - attempt tracking must not make assess unavailable
         store_attempt = 0
     attempt = max(caller_attempt, int(store_attempt or 0))
@@ -580,6 +587,7 @@ def assess(
             repo_id=repo.repo_id,
             assessed_commit=assessed_commit,
             action=action,
+            task=request.task,
         )
         scored.append(
             _score_action(

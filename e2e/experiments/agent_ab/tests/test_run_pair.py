@@ -5,6 +5,8 @@ so this pin is the last line of defence against an accidental live run."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from types import SimpleNamespace
 
 import pytest
@@ -368,6 +370,101 @@ def test_real_advisory_backend_threads_revise_attempts(monkeypatch, tmp_path):
     assert attempts == [(0, 1), (1, 1)]
 
 
+def test_real_advisory_backend_counts_cross_file_resubmission_per_run(monkeypatch, tmp_path):
+    seen: list[tuple[str, int, int]] = []
+
+    def _advise(payload, *, repo_root, db, revise_safer_attempt=0, max_revise_safer_attempts=1):
+        seen.append((payload["target_file"], revise_safer_attempt, max_revise_safer_attempts))
+        return {
+            "recommended_decision": "revise_safer" if revise_safer_attempt == 0 else "reject",
+            "risk_level": "high",
+            "advisory": "x",
+            "detail": {},
+        }
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    backend = run_pair._advisory_backend("pebra", tmp_path, tmp_path / "pebra.db")
+
+    backend({"target_file": "packages/zod/src/v3/types.ts", "proposed_patch": "risky"})
+    backend({"target_file": "packages/zod/src/v3/helpers/util.ts", "proposed_patch": "safer"})
+
+    assert seen == [
+        ("packages/zod/src/v3/types.ts", 0, 1),
+        ("packages/zod/src/v3/helpers/util.ts", 1, 1),
+    ]
+
+
+def test_repair_arm_verifies_cross_file_resubmission(monkeypatch, tmp_path):
+    seen: list[dict] = []
+    verified_targets: list[str] = []
+
+    def _advise(payload, *, repo_root, db, revise_safer_attempt=0, max_revise_safer_attempts=1):
+        seen.append({
+            "target": payload["target_file"],
+            "attempt": revise_safer_attempt,
+            "cap": max_revise_safer_attempts,
+            "cv": payload.get("candidate_verification"),
+        })
+        return {
+            "recommended_decision": "revise_safer" if revise_safer_attempt == 0 else "proceed",
+            "risk_level": "high",
+            "advisory": "x",
+            "detail": {},
+        }
+
+    def _verify(payload, repo_path, spec):
+        verified_targets.append(payload["target_file"])
+        return {
+            "status": "passed",
+            "required_checks": ["covering_tests"],
+            "verified_patch_hash": "host",
+        }
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(run_pair, "_verify_candidate_for_repair", _verify)
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "pebra.db"
+    )
+
+    backend({"target_file": "packages/zod/src/v3/types.ts", "proposed_patch": "risky"})
+    backend({"target_file": "packages/zod/src/v3/helpers/util.ts", "proposed_patch": "safer"})
+
+    assert seen[0]["attempt"] == 0 and seen[0]["cv"] is None
+    assert seen[1]["attempt"] == 1 and seen[1]["cap"] == 2
+    assert seen[1]["cv"]["status"] == "passed"
+    assert verified_targets == ["packages/zod/src/v3/helpers/util.ts"]
+
+
+def test_revise_attempt_state_is_isolated_and_bounded_per_backend(monkeypatch, tmp_path):
+    attempts: list[tuple[str, int]] = []
+
+    def _advise(payload, *, repo_root, db, revise_safer_attempt=0, **kwargs):
+        attempts.append((str(db), revise_safer_attempt))
+        return {
+            "recommended_decision": "revise_safer",
+            "risk_level": "high",
+            "advisory": "x",
+            "detail": {},
+        }
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    first = run_pair._advisory_backend("pebra", tmp_path, tmp_path / "first.db")
+    second = run_pair._advisory_backend("pebra", tmp_path, tmp_path / "second.db")
+    payload = {"target_file": "a.ts", "proposed_patch": "diff"}
+
+    first(payload)
+    first(payload)
+    first(payload)
+    second(payload)
+
+    assert attempts == [
+        (str(tmp_path / "first.db"), 0),
+        (str(tmp_path / "first.db"), 1),
+        (str(tmp_path / "first.db"), 1),
+        (str(tmp_path / "second.db"), 0),
+    ]
+
+
 def test_real_advisory_backend_threads_task_benefit_profile(monkeypatch, tmp_path):
     seen = {}
     spec = TaskSpec(
@@ -476,6 +573,37 @@ def test_repair_candidate_verification_rejects_target_patch_mismatch(monkeypatch
 
     assert result["status"] == "unavailable"
     assert "target" in result["reason"]
+
+
+def test_repair_candidate_verification_accepts_atomic_multifile_candidate(monkeypatch, tmp_path):
+    patch = (
+        "diff --git a/src/A.ts b/src/A.ts\n--- a/src/A.ts\n+++ b/src/A.ts\n@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/src/B.ts b/src/B.ts\n--- a/src/B.ts\n+++ b/src/B.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    scratch = tmp_path / "scratch"
+    monkeypatch.setattr(run_pair.candidate_materializer, "materialize_candidate", lambda *_args: scratch)
+    monkeypatch.setattr(run_pair.candidate_materializer, "cleanup", lambda _scratch: None)
+    monkeypatch.setattr(
+        run_pair.covering_tests_resolver,
+        "find_covering_tests",
+        lambda _repo, target, _patch, **_kwargs: ("tests", target),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        run_pair.candidate_verifier,
+        "verify_candidate",
+        lambda **kwargs: seen.update(kwargs) or {"status": "passed"},
+    )
+    spec = replace(_SPEC, language="typescript", harness_id="node")
+
+    result = run_pair._verify_candidate_for_repair(
+        {"target_file": "src/A.ts", "proposed_patch": patch}, tmp_path, spec
+    )
+
+    assert result["status"] == "passed"
+    assert seen["repo_path"] == scratch
+    assert seen["test_project"] is None  # conflicting per-file selectors use the full-build fallback
+    assert seen["allow_build_fallback"] is True
 
 
 def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):
@@ -631,8 +759,8 @@ def test_prepare_arm_passes_task_build_solution_to_baseline(monkeypatch, tmp_pat
 
 def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
     prompt = run_pair._build_subject_prompt(_SPEC, tmp_path, "sham")
-    for name in ("read_file", "write_file", "list_dir", "search_grep", "run_build", "run_tests",
-                 "advisory_check"):
+    for name in ("read_file", "write_file", "edit_file", "apply_patch", "list_dir", "search_grep", "run_build",
+                 "run_tests", "advisory_check"):
         assert name in prompt
     assert subject_protocol.INSTRUCTION_REL_PATH in prompt
     assert "read" in prompt.lower()

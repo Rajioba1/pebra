@@ -69,6 +69,26 @@ def test_extract_codex_apply_patch_ignores_non_string_command(tmp_path):
     assert gca.extract_target_paths(ev) == []
 
 
+def test_decide_denies_unparseable_apply_patch_instead_of_failing_open(tmp_path):
+    patch = """diff --git a/safe.py b/safe.py
+--- a/safe.py
++++ b/safe.py
+@@ -1 +1 @@
+-safe
++changed
+--- a/.pebra/state.py
++++ b/.pebra/state.py
+@@ -1 +1 @@
+-state
++tampered
+"""
+    decision = gca.decide(
+        {"tool_name": "apply_patch", "tool_input": {"command": patch}, "cwd": str(tmp_path)}
+    )
+    assert decision.permission == "deny"
+    assert decision.tier == "candidate_unverifiable"
+
+
 def test_extract_non_edit_tool_is_empty(tmp_path):
     ev = {"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": str(tmp_path)}
     assert gca.extract_target_paths(ev) == []

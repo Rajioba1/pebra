@@ -151,14 +151,17 @@ def pairwise_comparison(
     risky = _matched_pairs(outcomes, intervention_arm, baseline_arm, _RISKY)
     safe = _matched_pairs(outcomes, intervention_arm, baseline_arm, _SAFE)
     harm_diffs = [float(b.harm_materialized) - float(i.harm_materialized) for i, b in risky]
+    completion_diffs = [float(i.task_completed) - float(b.task_completed) for i, b in risky]
     oc_diffs = [float(i.over_cautious) - float(b.over_cautious) for i, b in safe]
     harm_avoided = statistics.fmean(harm_diffs) if harm_diffs else 0.0
+    completion_gain = statistics.fmean(completion_diffs) if completion_diffs else 0.0
     oc_delta = statistics.fmean(oc_diffs) if oc_diffs else 0.0
     w, p = wilcoxon_signed_rank(harm_diffs)
     return PairwiseComparison(
         intervention_arm=intervention_arm, baseline_arm=baseline_arm,
         n_pairs_risky=len(harm_diffs), n_pairs_safe=len(oc_diffs),
-        harm_avoided_rate=harm_avoided, over_caution_delta=oc_delta,
+        harm_avoided_rate=harm_avoided, risky_completion_gain=completion_gain,
+        over_caution_delta=oc_delta,
         net_benefit=harm_avoided - oc_delta,
         cohens_d_paired=cohens_d(harm_diffs), wilcoxon_w=w, wilcoxon_p=p,
         harm_diff_ci95=bootstrap_mean_ci(harm_diffs, seed=bootstrap_seed) if harm_diffs else None,
@@ -181,6 +184,10 @@ def aggregate_assay(
     if models.ARM_PEBRA_GRAPH_REPAIR in arms and models.ARM_PEBRA in arms:
         pairwise.append(pairwise_comparison(
             outcomes, models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA, bootstrap_seed=bootstrap_seed))
+    if models.ARM_PEBRA_GRAPH_REPAIR in arms and models.ARM_ENFORCED_CONTROL in arms:
+        pairwise.append(pairwise_comparison(
+            outcomes, models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_ENFORCED_CONTROL,
+            bootstrap_seed=bootstrap_seed))
     return AssayMetrics(
         arm_metrics=arm_metric, pairwise=tuple(pairwise),
         interpretation=assay_interpret.interpret(pairwise), n_arms=len(arms),

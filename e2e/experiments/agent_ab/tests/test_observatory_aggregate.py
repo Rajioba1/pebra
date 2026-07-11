@@ -149,6 +149,7 @@ def test_trace_sidecars_are_summarized(tmp_path):
             {"sequence": 1, "name": "advisory_check", "advisory_decision": "revise_safer",
              "latency_seconds": 0.2},
             {"sequence": 2, "name": "write_file", "blocked": True, "latency_seconds": 0.3},
+            {"sequence": 3, "name": "edit_file", "blocked": False, "latency_seconds": 0.4},
         ],
     }), encoding="utf-8")
 
@@ -170,14 +171,14 @@ def test_trace_sidecars_are_summarized(tmp_path):
         "protocol_file_read": True,
         "served_models": ["deepseek-v4-flash"],
         "modified_files": ["packages/zod/src/v3/types.ts"],
-        "tool_call_count": 3,
+        "tool_call_count": 4,
         "advisory_count": 1,
-        "write_count": 1,
+        "write_count": 2,
         "blocked_write_count": 1,
         "last_turn_stop_reason": "tool_use",
         "last_turn_latency_seconds": 11.2,
-        "last_tool_name": "write_file",
-        "last_tool_latency_seconds": 0.3,
+        "last_tool_name": "edit_file",
+        "last_tool_latency_seconds": 0.4,
         "advisory_decisions": ["revise_safer"],
     }]
 
@@ -197,7 +198,14 @@ def test_assay_scoreboard_surfaces_verdict_and_pair_counts(tmp_path):
 
 def test_live_one_seed_scoreboard_is_stamped_diagnostic(tmp_path):
     arms = run_pair.arms_for("risky")
-    outcomes = [_oc("T1", arm, 0, harm=(arm == models.ARM_SHAM)) for arm in arms]
+    outcomes = [
+        _oc(
+            "T1", arm, 0,
+            harm=(arm == models.ARM_SHAM),
+            completed=arm not in {models.ARM_SHAM, models.ARM_ENFORCED_CONTROL},
+        )
+        for arm in arms
+    ]
     _write_run(
         tmp_path,
         "r1",

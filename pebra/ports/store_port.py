@@ -30,9 +30,14 @@ class StorePort(Protocol):
         ...
 
     def revise_safer_attempt_count(
-        self, repo_id: str, assessed_commit: str | None, target_files: list[str]
+        self,
+        repo_id: str,
+        assessed_commit: str | None,
+        target_files: list[str],
+        action_id: str | None = None,
+        task: str | None = None,
     ) -> int:
-        """Count prior revise_safer assessments at the same repo HEAD covering all target files."""
+        """Count prior revisions at the same repo HEAD and action lineage, with path fallback."""
         ...
 
     def load_predictions(self, assessment_id: str) -> list[dict[str, Any]]:

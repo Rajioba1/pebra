@@ -237,7 +237,7 @@ def _trace_summary(path: Path) -> dict | None:
     ]
     write_calls = [
         c for c in tool_calls
-        if isinstance(c, dict) and c.get("name") == "write_file"
+        if isinstance(c, dict) and c.get("name") in models.MUTATING_TOOLS
     ]
     blocked_writes = [
         c for c in write_calls

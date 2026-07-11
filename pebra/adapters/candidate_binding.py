@@ -19,6 +19,15 @@ from pebra.core.models import CandidateAction
 
 _ALGORITHM = "sha256-normalized-content-v1"
 _CODEX_FILE = re.compile(r"^\*\*\* (Add|Update|Delete) File:\s*(.+?)\s*$")
+_UNSUPPORTED_MODE = re.compile(
+    r"^(?:old mode|new mode)\s+|^new file mode\s+(?!100644\s*$)", re.MULTILINE
+)
+
+
+def _has_unsupported_metadata(patch: str) -> bool:
+    # v1 binds normalized contents only. Reject executable/special mode mutations instead of
+    # pretending they are represented by the content digest.
+    return bool(_UNSUPPORTED_MODE.search(patch))
 
 
 def _normal(text: str) -> str:
@@ -160,7 +169,7 @@ def _materialize_codex(
 def _binding_for_patch(
     repo_root: str | Path, patch: str | None, *, base_dir: Path | None = None
 ) -> dict[str, Any] | None:
-    if not isinstance(patch, str) or not patch.strip():
+    if not isinstance(patch, str) or not patch.strip() or _has_unsupported_metadata(patch):
         return None
     root = Path(repo_root).resolve()
     codex_after = (
@@ -210,6 +219,8 @@ def _binding_for_event(event: dict[str, Any], repo_root: str | Path) -> dict[str
         return None
     if tool == "apply_patch":
         command = tool_input.get("command")
+        if not isinstance(command, str) or _has_unsupported_metadata(command):
+            return None
         if isinstance(command, str) and "*** Begin Patch" in command:
             after = _materialize_codex(root, command, base_dir=event_cwd)
             return _binding(after) if after is not None else None

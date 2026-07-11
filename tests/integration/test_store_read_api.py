@@ -38,6 +38,8 @@ def _persist_scoped(
     decision: Decision = Decision.PROCEED,
     commit: str = "abc123",
     files: list[str] | None = None,
+    action_id: str | None = "action-1",
+    task: str = "t",
 ) -> str:
     res = AssessmentResult(
         recommended_decision=decision,
@@ -54,7 +56,10 @@ def _persist_scoped(
             "advisory": {"why": ["because"]},
         },
     )
-    return store.persist_assessment(res, {"task": "t"})
+    request = {"task": task}
+    if action_id is not None:
+        request["action_id"] = action_id
+    return store.persist_assessment(res, request)
 
 
 def test_revise_safer_attempt_count_matches_repo_head_and_safe_scope(tmp_path) -> None:
@@ -66,6 +71,48 @@ def test_revise_safer_attempt_count_matches_repo_head_and_safe_scope(tmp_path) -
     _persist_scoped(store, decision=Decision.REVISE_SAFER, files=["src/Other.cs"])
 
     assert store.revise_safer_attempt_count("r", "abc123", ["src/Gamma.cs"]) == 2
+
+
+def test_revise_safer_attempt_count_follows_action_across_files(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/HighImpact.cs"],
+        action_id="stable-revision-lineage",
+    )
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/LowImpact.cs"],
+        action_id="other-action",
+    )
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/LowImpact.cs"],
+        action_id="stable-revision-lineage",
+        task="different task",
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/LowImpact.cs"], "stable-revision-lineage", "t"
+    ) == 1
+
+
+def test_legacy_scope_fallback_does_not_cross_known_task_boundary(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/Same.cs"],
+        action_id=None,
+        task="different task",
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/Same.cs"], "new-action", "current task"
+    ) == 0
 
 
 def test_list_assessments_newest_first_scoped_to_repo(tmp_path) -> None:

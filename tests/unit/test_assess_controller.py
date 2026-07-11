@@ -602,13 +602,13 @@ class FakeRevisionAttemptStore(FakeStore):
         self.count = count
         self.count_calls = []
 
-    def revise_safer_attempt_count(self, repo_id, assessed_commit, target_files):
-        self.count_calls.append((repo_id, assessed_commit, tuple(target_files)))
+    def revise_safer_attempt_count(self, repo_id, assessed_commit, target_files, action_id=None, task=None):
+        self.count_calls.append((repo_id, assessed_commit, tuple(target_files), action_id, task))
         return self.count
 
 
 class FakeFailingRevisionAttemptStore(FakeStore):
-    def revise_safer_attempt_count(self, repo_id, assessed_commit, target_files):
+    def revise_safer_attempt_count(self, repo_id, assessed_commit, target_files, action_id=None, task=None):
         raise RuntimeError("store unavailable")
 
 
@@ -632,7 +632,9 @@ def test_assess_uses_persisted_revise_safer_attempt_when_caller_is_lower() -> No
         assessed_commit="abc123",
     )
 
-    assert store.count_calls == [("repo_local_example", "abc123", ("src/auth.py",))]
+    assert store.count_calls == [
+        ("repo_local_example", "abc123", ("src/auth.py",), "a1", "Fix failing login validation")
+    ]
     assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN
     assert not any(g.get("name") == "revise_safer" for g in outcome.recommended_result.gates_fired)
     _result, persisted_payload, _predictions = store.persisted[0]
@@ -659,7 +661,9 @@ def test_assess_keeps_caller_revise_safer_attempt_when_caller_is_higher() -> Non
         assessed_commit="abc123",
     )
 
-    assert store.count_calls == [("repo_local_example", "abc123", ("src/auth.py",))]
+    assert store.count_calls == [
+        ("repo_local_example", "abc123", ("src/auth.py",), "a1", "Fix failing login validation")
+    ]
     assert outcome.recommended_result.recommended_decision is Decision.ASK_HUMAN
     _result, persisted_payload, _predictions = store.persisted[0]
     assert persisted_payload["thresholds"]["revise_safer_attempt"] == 1

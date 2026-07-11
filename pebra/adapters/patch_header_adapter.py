@@ -18,7 +18,11 @@ from pathlib import PurePosixPath
 _DIFF_GIT = re.compile(r"^diff --git a/(.*) b/(.*)$")
 _RENAME_FROM = re.compile(r"^rename from (.*)$")
 _RENAME_TO = re.compile(r"^rename to (.*)$")
+_COPY_FROM = re.compile(r"^copy from (.*)$")
+_COPY_TO = re.compile(r"^copy to (.*)$")
 _SIMILARITY = re.compile(r"^similarity index (\d+)%$")
+_OLD_FILE = re.compile(r"^--- (.+)$")
+_NEW_FILE = re.compile(r"^\+\+\+ (.+)$")
 
 
 @dataclass(frozen=True)
@@ -86,9 +90,51 @@ def touched_files(patch: str) -> tuple[str, ...]:
     ``diff --git`` header), sorted and de-duplicated. Used to build the before/after materialization
     scope; a rename contributes both its old and new name. Pure, no I/O."""
     paths: set[str] = set()
+    current: tuple[str, str] | None = None
+    old_seen = new_seen = False
+
+    def _header_path(raw: str) -> str:
+        return raw.split("\t", 1)[0]
+
+    def _complete_pair() -> bool:
+        return old_seen == new_seen
+
     for line in patch.splitlines():
         m = _DIFF_GIT.match(line)
         if m:
+            if current is not None and not _complete_pair():
+                return ()
+            current = (m.group(1), m.group(2))
+            old_seen = new_seen = False
             paths.add(m.group(1))
             paths.add(m.group(2))
+            continue
+        if m := _OLD_FILE.match(line):
+            if current is None or old_seen:
+                return ()
+            value = _header_path(m.group(1))
+            if value not in {f"a/{current[0]}", "/dev/null"}:
+                return ()
+            old_seen = True
+        elif m := _NEW_FILE.match(line):
+            if current is None or new_seen:
+                return ()
+            value = _header_path(m.group(1))
+            if value not in {f"b/{current[1]}", "/dev/null"}:
+                return ()
+            new_seen = True
+        elif m := _RENAME_FROM.match(line):
+            if current is None or m.group(1) != current[0]:
+                return ()
+        elif m := _RENAME_TO.match(line):
+            if current is None or m.group(1) != current[1]:
+                return ()
+        elif m := _COPY_FROM.match(line):
+            if current is None or m.group(1) != current[0]:
+                return ()
+        elif m := _COPY_TO.match(line):
+            if current is None or m.group(1) != current[1]:
+                return ()
+    if current is not None and not _complete_pair():
+        return ()
     return tuple(sorted(paths))

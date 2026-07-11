@@ -25,6 +25,179 @@ def test_write_then_read_roundtrip(tmp_path):
     assert tool_impl.read_file("src/A.cs", tmp_path) == {"content": "hello"}
 
 
+def test_write_file_rejects_truncated_large_file_overwrite_and_points_to_edit(tmp_path):
+    target = tmp_path / "large.ts"
+    original = "x" * (tool_impl._MAX_READ_BYTES + 1)  # noqa: SLF001
+    target.write_text(original, encoding="utf-8")
+
+    result = tool_impl.write_file("large.ts", "replacement", tmp_path)
+
+    assert result == {"error": "existing file is too large to replace safely; use edit_file"}
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_edit_file_replaces_unique_text_beyond_read_truncation_limit(tmp_path):
+    target = tmp_path / "large.ts"
+    target.write_text("x" * 70_000 + "\nconst oldValue = 1;\n", encoding="utf-8")
+
+    result = tool_impl.edit_file(
+        "large.ts", "const oldValue = 1;", "const newValue = 2;", tmp_path
+    )
+
+    assert result == {"ok": True}
+    assert target.read_text(encoding="utf-8").endswith("const newValue = 2;\n")
+
+
+@pytest.mark.parametrize("content", ["no match", "old old"])
+def test_edit_file_requires_one_unique_match_by_default(tmp_path, content):
+    target = tmp_path / "a.ts"
+    target.write_text(content, encoding="utf-8")
+
+    result = tool_impl.edit_file("a.ts", "old", "new", tmp_path)
+
+    assert "error" in result
+    assert target.read_text(encoding="utf-8") == content
+
+
+def test_edit_file_replace_all_replaces_every_match(tmp_path):
+    target = tmp_path / "a.ts"
+    target.write_text("old + old", encoding="utf-8")
+
+    result = tool_impl.edit_file("a.ts", "old", "new", tmp_path, replace_all=True)
+
+    assert result == {"ok": True}
+    assert target.read_text(encoding="utf-8") == "new + new"
+
+
+def test_edit_file_rejects_empty_old_string_and_hidden_path(tmp_path):
+    target = tmp_path / "a.ts"
+    target.write_text("value", encoding="utf-8")
+    (tmp_path / ".pebra").mkdir()
+    (tmp_path / ".pebra" / "state.ts").write_text("value", encoding="utf-8")
+
+    assert "error" in tool_impl.edit_file("a.ts", "", "new", tmp_path)
+    assert "error" in tool_impl.edit_file(".pebra/state.ts", "value", "new", tmp_path)
+    assert target.read_text(encoding="utf-8") == "value"
+
+
+def test_apply_patch_updates_multiple_files_atomically(tmp_path):
+    (tmp_path / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    (tmp_path / "b.ts").write_text("export const b = 1;\n", encoding="utf-8")
+    patch = """diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-export const a = 1;
++export const a = 2;
+diff --git a/b.ts b/b.ts
+--- a/b.ts
++++ b/b.ts
+@@ -1 +1 @@
+-export const b = 1;
++export const b = 2;
+"""
+
+    assert tool_impl.apply_patch(patch, tmp_path) == {"ok": True}
+    assert (tmp_path / "a.ts").read_text(encoding="utf-8").replace("\r\n", "\n") == "export const a = 2;\n"
+    assert (tmp_path / "b.ts").read_text(encoding="utf-8").replace("\r\n", "\n") == "export const b = 2;\n"
+
+
+def test_apply_patch_failure_leaves_every_file_unchanged(tmp_path):
+    (tmp_path / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    patch = """diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-does not match
++export const a = 2;
+"""
+
+    assert "error" in tool_impl.apply_patch(patch, tmp_path)
+    assert (tmp_path / "a.ts").read_text(encoding="utf-8") == "export const a = 1;\n"
+
+
+def test_apply_patch_rejects_unsafe_paths(tmp_path):
+    patch = """diff --git a/../../outside.ts b/../../outside.ts
+--- a/../../outside.ts
++++ b/../../outside.ts
+@@ -0,0 +1 @@
++unsafe
+"""
+    assert tool_impl.apply_patch(patch, tmp_path) == {"error": "patch contains an unsafe path"}
+
+
+def test_apply_patch_rejects_unbound_file_mode_changes(tmp_path):
+    (tmp_path / "a.ts").write_text("const a = 1;\n", encoding="utf-8")
+    patch = """diff --git a/a.ts b/a.ts
+old mode 100644
+new mode 100755
+"""
+    assert tool_impl.apply_patch(patch, tmp_path) == {
+        "error": "patch contains unsupported file-mode changes"
+    }
+
+
+def test_mutation_tools_reject_harness_private_paths_but_protocol_remains_readable(tmp_path):
+    protocol = tmp_path / ".agent-instructions" / "edit_protocol.md"
+    protocol.parent.mkdir()
+    protocol.write_text("instructions\n", encoding="utf-8")
+
+    assert tool_impl.read_file(
+        ".agent-instructions/edit_protocol.md", tmp_path
+    )["content"].replace("\r\n", "\n") == "instructions\n"
+    assert "error" in tool_impl.edit_file(
+        ".agent-instructions/edit_protocol.md", "instructions", "tampered", tmp_path
+    )
+    patch = """diff --git a/.agent-instructions/edit_protocol.md b/.agent-instructions/edit_protocol.md
+--- a/.agent-instructions/edit_protocol.md
++++ b/.agent-instructions/edit_protocol.md
+@@ -1 +1 @@
+-instructions
++tampered
+"""
+    assert tool_impl.apply_patch(patch, tmp_path) == {"error": "patch contains a protected path"}
+    assert protocol.read_text(encoding="utf-8") == "instructions\n"
+
+
+def test_apply_patch_rejects_hunk_path_not_declared_by_diff_header(tmp_path):
+    (tmp_path / "safe.txt").write_text("safe\n", encoding="utf-8")
+    hidden = tmp_path / ".pebra" / "state.txt"
+    hidden.parent.mkdir()
+    hidden.write_text("state\n", encoding="utf-8")
+    patch = """diff --git a/safe.txt b/safe.txt
+--- a/safe.txt
++++ b/safe.txt
+@@ -1 +1 @@
+-safe
++changed
+--- a/.pebra/state.txt
++++ b/.pebra/state.txt
+@@ -1 +1 @@
+-state
++tampered
+"""
+
+    assert tool_impl.apply_patch(patch, tmp_path) == {
+        "error": "patch has invalid or undeclared file headers"
+    }
+    assert hidden.read_text(encoding="utf-8") == "state\n"
+
+
+def test_apply_patch_rejects_rename_metadata_outside_declared_paths(tmp_path):
+    hidden = tmp_path / ".pebra" / "state.txt"
+    hidden.parent.mkdir()
+    hidden.write_text("state\n", encoding="utf-8")
+    patch = """diff --git a/safe.txt b/safe2.txt
+similarity index 100%
+rename from .pebra/state.txt
+rename to .pebra/state2.txt
+"""
+    assert tool_impl.apply_patch(patch, tmp_path) == {
+        "error": "patch has invalid or undeclared file headers"
+    }
+    assert hidden.is_file()
+
+
 @pytest.mark.parametrize(("path", "content"), [
     ("src/messages.ts", "I ran git checkout -- src/messages.ts; the repo is clean (verified)."),
     ("src/messages.css", '.notice { content: "run git checkout -- src/messages.ts"; }'),

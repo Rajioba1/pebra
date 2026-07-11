@@ -16,6 +16,10 @@ def _write(seq, path=PRIMARY, *, ok=True):
     return ToolCallRecord(seq, "write_file", {"path": path}, {"ok": ok, "blocked": not ok})
 
 
+def _edit(seq, path=PRIMARY, *, ok=True):
+    return ToolCallRecord(seq, "edit_file", {"path": path}, {"ok": ok, "blocked": not ok})
+
+
 def _build(seq):
     return ToolCallRecord(seq, "run_build", {}, {})
 
@@ -64,6 +68,20 @@ def test_revise_safer_blocked_then_reassessed_and_modified_is_heeded():
 
 def test_revise_safer_blocked_then_modified_without_reassessment_is_ignored():
     calls = [_adv("revise_safer"), _write(1, ok=False), _write(2)]
+    _, _, heeded, state = adherence.classify(calls, primary_file=PRIMARY, modified_files=[PRIMARY])
+    assert heeded is False and state == models.ADH_IGNORED
+
+
+def test_reject_then_other_file_mutation_is_ignored():
+    calls = [_adv("reject"), _edit(1, path="src/Other.cs")]
+    _, _, heeded, state = adherence.classify(
+        calls, primary_file=PRIMARY, modified_files=["src/Other.cs"]
+    )
+    assert heeded is False and state == models.ADH_IGNORED
+
+
+def test_revise_safer_then_edit_file_without_reassessment_is_ignored():
+    calls = [_adv("revise_safer"), _edit(1)]
     _, _, heeded, state = adherence.classify(calls, primary_file=PRIMARY, modified_files=[PRIMARY])
     assert heeded is False and state == models.ADH_IGNORED
 

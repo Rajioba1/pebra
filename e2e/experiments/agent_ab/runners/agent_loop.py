@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from e2e.experiments.agent_ab.metrics import blinding
-from e2e.experiments.agent_ab.models import SubjectResult, ToolCallRecord
+from e2e.experiments.agent_ab.models import MUTATING_TOOLS, SubjectResult, ToolCallRecord
 from e2e.experiments.agent_ab.runners import run_artifacts, subject_protocol, tool_impl
 from e2e.experiments.agent_ab.runners.model_client import ScriptExhausted
 from e2e.experiments.agent_ab.tools import advisory_contract
@@ -41,7 +41,7 @@ class RunConfig:
     max_tool_calls_per_run: int = 50
     max_wall_seconds_per_run: int = 600
     max_output_tokens_per_turn: int = 4096
-    tools: tuple[str, ...] = ("read_file", "write_file", "list_dir", "search_grep",
+    tools: tuple[str, ...] = ("read_file", "edit_file", "apply_patch", "write_file", "list_dir", "search_grep",
                               "run_build", "run_tests", "advisory_check")
 
 
@@ -54,11 +54,22 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "read_file": {"description": "Read a repo file by relative path.",
                   "input_schema": {"type": "object",
                                    "properties": {"path": {"type": "string"}}, "required": ["path"]}},
-    "write_file": {"description": "Write/overwrite a repo file by relative path.",
+    "write_file": {"description": "Create a file or completely replace it. Prefer edit_file for existing files.",
                    "input_schema": {"type": "object",
                                     "properties": {"path": {"type": "string"},
                                                    "content": {"type": "string"}},
                                     "required": ["path", "content"]}},
+    "edit_file": {"description": "Replace a unique string in an existing repo file.",
+                   "input_schema": {"type": "object",
+                                    "properties": {"path": {"type": "string"},
+                                                   "old_string": {"type": "string"},
+                                                   "new_string": {"type": "string"},
+                                                   "replace_all": {"type": "boolean"}},
+                                    "required": ["path", "old_string", "new_string"]}},
+    "apply_patch": {"description": "Atomically apply a git-style unified patch to one or more files.",
+                    "input_schema": {"type": "object",
+                                     "properties": {"patch": {"type": "string"}},
+                                     "required": ["patch"]}},
     "list_dir": {"description": "List entries of a repo directory.",
                  "input_schema": {"type": "object",
                                   "properties": {"path": {"type": "string"}}, "required": []}},
@@ -77,7 +88,12 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 
 def _build_tools_schema(names: tuple[str, ...]) -> list[dict[str, Any]]:
     schema: list[dict[str, Any]] = []
+    expanded: list[str] = []
     for name in names:
+        expanded.append(name)
+        if name == "write_file" and "edit_file" not in names:
+            expanded.append("edit_file")
+    for name in expanded:
         if name == advisory_contract.TOOL_NAME:
             schema.append({"name": name, "description": advisory_contract.TOOL_DESCRIPTION,
                            "input_schema": advisory_contract.INPUT_SCHEMA})
@@ -104,6 +120,10 @@ def _dispatch(name: str, args: dict[str, Any], setup: "ArmSetup") -> dict[str, A
         return tool_impl.read_file(args.get("path", ""), repo)
     if name == "write_file":
         return _gated_write(args, setup)
+    if name == "edit_file":
+        return _gated_edit(args, setup)
+    if name == "apply_patch":
+        return _gated_patch(args, setup)
     if name == "list_dir":
         return tool_impl.list_dir(args.get("path"), repo)
     if name == "search_grep":
@@ -131,6 +151,54 @@ def _gated_write(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
         "tool_input": {"file_path": path, "content": args.get("content", "")},
         "cwd": str(setup.repo_path),
     }
+    return _gated_file_change(
+        event,
+        setup,
+        lambda: tool_impl.write_file(path, args.get("content", ""), setup.repo_path),
+    )
+
+
+def _gated_edit(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
+    path = args.get("path", "")
+    old_string = args.get("old_string", "")
+    new_string = args.get("new_string", "")
+    replace_all = args.get("replace_all") is True
+    event = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": path,
+            "old_string": old_string,
+            "new_string": new_string,
+            "replace_all": replace_all,
+        },
+        "cwd": str(setup.repo_path),
+    }
+    return _gated_file_change(
+        event,
+        setup,
+        lambda: tool_impl.edit_file(
+            path, old_string, new_string, setup.repo_path, replace_all=replace_all
+        ),
+    )
+
+
+def _gated_patch(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
+    patch = args.get("patch", "")
+    event = {
+        "tool_name": "apply_patch",
+        "tool_input": {"command": patch},
+        "cwd": str(setup.repo_path),
+    }
+    return _gated_file_change(
+        event,
+        setup,
+        lambda: tool_impl.apply_patch(patch, setup.repo_path),
+    )
+
+
+def _gated_file_change(
+    event: dict[str, Any], setup: "ArmSetup", apply_change: Any
+) -> dict[str, Any]:
     try:
         decision = setup.gate_check_backend(event)
     except Exception:  # noqa: BLE001 - a gate failure must never block the experiment write (fail-open)
@@ -142,7 +210,7 @@ def _gated_write(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
         return {"ok": False, "blocked": True,
                 "reason": decision.get("reason")
                 or "A pre-edit check asked you to consult before making this change."}
-    result = tool_impl.write_file(path, args.get("content", ""), setup.repo_path)
+    result = apply_change()
     if "error" in result:
         return {"ok": False, "blocked": False, "reason": result["error"]}
     return {"ok": True, "blocked": False, "reason": None}
@@ -278,7 +346,9 @@ def run(
                 tool_ended = time.monotonic()
                 # Blinding: scan harness-authored outputs (advisory result AND any write reason — a gate
                 # deny or a write error), never file reads/content. Any reason text reaches the model.
-                if name == advisory_contract.TOOL_NAME or (name == "write_file" and result.get("reason")):
+                if name == advisory_contract.TOOL_NAME or (
+                    name in MUTATING_TOOLS and result.get("reason")
+                ):
                     blinding_presend_check([json.dumps(result)])
                 records.append(ToolCallRecord(sequence=seq, name=name, arguments=args, result=result))
                 tools_seen.append({

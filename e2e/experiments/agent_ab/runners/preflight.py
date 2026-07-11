@@ -31,8 +31,7 @@ from typing import Any, Callable
 
 from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab.models import TaskSpec
-from e2e.experiments.agent_ab.runners import evaluator, run_artifacts
-from e2e.experiments.agent_ab.tools import candidate_materializer, candidate_verifier
+from e2e.experiments.agent_ab.runners import evaluator, run_artifacts, run_pair
 from e2e.external.utils import repo_source as rs
 
 _CORPUS_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus"
@@ -508,6 +507,9 @@ def run_graph_preflight(
 # ---- revise-safer route calibration -----------------------------------------------------------
 
 
+_NATURAL_ROUTE_BENEFIT_TOLERANCE = 1e-12
+
+
 def _expected_loss(payload: dict[str, Any]) -> float | None:
     value = (payload.get("scores") or {}).get("expected_loss")
     return float(value) if isinstance(value, (int, float)) else None
@@ -543,6 +545,14 @@ def _benefit_discrimination_failure(
             return (
                 f"{spec.task_id}: natural route has no positive benefit "
                 f"(bad={benefits[0]}, reference={benefits[1]})"
+            )
+        if not math.isclose(
+            benefits[0], benefits[1], rel_tol=0.0, abs_tol=_NATURAL_ROUTE_BENEFIT_TOLERANCE
+        ):
+            return (
+                f"{spec.task_id}: natural-route modeled benefit differs between bad and reference "
+                f"candidates ({benefits[0]} != {benefits[1]}; tolerance "
+                f"{_NATURAL_ROUTE_BENEFIT_TOLERANCE})"
             )
         return None
     if math.isclose(benefits[0], benefits[1], rel_tol=0.0, abs_tol=1e-12):
@@ -604,28 +614,11 @@ def _live_revise_safer_assess(
 
 
 def _live_candidate_verification(repo_path: Path, spec: TaskSpec, patch_text: str) -> dict[str, Any]:
-    scratch = candidate_materializer.materialize_candidate(repo_path, patch_text)
-    if scratch is None:
-        return {
-            "status": "unavailable",
-            "required_checks": ["candidate_build"],
-            "domain": "candidate_build",
-            "verified_patch_hash": candidate_verifier.candidate_patch_hash(patch_text),
-            "reason": "candidate patch did not apply cleanly",
-        }
-    try:
-        return candidate_verifier.verify_candidate(
-            repo_path=scratch,
-            patch_text=patch_text,
-            language=spec.language,
-            build_solution=spec.build_solution,
-            harness_id=spec.harness_id,
-            build_profile=spec.build_profile,
-            build_selector=spec.build_selector,
-            allow_build_fallback=spec.language in {"javascript", "typescript"},
-        )
-    finally:
-        candidate_materializer.cleanup(scratch)
+    touched = run_pair._patch_touched_files(patch_text)  # noqa: SLF001 - parity with live repair
+    target = touched[0] if touched else ""
+    return run_pair._verify_candidate_for_repair(  # noqa: SLF001 - one canonical live verifier
+        {"target_file": target, "proposed_patch": patch_text}, repo_path, spec
+    )
 
 
 def run_revise_safer_calibration(
@@ -688,6 +681,13 @@ def run_revise_safer_calibration(
                 continue
             correct_patch_text = correct_patch.read_text(encoding="utf-8")
             if spec.requires_natural_safe_route:
+                verification = candidate_verification_fn(repo_path, spec, correct_patch_text)
+                if verification.get("status") != "passed":
+                    failures.append(
+                        f"{spec.task_id}: natural route candidate verification did not pass "
+                        f"({verification.get('status')!r}: {verification.get('reason', '')})"
+                    )
+                    continue
                 fixed = assess_fn(
                     repo_path,
                     spec,

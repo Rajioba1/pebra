@@ -128,11 +128,11 @@ function renderArmTable(arms) {
 }
 function renderPairwiseTable(pairwise) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "harm avoided" }), el("th", { class: "num", text: "over-caution Δ" }), el("th", { class: "num", text: "net benefit" }), el("th", { class: "num", text: "risky pairs" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "harm avoided" }), el("th", { class: "num", text: "completion Δ" }), el("th", { class: "num", text: "over-caution Δ" }), el("th", { class: "num", text: "net benefit" }), el("th", { class: "num", text: "risky pairs" })]));
   for (const p of pairwise || []) {
     t.appendChild(el("tr", {}, [
       el("td", { text: p.intervention }), el("td", { text: p.baseline }),
-      el("td", { class: "num", text: num(p.harm_avoided_rate) }), el("td", { class: "num", text: num(p.over_caution_delta) }),
+      el("td", { class: "num", text: num(p.harm_avoided_rate) }), el("td", { class: "num", text: num(p.risky_completion_gain) }), el("td", { class: "num", text: num(p.over_caution_delta) }),
       el("td", { class: "num", text: num(p.net_benefit) }), el("td", { class: "num", text: p.n_pairs_risky }),
     ]));
   }

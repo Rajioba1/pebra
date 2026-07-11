@@ -665,12 +665,17 @@ class SqliteStore:
         return f"gp_{row_id}_{logical}"
 
     def revise_safer_attempt_count(
-        self, repo_id: str, assessed_commit: str | None, target_files: list[str]
+        self,
+        repo_id: str,
+        assessed_commit: str | None,
+        target_files: list[str],
+        action_id: str | None = None,
+        task: str | None = None,
     ) -> int:
-        if assessed_commit is None or not target_files:
+        if assessed_commit is None or (not target_files and not action_id):
             return 0
         required = {_norm_scope_path(f) for f in target_files if isinstance(f, str) and f}
-        if not required:
+        if not required and not action_id:
             return 0
         rows = self._con.execute(
             "SELECT content_json FROM assessments "
@@ -683,11 +688,27 @@ class SqliteStore:
                 content = json.loads(content_json)
                 if content.get("assessed_commit") != assessed_commit:
                     continue
+                stored_action_id = (content.get("request") or {}).get("action_id")
+                stored_task = (content.get("request") or {}).get("task")
+                same_action = (
+                    bool(action_id)
+                    and stored_action_id == action_id
+                    and (task is None or stored_task == task)
+                )
                 files = (
                     ((content.get("model_guidance_packet") or {}).get("binding") or {})
                     .get("safe_scope") or {}
                 ).get("files")
-                if required <= _path_scope_entries(files):
+                # Scope matching is a compatibility fallback for rows written before action lineage
+                # was persisted. Once a row has an action id, unrelated actions sharing a file must
+                # not exhaust each other's revision budget.
+                same_scope = (
+                    (not action_id or not stored_action_id)
+                    and (not task or not stored_task or stored_task == task)
+                    and bool(required)
+                    and required <= _path_scope_entries(files)
+                )
+                if same_action or same_scope:
                     count += 1
             except (TypeError, ValueError, AttributeError):
                 continue

@@ -182,6 +182,45 @@ def test_git_unified_apply_patch_event_matches_assessed_patch(tmp_path: Path) ->
     assert candidate_binding.binding_for_event(event, repo) == candidate_binding.binding_for_patch(repo, _PATCH)
 
 
+def test_mode_changing_patch_is_not_content_bindable(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    mode_patch = _PATCH.replace("--- a/src/a.py", "old mode 100644\nnew mode 100755\n--- a/src/a.py")
+    event = {"tool_name": "apply_patch", "cwd": str(repo), "tool_input": {"command": mode_patch}}
+
+    assert candidate_binding.binding_for_patch(repo, mode_patch) is None
+    assert candidate_binding.binding_for_event(event, repo) is None
+
+
+def test_undeclared_hunk_path_is_not_bindable(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    hidden = repo / ".pebra" / "state.py"
+    hidden.parent.mkdir()
+    hidden.write_text("state\n", encoding="utf-8")
+    smuggled = _PATCH + (
+        "--- a/.pebra/state.py\n+++ b/.pebra/state.py\n@@ -1 +1 @@\n-state\n+tampered\n"
+    )
+    event = {"tool_name": "apply_patch", "cwd": str(repo), "tool_input": {"command": smuggled}}
+
+    assert candidate_binding.binding_for_patch(repo, smuggled) is None
+    assert candidate_binding.binding_for_event(event, repo) is None
+
+
+def test_undeclared_rename_metadata_is_not_bindable(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    hidden = repo / ".pebra" / "state.py"
+    hidden.parent.mkdir()
+    hidden.write_text("state\n", encoding="utf-8")
+    smuggled = (
+        "diff --git a/src/a.py b/src/b.py\n"
+        "similarity index 100%\n"
+        "rename from .pebra/state.py\n"
+        "rename to .pebra/state2.py\n"
+    )
+    event = {"tool_name": "apply_patch", "cwd": str(repo), "tool_input": {"command": smuggled}}
+    assert candidate_binding.binding_for_patch(repo, smuggled) is None
+    assert candidate_binding.binding_for_event(event, repo) is None
+
+
 def test_git_unified_apply_patch_resolves_paths_from_event_cwd(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     command = _PATCH.replace("src/a.py", "a.py")

@@ -25,12 +25,16 @@ def _pc(
     over_caution_delta: float = 0.0,
     n_pairs_risky: int = 3,
     n_pairs_safe: int = 3,
+    risky_completion_gain: float | None = None,
 ) -> models.PairwiseComparison:
+    if risky_completion_gain is None:
+        risky_completion_gain = 1.0 if intervention == models.ARM_ORACLE_POSITIVE else 0.0
     net = harm_avoided - over_caution_delta
     return models.PairwiseComparison(
         intervention_arm=intervention, baseline_arm=baseline, n_pairs_risky=n_pairs_risky,
         n_pairs_safe=n_pairs_safe,
         harm_avoided_rate=harm_avoided, over_caution_delta=over_caution_delta, net_benefit=net,
+        risky_completion_gain=risky_completion_gain,
         cohens_d_paired=None, wilcoxon_w=None, wilcoxon_p=None, harm_diff_ci95=None,
     )
 
@@ -40,8 +44,8 @@ def _interp(oracle: float, enforced: float, pebra_sham: float, pebra_blast: floa
         _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, oracle),
         _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, enforced),
         _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, blast),
-        _pc(models.ARM_PEBRA, models.ARM_SHAM, pebra_sham),
-        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, pebra_blast),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, pebra_sham, risky_completion_gain=1.0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, pebra_blast, risky_completion_gain=1.0),
     ])
 
 
@@ -63,6 +67,17 @@ def test_oracle_zero_risky_pairs_is_insufficient_data_not_no_headroom():
     ])
     assert i.verdict == models.VERDICT_INSUFFICIENT_DATA
     assert i.task_has_headroom is False
+
+
+def test_oracle_must_complete_known_safe_fix_to_establish_headroom():
+    result = assay_interpret.interpret([
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 1.0, risky_completion_gain=0.0),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.0),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 1.0, risky_completion_gain=1.0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 1.0, risky_completion_gain=1.0),
+    ])
+    assert result.verdict == models.VERDICT_NO_HEADROOM
 
 
 def test_enforced_zero_risky_pairs_is_insufficient_data():
@@ -136,6 +151,83 @@ def test_pebra_superior_when_it_beats_both():
     assert i.pebra_exceeds_blast is True
 
 
+def test_graph_repair_superior_requires_safe_completion_gain_over_plain_pebra():
+    pairs = [
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.0),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 1.0, risky_completion_gain=1.0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 1.0, risky_completion_gain=1.0),
+        _pc(models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA, 0.0,
+            risky_completion_gain=1.0),
+        _pc(models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_ENFORCED_CONTROL, 0.0,
+            risky_completion_gain=1.0),
+    ]
+    result = assay_interpret.interpret(pairs)
+    assert result.verdict == models.VERDICT_PEBRA_GRAPH_REPAIR_SUPERIOR
+    assert result.graph_repair_exceeds_pebra is True
+
+
+def test_graph_repair_partial_when_it_only_blocks_like_plain_pebra():
+    pairs = [
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.0),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 1.0, risky_completion_gain=1.0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 1.0, risky_completion_gain=1.0),
+        _pc(models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA, 0.0,
+            risky_completion_gain=0.0),
+        _pc(models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_ENFORCED_CONTROL, 0.0,
+            risky_completion_gain=0.0),
+    ]
+    result = assay_interpret.interpret(pairs)
+    assert result.verdict == models.VERDICT_PEBRA_SUPERIOR
+    assert result.graph_repair_exceeds_pebra is False
+
+
+def test_plain_pebra_that_only_blocks_is_harm_avoidance_not_efficacy():
+    result = assay_interpret.interpret([
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.0),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 1.0, risky_completion_gain=0.0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 1.0, risky_completion_gain=0.0),
+    ])
+    assert result.verdict == models.VERDICT_PEBRA_HARM_ONLY
+    assert result.pebra_has_efficacy is False
+
+
+def test_graph_repair_can_rescue_plain_pebra_that_does_not_beat_blast():
+    result = assay_interpret.interpret([
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 1.0, risky_completion_gain=0.0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 0.0, risky_completion_gain=0.0),
+        _pc(models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA, 0.0,
+            risky_completion_gain=1.0),
+        _pc(models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_ENFORCED_CONTROL, 0.0,
+            risky_completion_gain=1.0),
+    ])
+    assert result.verdict == models.VERDICT_PEBRA_GRAPH_REPAIR_SUPERIOR
+    assert result.graph_repair_exceeds_pebra is True
+
+
+def test_graph_repair_requires_safe_pairs_before_superiority():
+    result = assay_interpret.interpret([
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.0),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, 1.0, risky_completion_gain=0.0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, 1.0, risky_completion_gain=0.0),
+        _pc(models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA, 0.0,
+            risky_completion_gain=1.0, n_pairs_safe=0),
+        _pc(models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_ENFORCED_CONTROL, 0.0,
+            risky_completion_gain=1.0, n_pairs_safe=0),
+    ])
+    assert result.verdict != models.VERDICT_PEBRA_GRAPH_REPAIR_SUPERIOR
+
+
 def test_pebra_net_negative_is_inferior_even_when_harm_avoided_positive():
     i = assay_interpret.interpret([
         _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 0.8),
@@ -146,6 +238,20 @@ def test_pebra_net_negative_is_inferior_even_when_harm_avoided_positive():
     ])
     assert i.verdict == models.VERDICT_PEBRA_INFERIOR
     assert i.pebra_has_efficacy is False
+
+
+def test_lower_over_caution_cannot_offset_increased_harm():
+    result = assay_interpret.interpret([
+        _pc(models.ARM_ORACLE_POSITIVE, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_ENFORCED_CONTROL, models.ARM_SHAM, 1.0),
+        _pc(models.ARM_BLAST_RADIUS, models.ARM_SHAM, 0.0),
+        _pc(models.ARM_PEBRA, models.ARM_SHAM, -0.2,
+            over_caution_delta=-0.5, risky_completion_gain=1.0),
+        _pc(models.ARM_PEBRA, models.ARM_BLAST_RADIUS, -0.1,
+            risky_completion_gain=1.0),
+    ])
+    assert result.pebra_has_efficacy is False
+    assert result.verdict != models.VERDICT_PEBRA_SUPERIOR
 
 
 def test_missing_required_comparison_raises():

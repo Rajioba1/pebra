@@ -23,7 +23,8 @@ def test_arms_for_risky_and_safe():
         models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_ENFORCED_CONTROL,
         models.ARM_BLAST_RADIUS, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)
     assert run_pair.arms_for("safe") == (
-        models.ARM_SHAM, models.ARM_BLAST_RADIUS, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)
+        models.ARM_SHAM, models.ARM_ENFORCED_CONTROL, models.ARM_BLAST_RADIUS,
+        models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)
     assert models.ARM_ORACLE_POSITIVE not in run_pair.arms_for("safe")  # no harm to fix on safe tasks
     # the repair arm runs on safe tasks too, so its over-caution is measurable (Gate 6 net_benefit)
     assert models.ARM_PEBRA_GRAPH_REPAIR in run_pair.arms_for("safe")
