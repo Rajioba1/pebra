@@ -74,8 +74,10 @@ def test_measured_metric_units_are_bounded_before_entering_utility() -> None:
         future_change_exposure=0.992,
     )
 
-    assert -0.30 < result.credited_maintainability_gain < 0.0
-    assert result.benefit > 0.0
+    # A measured zero is a neutral dimension, not missing evidence: it remains in the denominator.
+    # JS1's measured shape is therefore (-0.5 + 0.0) / 2 * 0.992 = -0.248.
+    assert result.credited_maintainability_gain == pytest.approx(-0.248)
+    assert result.benefit == pytest.approx(0.252)
 
 
 def test_extreme_measured_deltas_cannot_create_unbounded_utility() -> None:

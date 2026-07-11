@@ -17,9 +17,13 @@ to obtain the after-*strings* (via the shared, vetted ``patch_materializer``).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import re
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,7 +31,7 @@ from pebra.adapters._paths import safe_relative_files
 from pebra.adapters.patch_materializer import materialize_patch
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.models import BenefitDeltaEvidence
-from pebra.core.rca_engine_paths import find_rca
+from pebra.core.rca_engine_paths import RCA_ACCEPTED_VERSION, RCA_SOURCE_REVISION, find_rca
 
 # Extensions the BUILT rca binary actually parses (empirically verified against the git-HEAD build; the
 # declared grammar list is broader — e.g. Kotlin/.kt and Go/.go are declared/plausible but produce NO
@@ -41,9 +45,73 @@ _RCA_SUPPORTED_EXTS = frozenset({
 RcaRunner = Callable[[Path], "dict[str, Any] | None"]
 
 
+@lru_cache(maxsize=8)
+def _rca_version_for_binary(exe: str, mtime_ns: int, size: int) -> str | None:
+    """Version for one concrete binary identity; mtime/size invalidate the cache on replacement."""
+    del mtime_ns, size
+    try:
+        proc = subprocess.run(
+            resolve_engine_argv(exe, ["--version"]),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    prefix = "rust-code-analysis-cli "
+    text = proc.stdout.strip()
+    return text[len(prefix):].strip() if text.startswith(prefix) else None
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _cargo_source_revision(exe: str) -> str | None:
+    """Read Cargo's install provenance for a launcher under <cargo-root>/bin."""
+    binary = Path(exe).resolve()
+    metadata = binary.parent.parent / ".crates2.json"
+    try:
+        installs = json.loads(metadata.read_text(encoding="utf-8")).get("installs", {})
+    except (OSError, ValueError, AttributeError):
+        return None
+    for descriptor, details in installs.items():
+        if not isinstance(descriptor, str) or not descriptor.startswith("rust-code-analysis-cli "):
+            continue
+        bins = details.get("bins", []) if isinstance(details, dict) else []
+        if binary.name.lower() not in {str(name).lower() for name in bins}:
+            continue
+        match = re.search(r"#([0-9a-f]{40})\)$", descriptor)
+        return match.group(1) if match else None
+    return None
+
+
+def _validated_rca(exe: str) -> str | None:
+    """Require the validated version plus pinned Cargo provenance or an explicit exact hash."""
+    try:
+        binary = Path(exe)
+        stat = binary.stat()
+    except OSError:
+        return None
+    version = _rca_version_for_binary(exe, stat.st_mtime_ns, stat.st_size)
+    if version != RCA_ACCEPTED_VERSION:
+        return None
+    expected_hash = os.environ.get("PEBRA_RCA_SHA256", "").strip().lower()
+    if expected_hash:
+        try:
+            return exe if _sha256_file(binary) == expected_hash else None
+        except OSError:
+            return None
+    return exe if _cargo_source_revision(exe) == RCA_SOURCE_REVISION else None
+
+
 def _run_rca_cli(path: Path) -> dict[str, Any] | None:
     exe = find_rca()
-    if exe is None:
+    if exe is None or _validated_rca(exe) is None:
         return None
     try:
         proc = subprocess.run(

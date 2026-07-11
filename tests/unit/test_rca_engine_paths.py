@@ -73,3 +73,8 @@ def test_all_miss_returns_none(monkeypatch) -> None:
     _no_env(monkeypatch)
     monkeypatch.setattr(rp.shutil, "which", lambda n: None)
     assert rp.find_rca() is None
+
+
+def test_rca_source_and_runtime_are_pinned() -> None:
+    assert rp.RCA_ACCEPTED_VERSION == "0.0.25"
+    assert rp.RCA_SOURCE_REVISION == "37e5d83c056c8cbf827223d5814a93c5218df1a9"

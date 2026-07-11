@@ -77,7 +77,9 @@ def maintainability_gain(deltas: dict[str, float], future_change_exposure: float
     Tool metrics use incompatible units (for example, cyclomatic points vs. MI points), so raw deltas
     must never be added directly to unit utility. Each known delta becomes a bounded directional signal
     ``[-1, 1]`` via ``x / (1 + abs(x))``; signals are averaged, then scaled by bounded graph exposure.
-    Unknown/non-finite metrics are ignored (conservative: they earn no credit).
+    Unknown/non-finite metrics are ignored (conservative: they earn no credit). A finite measured zero
+    remains a neutral signal in the average: it records that one measured quality dimension did not
+    move and prevents a change in one metric from pretending every measured dimension improved.
     """
     signals: list[float] = []
     for metric, value in deltas.items():

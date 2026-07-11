@@ -25,23 +25,6 @@ _MAX_MATCHES = 200
 _MAX_GREP_FILE_BYTES = 1_000_000
 _HIDDEN_DIRS = {".git", ".codegraph", ".pebra"}
 _REDACTION = "[redacted]"
-_SOURCE_EXTENSIONS = {
-    ".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".java", ".js", ".jsx",
-    ".kt", ".php", ".py", ".rb", ".rs", ".scala", ".swift", ".ts", ".tsx", ".vb",
-}
-_SOURCE_CODE_RE = re.compile(
-    r"\b(async|await|class|const|def|export|for|function|if|import|interface|let|namespace|"
-    r"private|public|return|type|using|var|while)\b|[{};=<>()]"
-)
-_COMMAND_LINE_RE = re.compile(
-    r"^\s*(?:\$|git|npm|pnpm|yarn|node|python|pip|dotnet|cargo|go|make|pytest)\b",
-    re.IGNORECASE,
-)
-_SHELL_MUTATION_RE = re.compile(r"\bgit\s+(?:checkout|reset|clean|apply)\b")
-_PROSE_OPENING_RE = re.compile(
-    r"^\s*(?:here is|here's|i will|we should|to fix|the fix is|this change|first,|then,)\b",
-    re.IGNORECASE,
-)
 
 
 def model_safe_text(text: str) -> str:
@@ -76,56 +59,6 @@ def _contains_hidden_part(path: Path) -> bool:
     return any(part in _HIDDEN_DIRS for part in path.parts)
 
 
-def _first_non_comment_line(text: str) -> str:
-    """Return the first meaningful leading line, preserving text after a closing block comment."""
-    in_block = False
-    for raw in text.splitlines():
-        line = raw.strip()
-        while line:
-            if in_block:
-                end = line.find("*/")
-                if end < 0:
-                    line = ""
-                    break
-                in_block = False
-                line = line[end + 2 :].lstrip()
-                continue
-            if line.startswith(("//", "#")):
-                line = ""
-                break
-            if line.startswith("/*"):
-                end = line.find("*/", 2)
-                if end < 0:
-                    in_block = True
-                    line = ""
-                    break
-                line = line[end + 2 :].lstrip()
-                continue
-            return line
-    return ""
-
-
-def _implausible_source_write(content: str, target: Path) -> bool:
-    """Catch obvious model prose/command dumps before they replace source files."""
-    if target.suffix.lower() not in _SOURCE_EXTENSIONS:
-        return False
-    text = (content or "").strip()
-    if not text:
-        return False
-    has_code_signal = bool(_SOURCE_CODE_RE.search(text))
-    first_line = _first_non_comment_line(text)
-    if (
-        first_line.lstrip().startswith("```")
-        or _COMMAND_LINE_RE.search(first_line)
-        or _PROSE_OPENING_RE.search(first_line)
-    ):
-        return True
-    if not has_code_signal and _SHELL_MUTATION_RE.search(text):
-        return True
-    sentence_count = len(re.findall(r"[.!?](?:\s|$)", text))
-    return not has_code_signal and (sentence_count >= 2 or bool(_PROSE_OPENING_RE.search(text)))
-
-
 def read_file(path: str, repo_root: Path) -> dict[str, Any]:
     try:
         target = _resolve_guarded(path, repo_root)
@@ -149,8 +82,6 @@ def write_file(path: str, content: str, repo_root: Path) -> dict[str, Any]:
         return {"error": "path escapes repo boundary"}
     if _contains_hidden_part(target.relative_to(repo_root.resolve())):
         return {"error": "hidden path requested"}
-    if _implausible_source_write(content, target):
-        return {"error": "write rejected: content does not look like source code for this file type"}
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")

@@ -5,8 +5,11 @@ not mutated, fail-safe on a missing binary / bad JSON."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from pebra.adapters import rca_adapter as ra
 from pebra.adapters.rca_adapter import RustCodeAnalysisAdapter
@@ -19,6 +22,12 @@ class _FakeProc:
 
 
 _VALID_JSON = '{"metrics": {"cyclomatic": {"sum": 3.0}, "mi": {"mi_visual_studio": 80.0}}}'
+_ORIGINAL_VALIDATED_RCA = ra._validated_rca
+
+
+@pytest.fixture(autouse=True)
+def _accept_fake_rca_runtime(monkeypatch):
+    monkeypatch.setattr(ra, "_validated_rca", lambda exe: exe)
 
 
 # --- _run_rca_cli fail-safe branches (the REAL subprocess runner, monkeypatched) ----------------
@@ -73,6 +82,66 @@ def test_run_rca_cli_timeout_is_none(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(ra.subprocess, "run", _timeout)
     assert ra._run_rca_cli(tmp_path / "x.py") is None
+
+
+def test_validated_rca_requires_pinned_runtime_version(monkeypatch, tmp_path) -> None:
+    exe = tmp_path / "bin" / "rust-code-analysis-cli"
+    exe.parent.mkdir()
+    exe.write_bytes(b"binary")
+    (tmp_path / ".crates2.json").write_text(json.dumps({"installs": {
+        "rust-code-analysis-cli 0.0.25 (git+https://github.com/mozilla/rust-code-analysis"
+        "#37e5d83c056c8cbf827223d5814a93c5218df1a9)": {
+            "bins": [exe.name],
+        },
+    }}), encoding="utf-8")
+    ra._rca_version_for_binary.cache_clear()
+    monkeypatch.setattr(
+        ra.subprocess,
+        "run",
+        lambda *a, **k: _FakeProc(0, "rust-code-analysis-cli 0.0.25\n"),
+    )
+
+    assert _ORIGINAL_VALIDATED_RCA(str(exe)) == str(exe)
+
+    ra._rca_version_for_binary.cache_clear()
+    monkeypatch.setattr(
+        ra.subprocess,
+        "run",
+        lambda *a, **k: _FakeProc(0, "rust-code-analysis-cli 0.0.26\n"),
+    )
+    assert _ORIGINAL_VALIDATED_RCA(str(exe)) is None
+
+
+def test_validated_rca_rejects_wrong_source_revision(monkeypatch, tmp_path) -> None:
+    exe = tmp_path / "bin" / "rust-code-analysis-cli"
+    exe.parent.mkdir()
+    exe.write_bytes(b"binary")
+    (tmp_path / ".crates2.json").write_text(json.dumps({"installs": {
+        "rust-code-analysis-cli 0.0.25 (git+https://github.com/mozilla/rust-code-analysis"
+        "#0000000000000000000000000000000000000000)": {"bins": [exe.name]},
+    }}), encoding="utf-8")
+    ra._rca_version_for_binary.cache_clear()
+    monkeypatch.setattr(
+        ra.subprocess,
+        "run",
+        lambda *a, **k: _FakeProc(0, "rust-code-analysis-cli 0.0.25\n"),
+    )
+
+    assert _ORIGINAL_VALIDATED_RCA(str(exe)) is None
+
+
+def test_validated_rca_accepts_explicit_matching_binary_hash(monkeypatch, tmp_path) -> None:
+    exe = tmp_path / "custom-rca"
+    exe.write_bytes(b"custom pinned binary")
+    monkeypatch.setenv("PEBRA_RCA_SHA256", ra._sha256_file(exe))
+    ra._rca_version_for_binary.cache_clear()
+    monkeypatch.setattr(
+        ra.subprocess,
+        "run",
+        lambda *a, **k: _FakeProc(0, "rust-code-analysis-cli 0.0.25\n"),
+    )
+
+    assert _ORIGINAL_VALIDATED_RCA(str(exe)) == str(exe)
 
 
 def _funcspace(cc: float, mi: float) -> dict:

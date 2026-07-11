@@ -28,10 +28,14 @@ from e2e.experiments.agent_ab.reports import render_report
 from e2e.experiments.agent_ab.runners import preflight, run_artifacts, run_gate, run_pair, subject_protocol
 from e2e.experiments.agent_ab.specimens import loader as specimen_loader
 from e2e.external.utils import repo_source as rs
-from e2e.utils import cli_harness
+from e2e.utils import cli_harness, rca_probe
 
 _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+_RCA_IDENTITY_KEYS = (
+    "status", "validation_mode", "version", "sha256", "source_revision",
+    "required_sha256", "accepted_version", "required_source_revision",
+)
 _EVAL_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "evaluator_tests"
 _ALLOW_UNVERIFIED_ENV = "E2E_AB_ALLOW_UNVERIFIED"
 _TERMINAL_PHASES = frozenset({"finished", "failed", "insufficient_data", "no_headroom"})
@@ -115,8 +119,16 @@ def _live_assess_fn(repo_path: Path, spec: TaskSpec) -> dict[str, Any]:
         Path(req_path).unlink(missing_ok=True)
 
 
-def _write_outcomes(path: Path, outcomes: list[RunOutcome], run_id: str) -> None:
+def _write_outcomes(
+    path: Path,
+    outcomes: list[RunOutcome],
+    run_id: str,
+    *,
+    run_metadata: dict[str, Any] | None = None,
+) -> None:
     payload = {"run_id": run_id, "outcomes": [dataclasses.asdict(o) for o in outcomes]}
+    if run_metadata is not None:
+        payload["run_metadata"] = run_metadata
     run_artifacts.atomic_write_json(path, payload)
 
 
@@ -186,6 +198,22 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _rca_metadata(cfg: dict[str, Any]) -> dict[str, object]:
+    rca_pin = cfg.get("toolchain", {}).get("rca", {})
+    return {
+        **rca_probe.fingerprint(
+            accepted_version=rca_pin.get("version"),
+            required_source_revision=rca_pin.get("source_revision"),
+        ),
+        "accepted_version": rca_pin.get("version"),
+        "required_source_revision": rca_pin.get("source_revision"),
+    }
+
+
+def _rca_identity(rca: dict[str, object]) -> tuple[object, ...]:
+    return tuple(rca[key] for key in _RCA_IDENTITY_KEYS)
+
+
 def _run_metadata(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
     provider = os.environ.get("E2E_AB_PROVIDER", "anthropic").strip().lower() or "anthropic"
     subject_cfg = cfg.get("subject", {})
@@ -208,11 +236,57 @@ def _run_metadata(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
         },
         "subject_prompt_template_sha256": _sha256_text(run_pair._SUBJECT_PROMPT),  # noqa: SLF001
         "protocol_file": subject_protocol.INSTRUCTION_REL_PATH,
+        "rca": _rca_metadata(cfg),
         "protocol_hashes": {
             arm: _sha256_text(subject_protocol.protocol_for_arm(arm))
             for arm in run_pair.arms_for("risky")
         },
     }
+
+
+def _assert_resume_rca_compatible(out_dir: Path, run_metadata: dict[str, Any]) -> None:
+    """Never combine completed outcomes produced by different or unknown RCA binaries."""
+    outcomes_path = out_dir / "outcomes.json"
+    if not outcomes_path.exists():
+        return
+    try:
+        prior = json.loads(outcomes_path.read_text(encoding="utf-8"))
+        prior_rca = prior["run_metadata"]["rca"]
+        current_rca = run_metadata["rca"]
+        prior_identity = _rca_identity(prior_rca)
+        current_identity = _rca_identity(current_rca)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ExperimentRunError(
+            "cannot resume outcomes without a prior RCA fingerprint; use a fresh run-id"
+        ) from None
+    if prior_identity != current_identity:
+        raise ExperimentRunError(
+            "RCA fingerprint changed since this run-id produced outcomes; use a fresh run-id"
+        )
+
+
+def _assert_rca_probe_usable(run_metadata: dict[str, Any]) -> None:
+    status = (run_metadata.get("rca") or {}).get("status")
+    if status not in {"accepted", "rejected", "absent"}:
+        raise ExperimentRunError(
+            "RCA fingerprint probe failed; fix the binary/probe before starting or resuming this run"
+        )
+
+
+def _assert_active_rca_compatible(
+    run_metadata: dict[str, Any], cfg: dict[str, Any]
+) -> None:
+    """Abort before persisting outcomes if RCA identity or acceptance changes mid-run."""
+    current_rca = _rca_metadata(cfg)
+    _assert_rca_probe_usable({"rca": current_rca})
+    try:
+        unchanged = _rca_identity(run_metadata["rca"]) == _rca_identity(current_rca)
+    except (KeyError, TypeError):
+        unchanged = False
+    if not unchanged:
+        raise ExperimentRunError(
+            "RCA fingerprint changed during this run; outcomes were not persisted; use a fresh run-id"
+        )
 
 
 def _outcome_from_dict(d: dict[str, Any]) -> RunOutcome:
@@ -322,9 +396,6 @@ def main(argv: list[str] | None = None) -> int:
     corpus = load_corpus()
     plan = _plan(corpus, mode["tasks"], mode["seeds_per_arm"])
     planned_specs = list({spec.task_id: spec for spec, _seed in plan}.values())
-    preflight.run_repo_identity_preflight(planned_specs, rs.source_repo_path())
-    external = rs.prepare_external_repo()
-
     preflight_status = {
         "oracle": "skipped" if args.skip_oracle_preflight else "passed",
         "graph": "skipped" if args.skip_graph_preflight else "passed",
@@ -332,6 +403,10 @@ def main(argv: list[str] | None = None) -> int:
     }
     scoring_mode = _scoring_mode(planned_specs)
     run_metadata = _run_metadata(args, cfg)
+    _assert_rca_probe_usable(run_metadata)
+    _assert_resume_rca_compatible(out_dir, run_metadata)
+    preflight.run_repo_identity_preflight(planned_specs, rs.source_repo_path())
+    external = rs.prepare_external_repo()
     _write_run_status(out_dir, args.mode, "preflight",
                       preflight_status=preflight_status, scoring_mode=scoring_mode,
                       run_metadata=run_metadata)
@@ -401,7 +476,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 outcomes.append(oracle.score_run(subject, spec))
                 present_sham.add(key)
-                _write_outcomes(outcomes_path, outcomes, args.run_id)
+                _assert_active_rca_compatible(run_metadata, cfg)
+                _write_outcomes(outcomes_path, outcomes, args.run_id, run_metadata=run_metadata)
             insufficient_data, no_headroom = _sham_admission_failures(outcomes, plan)
             if insufficient_data:
                 raise ShamAdmissionError(
@@ -441,7 +517,10 @@ def main(argv: list[str] | None = None) -> int:
                     )
             for res in results:
                 outcomes.append(oracle.score_run(res, spec))
-            _write_outcomes(outcomes_path, outcomes, args.run_id)  # incremental / crash-survivable
+            _assert_active_rca_compatible(run_metadata, cfg)
+            _write_outcomes(
+                outcomes_path, outcomes, args.run_id, run_metadata=run_metadata
+            )  # incremental / crash-survivable
 
         served_models = _served_models(outcomes)
         if is_assay:

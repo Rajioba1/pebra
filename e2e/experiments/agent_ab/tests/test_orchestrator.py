@@ -26,6 +26,31 @@ def _outcome(task_id: str, arm: str, seed: int = 0) -> RunOutcome:
     )
 
 
+def _rca_meta(*, status="absent", version=None, sha256=None):
+    source = "37e5d83c056c8cbf827223d5814a93c5218df1a9" if status == "accepted" else None
+    return {
+        "status": status,
+        "validation_mode": "cargo_revision" if status == "accepted" else None,
+        "version": version,
+        "sha256": sha256,
+        "source_revision": source,
+        "required_sha256": None,
+        "accepted_version": "0.0.25",
+        "required_source_revision": "37e5d83c056c8cbf827223d5814a93c5218df1a9",
+    }
+
+
+def _rca_toolchain_config() -> dict:
+    return {
+        "toolchain": {
+            "rca": {
+                "version": "0.0.25",
+                "source_revision": "37e5d83c056c8cbf827223d5814a93c5218df1a9",
+            }
+        }
+    }
+
+
 def test_plan_is_sorted_and_seeded():
     plan = orchestrator._plan([_T1, _B1], ["B1", "T1"], 2)
     assert plan == [(_B1, 0), (_B1, 1), (_T1, 0), (_T1, 1)]
@@ -86,6 +111,128 @@ def test_config_has_javascript_assay_mode():
     assert cfg["assay_js"]["seeds_per_arm"] == 3
     assert cfg["smoke"]["seeds_per_arm"] == 1
     assert cfg["smoke"]["total_runs"] == 2
+
+
+def test_run_metadata_records_rca_fingerprint_and_pin(monkeypatch):
+    cfg = orchestrator._config()
+    monkeypatch.setattr(
+        orchestrator.rca_probe,
+        "fingerprint",
+        lambda **kwargs: {
+            "status": "accepted", "validation_mode": "cargo_revision",
+            "version": "0.0.25", "sha256": "abc",
+            "source_revision": kwargs["required_source_revision"], "required_sha256": None,
+        },
+    )
+    args = type("Args", (), {"mode": "assay_js"})()
+
+    metadata = orchestrator._run_metadata(args, cfg)
+
+    assert metadata["rca"]["version"] == "0.0.25"
+    assert metadata["rca"]["accepted_version"] == "0.0.25"
+    assert metadata["rca"]["sha256"] == "abc"
+    assert metadata["rca"]["required_source_revision"] == (
+        "37e5d83c056c8cbf827223d5814a93c5218df1a9"
+    )
+
+
+def test_resume_rejects_changed_rca_binary_fingerprint(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "outcomes.json").write_text(json.dumps({
+        "outcomes": [],
+        "run_metadata": {"rca": _rca_meta(status="accepted", version="0.0.25", sha256="old")},
+    }), encoding="utf-8")
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="RCA fingerprint changed"):
+        orchestrator._assert_resume_rca_compatible(
+            run_dir, {"rca": _rca_meta(status="accepted", version="0.0.25", sha256="new")}
+        )
+
+
+def test_resume_accepts_same_rca_binary_fingerprint(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "outcomes.json").write_text(json.dumps({
+        "outcomes": [],
+        "run_metadata": {"rca": _rca_meta(status="accepted", version="0.0.25", sha256="same")},
+    }), encoding="utf-8")
+
+    orchestrator._assert_resume_rca_compatible(
+        run_dir, {"rca": _rca_meta(status="accepted", version="0.0.25", sha256="same")}
+    )
+
+
+def test_resume_rejects_changed_rca_acceptance_state_with_same_binary(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "outcomes.json").write_text(json.dumps({
+        "outcomes": [],
+        "run_metadata": {
+            "rca": _rca_meta(status="accepted", version="0.0.25", sha256="same")
+        },
+    }), encoding="utf-8")
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="RCA fingerprint changed"):
+        orchestrator._assert_resume_rca_compatible(
+            run_dir,
+            {"rca": {**_rca_meta(status="rejected", version="0.0.25", sha256="same")}},
+        )
+
+
+def test_resume_accepts_stable_known_rca_absence(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "outcomes.json").write_text(json.dumps({
+        "outcomes": [],
+        "run_metadata": {"rca": _rca_meta()},
+    }), encoding="utf-8")
+
+    orchestrator._assert_resume_rca_compatible(
+        run_dir, {"rca": _rca_meta()}
+    )
+
+
+def test_rca_probe_error_blocks_run_before_resume_or_model_calls():
+    with pytest.raises(orchestrator.ExperimentRunError, match="probe failed"):
+        orchestrator._assert_rca_probe_usable({"rca": _rca_meta(status="probe_error")})
+
+
+def test_active_run_rejects_changed_rca_fingerprint(monkeypatch):
+    monkeypatch.setattr(
+        orchestrator.rca_probe,
+        "fingerprint",
+        lambda **kwargs: {
+            "status": "accepted", "validation_mode": "cargo_revision",
+            "version": "0.0.25", "sha256": "changed",
+            "source_revision": kwargs["required_source_revision"],
+            "required_sha256": None,
+        },
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="changed during this run"):
+        orchestrator._assert_active_rca_compatible(
+            {"rca": _rca_meta(status="accepted", version="0.0.25", sha256="original")},
+            _rca_toolchain_config(),
+        )
+
+
+def test_active_run_accepts_unchanged_rca_fingerprint(monkeypatch):
+    monkeypatch.setattr(
+        orchestrator.rca_probe,
+        "fingerprint",
+        lambda **kwargs: {
+            "status": "accepted", "validation_mode": "cargo_revision",
+            "version": "0.0.25", "sha256": "same",
+            "source_revision": kwargs["required_source_revision"],
+            "required_sha256": None,
+        },
+    )
+
+    orchestrator._assert_active_rca_compatible(
+        {"rca": _rca_meta(status="accepted", version="0.0.25", sha256="same")},
+        _rca_toolchain_config(),
+    )
 
 
 def test_assay_config_does_not_expose_dead_arm_list():
@@ -193,12 +340,33 @@ def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):
     # Pre-seed a completed pair for (T1, 0); run_pair must NOT be called again.
     out_path = tmp_path / "t1" / "outcomes.json"
     orchestrator._write_outcomes(
-        out_path, [_outcome("T1", models.ARM_CONTROL, 0), _outcome("T1", models.ARM_TREATMENT, 0)], "t1")
+        out_path,
+        [_outcome("T1", models.ARM_CONTROL, 0), _outcome("T1", models.ARM_TREATMENT, 0)],
+        "t1",
+        run_metadata={"rca": _rca_meta()},
+    )
 
     def _must_not_run(spec, seed, run_id):
         raise AssertionError("run_pair called for an already-completed pair")
 
     _wire(monkeypatch, tmp_path, [_T1], _must_not_run)
+    monkeypatch.setattr(
+        orchestrator,
+        "_config",
+        lambda: {
+            "pilot": {"tasks": ["T1"], "seeds_per_arm": 1},
+            "bootstrap_seed": 0,
+            **_rca_toolchain_config(),
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator.rca_probe,
+        "fingerprint",
+        lambda **kwargs: {
+            "status": "absent", "validation_mode": None, "version": None,
+            "sha256": None, "source_revision": None, "required_sha256": None,
+        },
+    )
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
     rc = orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
     assert rc == 0
@@ -392,7 +560,11 @@ def test_assay_js_stops_after_sham_stage_when_no_headroom(monkeypatch, tmp_path)
     monkeypatch.setattr(
         orchestrator,
         "_config",
-        lambda: {"assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1}, "bootstrap_seed": 0},
+        lambda: {
+            "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
+            "bootstrap_seed": 0,
+            **_rca_toolchain_config(),
+        },
     )
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
     monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
@@ -481,6 +653,7 @@ def test_assay_js_resume_retries_unscorable_sham(monkeypatch, tmp_path):
         run_dir / "outcomes.json",
         [dataclasses.replace(_outcome("JS1", models.ARM_SHAM), no_attempt=True, timed_out=True)],
         "retry-sham",
+        run_metadata={"rca": _rca_meta()},
     )
     calls: list[tuple[str, ...] | None] = []
     monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
@@ -489,7 +662,11 @@ def test_assay_js_resume_retries_unscorable_sham(monkeypatch, tmp_path):
     monkeypatch.setattr(
         orchestrator,
         "_config",
-        lambda: {"assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1}, "bootstrap_seed": 0},
+        lambda: {
+            "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
+            "bootstrap_seed": 0,
+            **_rca_toolchain_config(),
+        },
     )
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
     monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
@@ -497,6 +674,14 @@ def test_assay_js_resume_retries_unscorable_sham(monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
     monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", lambda *a, **k: None)
     monkeypatch.setattr(orchestrator.preflight, "run_revise_safer_calibration", lambda *a, **k: None)
+    monkeypatch.setattr(
+        orchestrator.rca_probe,
+        "fingerprint",
+        lambda **kwargs: {
+            "status": "absent", "validation_mode": None, "version": None,
+            "sha256": None, "source_revision": None, "required_sha256": None,
+        },
+    )
 
     def _trial(spec, seed, run_id, *, arms=None):
         calls.append(arms)

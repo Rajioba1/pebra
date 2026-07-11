@@ -11,13 +11,15 @@ old inlined ``_rca_present`` got wrong: it reported the binary absent instead of
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from e2e.utils import rca_probe
-from pebra.core.rca_engine_paths import find_rca
+from pebra.core.rca_engine_paths import RCA_ACCEPTED_VERSION, RCA_SOURCE_REVISION, find_rca
 
 _ENGINE = "rust-code-analysis-cli"
 
@@ -97,3 +99,88 @@ def test_parity_bogus_override_falls_through_to_path(tmp_path, monkeypatch) -> N
     monkeypatch.setenv("PATH", str(onpath))
     _assert_parity()
     assert find_rca() is not None
+
+
+def test_agent_assay_config_pins_the_production_rca_toolchain() -> None:
+    config_path = Path(__file__).resolve().parents[2] / "e2e" / "experiments" / "agent_ab" / "config.json"
+    toolchain = json.loads(config_path.read_text(encoding="utf-8"))["toolchain"]["rca"]
+
+    assert toolchain["version"] == RCA_ACCEPTED_VERSION
+    assert toolchain["source_revision"] == RCA_SOURCE_REVISION
+
+
+def test_e2e_rca_fingerprint_records_version_and_binary_hash(tmp_path, monkeypatch) -> None:
+    binary = tmp_path / "bin" / "rca"
+    binary.parent.mkdir()
+    binary.write_bytes(b"pinned binary")
+    (tmp_path / ".crates2.json").write_text(json.dumps({"installs": {
+        "rust-code-analysis-cli 0.0.25 (git+https://github.com/mozilla/rust-code-analysis"
+        "#37e5d83c056c8cbf827223d5814a93c5218df1a9)": {"bins": [binary.name]},
+    }}), encoding="utf-8")
+    monkeypatch.setattr(rca_probe, "find_rca", lambda: str(binary))
+    monkeypatch.setattr(
+        rca_probe.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="rust-code-analysis-cli 0.0.25\n"),
+    )
+
+    result = rca_probe.fingerprint(
+        accepted_version=RCA_ACCEPTED_VERSION,
+        required_source_revision=RCA_SOURCE_REVISION,
+    )
+
+    assert result["status"] == "accepted"
+    assert result["validation_mode"] == "cargo_revision"
+    assert result["version"] == "0.0.25"
+    assert result["sha256"] == "c1dd1e3ff1ec0ea985242912037b4477b10a600d8e1c252eadf4c697120800f5"
+
+
+def test_explicit_hash_mismatch_overrides_matching_cargo_revision(tmp_path, monkeypatch) -> None:
+    binary = tmp_path / "bin" / "rca"
+    binary.parent.mkdir()
+    binary.write_bytes(b"actual binary")
+    (tmp_path / ".crates2.json").write_text(json.dumps({"installs": {
+        "rust-code-analysis-cli 0.0.25 (git+https://github.com/mozilla/rust-code-analysis"
+        "#37e5d83c056c8cbf827223d5814a93c5218df1a9)": {"bins": [binary.name]},
+    }}), encoding="utf-8")
+    monkeypatch.setenv("PEBRA_RCA_SHA256", "0" * 64)
+    monkeypatch.setattr(rca_probe, "find_rca", lambda: str(binary))
+    monkeypatch.setattr(
+        rca_probe.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a[0], 0, stdout="rust-code-analysis-cli 0.0.25\n"
+        ),
+    )
+
+    result = rca_probe.fingerprint(
+        accepted_version=RCA_ACCEPTED_VERSION,
+        required_source_revision=RCA_SOURCE_REVISION,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["validation_mode"] is None
+
+
+def test_e2e_rca_fingerprint_distinguishes_absence_from_probe_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(rca_probe, "find_rca", lambda: None)
+    absent = rca_probe.fingerprint(
+        accepted_version=RCA_ACCEPTED_VERSION,
+        required_source_revision=RCA_SOURCE_REVISION,
+    )
+    assert absent["status"] == "absent"
+
+    binary = tmp_path / "rca"
+    binary.write_bytes(b"binary")
+    monkeypatch.setattr(rca_probe, "find_rca", lambda: str(binary))
+    monkeypatch.setattr(
+        rca_probe.subprocess,
+        "run",
+        lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired("rca", 10)),
+    )
+    failed = rca_probe.fingerprint(
+        accepted_version=RCA_ACCEPTED_VERSION,
+        required_source_revision=RCA_SOURCE_REVISION,
+    )
+    assert failed["status"] == "probe_error"
+    assert failed["sha256"] is not None

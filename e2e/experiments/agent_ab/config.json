@@ -7,6 +7,12 @@
     "max_output_tokens_per_turn": 4096,
     "tools": ["read_file", "write_file", "list_dir", "search_grep", "run_build", "run_tests", "advisory_check"]
   },
+  "toolchain": {
+    "rca": {
+      "version": "0.0.25",
+      "source_revision": "37e5d83c056c8cbf827223d5814a93c5218df1a9"
+    }
+  },
   "blinding": {
     "advisory_tool_name": "advisory_check",
     "note": "SAME tool name + output shape in both arms; only the backend content differs."

@@ -21,6 +21,8 @@ import shutil
 from pathlib import Path
 
 _ENGINE = "rust-code-analysis-cli"
+RCA_ACCEPTED_VERSION = "0.0.25"
+RCA_SOURCE_REVISION = "37e5d83c056c8cbf827223d5814a93c5218df1a9"
 
 
 def _is_windows() -> bool:

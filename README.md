@@ -48,10 +48,19 @@ invoked as a subprocess. Build it from git (crates.io's release does not compile
 tree-sitter):
 
 ```powershell
-cargo install --git https://github.com/mozilla/rust-code-analysis rust-code-analysis-cli
+cargo install --git https://github.com/mozilla/rust-code-analysis `
+  --rev 37e5d83c056c8cbf827223d5814a93c5218df1a9 rust-code-analysis-cli
 ```
 
-Point PEBRA at it via `PEBRA_RCA_BIN` or ensure it is on `PATH`. When absent, benefit evidence fails
+Point PEBRA at it via `PEBRA_RCA_BIN` or ensure it is on `PATH`. PEBRA accepts runtime version
+`0.0.25` when Cargo install metadata identifies the pinned source revision. For a copied or packaged
+binary without Cargo metadata, set `PEBRA_RCA_SHA256` to its expected lowercase SHA-256. Live experiment
+metadata records the executable SHA-256 and refuses to resume a run with a different fingerprint.
+Cargo metadata is install provenance, not tamper-proof byte attestation. For copied binaries, shared
+machines, or any environment where local binary replacement is in scope, set `PEBRA_RCA_SHA256`; an
+explicit hash is authoritative and a mismatch disables RCA benefit evidence even when Cargo metadata
+matches.
+When absent or version-mismatched, benefit evidence fails
 safe to *projected* (no maintainability credit) — it never blocks an assessment and never affects risk.
 Supported languages: Python, JavaScript/JSX, TypeScript/TSX, Java, Rust, C/C++.
 

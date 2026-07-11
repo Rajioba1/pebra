@@ -638,6 +638,38 @@ def test_gate4_negative_rau_asks_human_by_default() -> None:
     assert any(g["gate"] == 4 for g in result.gates_fired)
 
 
+def test_gate4_structural_risk_with_positive_benefit_requests_safer_revision() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    inp = replace(
+        inp,
+        action=replace(
+            inp.action,
+            expected_files=["src/api.py"],
+            proposed_patch=_CANDIDATE_PATCH,
+        ),
+        events=[{"event": "public_api_break", "p_event": 0.05, "elicited_disutility": 0.40}],
+        immediate_benefit=0.50,
+        variance_breakdown={"scenario_variance": 1.0},
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.scores["expected_loss"] <= result.scores["effective_threshold"]
+    assert result.scores["rau"] < 0
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert any(g["name"] == "revise_safer" for g in result.gates_fired)
+    assert any(g["gate"] == 4 and g["name"] == "negative_rau" for g in result.gates_fired)
+
+
 def test_lowering_expected_loss_below_gate3_does_not_escalate_to_reject() -> None:
     # Above threshold with positive EU -> ask_human from Gate 3. Lowering risk below the threshold may
     # expose Gate 4, but it must not become stricter than the prior ask_human decision.
