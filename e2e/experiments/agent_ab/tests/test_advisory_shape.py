@@ -5,6 +5,8 @@ no real CLI call — by testing the pure `_shape_output`.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from e2e.experiments.agent_ab.tools import advisory_check_real as real
@@ -56,6 +58,16 @@ def test_real_output_shape_matches_sham_and_is_vocab_clean():
     assert out["recommended_decision"] == "reject"
     assert out["risk_level"] == "high"
     assert sham_out["recommended_decision"] is None
+
+
+def test_host_receipt_is_not_serialized_into_agent_facing_output():
+    payload = real._shape_output(_LEAKY_PEBRA_RESULT)
+    out = real.AdvisoryOutput(payload, assessment_id="asm_7")
+
+    assert tuple(out) == advisory_contract.OUTPUT_KEYS
+    assert "assessment_id" not in out
+    assert "assessment_id" not in json.loads(json.dumps(out))
+    assert out.assessment_id == "asm_7"
 
 
 def test_real_output_is_vocab_clean_for_every_decision():

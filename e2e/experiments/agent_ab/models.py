@@ -121,6 +121,12 @@ class SubjectResult:
     turn_count: int = 0
     served_models: tuple[str, ...] = ()
     protocol_file_read: bool = False
+    post_edit_verify_ran: bool = False
+    post_edit_verify_passed: bool | None = None
+    post_edit_verify_assessment_id: str | None = None
+    post_edit_verify_error: str | None = None
+    measured_benefit: float = 0.0
+    measured_benefit_deltas: dict[str, float] = field(default_factory=dict)
 
 
 # ---- scored outcome ---------------------------------------------------------------------------

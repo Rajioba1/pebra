@@ -19,6 +19,7 @@
   };
   const BENEFIT = "#58a6ff";
   const RISK = "#f0883e";
+  const UTILITY = "#59d3bd";
   const ACCENT = "#59d3bd";
   const GRID = "#29333d";
   const AXIS = "#8795a1";
@@ -149,7 +150,7 @@
     ]);
     clear(view);
 
-    const tcard = card("Risk & benefit over time");
+    const tcard = card("Risk, benefit & expected utility over time");
     const chartBox = el("div", "chart");
     tcard.appendChild(chartBox);
     view.appendChild(tcard);
@@ -166,7 +167,9 @@
     if (!data.items.length) { hcard.appendChild(emptyMsg("No assessments recorded yet.")); }
     else {
       const table = el("table");
-      table.appendChild(headRow(["assessment", "decision", "risk", "benefit", "rau", "confidence", "status"]));
+      table.appendChild(headRow([
+        "assessment", "decision", "risk", "benefit", "expected utility", "rau", "confidence", "status",
+      ]));
       const tb = el("tbody");
       data.items.forEach((it) => {
         const s = it.scores || {};
@@ -175,6 +178,7 @@
         const dcell = el("td"); dcell.appendChild(pill(it.decision)); tr.appendChild(dcell);
         tr.appendChild(cell(fmt(s.expected_loss), "num"));
         tr.appendChild(cell(fmt(s.benefit), "num"));
+        tr.appendChild(cell(fmt(s.expected_utility), "num"));
         tr.appendChild(cell(fmt(s.rau), "num"));
         tr.appendChild(cell(fmt(s.edit_confidence, 2), "num"));
         tr.appendChild(cell(it.terminal_status || "pending", "mono"));
@@ -451,6 +455,7 @@
     const xs = ordered.map((_, i) => i + 1);
     const risk = ordered.map((i) => i.scores.expected_loss);
     const benefit = ordered.map((i) => i.scores.benefit);
+    const utility = ordered.map((i) => i.scores.expected_utility);
     newChart(box, {
       scales: { x: { time: false } },
       axes: [AXIS_OPTS, AXIS_OPTS],
@@ -458,8 +463,9 @@
         { label: "#" },
         { label: "risk (expected loss)", stroke: RISK, width: 2 },
         { label: "benefit", stroke: BENEFIT, width: 2 },
+        { label: "expected utility", stroke: UTILITY, width: 2 },
       ],
-    }, [xs, risk, benefit]);
+    }, [xs, risk, benefit, utility]);
   }
   function drawReliability(box, bins) {
     const used = bins.filter((b) => b.count > 0);

@@ -270,6 +270,15 @@ def test_dashboard_static_wires_measured_benefit_drilldown(tmp_path) -> None:
     assert "measured_benefit_deltas" in text
 
 
+def test_dashboard_static_renders_expected_utility_in_history_and_chart(tmp_path) -> None:
+    response = _client(tmp_path / "p.db").get("/static/app.js", headers=_AUTH)
+
+    assert response.status_code == 200
+    text = response.text
+    assert '"expected utility"' in text
+    assert "i.scores.expected_utility" in text
+
+
 def test_dashboard_static_does_not_render_empty_guardrail_as_measured_benefit(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     text = _client(db).get("/static/app.js").text

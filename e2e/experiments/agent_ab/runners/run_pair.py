@@ -109,6 +109,14 @@ Complete the task, then stop.{skill_protocol}"""
 
 
 @dataclass
+class ArmTelemetry:
+    """Host-only binding between an assessment and the candidate the write gate allowed."""
+
+    last_assessment_id: str | None = None
+    applied_assessment_id: str | None = None
+
+
+@dataclass
 class ArmSetup:
     arm: str
     repo_path: Path
@@ -119,6 +127,7 @@ class ArmSetup:
     spec: TaskSpec | None = None
     build_backend: Any | None = None
     oracle_modified_files: tuple[str, ...] = ()
+    telemetry: ArmTelemetry = dataclasses.field(default_factory=ArmTelemetry)
     # SAME write-gate in both arms; only treatment is backed by real PEBRA. Default = sham-allow so any
     # ArmSetup built without an explicit backend never blocks a write.
     gate_check_backend: Callable[..., dict[str, Any]] = lambda event: {"permission": "allow", "tier": "pass"}
@@ -202,7 +211,7 @@ def _verify_candidate_for_repair(
 
 def _advisory_backend(
     arm: str, repo_path: Path, db_path: Path, *, covering_hint: str = "",
-    spec: TaskSpec | None = None,
+    spec: TaskSpec | None = None, telemetry: ArmTelemetry | None = None,
 ) -> Callable[..., dict[str, Any]]:
     """Return the callable backing the SAME 'advisory_check' tool. Only the CONTENT differs by arm:
     pebra/treatment -> real PEBRA; blast_radius -> dependent-file list (no verdict); everyone else
@@ -240,6 +249,9 @@ def _advisory_backend(
                 payload, repo_root=repo_path, db=db_path, revise_safer_attempt=attempt,
                 max_revise_safer_attempts=max_attempts,
             )
+            assessment_id = getattr(result, "assessment_id", None)
+            if telemetry is not None and isinstance(assessment_id, str):
+                telemetry.last_assessment_id = assessment_id
             if result.get("recommended_decision") == "revise_safer":
                 revise_attempts[target] = attempt + 1
                 if covering_hint:
@@ -252,7 +264,9 @@ def _advisory_backend(
     return lambda payload: advisory_check_sham.advise(payload)
 
 
-def _gate_check_backend(arm: str, db_path: Path) -> Callable[..., dict[str, Any]]:
+def _gate_check_backend(
+    arm: str, db_path: Path, *, telemetry: ArmTelemetry | None = None
+) -> Callable[..., dict[str, Any]]:
     """Return the arm's write-gate backend.
 
     PEBRA enforces through the real gate. ``enforced_control`` is the sensitivity positive control:
@@ -268,7 +282,18 @@ def _gate_check_backend(arm: str, db_path: Path) -> Callable[..., dict[str, Any]
     if arm in _GATE_ARMS:
         # consult_only: the A/B has no human approver, so ask_human/reject stay conservative (deny)
         # instead of surfacing an interactive approval prompt.
-        return lambda event: cli_harness.gate_check(event, db=db_path, consult_only=True)
+        def _real_gate(event: dict[str, Any]) -> dict[str, Any]:
+            decision = cli_harness.gate_check(event, db=db_path, consult_only=True)
+            if (
+                telemetry is not None
+                and decision.get("permission") == "allow"
+                and decision.get("tier") == "consulted"
+                and telemetry.last_assessment_id is not None
+            ):
+                telemetry.applied_assessment_id = telemetry.last_assessment_id
+            return decision
+
+        return _real_gate
     return lambda event: {"permission": "allow", "tier": "pass"}
 
 
@@ -375,6 +400,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         patch = arm_prep.prepare_oracle_patch(repo_path, spec.task_id, patch_dir=_correct_patch_dir(spec))
         oracle_modified_files = _patch_touched_files(patch.read_text(encoding="utf-8"))
     db_path = dest.parent / "pebra.db"
+    telemetry = ArmTelemetry()
     build_backend = backends.backend_for_spec(spec)
     baseline = build_backend.run_build_delta(repo_path, spec)
     _validate_baseline(repo_path, baseline)
@@ -385,6 +411,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
             arm, repo_path, db_path,
             covering_hint=_covering_tests_hint(spec) if arm == models.ARM_PEBRA_GRAPH_REPAIR else "",
             spec=spec,
+            telemetry=telemetry,
         ),
         baseline_build=baseline,
         subject_prompt=_build_subject_prompt(spec, repo_path, arm),
@@ -392,7 +419,8 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         spec=spec,
         build_backend=build_backend,
         oracle_modified_files=oracle_modified_files,
-        gate_check_backend=_gate_check_backend(arm, db_path),
+        telemetry=telemetry,
+        gate_check_backend=_gate_check_backend(arm, db_path, telemetry=telemetry),
     )
 
 
@@ -420,6 +448,42 @@ def _subject_api_key(provider: str) -> str:
     import os  # noqa: PLC0415
     key_name = "DEEPSEEK_API_KEY" if provider == "deepseek" else "ANTHROPIC_API_KEY"
     return os.environ[key_name]
+
+
+def _post_edit_verify(setup: ArmSetup, result: SubjectResult) -> SubjectResult:
+    """Persist production guardrails for the exact assessed candidate the write gate allowed."""
+    assessment_id = setup.telemetry.applied_assessment_id
+    if setup.arm not in _REAL_ADVISORY_ARMS or not result.modified_files or assessment_id is None:
+        return result
+    try:
+        passed, payload = cli_harness.verify(
+            assessment_id,
+            repo_root=setup.repo_path,
+            db=setup.repo_path.parent / "pebra.db",
+            scope="all",
+        )
+    except (cli_harness.CLIError, OSError, subprocess.SubprocessError, ValueError) as exc:
+        return dataclasses.replace(
+            result,
+            post_edit_verify_ran=True,
+            post_edit_verify_passed=False,
+            post_edit_verify_assessment_id=assessment_id,
+            post_edit_verify_error=f"{type(exc).__name__}: {exc}",
+        )
+    deltas = payload.get("measured_benefit_deltas")
+    measured = payload.get("measured_benefit")
+    return dataclasses.replace(
+        result,
+        post_edit_verify_ran=True,
+        post_edit_verify_passed=passed,
+        post_edit_verify_assessment_id=assessment_id,
+        measured_benefit=float(measured) if isinstance(measured, (int, float)) else 0.0,
+        measured_benefit_deltas={
+            str(key): float(value)
+            for key, value in (deltas.items() if isinstance(deltas, dict) else ())
+            if isinstance(value, (int, float))
+        },
+    )
 
 
 def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> SubjectResult:
@@ -460,6 +524,10 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         config=run_cfg,
         trace_path=setup.repo_path.parent / "subject_trace.json",
     )
+
+    # Verify before hidden evaluator files are injected, so RCA and envelope checks observe only the
+    # subject's applied edit. This is telemetry, not a replacement for the hidden outcome oracle.
+    result = _post_edit_verify(setup, result)
 
     # HIDDEN oracle: inject evaluator tests post-agent, then build + test.
     build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec)

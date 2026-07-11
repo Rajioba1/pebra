@@ -31,6 +31,14 @@ _THRESHOLDS = {
 }
 
 
+class AdvisoryOutput(dict[str, Any]):
+    """Blinded agent payload carrying a host-only assessment receipt as an attribute."""
+
+    def __init__(self, payload: dict[str, Any], *, assessment_id: str | None) -> None:
+        super().__init__(payload)
+        self.assessment_id = assessment_id
+
+
 def _build_request(
     payload: dict[str, Any], *, revise_safer_attempt: int = 0, max_revise_safer_attempts: int = 1
 ) -> dict[str, Any]:
@@ -177,4 +185,8 @@ def advise(
         Path(req_path).unlink(missing_ok=True)
         if trusted_path is not None:
             Path(trusted_path).unlink(missing_ok=True)
-    return _shape_output(result)
+    assessment_id = result.get("assessment_id")
+    return AdvisoryOutput(
+        _shape_output(result),
+        assessment_id=assessment_id if isinstance(assessment_id, str) else None,
+    )

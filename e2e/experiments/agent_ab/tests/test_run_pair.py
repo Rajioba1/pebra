@@ -203,6 +203,144 @@ def test_treatment_gate_check_backend_uses_consult_only(monkeypatch, tmp_path):
     }
 
 
+def test_exact_allowed_candidate_is_bound_for_post_edit_verify(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry()
+
+    monkeypatch.setattr(
+        run_pair.advisory_check_real,
+        "advise",
+        lambda *args, **kwargs: run_pair.advisory_check_real.AdvisoryOutput(
+            {
+                "recommended_decision": "proceed",
+                "risk_level": "low",
+                "advisory": "ok",
+                "detail": {},
+            },
+            assessment_id="asm_7",
+        ),
+    )
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "gate_check",
+        lambda event, *, db, consult_only: {
+            "permission": "allow", "tier": "consulted", "reason": None,
+        },
+    )
+    advisory = run_pair._advisory_backend(
+        models.ARM_PEBRA, tmp_path, tmp_path / "pebra.db", telemetry=telemetry,
+    )
+    gate = run_pair._gate_check_backend(
+        models.ARM_PEBRA, tmp_path / "pebra.db", telemetry=telemetry,
+    )
+
+    advisory({"target_file": "a.cs", "proposed_patch": "diff", "change_summary": "x"})
+    gate({"tool_name": "Write", "tool_input": {"file_path": "a.cs"}})
+
+    assert telemetry.last_assessment_id == "asm_7"
+    assert telemetry.applied_assessment_id == "asm_7"
+
+
+def test_denied_candidate_is_not_bound_for_post_edit_verify(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry(last_assessment_id="asm_7")
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "gate_check",
+        lambda event, *, db, consult_only: {
+            "permission": "deny", "tier": "consulted_revise", "reason": "revise",
+        },
+    )
+
+    gate = run_pair._gate_check_backend(
+        models.ARM_PEBRA, tmp_path / "pebra.db", telemetry=telemetry,
+    )
+    gate({"tool_name": "Write", "tool_input": {"file_path": "a.cs"}})
+
+    assert telemetry.applied_assessment_id is None
+
+
+def test_fail_open_write_is_not_bound_for_post_edit_verify(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry(last_assessment_id="asm_7")
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "gate_check",
+        lambda event, *, db, consult_only: {
+            "permission": "allow", "tier": "fail_open", "warn": "graph unavailable",
+        },
+    )
+
+    gate = run_pair._gate_check_backend(
+        models.ARM_PEBRA, tmp_path / "pebra.db", telemetry=telemetry,
+    )
+    gate({"tool_name": "Write", "tool_input": {"file_path": "a.cs"}})
+
+    assert telemetry.applied_assessment_id is None
+
+
+def test_post_edit_verify_persists_measured_benefit_for_applied_candidate(monkeypatch, tmp_path):
+    setup = run_pair.ArmSetup(
+        arm=models.ARM_PEBRA,
+        repo_path=tmp_path,
+        advisory_backend=lambda payload: {},
+        baseline_build=None,
+        subject_prompt="x",
+        telemetry=run_pair.ArmTelemetry(applied_assessment_id="asm_7"),
+    )
+    result = SubjectResult(
+        task_id="T1", arm=models.ARM_PEBRA, seed=0, modified_files=("a.cs",),
+    )
+    seen = {}
+
+    def _verify(assessment_id, *, repo_root, db, scope):
+        seen.update({
+            "assessment_id": assessment_id, "repo_root": repo_root, "db": db, "scope": scope,
+        })
+        return True, {
+            "measured_benefit": 0.42,
+            "measured_benefit_deltas": {
+                "complexity_delta": -2.0, "maintainability_index_delta": 4.0,
+            },
+        }
+
+    monkeypatch.setattr(run_pair.cli_harness, "verify", _verify)
+
+    verified = run_pair._post_edit_verify(setup, result)
+
+    assert seen == {
+        "assessment_id": "asm_7",
+        "repo_root": tmp_path,
+        "db": tmp_path.parent / "pebra.db",
+        "scope": "all",
+    }
+    assert verified.post_edit_verify_ran is True
+    assert verified.post_edit_verify_passed is True
+    assert verified.post_edit_verify_assessment_id == "asm_7"
+    assert verified.measured_benefit == pytest.approx(0.42)
+    assert verified.measured_benefit_deltas == {
+        "complexity_delta": -2.0, "maintainability_index_delta": 4.0,
+    }
+
+
+def test_post_edit_verify_skips_when_no_exact_candidate_was_applied(monkeypatch, tmp_path):
+    setup = run_pair.ArmSetup(
+        arm=models.ARM_PEBRA,
+        repo_path=tmp_path,
+        advisory_backend=lambda payload: {},
+        baseline_build=None,
+        subject_prompt="x",
+    )
+    result = SubjectResult(
+        task_id="T1", arm=models.ARM_PEBRA, seed=0, modified_files=("a.cs",),
+    )
+    monkeypatch.setattr(
+        run_pair.cli_harness, "verify",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not verify")),
+    )
+
+    verified = run_pair._post_edit_verify(setup, result)
+
+    assert verified.post_edit_verify_ran is False
+
+
 def test_real_advisory_backend_threads_revise_attempts(monkeypatch, tmp_path):
     attempts: list[int] = []
 

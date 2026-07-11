@@ -21,6 +21,8 @@ import pytest
 from e2e.utils import cli_harness as ch
 from e2e.utils import dashboard_harness as dh
 from e2e.utils import rca_probe
+from e2e.experiments.agent_ab import models
+from e2e.experiments.agent_ab.runners import run_pair
 
 _E2E_UI = os.environ.get("E2E_UI") == "1"
 
@@ -167,6 +169,35 @@ def test_dashboard_exposes_measured_rca_benefit(tmp_path, require_accepted_rca):
         assert g["measured_benefit"] > 0
 
 
+def test_assay_post_edit_verify_populates_arm_dashboard(tmp_path, require_accepted_rca):
+    repo = _repo(tmp_path / "repo", "calc.py", _BEFORE)
+    db = tmp_path / "pebra.db"
+    req = _request(tmp_path / "r.json", "calc.py", _patch("calc.py", _BEFORE, _SIMPLER))
+    asm = ch.assess(req, repo_root=repo, db=db)["assessment_id"]
+    (repo / "calc.py").write_text(_SIMPLER, encoding="utf-8")
+    setup = run_pair.ArmSetup(
+        arm=models.ARM_PEBRA,
+        repo_path=repo,
+        advisory_backend=lambda payload: {},
+        baseline_build=None,
+        subject_prompt="x",
+        telemetry=run_pair.ArmTelemetry(applied_assessment_id=asm),
+    )
+    subject = models.SubjectResult(
+        task_id="RCA", arm=models.ARM_PEBRA, seed=0, modified_files=("calc.py",),
+    )
+
+    verified = run_pair._post_edit_verify(setup, subject)
+
+    assert verified.post_edit_verify_ran is True
+    assert verified.measured_benefit > 0
+    assert verified.measured_benefit_deltas["complexity_delta"] < 0
+    with dh.running_dashboard(repo, db) as info:
+        detail = _api_get(info.port, info.token, f"/api/repos/{info.repo_id}/assessments/{asm}")
+        measured = [g for g in detail["guardrails"] if g.get("measured_benefit_deltas")]
+        assert measured[-1]["measured_benefit"] == verified.measured_benefit
+
+
 @pytest.mark.skipif(not _E2E_UI, reason="E2E_UI not set (needs pebra[ui-e2e] + playwright install)")
 def test_dashboard_history_renders_measured_benefit_detail(tmp_path, require_accepted_rca):
     from playwright.sync_api import sync_playwright
@@ -238,6 +269,7 @@ def test_dashboard_history_renders_revise_safer_risk_benefit_math(tmp_path):
                 assert cells.nth(1).inner_text() == "revise_safer"
                 assert cells.nth(2).inner_text() == f'{scores["expected_loss"]:.3f}'
                 assert cells.nth(3).inner_text() == f'{scores["benefit"]:.3f}'
-                assert cells.nth(4).inner_text() == f'{scores["rau"]:.3f}'
+                assert cells.nth(4).inner_text() == f'{scores["expected_utility"]:.3f}'
+                assert cells.nth(5).inner_text() == f'{scores["rau"]:.3f}'
             finally:
                 browser.close()
