@@ -13,6 +13,7 @@ builder); it never enters p_event here.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import asdict
 from collections.abc import Sequence
 from typing import Any
 
@@ -66,6 +67,7 @@ def _flatten_scores(a: Assessment) -> dict[str, Any]:
         "effective_threshold": s["effective_threshold"],
         "budget_threshold_key": s["budget_threshold_key"],
         "benefit": s["benefit"],
+        "benefit_breakdown": asdict(s["benefit_breakdown"]),
         "criticality_stage": s["criticality_stage"],
         "criticality_value": s["criticality_value"],
         "confidence_band": a.confidence_band,
@@ -138,7 +140,11 @@ def _should_revise_safer(assessment: Assessment) -> bool:
         return False
     if _revision_exhausted(thresholds):
         return False
-    if assessment.scores["expected_utility"] <= 0:
+    # Eligibility asks whether preserving the task goal has any value, not whether THIS risky route
+    # already has positive net utility. Expected utility includes the loss that triggered this gate;
+    # using it here makes increasing risk suppress the very safer-route search this decision exists
+    # to request. Candidate verification can prove a revised route safe, but cannot manufacture value.
+    if assessment.scores["benefit"] <= 0:
         return False
     events = {str(c.get("event")) for c in assessment.scores["loss_components"]}
     if events & _HARD_TERMINAL_EVENTS:

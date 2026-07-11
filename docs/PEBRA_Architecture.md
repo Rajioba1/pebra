@@ -234,7 +234,7 @@ BenefitDeltaEvidence {
 }
 ```
 
-`core/benefit_model.py` receives already-collected metrics and proposed/actual diff evidence. It does not read files, call git, run rust-code-analysis, inspect coverage, or query issue trackers. Adapters provide before/after metrics; the core computes directionality, normalization, exposure weighting, `benefit`, and `Var(benefit)`.
+`core/benefit_model.py` receives already-collected metrics and proposed/actual diff evidence. It does not read files, call git, run rust-code-analysis, inspect coverage, or query issue trackers. Adapters provide before/after metrics; the core maps each directional delta to `x / (1 + abs(x))`, averages the bounded signals, applies bounded exposure, and clamps total benefit to finite unit utility `[0,1]` before computing `Var(benefit)`. Raw tool units never enter utility directly.
 
 Directionality is explicit per metric: lower is better for complexity, coupling, duplication, public surface, hidden side effects, debt interest, and recurrence; higher is better for testability, cohesion, modularity, encapsulation, observability, and operability. A new abstraction is not automatically beneficial; it earns positive value only when the measured deltas reduce future change effort.
 

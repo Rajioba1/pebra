@@ -712,13 +712,15 @@ directional_delta_k =
   raw_delta_k        if higher_is_better(k)
   -raw_delta_k       if lower_is_better(k)
 
-normalized_delta_k = normalize_to_minus_one_plus_one(directional_delta_k, metric_k)
+normalized_delta_k = directional_delta_k / (1 + abs(directional_delta_k))
 
 benefit_delta_k =
   normalized_delta_k * future_change_exposure(scope)
 
 maintenance_effort_delta_per_change =
-  sum_k weight_k * benefit_delta_k
+  mean_k(normalized_delta_k) * future_change_exposure(scope)
+
+benefit = clamp_0_1(immediate_benefit + maintenance_effort_delta_per_change)
 ```
 
 Pre-edit:
@@ -1372,7 +1374,7 @@ else:
     max_expected_loss_limit = thresholds.max_expected_loss_without_human
 
 if expected_loss > max_expected_loss_limit:
-    if expected_utility > 0 and narrowing_headroom and revise_attempt_not_exhausted:
+    if benefit > 0 and narrowing_headroom and revise_attempt_not_exhausted:
         if trusted candidate verification passes and is bound to this exact patch:
             proceed
         else:
@@ -1381,7 +1383,7 @@ if expected_loss > max_expected_loss_limit:
         ask_human or reject
 
 if risk_adjusted_utility < 0:
-    if expected_utility > 0 and narrowing_headroom and revise_attempt_not_exhausted:
+    if benefit > 0 and narrowing_headroom and revise_attempt_not_exhausted:
         if trusted candidate verification passes and is bound to this exact patch:
             proceed
         else:

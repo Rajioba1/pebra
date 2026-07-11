@@ -20,6 +20,7 @@ import (graph/assess reached via cli_harness subprocess).
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import shutil
@@ -345,6 +346,14 @@ def _graph_backed_failure(spec: TaskSpec, assess_payload: dict[str, Any]) -> str
                 f"{spec.task_id}: requires language tier {required_tier}, "
                 f"but assess payload proved {measured_tier!r}"
             )
+    if spec.requires_measured_benefit:
+        breakdown = scores.get("benefit_breakdown") or {}
+        source_type = breakdown.get("source_type")
+        if source_type != "measured":
+            return (
+                f"{spec.task_id}: requires measured benefit evidence, "
+                f"but assess payload proved {source_type!r}; install/configure RCA before this run"
+            )
     return None
 
 
@@ -488,6 +497,41 @@ def run_graph_preflight(
 def _expected_loss(payload: dict[str, Any]) -> float | None:
     value = (payload.get("scores") or {}).get("expected_loss")
     return float(value) if isinstance(value, (int, float)) else None
+
+
+def _benefit_discrimination_failure(
+    spec: TaskSpec, bad: dict[str, Any], fixed: dict[str, Any]
+) -> str | None:
+    """Require a real, finite candidate-specific benefit signal when the corpus promises one."""
+    if not spec.requires_measured_benefit:
+        return None
+    gains: list[float] = []
+    benefits: list[float] = []
+    for label, payload in (("bad", bad), ("reference", fixed)):
+        scores = payload.get("scores") or {}
+        breakdown = scores.get("benefit_breakdown") or {}
+        gain = breakdown.get("maintainability_gain")
+        benefit = scores.get("benefit")
+        if breakdown.get("source_type") != "measured" or not isinstance(gain, (int, float)):
+            return f"{spec.task_id}: {label} route did not expose measured benefit"
+        if (
+            isinstance(gain, bool)
+            or not math.isfinite(gain)
+            or isinstance(benefit, bool)
+            or not isinstance(benefit, (int, float))
+            or not math.isfinite(benefit)
+        ):
+            return f"{spec.task_id}: {label} route exposed non-finite measured benefit"
+        gains.append(float(gain))
+        benefits.append(float(benefit))
+    if math.isclose(benefits[0], benefits[1], rel_tol=0.0, abs_tol=1e-12):
+        return (
+            f"{spec.task_id}: decision-driving benefit did not vary between bad and reference "
+            f"candidates ({benefits[0]} == {benefits[1]}; measured gains {gains})"
+        )
+    if benefits[1] <= 0.0:
+        return f"{spec.task_id}: reference candidate has no positive benefit ({benefits[1]})"
+    return None
 
 
 def _live_revise_safer_assess(
@@ -643,6 +687,10 @@ def run_revise_safer_calibration(
                     revise_safer_attempt=0,
                 )
             fixed_decision = fixed.get("recommended_decision")
+            benefit_failure = _benefit_discrimination_failure(spec, bad, fixed)
+            if benefit_failure:
+                failures.append(benefit_failure)
+                continue
             if fixed_decision in _BLOCKING_DECISIONS:
                 failures.append(
                     f"{spec.task_id}: reference route remained blocked ({fixed_decision!r})"

@@ -322,7 +322,7 @@ socket scan create --report
 ### JS/Zod Phase-4 no-paid preflight
 
 Run this before any paid JS assay. It runs repo identity, oracle labels, fresh graph evidence, language
-tier, semantic-diff request wiring, and `revise_safer` repair-route calibration, then exits before the
+tier, measured candidate-specific RCA benefit, semantic-diff request wiring, and `revise_safer` repair-route calibration, then exits before the
 subject/model loop. It does **not** require a provider key or the live run gate. Do not combine it with
 preflight skip flags.
 

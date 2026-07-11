@@ -91,8 +91,7 @@ def _live_assess_fn(repo_path: Path, spec: TaskSpec) -> dict[str, Any]:
                      "edit_confidence_factors": {"p_success": 0.75, "evidence_quality": 0.7,
                                                  "testability": 0.7, "reversibility": 0.7,
                                                  "source_reliability": 0.7, "scope_control": 0.7},
-                     "benefit_delta_evidence": {"source_type": "projected",
-                                                "future_change_exposure": 0.0, "deltas": {}}},
+                    },
         "thresholds": {"max_expected_loss_without_human": 0.45},
     }
     import tempfile  # noqa: PLC0415

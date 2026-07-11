@@ -76,6 +76,35 @@ def _contains_hidden_part(path: Path) -> bool:
     return any(part in _HIDDEN_DIRS for part in path.parts)
 
 
+def _first_non_comment_line(text: str) -> str:
+    """Return the first meaningful leading line, preserving text after a closing block comment."""
+    in_block = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        while line:
+            if in_block:
+                end = line.find("*/")
+                if end < 0:
+                    line = ""
+                    break
+                in_block = False
+                line = line[end + 2 :].lstrip()
+                continue
+            if line.startswith(("//", "#")):
+                line = ""
+                break
+            if line.startswith("/*"):
+                end = line.find("*/", 2)
+                if end < 0:
+                    in_block = True
+                    line = ""
+                    break
+                line = line[end + 2 :].lstrip()
+                continue
+            return line
+    return ""
+
+
 def _implausible_source_write(content: str, target: Path) -> bool:
     """Catch obvious model prose/command dumps before they replace source files."""
     if target.suffix.lower() not in _SOURCE_EXTENSIONS:
@@ -83,13 +112,15 @@ def _implausible_source_write(content: str, target: Path) -> bool:
     text = (content or "").strip()
     if not text:
         return False
-    if "```" in text:
-        return True
-    if _SHELL_MUTATION_RE.search(text):
-        return True
     has_code_signal = bool(_SOURCE_CODE_RE.search(text))
-    first_line = next((line for line in text.splitlines() if line.strip()), "")
-    if _COMMAND_LINE_RE.search(first_line) and not has_code_signal:
+    first_line = _first_non_comment_line(text)
+    if (
+        first_line.lstrip().startswith("```")
+        or _COMMAND_LINE_RE.search(first_line)
+        or _PROSE_OPENING_RE.search(first_line)
+    ):
+        return True
+    if not has_code_signal and _SHELL_MUTATION_RE.search(text):
         return True
     sentence_count = len(re.findall(r"[.!?](?:\s|$)", text))
     return not has_code_signal and (sentence_count >= 2 or bool(_PROSE_OPENING_RE.search(text)))

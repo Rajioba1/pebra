@@ -12,6 +12,7 @@ earns value only when measured deltas reduce future change effort.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 # Per-metric directionality (Architecture §5). +1 = higher delta is better; -1 = lower delta is better.
@@ -63,20 +64,42 @@ class BenefitBreakdown:
     component_provenance: list[dict] = field(default_factory=list)
 
 
+def _unit_benefit(value: float) -> float:
+    """Finite unit-utility value; malformed/unbounded caller evidence earns no extra authority."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return 0.0
+    return max(0.0, min(BENEFIT_OVERRIDE_MAX, value))
+
+
 def maintainability_gain(deltas: dict[str, float], future_change_exposure: float) -> float:
     """Exposure-weighted directional improvement.
 
-    Each delta is converted to a signed *improvement* (positive = better) using ``METRIC_DIRECTION``,
-    summed, and scaled by how much future change is exposed to the touched scope. Unknown metric keys
-    are ignored (conservative: they earn no credit).
+    Tool metrics use incompatible units (for example, cyclomatic points vs. MI points), so raw deltas
+    must never be added directly to unit utility. Each known delta becomes a bounded directional signal
+    ``[-1, 1]`` via ``x / (1 + abs(x))``; signals are averaged, then scaled by bounded graph exposure.
+    Unknown/non-finite metrics are ignored (conservative: they earn no credit).
     """
-    improvement = 0.0
+    signals: list[float] = []
     for metric, value in deltas.items():
         direction = METRIC_DIRECTION.get(metric)
-        if direction is None:
+        if (
+            direction is None
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
             continue
-        improvement += direction * value
-    return future_change_exposure * improvement
+        signals.append(direction * value / (1.0 + abs(value)))
+    if not signals:
+        return 0.0
+    if (
+        isinstance(future_change_exposure, bool)
+        or not isinstance(future_change_exposure, (int, float))
+        or not math.isfinite(future_change_exposure)
+    ):
+        return 0.0
+    exposure = max(0.0, min(1.0, future_change_exposure))
+    return exposure * (sum(signals) / len(signals))
 
 
 def resolve_benefit(
@@ -91,6 +114,7 @@ def resolve_benefit(
     (plan §5 Phase-0 stub) so ``benefit == immediate_benefit``; measured/derived mode credits the
     exposure-weighted directional gain.
     """
+    bounded_immediate = _unit_benefit(immediate_benefit)
     gain = maintainability_gain(deltas, future_change_exposure)
     if source_type == "projected":
         credited = 0.0
@@ -98,9 +122,9 @@ def resolve_benefit(
     else:
         credited = gain
         variance = MEASURED_BENEFIT_VARIANCE
-    benefit = immediate_benefit + credited
+    benefit = _unit_benefit(bounded_immediate + credited)
     return BenefitBreakdown(
-        immediate_benefit=immediate_benefit,
+        immediate_benefit=bounded_immediate,
         maintainability_gain=gain,
         credited_maintainability_gain=credited,
         benefit=benefit,

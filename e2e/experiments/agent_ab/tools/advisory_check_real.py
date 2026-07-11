@@ -53,8 +53,6 @@ def _build_request(
         "edit_confidence_factors": {"p_success": 0.75, "evidence_quality": 0.7, "testability": 0.7,
                                     "reversibility": 0.7, "source_reliability": 0.7,
                                     "scope_control": 0.7},
-        "benefit_delta_evidence": {"source_type": "projected", "future_change_exposure": 0.0,
-                                   "deltas": {}},
     }
     return {
         "schema_version": "0.1", "task": summary, "repo_id": "ab_experiment",

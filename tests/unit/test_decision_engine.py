@@ -29,6 +29,7 @@ def test_worked_example_is_proceed_with_confirmation_sensitive_context() -> None
     assert result.requires_confirmation is True  # C3
     assert result.risk_mode is RiskMode.SENSITIVE_CONTEXT
     assert result.scores["rau"] == pytest.approx(0.31)
+    assert result.scores["benefit_breakdown"]["source_type"] == "projected"
 
 
 def test_gate3_expected_loss_over_threshold_with_positive_eu_asks_human() -> None:
@@ -107,14 +108,14 @@ def test_gate3_structural_dependency_risk_requests_safer_revision() -> None:
     assert any(g["name"] == "revise_safer" for g in result.gates_fired)
 
 
-def test_gate3_structural_dependency_risk_with_negative_eu_rejects_not_revision() -> None:
+def test_gate3_structural_dependency_risk_with_positive_benefit_can_revise_despite_negative_eu() -> None:
     from pebra.core import models as m
 
     inp = _worked_example_input()
     inp = replace(
         inp,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
-        immediate_benefit=0.1,
+        immediate_benefit=0.5,
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
             changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
@@ -128,6 +129,35 @@ def test_gate3_structural_dependency_risk_with_negative_eu_rejects_not_revision(
 
     assert result.scores["expected_loss"] > result.scores["effective_threshold"]
     assert result.scores["expected_utility"] < 0
+    assert result.scores["benefit"] > 0
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert any(g["name"] == "revise_safer" for g in result.gates_fired)
+
+
+def test_gate3_structural_dependency_risk_without_benefit_rejects_not_revision() -> None:
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(),
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=0.5,
+        benefit_delta_evidence=m.BenefitDeltaEvidence(
+            source_type="measured",
+            deltas={"complexity_delta": 1.0},
+            future_change_exposure=1.0,
+        ),
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.scores["benefit"] == 0
     assert result.recommended_decision is Decision.REJECT
     assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
 
@@ -141,7 +171,7 @@ def test_gate3_single_symbol_public_api_break_requests_safer_revision() -> None:
         inp,
         action=action,
         events=[{"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80}],
-        immediate_benefit=2.0,
+        immediate_benefit=0.5,
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
             changed_symbols=["packages/zod/src/v3/types.ts::ZodType"],
@@ -155,7 +185,7 @@ def test_gate3_single_symbol_public_api_break_requests_safer_revision() -> None:
     result = de.decide(ab.build_assessment(inp))
 
     assert result.scores["expected_loss"] > result.scores["effective_threshold"]
-    assert result.scores["expected_utility"] > 0
+    assert result.scores["expected_utility"] < 0
     assert result.recommended_decision is Decision.REVISE_SAFER
     assert any(g["name"] == "revise_safer" for g in result.gates_fired)
 
@@ -184,7 +214,7 @@ def test_gate3_unparsed_single_file_structural_risk_requests_safer_revision() ->
             {"event": "dependency_break", "p_event": 0.45, "elicited_disutility": 0.80},
             {"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80},
         ],
-        immediate_benefit=3.0,
+        immediate_benefit=0.5,
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=False,
             changed_symbols=[],
@@ -203,7 +233,7 @@ def test_gate3_unparsed_single_file_structural_risk_requests_safer_revision() ->
 
     result = de.decide(ab.build_assessment(inp))
 
-    assert result.scores["expected_utility"] > 0
+    assert result.scores["expected_utility"] < 0
     assert result.recommended_decision is Decision.REVISE_SAFER
     assert any(g["name"] == "revise_safer" for g in result.gates_fired)
 
@@ -250,7 +280,7 @@ def test_gate3_verified_single_symbol_candidate_can_proceed_pre_edit() -> None:
         inp,
         action=action,
         events=[{"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80}],
-        immediate_benefit=2.0,
+        immediate_benefit=0.5,
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
             changed_symbols=["packages/zod/src/v3/types.ts::ZodType"],
@@ -271,7 +301,7 @@ def test_gate3_verified_single_symbol_candidate_can_proceed_pre_edit() -> None:
     result = de.decide(ab.build_assessment(inp))
 
     assert result.scores["expected_loss"] > result.scores["effective_threshold"]
-    assert result.scores["expected_utility"] > 0
+    assert result.scores["expected_utility"] < 0
     assert result.recommended_decision is Decision.PROCEED
     assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
     assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
@@ -474,6 +504,19 @@ def test_gate3_passed_verification_bound_to_candidate_patch_proceeds() -> None:
     result = de.decide(ab.build_assessment(_verified_candidate_input(verified_patch_hash=correct)))
     assert result.recommended_decision is Decision.PROCEED
     assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
+
+
+def test_gate3_passed_verification_does_not_manufacture_missing_benefit() -> None:
+    correct = de.candidate_patch_hash(_CANDIDATE_PATCH)
+    inp = replace(
+        _verified_candidate_input(verified_patch_hash=correct), immediate_benefit=0.0
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.scores["benefit"] == 0.0
+    assert result.recommended_decision is Decision.REJECT
+    assert not any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
 
 
 @pytest.mark.parametrize("bad_hash", [None, "", "deadbeef", "0" * 64])

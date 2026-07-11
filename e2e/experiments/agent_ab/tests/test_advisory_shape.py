@@ -125,6 +125,17 @@ def test_build_request_carries_revise_safer_attempt():
     assert req["thresholds"]["codegraph_semantic_diff_enabled"] == 1.0
 
 
+def test_build_request_leaves_maintainability_evidence_open_for_production_measurement():
+    req = real._build_request({
+        "target_file": "x.ts",
+        "change_summary": "change x",
+        "proposed_patch": "diff --git a/x.ts b/x.ts",
+    })
+
+    assert req["evidence"]["immediate_benefit"] == 0.5
+    assert "benefit_delta_evidence" not in req["evidence"]
+
+
 def test_build_request_does_not_carry_candidate_verification_in_untrusted_evidence():
     req = real._build_request({
         "target_file": "src/Numerics/SpecialFunctions/Gamma.cs",

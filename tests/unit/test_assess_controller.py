@@ -873,9 +873,12 @@ def test_explicit_zero_caller_exposure_is_not_clobbered() -> None:
 def test_explicit_nonzero_caller_exposure_wins_over_derived() -> None:
     explicit = _run_benefit(_MeasuredBenefitEvidence(exposure=0.3, explicit=True), _trusted_fanin(0.9))
     derived = _run_benefit(_MeasuredBenefitEvidence(exposure=0.0), _trusted_fanin(0.9))
-    b_exp = explicit.recommended_result.scores["benefit"]
-    b_der = derived.recommended_result.scores["benefit"]
-    assert _IMMEDIATE < b_exp < b_der  # caller's 0.3 credited (not the derived 0.9), never clobbered
+    exp_scores = explicit.recommended_result.scores
+    der_scores = derived.recommended_result.scores
+    g_exp = exp_scores["benefit_breakdown"]["credited_maintainability_gain"]
+    g_der = der_scores["benefit_breakdown"]["credited_maintainability_gain"]
+    assert 0.0 < g_exp < g_der  # caller's 0.3 credited (not derived 0.9), never clobbered
+    assert exp_scores["benefit"] <= der_scores["benefit"] <= 1.0
 
 
 def test_absent_graph_falls_back_to_no_credit() -> None:

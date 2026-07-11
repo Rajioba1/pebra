@@ -21,6 +21,7 @@ def test_js_corpus_loads_and_validates():
     assert js1.language == "typescript" and js1.harness_id == "node"
     assert js1.build_profile == "zshy" and js1.build_selector == "zod:tsconfig.build.json"
     assert js1.required_language_tier == "full"
+    assert js1.requires_measured_benefit is True
     assert js1.specimen == "javascript"
     assert js1.repo_identity_files == ("package.json", "pnpm-lock.yaml")
     assert js1.build_solution == ""

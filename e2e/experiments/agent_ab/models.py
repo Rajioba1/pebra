@@ -72,6 +72,7 @@ class TaskSpec:
     evaluator_test_filter: str | None = None   # hidden: optional dotnet test filter for that project
     build_solution: str = "TemplateBlueprint.sln"  # hidden: solution passed to dotnet build/test tools
     required_language_tier: str | None = None  # hidden: "risk_only" | "partial" | "full" preflight floor
+    requires_measured_benefit: bool = False  # hidden: fail preflight unless RCA measured this patch
     language: str = "csharp"  # hidden: selects the build/test backend (csharp | javascript | typescript)
     harness_id: str = "dotnet"  # hidden: fixed backend profile family (dotnet | node)
     specimen: str = "csharp"  # hidden: specimen package under specimens/<name>/corpus

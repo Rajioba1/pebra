@@ -24,6 +24,11 @@ _JS_TRAP = TaskSpec(
     language="typescript", harness_id="node", specimen="javascript",
     build_profile="zshy", build_selector="zod:tsconfig.build.json",
 )
+_MEASURED_BENEFIT_TRAP = TaskSpec(
+    "JSBEN", "d", ("src/a.ts",), "risky", ("src/a.ts",), "build_failure", True,
+    language="typescript", harness_id="node", specimen="javascript",
+    required_language_tier="full", requires_measured_benefit=True,
+)
 
 
 def _build(ran=True, passed=True, err=""):
@@ -158,6 +163,54 @@ def test_required_language_tier_passes_when_payload_meets_requirement():
     }
 
     assert preflight._graph_backed_failure(_FULL_TIER_TRAP, payload) is None
+
+
+def test_required_measured_benefit_rejects_projected_assessment():
+    payload = _payload("fresh", "location")
+    payload["graph_provenance"] = {
+        "language_capability": {"language": "typescript", "tier": "full"}
+    }
+    payload["scores"]["benefit_breakdown"] = {"source_type": "projected"}
+
+    msg = preflight._graph_backed_failure(_MEASURED_BENEFIT_TRAP, payload)
+
+    assert msg and "measured benefit" in msg
+
+
+def test_required_measured_benefit_accepts_rca_measurement():
+    payload = _payload("fresh", "location")
+    payload["graph_provenance"] = {
+        "language_capability": {"language": "typescript", "tier": "full"}
+    }
+    payload["scores"]["benefit_breakdown"] = {"source_type": "measured"}
+
+    assert preflight._graph_backed_failure(_MEASURED_BENEFIT_TRAP, payload) is None
+
+
+def test_benefit_calibration_requires_candidate_specific_signal():
+    bad = {"scores": {"benefit": 0.5, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0,
+    }}}
+    fixed = {"scores": {"benefit": 0.5, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0,
+    }}}
+
+    msg = preflight._benefit_discrimination_failure(_MEASURED_BENEFIT_TRAP, bad, fixed)
+
+    assert msg and "did not vary" in msg
+
+
+def test_benefit_calibration_accepts_finite_candidate_specific_signal():
+    bad = {"scores": {"benefit": 0.5, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0,
+    }}}
+    fixed = {"scores": {"benefit": 0.25, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": -0.25,
+    }}}
+
+    assert preflight._benefit_discrimination_failure(
+        _MEASURED_BENEFIT_TRAP, bad, fixed
+    ) is None
 
 
 # ---- accumulate-ALL-failures (never first-fail) ----

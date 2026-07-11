@@ -41,20 +41,53 @@ def test_write_file_rejects_prose_overwrite_for_typescript_source(tmp_path):
     assert src.read_text(encoding="utf-8") == "export const existing = 1;\n"
 
 
-def test_write_file_rejects_shell_script_overwrite_for_typescript_source(tmp_path):
+def test_write_file_rejects_shell_command_overwrite_for_typescript_source(tmp_path):
     src = tmp_path / "packages" / "zod" / "src" / "v3" / "types.ts"
     src.parent.mkdir(parents=True)
     src.write_text("export const existing = 1;\n", encoding="utf-8")
 
     out = tool_impl.write_file(
         "packages/zod/src/v3/types.ts",
-        "import { execSync } from 'node:child_process';\nexecSync('git checkout -- packages/zod/src/v3/types.ts');\n",
+        "git checkout -- packages/zod/src/v3/types.ts\n",
         tmp_path,
     )
 
     assert "error" in out
     assert "rejected" in out["error"]
     assert src.read_text(encoding="utf-8") == "export const existing = 1;\n"
+
+
+def test_write_file_allows_git_and_fence_text_inside_real_typescript_source(tmp_path):
+    src = tmp_path / "src" / "messages.ts"
+    content = (
+        "export const command = 'git checkout -- src/messages.ts';\n"
+        "export const markdown = '```ts';\n"
+    )
+
+    out = tool_impl.write_file("src/messages.ts", content, tmp_path)
+
+    assert out == {"ok": True}
+    assert src.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.parametrize("prefix", [
+    "git checkout -- src/messages.ts\n",
+    "Here is the fix.\n",
+    "```ts\n",
+    "// generated\ngit checkout -- src/messages.ts\n",
+    "// generated\nHere is the fix.\n",
+    "// generated\n```ts\n",
+    "/* generated */ git checkout -- src/messages.ts\n",
+    "/* generated */ Here is the fix.\n",
+    "/* generated\n * note\n */ ```ts\n",
+])
+def test_write_file_rejects_non_source_first_line_even_if_code_follows(tmp_path, prefix):
+    out = tool_impl.write_file(
+        "src/messages.ts", prefix + "export const x = 1;\n", tmp_path
+    )
+
+    assert "error" in out
+    assert not (tmp_path / "src" / "messages.ts").exists()
 
 
 def test_write_traversal_returns_error_not_raises(tmp_path):

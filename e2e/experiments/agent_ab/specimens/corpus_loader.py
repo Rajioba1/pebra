@@ -167,6 +167,7 @@ def load_corpus(
             evaluator_test_filter=evaluator_test_filter,
             build_solution=build_solution,
             required_language_tier=required_language_tier,
+            requires_measured_benefit=bool(oracle.get("requires_measured_benefit", False)),
             language=language,
             harness_id=harness_id,
             specimen=specimen,
