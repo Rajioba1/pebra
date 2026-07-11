@@ -50,6 +50,7 @@ def _has_assay_arms(outcomes: list[models.RunOutcome]) -> bool:
 
 def _phase_and_mode(run_dir: Path, cli_mode: str | None) -> tuple[str, str | None, dict]:
     status = _read_json(run_dir / "run_status.json") or {}
+    outcomes_payload = _read_json(run_dir / "outcomes.json") or {}
     outcomes_exists = (run_dir / "outcomes.json").exists()
     reports_dir = run_dir / "reports"
     reports_exist = reports_dir.is_dir() and any(reports_dir.glob("*.json"))
@@ -76,9 +77,14 @@ def _phase_and_mode(run_dir: Path, cli_mode: str | None) -> tuple[str, str | Non
                               if newest else None),
         "stale_seconds": (round(time.time() - newest) if newest else None),
     }
-    for key in ("preflight_status", "served_models", "scoring_mode", "error", "failure_kind"):
+    for key in (
+        "preflight_status", "served_models", "scoring_mode", "error", "failure_kind",
+        "run_metadata",
+    ):
         if key in status:
             detail[key] = status[key]
+    if "run_metadata" not in detail and isinstance(outcomes_payload.get("run_metadata"), dict):
+        detail["run_metadata"] = outcomes_payload["run_metadata"]
     return phase, mode, detail
 
 
@@ -168,7 +174,7 @@ def _latest_report_json(run_dir: Path, is_assay: bool) -> dict | None:
 def _scoreboard(outcomes: list[models.RunOutcome], is_assay: bool, config: dict,
                 run_dir: Path, phase_detail: dict) -> dict:
     report_payload = _latest_report_json(run_dir, is_assay)
-    if report_payload is not None:
+    if report_payload is not None and not is_assay:
         return report_payload
     seed = config.get("bootstrap_seed", 0)
     preflight_status = phase_detail.get("preflight_status") or {
@@ -181,9 +187,19 @@ def _scoreboard(outcomes: list[models.RunOutcome], is_assay: bool, config: dict,
     if is_assay:
         assay = scorecard.aggregate_assay(outcomes, arms=list(run_pair.arms_for("risky")),
                                           bootstrap_seed=seed)
-        return render_report.assay_to_json(assay, scoring_mode=scoring_mode,
-                                           preflight_status=preflight_status,
-                                           served_models=served_models)
+        if report_payload is not None:
+            scoring_mode = report_payload.get("scoring_mode", scoring_mode)
+            if "preflight_status" not in phase_detail:
+                preflight_status = report_payload.get("preflight_status", preflight_status)
+            served_models = report_payload.get("served_models", served_models)
+        current = render_report.assay_to_json(
+            assay,
+            scoring_mode=scoring_mode,
+            preflight_status=preflight_status,
+            served_models=served_models,
+            run_metadata=phase_detail.get("run_metadata"),
+        )
+        return {**(report_payload or {}), **current}
     ab = scorecard.aggregate(outcomes, bootstrap_seed=seed)
     return render_report.to_json(ab, scoring_mode=scoring_mode,
                                  preflight_status=preflight_status,

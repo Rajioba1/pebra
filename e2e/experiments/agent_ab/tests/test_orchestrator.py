@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,8 +13,16 @@ from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.models import RunOutcome, SubjectResult, TaskSpec
 from e2e.experiments.agent_ab.runners import orchestrator
 
+_ORIGINAL_ASSERT_HARNESS_CLEAN = orchestrator._assert_harness_clean
+
 _T1 = TaskSpec("T1", "d", ("a.cs",), "risky", ("a.cs",), "build_failure", True)
 _B1 = TaskSpec("B1", "d", ("a.cs",), "safe", ("a.cs",), "none", False)
+
+
+@pytest.fixture(autouse=True)
+def _stable_harness_identity(monkeypatch):
+    commit = orchestrator._git_commit() or "test-harness-head"
+    monkeypatch.setattr(orchestrator, "_assert_harness_clean", lambda root=None: commit)
 
 
 def _outcome(task_id: str, arm: str, seed: int = 0) -> RunOutcome:
@@ -51,9 +60,49 @@ def _rca_toolchain_config() -> dict:
     }
 
 
+def _run_meta(*, mode="pilot", seeds_per_arm=1, specs=None) -> dict:
+    specs = list(specs or [_T1])
+    cfg = {
+        mode: {"tasks": [spec.task_id for spec in specs], "seeds_per_arm": seeds_per_arm},
+        "bootstrap_seed": 0,
+    }
+    args = type("Args", (), {"mode": mode})()
+    design = orchestrator._experiment_design(
+        args, cfg, specs, provider="anthropic", model=None
+    )
+    return {
+        "mode": mode,
+        "seeds_per_arm": seeds_per_arm,
+        "minimum_pairs_for_efficacy": 3,
+        "run_intent": "diagnostic" if seeds_per_arm < 3 else "efficacy",
+        "experiment_design": design,
+        "experiment_design_sha256": orchestrator._design_sha256(design),
+        "rca": _rca_meta(),
+    }
+
+
 def test_plan_is_sorted_and_seeded():
     plan = orchestrator._plan([_T1, _B1], ["B1", "T1"], 2)
     assert plan == [(_B1, 0), (_B1, 1), (_T1, 0), (_T1, 1)]
+
+
+def test_harness_identity_requires_git_head_and_clean_tree(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "e2e@pebra.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "pebra-e2e"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("clean", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+
+    assert _ORIGINAL_ASSERT_HARNESS_CLEAN(repo)
+
+    (repo / "tracked.txt").write_text("dirty", encoding="utf-8")
+    with pytest.raises(orchestrator.ExperimentRunError, match="uncommitted changes"):
+        _ORIGINAL_ASSERT_HARNESS_CLEAN(repo)
+    with pytest.raises(orchestrator.ExperimentRunError, match="cannot identify"):
+        _ORIGINAL_ASSERT_HARNESS_CLEAN(tmp_path / "not-a-repo")
 
 
 def test_plan_rejects_missing_tasks():
@@ -135,6 +184,62 @@ def test_run_metadata_records_rca_fingerprint_and_pin(monkeypatch):
     assert metadata["rca"]["required_source_revision"] == (
         "37e5d83c056c8cbf827223d5814a93c5218df1a9"
     )
+    assert metadata["seeds_per_arm"] == 1
+    assert metadata["minimum_pairs_for_efficacy"] == 3
+    assert metadata["run_intent"] == "diagnostic"
+    assert metadata["experiment_design_sha256"]
+    design = metadata["experiment_design"]
+    assert design["provider"] == "anthropic"
+    assert design["model"] == "claude-haiku-4-5-20251001"
+    assert design["mode_config"]["tasks"] == ["JS1", "JS2", "JS3"]
+    assert design["subject_prompt_template_sha256"]
+    assert set(design["protocol_hashes"]) >= {"sham", "pebra"}
+
+
+def test_experiment_design_hash_changes_with_provider_model_prompt_tasks_and_arms(monkeypatch):
+    cfg = orchestrator._config()
+    args = type("Args", (), {"mode": "assay_js"})()
+    js1 = next(spec for spec in orchestrator.load_corpus() if spec.task_id == "JS1")
+    base = orchestrator._experiment_design(
+        args, cfg, [js1], provider="deepseek", model="deepseek-v4-flash"
+    )
+    changed_model = orchestrator._experiment_design(
+        args, cfg, [js1], provider="anthropic", model="claude-test"
+    )
+    monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1")
+    monkeypatch.setenv("E2E_AB_MAX_WORKERS", "5")
+    monkeypatch.setenv("PEBRA_CODEGRAPH_SEMANTIC_DIFF", "1")
+    changed_execution = orchestrator._experiment_design(
+        args, cfg, [js1], provider="deepseek", model="deepseek-v4-flash"
+    )
+    monkeypatch.delenv("E2E_AB_PARALLEL_ARMS")
+    monkeypatch.delenv("E2E_AB_MAX_WORKERS")
+    monkeypatch.delenv("PEBRA_CODEGRAPH_SEMANTIC_DIFF")
+    changed_source = orchestrator._experiment_design(
+        args,
+        cfg,
+        [js1],
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        source_head_sha="different-source-head",
+    )
+    monkeypatch.setattr(orchestrator.run_pair, "_SUBJECT_PROMPT", "changed prompt")
+    changed_prompt = orchestrator._experiment_design(
+        args, cfg, [js1], provider="deepseek", model="deepseek-v4-flash"
+    )
+    changed_task = orchestrator._experiment_design(
+        args, cfg, [dataclasses.replace(js1, task_id="JSX")],
+        provider="deepseek", model="deepseek-v4-flash",
+    )
+
+    hashes = {
+        orchestrator._design_sha256(design)
+        for design in (
+            base, changed_model, changed_execution, changed_source, changed_prompt, changed_task,
+        )
+    }
+    assert len(hashes) == 6
+    assert base["arm_topology"]["JS1"] == list(orchestrator.run_pair.arms_for("risky"))
 
 
 def test_resume_rejects_changed_rca_binary_fingerprint(tmp_path):
@@ -194,6 +299,20 @@ def test_resume_accepts_stable_known_rca_absence(tmp_path):
     )
 
 
+def test_resume_rejects_changed_seed_design(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "outcomes.json").write_text(json.dumps({
+        "outcomes": [],
+        "run_metadata": _run_meta(mode="assay_js", seeds_per_arm=1),
+    }), encoding="utf-8")
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run design changed"):
+        orchestrator._assert_resume_design_compatible(
+            run_dir, _run_meta(mode="assay_js", seeds_per_arm=3)
+        )
+
+
 def test_rca_probe_error_blocks_run_before_resume_or_model_calls():
     with pytest.raises(orchestrator.ExperimentRunError, match="probe failed"):
         orchestrator._assert_rca_probe_usable({"rca": _rca_meta(status="probe_error")})
@@ -234,6 +353,21 @@ def test_active_run_accepts_unchanged_rca_fingerprint(monkeypatch):
         {"rca": _rca_meta(status="accepted", version="0.0.25", sha256="same")},
         _rca_toolchain_config(),
     )
+
+
+def test_active_run_rejects_changed_or_dirty_harness(monkeypatch):
+    metadata = {"experiment_design": {"git_commit": "original"}}
+    monkeypatch.setattr(orchestrator, "_assert_harness_clean", lambda: "changed")
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="harness changed during this run"):
+        orchestrator._assert_active_harness_compatible(metadata)
+
+    def _dirty():
+        raise orchestrator.ExperimentRunError("harness Git checkout has uncommitted changes")
+
+    monkeypatch.setattr(orchestrator, "_assert_harness_clean", _dirty)
+    with pytest.raises(orchestrator.ExperimentRunError, match="uncommitted changes"):
+        orchestrator._assert_active_harness_compatible(metadata)
 
 
 def test_assay_config_does_not_expose_dead_arm_list():
@@ -344,7 +478,7 @@ def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):
         out_path,
         [_outcome("T1", models.ARM_CONTROL, 0), _outcome("T1", models.ARM_TREATMENT, 0)],
         "t1",
-        run_metadata={"rca": _rca_meta()},
+        run_metadata=_run_meta(),
     )
 
     def _must_not_run(spec, seed, run_id):
@@ -654,7 +788,7 @@ def test_assay_js_resume_retries_unscorable_sham(monkeypatch, tmp_path):
         run_dir / "outcomes.json",
         [dataclasses.replace(_outcome("JS1", models.ARM_SHAM), no_attempt=True, timed_out=True)],
         "retry-sham",
-        run_metadata={"rca": _rca_meta()},
+        run_metadata=_run_meta(mode="assay_js", specs=[js1]),
     )
     calls: list[tuple[str, ...] | None] = []
     monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
@@ -788,8 +922,9 @@ def test_main_runs_repo_identity_preflight_before_external_clone(monkeypatch, tm
         assert source_root == source
         assert [s.task_id for s in specs] == ["T1"]
 
-    def _prepare():
+    def _prepare(source_root):
         calls.append("prepare")
+        assert source_root == source
         return object()
 
     monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", _identity)

@@ -87,7 +87,11 @@ enforced-control arm must avoid harm. Efficacy gates on **net_benefit**: PEBRA m
 hiding over-caution cost. The graph-repair verdict is only reached after the base PEBRA-vs-blast gate
 passes, so it cannot hide a base PEBRA partial verdict. A risky-only one-seed run can validate the
 apparatus and harm prevention, but it cannot support a balanced efficacy claim until a safe Math.NET
-task is added.
+task is added. Reports with fewer than three scorable `pebra`-vs-`sham` risky pairs are stamped
+`DIAGNOSTIC_ONLY`, retain the raw structural verdict separately, and set `claim_valid=false`. The
+code-owned three-pair minimum cannot be lowered by run metadata. A run ID is also bound to a canonical
+experiment-design hash (code commit, provider/model, prompt/protocol, task specs, and arm topology), so
+diagnostic and efficacy outcomes cannot be combined by resuming after the design changes.
 
 ## What we will NOT claim
 - **No p-values from one-seed assay runs.** 3 seeds/arm is still directional; it is not a powered claim.

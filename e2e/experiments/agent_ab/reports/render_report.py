@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.models import ABMetrics, AssayMetrics
 
 _CONFIG = Path(__file__).resolve().parents[1] / "config.json"
@@ -43,6 +44,92 @@ def _find_pair(m: AssayMetrics, intervention: str, baseline: str):
         if p.intervention_arm == intervention and p.baseline_arm == baseline:
             return p
     return None
+
+
+def _assay_claim_context(
+    m: AssayMetrics, run_metadata: dict | None
+) -> dict:
+    pair = _find_pair(m, models.ARM_PEBRA, models.ARM_SHAM)
+    actual_pairs = pair.n_pairs_risky if pair is not None else 0
+    minimum = models.MIN_PAIRS_FOR_EFFICACY
+    seeds_per_arm = None
+    run_intent = None
+    if run_metadata is not None:
+        try:
+            seeds_per_arm = int(run_metadata["seeds_per_arm"])
+        except (KeyError, TypeError, ValueError):
+            seeds_per_arm = None
+        run_intent = str(run_metadata.get("run_intent") or "") or None
+    reasons: list[str] = []
+    if run_metadata is None:
+        reasons.append("run metadata unavailable")
+    else:
+        configured_minimum = run_metadata.get("minimum_pairs_for_efficacy")
+        if configured_minimum is not None:
+            try:
+                configured_minimum = int(configured_minimum)
+            except (TypeError, ValueError):
+                configured_minimum = None
+            if configured_minimum != minimum:
+                reasons.append(
+                    f"run metadata minimum {configured_minimum!r} differs from policy {minimum}"
+                )
+        if run_intent == "diagnostic":
+            reasons.append("explicit diagnostic run intent")
+        if seeds_per_arm is None:
+            reasons.append("configured seed count unavailable")
+        elif seeds_per_arm < minimum:
+            reasons.append(f"configured seeds {seeds_per_arm} below minimum {minimum}")
+    if actual_pairs < minimum:
+        reasons.append(f"observed risky pairs {actual_pairs} below minimum {minimum}")
+    diagnostic_only = bool(reasons)
+    return {
+        "seeds_per_arm": seeds_per_arm,
+        "minimum_pairs_for_efficacy": minimum,
+        "actual_pairs_for_efficacy": actual_pairs,
+        "run_intent": run_intent,
+        "diagnostic_only": diagnostic_only,
+        "diagnostic_reasons": reasons,
+    }
+
+
+def _assay_report_state(
+    m: AssayMetrics, preflight_status: dict, run_metadata: dict | None
+) -> dict:
+    raw_verdict = m.interpretation.verdict
+    preflight_valid = _preflight_passed(preflight_status)
+    structural_verdict = raw_verdict if preflight_valid else "INVALID_DEBUG_RUN"
+    assay_valid = preflight_valid and not structural_verdict.startswith("INVALID_")
+    claim_context = _assay_claim_context(m, run_metadata)
+    diagnostic_only = bool(claim_context["diagnostic_only"])
+    verdict = (
+        models.VERDICT_DIAGNOSTIC_ONLY
+        if assay_valid and diagnostic_only
+        else structural_verdict
+    )
+    if verdict == models.VERDICT_DIAGNOSTIC_ONLY:
+        reasons = "; ".join(claim_context["diagnostic_reasons"])
+        conclusion = (
+            f"DIAGNOSTIC ONLY ({reasons}): raw structural verdict {raw_verdict} was produced from "
+            f"{claim_context['actual_pairs_for_efficacy']} risky PEBRA-vs-sham pair(s). "
+            "Inspect arm behavior and traces; do not claim efficacy."
+        )
+    else:
+        conclusion = _VERDICT_NOTE.get(verdict, "")
+    claim_valid = assay_valid and not diagnostic_only
+    return {
+        **claim_context,
+        "raw_verdict": raw_verdict,
+        "structural_verdict": structural_verdict,
+        "verdict": verdict,
+        "preflight_valid": preflight_valid,
+        "assay_valid": assay_valid,
+        "claim_valid": claim_valid,
+        "efficacy_claim_allowed": (
+            claim_valid and m.interpretation.pebra_has_efficacy
+        ),
+        "conclusion": conclusion,
+    }
 
 
 def _graph_repair_increment(m: AssayMetrics) -> dict:
@@ -238,18 +325,30 @@ _VERDICT_NOTE = {
 }
 
 
-def assay_to_json(m: AssayMetrics, *, scoring_mode: str = "build_break_scope",
-                  preflight_status: dict | None = None, served_models: list[str] | None = None) -> dict:
+def assay_to_json(
+    m: AssayMetrics,
+    *,
+    scoring_mode: str = "build_break_scope",
+    preflight_status: dict | None = None,
+    served_models: list[str] | None = None,
+    run_metadata: dict | None = None,
+) -> dict:
     preflight_status = preflight_status or {"oracle": "passed", "graph": "passed"}
     i = m.interpretation
-    preflight_valid = _preflight_passed(preflight_status)
-    verdict = i.verdict if preflight_valid else "INVALID_DEBUG_RUN"
-    assay_valid = preflight_valid and not verdict.startswith("INVALID_")
+    state = _assay_report_state(m, preflight_status, run_metadata)
     return {
         "scoring_mode": scoring_mode, "preflight_status": preflight_status,
-        "served_models": served_models or [], "n_arms": m.n_arms, "verdict": verdict,
-        "raw_verdict": i.verdict, "preflight_valid": preflight_valid,
-        "assay_valid": assay_valid, "claim_valid": assay_valid,
+        "served_models": served_models or [], "n_arms": m.n_arms,
+        "verdict": state["verdict"], "raw_verdict": state["raw_verdict"],
+        "structural_verdict": state["structural_verdict"],
+        "preflight_valid": state["preflight_valid"],
+        "assay_valid": state["assay_valid"], "claim_valid": state["claim_valid"],
+        "diagnostic_only": state["diagnostic_only"],
+        "diagnostic_reasons": state["diagnostic_reasons"],
+        "efficacy_claim_allowed": state["efficacy_claim_allowed"],
+        "run_intent": state["run_intent"], "seeds_per_arm": state["seeds_per_arm"],
+        "minimum_pairs_for_efficacy": state["minimum_pairs_for_efficacy"],
+        "actual_pairs_for_efficacy": state["actual_pairs_for_efficacy"],
         "gate_trace": {"task_has_headroom": i.task_has_headroom,
                        "assay_detects_realistic": i.assay_detects_realistic,
                        "pebra_has_efficacy": i.pebra_has_efficacy,
@@ -270,17 +369,23 @@ def assay_to_json(m: AssayMetrics, *, scoring_mode: str = "build_break_scope",
                       "harm_diff_ci95": list(p.harm_diff_ci95) if p.harm_diff_ci95 else None}
                      for p in m.pairwise],
         "graph_repair_increment": _graph_repair_increment(m),
-        "conclusion": _VERDICT_NOTE.get(verdict, ""),
+        "conclusion": state["conclusion"],
     }
 
 
-def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "build_break_scope",
-                          preflight_status: dict | None = None, served_models: list[str] | None = None) -> str:
+def render_assay_markdown(
+    m: AssayMetrics,
+    *,
+    run_id: str,
+    scoring_mode: str = "build_break_scope",
+    preflight_status: dict | None = None,
+    served_models: list[str] | None = None,
+    run_metadata: dict | None = None,
+) -> str:
     preflight_status = preflight_status or {"oracle": "passed", "graph": "passed"}
     i = m.interpretation
-    preflight_valid = _preflight_passed(preflight_status)
-    verdict = i.verdict if preflight_valid else "INVALID_DEBUG_RUN"
-    assay_valid = preflight_valid and not verdict.startswith("INVALID_")
+    state = _assay_report_state(m, preflight_status, run_metadata)
+    verdict = state["verdict"]
     lines = [
         f"# PEBRA agent ASSAY — `{run_id}`", "",
         f"> Scoring mode: **{scoring_mode}**. Preflight: oracle={preflight_status.get('oracle')}, "
@@ -288,8 +393,12 @@ def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "
         f"> Assay arms: {' / '.join(sorted(m.arm_metrics))}. "
         "Validity gates on harm_avoided; "
         "efficacy gates on net_benefit.", "",
-        f"> Validity: preflight_valid={preflight_valid}, assay_valid={assay_valid}.", "",
-        f"## VERDICT: {verdict}", "", _VERDICT_NOTE.get(verdict, ""), "",
+        f"> Validity: preflight_valid={state['preflight_valid']}, "
+        f"assay_valid={state['assay_valid']}, claim_valid={state['claim_valid']}.",
+        f"> Run intent: {state['run_intent'] or 'unspecified'}; seeds_per_arm="
+        f"{state['seeds_per_arm'] if state['seeds_per_arm'] is not None else 'unknown'}; "
+        f"minimum risky pairs for efficacy={state['minimum_pairs_for_efficacy']}.", "",
+        f"## VERDICT: {verdict}", "", state["conclusion"], "",
         f"Gate trace: headroom={i.task_has_headroom}, assay_sensitive={i.assay_detects_realistic}, "
         f"pebra_efficacy={i.pebra_has_efficacy}, pebra_exceeds_blast={i.pebra_exceeds_blast}, "
         f"graph_repair_exceeds_pebra={i.graph_repair_exceeds_pebra}", "",
@@ -320,8 +429,9 @@ def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "
             f"- pebra_graph_repair vs pebra net_benefit: {_num(repair['net_benefit'])}",
             f"- exceeds_plain_pebra: {repair['exceeds_plain_pebra']}",
         ]
-    if not preflight_valid:
-        lines += ["", f"Raw assay verdict: {i.verdict}"]
+    if verdict != i.verdict:
+        label = "Raw structural verdict" if verdict == models.VERDICT_DIAGNOSTIC_ONLY else "Raw assay verdict"
+        lines += ["", f"{label}: {i.verdict}"]
     errs = sum(a.error_run_count for a in m.arm_metrics.values())
     leaks = sum(a.blinding_leak_count for a in m.arm_metrics.values())
     no_attempts = sum(a.no_attempt_count for a in m.arm_metrics.values())
@@ -334,15 +444,25 @@ def render_assay_markdown(m: AssayMetrics, *, run_id: str, scoring_mode: str = "
     return "\n".join(lines)
 
 
-def write_assay_report(m: AssayMetrics, *, out_dir, run_id: str, scoring_mode: str = "build_break_scope",
-                       preflight_status: dict | None = None, served_models: list[str] | None = None):
+def write_assay_report(
+    m: AssayMetrics,
+    *,
+    out_dir,
+    run_id: str,
+    scoring_mode: str = "build_break_scope",
+    preflight_status: dict | None = None,
+    served_models: list[str] | None = None,
+    run_metadata: dict | None = None,
+):
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     md_path = out / f"assay_{run_id}.md"
     json_path = out / f"assay_{run_id}.json"
     md_path.write_text(render_assay_markdown(m, run_id=run_id, scoring_mode=scoring_mode,
-                       preflight_status=preflight_status, served_models=served_models), encoding="utf-8")
+                       preflight_status=preflight_status, served_models=served_models,
+                       run_metadata=run_metadata), encoding="utf-8")
     json_path.write_text(json.dumps(assay_to_json(m, scoring_mode=scoring_mode,
-                         preflight_status=preflight_status, served_models=served_models), indent=2),
+                         preflight_status=preflight_status, served_models=served_models,
+                         run_metadata=run_metadata), indent=2),
                          encoding="utf-8")
     return md_path, json_path

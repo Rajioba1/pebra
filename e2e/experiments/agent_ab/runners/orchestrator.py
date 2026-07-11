@@ -23,7 +23,14 @@ from pathlib import Path
 from typing import Any
 
 from e2e.experiments.agent_ab.metrics import oracle, scorecard
-from e2e.experiments.agent_ab.models import ARM_CONTROL, ARM_SHAM, ARM_TREATMENT, RunOutcome, TaskSpec
+from e2e.experiments.agent_ab.models import (
+    ARM_CONTROL,
+    ARM_SHAM,
+    ARM_TREATMENT,
+    MIN_PAIRS_FOR_EFFICACY,
+    RunOutcome,
+    TaskSpec,
+)
 from e2e.experiments.agent_ab.reports import render_report
 from e2e.experiments.agent_ab.runners import preflight, run_artifacts, run_gate, run_pair, subject_protocol
 from e2e.experiments.agent_ab.specimens import loader as specimen_loader
@@ -36,6 +43,7 @@ _RCA_IDENTITY_KEYS = (
     "status", "validation_mode", "version", "sha256", "source_revision",
     "required_sha256", "accepted_version", "required_source_revision",
 )
+_RUN_DESIGN_KEYS = ("experiment_design_sha256",)
 _EVAL_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "evaluator_tests"
 _ALLOW_UNVERIFIED_ENV = "E2E_AB_ALLOW_UNVERIFIED"
 _TERMINAL_PHASES = frozenset({"finished", "failed", "insufficient_data", "no_headroom"})
@@ -194,6 +202,34 @@ def _git_commit() -> str | None:
     return commit or None
 
 
+def _assert_harness_clean(root: Path | None = None) -> str:
+    """Return the harness HEAD only when the experiment code is a clean Git checkout."""
+    repo = root or Path(__file__).resolve().parents[4]
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise ExperimentRunError("cannot identify a clean harness Git checkout") from None
+    commit = head.stdout.strip()
+    if head.returncode != 0 or not commit:
+        raise ExperimentRunError("cannot identify a clean harness Git checkout")
+    if status.returncode != 0:
+        raise ExperimentRunError("cannot verify that the harness Git checkout is clean")
+    if status.stdout.strip():
+        raise ExperimentRunError(
+            "harness Git checkout has uncommitted changes; commit them before running the experiment"
+        )
+    return commit
+
+
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -214,15 +250,87 @@ def _rca_identity(rca: dict[str, object]) -> tuple[object, ...]:
     return tuple(rca[key] for key in _RCA_IDENTITY_KEYS)
 
 
-def _run_metadata(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
+def _design_sha256(design: dict[str, Any]) -> str:
+    canonical = json.dumps(design, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _experiment_design(
+    args: argparse.Namespace,
+    cfg: dict[str, Any],
+    planned_specs: list[TaskSpec],
+    *,
+    provider: str,
+    model: str | None,
+    source_head_sha: str | None = None,
+    harness_commit: str | None = None,
+) -> dict[str, Any]:
+    is_assay = args.mode in {"assay", "assay_js"}
+    specs = sorted(planned_specs, key=lambda spec: spec.task_id)
+    protocol_hashes = {
+        arm: _sha256_text(subject_protocol.protocol_for_arm(arm))
+        for arm in run_pair.arms_for("risky")
+    }
+    return {
+        "git_commit": harness_commit if harness_commit is not None else _git_commit(),
+        "mode": args.mode,
+        "mode_config": cfg[args.mode],
+        "subject_config": cfg.get("subject", {}),
+        "thresholds": cfg.get("thresholds", {}),
+        "bootstrap_seed": cfg.get("bootstrap_seed", 0),
+        "provider": provider,
+        "model": model,
+        "source_head_sha": source_head_sha,
+        "execution": {
+            "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
+            "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
+            "semantic_diff_env": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF"),
+        },
+        "subject_prompt_template_sha256": _sha256_text(run_pair._SUBJECT_PROMPT),  # noqa: SLF001
+        "protocol_hashes": protocol_hashes,
+        "task_specs": [dataclasses.asdict(spec) for spec in specs],
+        "arm_topology": {
+            spec.task_id: list(
+                run_pair.arms_for(spec.harm_label)
+                if is_assay
+                else (ARM_CONTROL, ARM_TREATMENT)
+            )
+            for spec in specs
+        },
+    }
+
+
+def _run_metadata(
+    args: argparse.Namespace,
+    cfg: dict[str, Any],
+    planned_specs: list[TaskSpec] | None = None,
+    *,
+    source_head_sha: str | None = None,
+    harness_commit: str | None = None,
+) -> dict[str, Any]:
     provider = os.environ.get("E2E_AB_PROVIDER", "anthropic").strip().lower() or "anthropic"
     subject_cfg = cfg.get("subject", {})
     model = os.environ.get("E2E_AB_MODEL")
     if not model:
         model = "deepseek-v4-flash" if provider == "deepseek" else subject_cfg.get("model")
+    seeds_per_arm = int(cfg[args.mode]["seeds_per_arm"])
+    design = _experiment_design(
+        args,
+        cfg,
+        planned_specs or [],
+        provider=provider,
+        model=model,
+        source_head_sha=source_head_sha,
+        harness_commit=harness_commit,
+    )
     return {
-        "git_commit": _git_commit(),
+        "git_commit": design["git_commit"],
         "mode": args.mode,
+        "seeds_per_arm": seeds_per_arm,
+        "minimum_pairs_for_efficacy": MIN_PAIRS_FOR_EFFICACY,
+        "run_intent": (
+            "diagnostic" if seeds_per_arm < MIN_PAIRS_FOR_EFFICACY else "efficacy"
+        ),
         "provider": provider,
         "model": model,
         "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
@@ -234,13 +342,12 @@ def _run_metadata(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, An
             "E2E_AB_PROVIDER": os.environ.get("E2E_AB_PROVIDER"),
             "PEBRA_CODEGRAPH_SEMANTIC_DIFF": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF"),
         },
-        "subject_prompt_template_sha256": _sha256_text(run_pair._SUBJECT_PROMPT),  # noqa: SLF001
+        "subject_prompt_template_sha256": design["subject_prompt_template_sha256"],
         "protocol_file": subject_protocol.INSTRUCTION_REL_PATH,
         "rca": _rca_metadata(cfg),
-        "protocol_hashes": {
-            arm: _sha256_text(subject_protocol.protocol_for_arm(arm))
-            for arm in run_pair.arms_for("risky")
-        },
+        "protocol_hashes": design["protocol_hashes"],
+        "experiment_design": design,
+        "experiment_design_sha256": _design_sha256(design),
     }
 
 
@@ -265,6 +372,25 @@ def _assert_resume_rca_compatible(out_dir: Path, run_metadata: dict[str, Any]) -
         )
 
 
+def _assert_resume_design_compatible(out_dir: Path, run_metadata: dict[str, Any]) -> None:
+    """Keep one run-id bound to one claim design; never mix diagnostic and efficacy rows."""
+    outcomes_path = out_dir / "outcomes.json"
+    if not outcomes_path.exists():
+        return
+    try:
+        prior = json.loads(outcomes_path.read_text(encoding="utf-8"))["run_metadata"]
+        prior_identity = tuple(prior[key] for key in _RUN_DESIGN_KEYS)
+        current_identity = tuple(run_metadata[key] for key in _RUN_DESIGN_KEYS)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ExperimentRunError(
+            "cannot resume outcomes without prior run-design metadata; use a fresh run-id"
+        ) from None
+    if prior_identity != current_identity:
+        raise ExperimentRunError(
+            "run design changed since this run-id produced outcomes; use a fresh run-id"
+        )
+
+
 def _assert_rca_probe_usable(run_metadata: dict[str, Any]) -> None:
     status = (run_metadata.get("rca") or {}).get("status")
     if status not in {"accepted", "rejected", "absent"}:
@@ -286,6 +412,19 @@ def _assert_active_rca_compatible(
     if not unchanged:
         raise ExperimentRunError(
             "RCA fingerprint changed during this run; outcomes were not persisted; use a fresh run-id"
+        )
+
+
+def _assert_active_harness_compatible(run_metadata: dict[str, Any]) -> None:
+    """Abort before persistence if live CLI subprocesses could have loaded changed harness code."""
+    try:
+        expected = run_metadata["experiment_design"]["git_commit"]
+    except (KeyError, TypeError):
+        raise ExperimentRunError("active run is missing harness design identity") from None
+    current = _assert_harness_clean()
+    if current != expected:
+        raise ExperimentRunError(
+            "harness changed during this run; outcomes were not persisted; use a fresh run-id"
         )
 
 
@@ -379,6 +518,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-oracle-preflight", action="store_true")
     parser.add_argument("--skip-graph-preflight", action="store_true")
     args = parser.parse_args(argv)
+    harness_commit = _assert_harness_clean()
 
     if not args.preflight_only:
         run_gate.check_gate()  # fail-closed before ANY clone / model call
@@ -402,11 +542,19 @@ def main(argv: list[str] | None = None) -> int:
         "revise_safer": "skipped" if (args.skip_graph_preflight or not is_assay) else "passed",
     }
     scoring_mode = _scoring_mode(planned_specs)
-    run_metadata = _run_metadata(args, cfg)
+    source_root = rs.source_repo_path()
+    preflight.run_repo_identity_preflight(planned_specs, source_root)
+    external = rs.prepare_external_repo(source_root)
+    run_metadata = _run_metadata(
+        args,
+        cfg,
+        planned_specs,
+        source_head_sha=getattr(external, "head_sha", None),
+        harness_commit=harness_commit,
+    )
     _assert_rca_probe_usable(run_metadata)
     _assert_resume_rca_compatible(out_dir, run_metadata)
-    preflight.run_repo_identity_preflight(planned_specs, rs.source_repo_path())
-    external = rs.prepare_external_repo()
+    _assert_resume_design_compatible(out_dir, run_metadata)
     _write_run_status(out_dir, args.mode, "preflight",
                       preflight_status=preflight_status, scoring_mode=scoring_mode,
                       run_metadata=run_metadata)
@@ -476,6 +624,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 outcomes.append(oracle.score_run(subject, spec))
                 present_sham.add(key)
+                _assert_active_harness_compatible(run_metadata)
                 _assert_active_rca_compatible(run_metadata, cfg)
                 _write_outcomes(outcomes_path, outcomes, args.run_id, run_metadata=run_metadata)
             insufficient_data, no_headroom = _sham_admission_failures(outcomes, plan)
@@ -517,6 +666,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
             for res in results:
                 outcomes.append(oracle.score_run(res, spec))
+            _assert_active_harness_compatible(run_metadata)
             _assert_active_rca_compatible(run_metadata, cfg)
             _write_outcomes(
                 outcomes_path, outcomes, args.run_id, run_metadata=run_metadata
@@ -529,7 +679,8 @@ def main(argv: list[str] | None = None) -> int:
             render_report.write_assay_report(assay, out_dir=out_dir / "reports", run_id=args.run_id,
                                              scoring_mode=scoring_mode,
                                              preflight_status=preflight_status,
-                                             served_models=served_models)
+                                             served_models=served_models,
+                                             run_metadata=run_metadata)
         else:
             ab = scorecard.aggregate(outcomes, bootstrap_seed=cfg.get("bootstrap_seed", 0))
             render_report.write_report(ab, out_dir=out_dir / "reports", run_id=args.run_id,

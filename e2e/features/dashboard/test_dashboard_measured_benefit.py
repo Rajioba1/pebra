@@ -22,10 +22,25 @@ from e2e.utils import cli_harness as ch
 from e2e.utils import dashboard_harness as dh
 from e2e.utils import rca_probe
 
-pytestmark = pytest.mark.skipif(
-    rca_probe.find_rca() is None, reason="rust-code-analysis-cli not installed"
-)
 _E2E_UI = os.environ.get("E2E_UI") == "1"
+
+
+def _accepted_rca_available() -> bool:
+    config = json.loads(
+        (Path(__file__).resolve().parents[2] / "experiments" / "agent_ab" / "config.json")
+        .read_text(encoding="utf-8")
+    )
+    pin = config["toolchain"]["rca"]
+    return rca_probe.fingerprint(
+        accepted_version=pin["version"],
+        required_source_revision=pin["source_revision"],
+    )["status"] == "accepted"
+
+
+@pytest.fixture
+def require_accepted_rca() -> None:
+    if not _accepted_rca_available():
+        pytest.skip("production-accepted rust-code-analysis-cli unavailable")
 
 _BEFORE = "def f(x):\n    if x > 0:\n        return x\n    return -x\n"
 _SIMPLER = "def f(x):\n    return abs(x)\n"
@@ -130,7 +145,7 @@ def _api_get(port: int, token: str, path: str) -> dict:
         return json.loads(resp.read())
 
 
-def test_dashboard_exposes_measured_rca_benefit(tmp_path):
+def test_dashboard_exposes_measured_rca_benefit(tmp_path, require_accepted_rca):
     repo = _repo(tmp_path / "repo", "calc.py", _BEFORE)
     db = tmp_path / "p.db"
     req = _request(tmp_path / "r.json", "calc.py", _patch("calc.py", _BEFORE, _SIMPLER))
@@ -153,7 +168,7 @@ def test_dashboard_exposes_measured_rca_benefit(tmp_path):
 
 
 @pytest.mark.skipif(not _E2E_UI, reason="E2E_UI not set (needs pebra[ui-e2e] + playwright install)")
-def test_dashboard_history_renders_measured_benefit_detail(tmp_path):
+def test_dashboard_history_renders_measured_benefit_detail(tmp_path, require_accepted_rca):
     from playwright.sync_api import sync_playwright
 
     repo = _repo(tmp_path / "repo", "calc.py", _BEFORE)

@@ -28,10 +28,14 @@ def _oc(task_id, arm, seed, *, harm_label="risky", harm=False, over_cautious=Fal
     )
 
 
-def _write_run(ab_out, run_id, outcomes, *, run_status=None, coverage=None, reports=False):
+def _write_run(
+    ab_out, run_id, outcomes, *, run_status=None, run_metadata=None, coverage=None, reports=False
+):
     run_dir = ab_out / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     payload = {"run_id": run_id, "outcomes": [dataclasses.asdict(o) for o in outcomes]}
+    if run_metadata is not None:
+        payload["run_metadata"] = run_metadata
     (run_dir / "outcomes.json").write_text(json.dumps(payload), encoding="utf-8")
     if run_status is not None:
         (run_dir / "run_status.json").write_text(json.dumps(run_status), encoding="utf-8")
@@ -191,7 +195,41 @@ def test_assay_scoreboard_surfaces_verdict_and_pair_counts(tmp_path):
     assert any("n_pairs_risky" in p for p in sb["pairwise"])
 
 
-def test_scoreboard_prefers_final_report_json_when_present(tmp_path):
+def test_live_one_seed_scoreboard_is_stamped_diagnostic(tmp_path):
+    arms = run_pair.arms_for("risky")
+    outcomes = [_oc("T1", arm, 0, harm=(arm == models.ARM_SHAM)) for arm in arms]
+    _write_run(
+        tmp_path,
+        "r1",
+        outcomes,
+        run_status={
+            "run_id": "r1",
+            "mode": "assay_js",
+            "phase": "running",
+            "preflight_status": {"oracle": "passed", "graph": "passed", "revise_safer": "passed"},
+            "run_metadata": {
+                "seeds_per_arm": 1,
+                "minimum_pairs_for_efficacy": 3,
+                "run_intent": "diagnostic",
+            },
+        },
+    )
+    corpus = [TaskSpec(
+        "T1", "d", ("a.ts",), "risky", ("a.ts",), "build_failure", True,
+        language="typescript", harness_id="node", specimen="javascript",
+    )]
+    config = {"assay_js": {"tasks": ["T1"], "seeds_per_arm": 1}, "bootstrap_seed": 0}
+
+    view = aggregate.build_run_view(
+        "r1", ab_out=tmp_path, mode=None, corpus=corpus, config=config
+    )
+
+    assert view["scoreboard"]["verdict"] == "DIAGNOSTIC_ONLY"
+    assert view["scoreboard"]["diagnostic_only"] is True
+    assert view["scoreboard"]["claim_valid"] is False
+
+
+def test_scoreboard_preserves_report_provenance_but_recomputes_claim_validity(tmp_path):
     outcomes = [_oc("T1", a, 0, harm=(a == models.ARM_SHAM)) for a in run_pair.arms_for("risky")]
     run_dir = _write_run(tmp_path, "r1", outcomes)
     expected = {
@@ -201,6 +239,7 @@ def test_scoreboard_prefers_final_report_json_when_present(tmp_path):
         "scoring_mode": "custom_report_scope",
         "arms": {},
         "pairwise": [],
+        "custom_report_field": "kept",
     }
     (run_dir / "reports").mkdir()
     (run_dir / "reports" / "assay_r1.json").write_text(json.dumps(expected), encoding="utf-8")
@@ -210,9 +249,86 @@ def test_scoreboard_prefers_final_report_json_when_present(tmp_path):
     view = aggregate.build_run_view("r1", ab_out=tmp_path, mode="assay", corpus=corpus,
                                     config=config)
 
-    assert view["scoreboard"]["verdict"] == "REPORT_IS_AUTHORITATIVE"
+    assert view["scoreboard"]["verdict"] == "INVALID_DEBUG_RUN"
+    assert view["scoreboard"]["raw_verdict"] != "REPORT_IS_AUTHORITATIVE"
+    assert view["scoreboard"]["claim_valid"] is False
     assert view["scoreboard"]["served_models"] == ["deepseek-test"]
     assert view["scoreboard"]["scoring_mode"] == "custom_report_scope"
+    assert view["scoreboard"]["custom_report_field"] == "kept"
+
+
+def test_current_run_status_preflight_overrides_stale_passing_report(tmp_path):
+    arms = run_pair.arms_for("risky")
+    outcomes = [
+        _oc("T1", arm, seed, harm=(arm == models.ARM_SHAM))
+        for seed in range(3)
+        for arm in arms
+    ]
+    metadata = {
+        "seeds_per_arm": 3,
+        "minimum_pairs_for_efficacy": 3,
+        "run_intent": "efficacy",
+    }
+    run_dir = _write_run(
+        tmp_path,
+        "r1",
+        outcomes,
+        run_metadata=metadata,
+        run_status={
+            "run_id": "r1",
+            "mode": "assay_js",
+            "phase": "running",
+            "preflight_status": {
+                "oracle": "skipped", "graph": "passed", "revise_safer": "passed",
+            },
+            "run_metadata": metadata,
+        },
+    )
+    (run_dir / "reports").mkdir()
+    (run_dir / "reports" / "assay_r1.json").write_text(json.dumps({
+        "verdict": "PEBRA_SUPERIOR",
+        "preflight_status": {
+            "oracle": "passed", "graph": "passed", "revise_safer": "passed",
+        },
+        "served_models": [],
+        "scoring_mode": "build_break_scope",
+    }), encoding="utf-8")
+    corpus = [TaskSpec("T1", "d", ("a.ts",), "risky", ("a.ts",), "build_failure", True)]
+    config = {"assay_js": {"tasks": ["T1"], "seeds_per_arm": 3}, "bootstrap_seed": 0}
+
+    view = aggregate.build_run_view(
+        "r1", ab_out=tmp_path, mode=None, corpus=corpus, config=config
+    )
+
+    assert view["scoreboard"]["verdict"] == "INVALID_DEBUG_RUN"
+    assert view["scoreboard"]["preflight_valid"] is False
+    assert view["scoreboard"]["claim_valid"] is False
+
+
+def test_scoreboard_recovers_diagnostic_metadata_from_crash_survivable_outcomes(tmp_path):
+    arms = run_pair.arms_for("risky")
+    outcomes = [_oc("T1", arm, 0, harm=(arm == models.ARM_SHAM)) for arm in arms]
+    _write_run(
+        tmp_path,
+        "r1",
+        outcomes,
+        run_metadata={
+            "seeds_per_arm": 1,
+            "minimum_pairs_for_efficacy": 3,
+            "run_intent": "diagnostic",
+        },
+    )
+    corpus = [TaskSpec("T1", "d", ("a.ts",), "risky", ("a.ts",), "build_failure", True)]
+    config = {"assay_js": {"tasks": ["T1"], "seeds_per_arm": 1}, "bootstrap_seed": 0}
+
+    view = aggregate.build_run_view(
+        "r1", ab_out=tmp_path, mode="assay_js", corpus=corpus, config=config
+    )
+
+    assert view["scoreboard"]["verdict"] == "INVALID_DEBUG_RUN"
+    assert view["scoreboard"]["diagnostic_only"] is True
+    assert view["scoreboard"]["run_intent"] == "diagnostic"
+    assert view["scoreboard"]["claim_valid"] is False
 
 
 # --- dashboards + arm attribution (blinded clone dirs) ------------------------------------------

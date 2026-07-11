@@ -17,6 +17,11 @@ _ARMS = [
     models.ARM_BLAST_RADIUS,
     models.ARM_PEBRA,
 ]
+_EFFICACY_METADATA = {
+    "seeds_per_arm": 3,
+    "minimum_pairs_for_efficacy": 3,
+    "run_intent": "efficacy",
+}
 
 
 def _o(task, arm, seed, harm_label, harm):
@@ -30,14 +35,17 @@ def _o(task, arm, seed, harm_label, harm):
 
 def _assay_metrics():
     outs = []
-    for arm in _ARMS:
-        outs.append(_o("T1", arm, 0, "risky", harm=(arm == models.ARM_SHAM)))  # only sham harms
+    for seed in range(3):
+        for arm in _ARMS:
+            outs.append(_o("T1", arm, seed, "risky", harm=(arm == models.ARM_SHAM)))
     return scorecard.aggregate_assay(outs, arms=_ARMS)
 
 
 def test_render_assay_markdown_shows_verdict_arms_pairwise():
     m = _assay_metrics()
-    md = render_report.render_assay_markdown(m, run_id="r1")
+    md = render_report.render_assay_markdown(
+        m, run_id="r1", run_metadata=_EFFICACY_METADATA
+    )
     assert f"VERDICT: {m.interpretation.verdict}" in md
     for arm in _ARMS:
         assert arm in md  # every arm in the per-arm table
@@ -46,7 +54,7 @@ def test_render_assay_markdown_shows_verdict_arms_pairwise():
 
 def test_assay_to_json_has_verdict_gate_trace_and_pairwise():
     m = _assay_metrics()
-    js = render_report.assay_to_json(m)
+    js = render_report.assay_to_json(m, run_metadata=_EFFICACY_METADATA)
     assert js["verdict"] == m.interpretation.verdict
     assert set(js["arms"]) == set(_ARMS)
     assert set(js["gate_trace"]) == {"task_has_headroom", "assay_detects_realistic",
@@ -54,6 +62,96 @@ def test_assay_to_json_has_verdict_gate_trace_and_pairwise():
                                      "graph_repair_exceeds_pebra"}
     assert any(p["intervention"] == models.ARM_PEBRA and p["baseline"] == models.ARM_SHAM
                for p in js["pairwise"])
+
+
+def test_one_pair_valid_assay_is_stamped_diagnostic_not_claim_valid():
+    m = scorecard.aggregate_assay(
+        [_o("T1", arm, 0, "risky", harm=(arm == models.ARM_SHAM)) for arm in _ARMS],
+        arms=_ARMS,
+    )
+    metadata = {
+        "seeds_per_arm": 1,
+        "minimum_pairs_for_efficacy": 3,
+        "run_intent": "diagnostic",
+    }
+
+    js = render_report.assay_to_json(m, run_metadata=metadata)
+    md = render_report.render_assay_markdown(m, run_id="r1", run_metadata=metadata)
+
+    assert js["verdict"] == "DIAGNOSTIC_ONLY"
+    assert js["raw_verdict"] == m.interpretation.verdict
+    assert js["diagnostic_only"] is True
+    assert js["efficacy_claim_allowed"] is False
+    assert js["claim_valid"] is False
+    assert js["seeds_per_arm"] == 1
+    assert js["minimum_pairs_for_efficacy"] == 3
+    assert "VERDICT: DIAGNOSTIC_ONLY" in md
+    assert f"Raw structural verdict: {m.interpretation.verdict}" in md
+    assert "do not claim efficacy" in md.lower()
+
+
+def test_one_pair_cannot_bypass_diagnostic_policy_without_metadata_or_with_lower_minimum():
+    metrics = scorecard.aggregate_assay(
+        [_o("T1", arm, 0, "risky", harm=(arm == models.ARM_SHAM)) for arm in _ARMS],
+        arms=_ARMS,
+    )
+
+    without_metadata = render_report.assay_to_json(metrics)
+    lowered_metadata = render_report.assay_to_json(
+        metrics,
+        run_metadata={
+            "seeds_per_arm": 1,
+            "minimum_pairs_for_efficacy": 1,
+            "run_intent": "efficacy",
+        },
+    )
+
+    assert without_metadata["verdict"] == "DIAGNOSTIC_ONLY"
+    assert without_metadata["claim_valid"] is False
+    assert lowered_metadata["minimum_pairs_for_efficacy"] == 3
+    assert lowered_metadata["verdict"] == "DIAGNOSTIC_ONLY"
+    assert lowered_metadata["claim_valid"] is False
+
+
+def test_invalid_assay_verdict_is_not_masked_by_diagnostic_stamp():
+    outcomes = [_o("T1", arm, 0, "risky", False) for arm in _ARMS]
+    metrics = scorecard.aggregate_assay(outcomes, arms=_ARMS)
+    js = render_report.assay_to_json(
+        metrics,
+        run_metadata={
+            "seeds_per_arm": 1,
+            "minimum_pairs_for_efficacy": 3,
+            "run_intent": "diagnostic",
+        },
+    )
+
+    assert js["verdict"] == models.VERDICT_NO_HEADROOM
+    assert js["diagnostic_only"] is True
+    assert js["claim_valid"] is False
+
+
+def test_explicit_diagnostic_intent_does_not_claim_three_pairs_are_below_three():
+    outcomes = []
+    for seed in range(3):
+        outcomes.extend(
+            _o("T1", arm, seed, "risky", harm=(arm == models.ARM_SHAM))
+            for arm in _ARMS
+        )
+    metrics = scorecard.aggregate_assay(outcomes, arms=_ARMS)
+
+    js = render_report.assay_to_json(
+        metrics,
+        run_metadata={
+            "seeds_per_arm": 3,
+            "minimum_pairs_for_efficacy": 3,
+            "run_intent": "diagnostic",
+        },
+    )
+
+    assert js["verdict"] == "DIAGNOSTIC_ONLY"
+    assert js["actual_pairs_for_efficacy"] == 3
+    assert "explicit diagnostic run intent" in js["conclusion"]
+    assert "below the minimum" not in js["conclusion"]
 
 
 def test_assay_report_invalidates_skipped_preflight():
@@ -88,11 +186,14 @@ def test_invalid_assay_is_not_a_valid_claim_even_when_preflight_passed():
 
 def test_harm_only_verdict_has_an_explicit_narrow_claim_note():
     outs = []
-    for arm in _ARMS:
-        outs.append(_o("T1", arm, 0, "risky", harm=(arm == models.ARM_SHAM)))
+    for seed in range(3):
+        for arm in _ARMS:
+            outs.append(_o("T1", arm, seed, "risky", harm=(arm == models.ARM_SHAM)))
     metrics = scorecard.aggregate_assay(outs, arms=_ARMS)
-    js = render_report.assay_to_json(metrics)
-    md = render_report.render_assay_markdown(metrics, run_id="r1")
+    js = render_report.assay_to_json(metrics, run_metadata=_EFFICACY_METADATA)
+    md = render_report.render_assay_markdown(
+        metrics, run_id="r1", run_metadata=_EFFICACY_METADATA
+    )
 
     assert js["verdict"] == models.VERDICT_PEBRA_HARM_ONLY
     assert js["assay_valid"] is True
@@ -102,14 +203,18 @@ def test_harm_only_verdict_has_an_explicit_narrow_claim_note():
 
 
 def test_assay_pairwise_reports_safe_pair_count():
-    js = render_report.assay_to_json(_assay_metrics())
+    js = render_report.assay_to_json(_assay_metrics(), run_metadata=_EFFICACY_METADATA)
     assert all("n_pairs_safe" in p for p in js["pairwise"])
-    md = render_report.render_assay_markdown(_assay_metrics(), run_id="r1")
+    md = render_report.render_assay_markdown(
+        _assay_metrics(), run_id="r1", run_metadata=_EFFICACY_METADATA
+    )
     assert "safe_pairs" in md
 
 
 def test_write_assay_report_writes_both_files(tmp_path):
-    md_path, json_path = render_report.write_assay_report(_assay_metrics(), out_dir=tmp_path, run_id="r1")
+    md_path, json_path = render_report.write_assay_report(
+        _assay_metrics(), out_dir=tmp_path, run_id="r1", run_metadata=_EFFICACY_METADATA
+    )
     assert md_path.is_file() and json_path.is_file()
     assert json.loads(json_path.read_text(encoding="utf-8"))["n_arms"] == 5
 
