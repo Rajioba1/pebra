@@ -51,3 +51,11 @@ def test_js1_zshy_oracle_patches_against_real_zod(tmp_path):
         fixed, profile="zshy", selector="zod:tsconfig.build.json", timeout=1200, install_timeout=1200
     )
     assert fixed_build.ran and fixed_build.passed, fixed_build.error_summary
+    hidden_rel = Path("packages/zod/src/v3/tests/schema-type-label.test.ts")
+    hidden = _CORPUS / "evaluator_tests" / "JS1" / hidden_rel
+    destination = fixed / hidden_rel
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(hidden, destination)
+    fixed_test = node_harness.run_tests(fixed, test_path=hidden_rel, timeout=1200, install_timeout=1200)
+    assert fixed_test.ran and fixed_test.passed, fixed_test.error_summary
+    assert (fixed_test.tests_selected or 0) > 0

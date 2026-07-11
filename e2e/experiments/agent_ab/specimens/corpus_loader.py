@@ -9,6 +9,7 @@ Validation is the corpus's honesty guard:
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from e2e.experiments.agent_ab.forbidden import CORPUS_FORBIDDEN_TERMS, match_terms
@@ -154,6 +155,27 @@ def load_corpus(
             raise CorpusError(
                 f"task {tid!r} has invalid required_language_tier {required_language_tier!r}"
             )
+        p_success = oracle.get("assay_p_success", 0.75)
+        immediate_benefit = oracle.get("assay_immediate_benefit", 0.5)
+        review_cost = oracle.get("assay_review_cost", 0.1)
+        if (
+            isinstance(p_success, bool)
+            or not isinstance(p_success, (int, float))
+            or not math.isfinite(p_success)
+            or not 0.0 <= p_success <= 1.0
+        ):
+            raise CorpusError(f"task {tid!r} has invalid assay_p_success {p_success!r}")
+        for name, value in (
+            ("assay_immediate_benefit", immediate_benefit),
+            ("assay_review_cost", review_cost),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0.0
+            ):
+                raise CorpusError(f"task {tid!r} has invalid {name} {value!r}")
 
         specs.append(TaskSpec(
             task_id=tid,
@@ -168,6 +190,10 @@ def load_corpus(
             build_solution=build_solution,
             required_language_tier=required_language_tier,
             requires_measured_benefit=bool(oracle.get("requires_measured_benefit", False)),
+            requires_natural_safe_route=bool(oracle.get("requires_natural_safe_route", False)),
+            assay_p_success=float(p_success),
+            assay_immediate_benefit=float(immediate_benefit),
+            assay_review_cost=float(review_cost),
             language=language,
             harness_id=harness_id,
             specimen=specimen,

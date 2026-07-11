@@ -6,7 +6,7 @@ index f4028549..5b1d386d 100644
    "~standard": StandardSchemaV1.Props<Input, Output>;
  
    abstract _parse(input: ParseInput): ParseReturnType<Output>;
-+  abstract _schemaTypeLabel(): string;
++  abstract schemaTypeLabel(): string;
  
    _getType(input: ParseInput): string {
      return getParsedType(input.data);

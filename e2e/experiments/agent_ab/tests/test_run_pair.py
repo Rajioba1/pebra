@@ -368,6 +368,27 @@ def test_real_advisory_backend_threads_revise_attempts(monkeypatch, tmp_path):
     assert attempts == [(0, 1), (1, 1)]
 
 
+def test_real_advisory_backend_threads_task_benefit_profile(monkeypatch, tmp_path):
+    seen = {}
+    spec = TaskSpec(
+        "JS1", "d", ("a.ts",), "risky", ("a.ts",), "build_failure", True,
+        assay_p_success=0.85, assay_immediate_benefit=0.65, assay_review_cost=0.05,
+    )
+
+    def _advise(payload, **kwargs):
+        seen.update(kwargs)
+        return {"recommended_decision": "proceed", "risk_level": "low", "advisory": "x", "detail": {}}
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    backend = run_pair._advisory_backend("pebra", tmp_path, tmp_path / "p.db", spec=spec)
+
+    backend({"target_file": "a.ts", "proposed_patch": "diff", "change_summary": "x"})
+
+    assert seen["p_success"] == pytest.approx(0.85)
+    assert seen["immediate_benefit"] == pytest.approx(0.65)
+    assert seen["review_cost"] == pytest.approx(0.05)
+
+
 def test_repair_arm_verifies_candidate_and_raises_cap(monkeypatch, tmp_path):
     # P4: the graph_repair arm host-produces candidate_verification on the narrowed resubmit (attempt>=1)
     # and raises the cap to 2 so gate 7 is reachable. Verification pieces are monkeypatched (no dotnet).

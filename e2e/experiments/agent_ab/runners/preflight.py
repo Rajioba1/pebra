@@ -31,7 +31,7 @@ from typing import Any, Callable
 
 from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab.models import TaskSpec
-from e2e.experiments.agent_ab.runners import run_artifacts
+from e2e.experiments.agent_ab.runners import evaluator, run_artifacts
 from e2e.experiments.agent_ab.tools import candidate_materializer, candidate_verifier
 from e2e.external.utils import repo_source as rs
 
@@ -121,9 +121,9 @@ def _oracle_failure(spec: TaskSpec, build) -> str | None:
     return None
 
 
-def _patch_touched_files(patch_file: Path) -> set[str]:
+def _patch_text_touched_files(patch: str) -> set[str]:
     touched: set[str] = set()
-    for line in patch_file.read_text(encoding="utf-8").splitlines():
+    for line in patch.splitlines():
         if not line.startswith("diff --git "):
             continue
         parts = line.split()
@@ -134,6 +134,15 @@ def _patch_touched_files(patch_file: Path) -> set[str]:
             if path != "/dev/null":
                 touched.add(path.replace("\\", "/"))
     return touched
+
+
+def _patch_touched_files(patch_file: Path) -> set[str]:
+    return _patch_text_touched_files(patch_file.read_text(encoding="utf-8"))
+
+
+def _single_patch_target(patch: str) -> str | None:
+    touched = sorted(_patch_text_touched_files(patch))
+    return touched[0] if len(touched) == 1 else None
 
 
 def _correct_fix_scope_failure(spec: TaskSpec, patch_file: Path) -> str | None:
@@ -182,6 +191,11 @@ def _run_spec_test(spec: TaskSpec, repo_path: Path, test_fn: Callable[..., Any])
     if not spec.evaluator_test_project:
         return None
     project = (repo_path / spec.evaluator_test_project).resolve()
+    if not project.is_file():
+        injected = evaluator.inject_task_evaluator(repo_path, spec)
+        if injected is None:
+            return None
+        project = injected.resolve()
     if test_fn is not None:
         if spec.evaluator_test_filter:
             return test_fn(repo_path, project=project, test_filter=spec.evaluator_test_filter)
@@ -218,7 +232,7 @@ def _oracle_test_failure(spec: TaskSpec, test) -> str | None:
 
 
 def _correct_fix_test_failure(spec: TaskSpec, test) -> str | None:
-    if spec.harm_type != "test_failure":
+    if not spec.evaluator_test_project:
         return None
     if test is None or not test.ran:
         return f"{spec.task_id}: correct-fix test did not run (dotnet SDK absent?)"
@@ -284,7 +298,7 @@ def run_oracle_preflight(
                 fix_msg = _correct_fix_failure(spec, fix_build)
                 if fix_msg:
                     failures.append(fix_msg)
-                elif spec.harm_type == "test_failure":
+                elif spec.evaluator_test_project:
                     fix_test_msg = _correct_fix_test_failure(
                         spec, _run_spec_test(spec, correct_repo, test_fn)
                     )
@@ -548,13 +562,18 @@ def _live_revise_safer_assess(
     from e2e.experiments.agent_ab.tools import advisory_check_real  # noqa: PLC0415
     from e2e.utils import cli_harness  # noqa: PLC0415
 
-    target = spec.expected_edit_scope[0] if spec.expected_edit_scope else ""
+    target = _single_patch_target(proposed_patch) or (
+        spec.expected_edit_scope[0] if spec.expected_edit_scope else ""
+    )
     request = advisory_check_real._build_request({  # noqa: SLF001 - shared e2e request builder
         "target_file": target,
         "change_summary": spec.description,
         "proposed_patch": proposed_patch,
     }, revise_safer_attempt=revise_safer_attempt,
-       max_revise_safer_attempts=max_revise_safer_attempts)
+       max_revise_safer_attempts=max_revise_safer_attempts,
+       p_success=spec.assay_p_success,
+       immediate_benefit=spec.assay_immediate_benefit,
+       review_cost=spec.assay_review_cost)
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
         json.dump(request, fh)
         req_path = fh.name
@@ -661,7 +680,16 @@ def run_revise_safer_calibration(
                 )
                 continue
             correct_patch_text = correct_patch.read_text(encoding="utf-8")
-            if spec.language in {"javascript", "typescript"}:
+            if spec.requires_natural_safe_route:
+                fixed = assess_fn(
+                    repo_path,
+                    spec,
+                    correct_patch_text,
+                    reference_db,
+                    revise_safer_attempt=1,
+                    max_revise_safer_attempts=2,
+                )
+            elif spec.language in {"javascript", "typescript"}:
                 verification = candidate_verification_fn(repo_path, spec, correct_patch_text)
                 if verification.get("status") != "passed":
                     failures.append(
@@ -690,6 +718,22 @@ def run_revise_safer_calibration(
             benefit_failure = _benefit_discrimination_failure(spec, bad, fixed)
             if benefit_failure:
                 failures.append(benefit_failure)
+                continue
+            if spec.requires_natural_safe_route:
+                if fixed_decision != "proceed":
+                    failures.append(
+                        f"{spec.task_id}: natural safe route remained blocked ({fixed_decision!r})"
+                    )
+                    continue
+                bad_loss = _expected_loss(bad)
+                fixed_loss = _expected_loss(fixed)
+                if bad_loss is None or fixed_loss is None:
+                    failures.append(f"{spec.task_id}: calibration missing expected_loss")
+                elif fixed_loss >= bad_loss:
+                    failures.append(
+                        f"{spec.task_id}: natural safe route did not lower expected_loss "
+                        f"({fixed_loss} >= {bad_loss})"
+                    )
                 continue
             if fixed_decision in _BLOCKING_DECISIONS:
                 failures.append(

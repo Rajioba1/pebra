@@ -25,6 +25,30 @@ _EVALUATOR_DIR = (
 )
 
 
+def _task_evaluator_dir(task: TaskSpec, evaluator_dir: Path | None = None) -> Path:
+    if evaluator_dir is not None:
+        return evaluator_dir
+    return (
+        Path(__file__).resolve().parents[1]
+        / "specimens" / task.specimen / "corpus" / "evaluator_tests"
+    )
+
+
+def inject_task_evaluator(
+    repo_path: Path, task: TaskSpec, *, evaluator_dir: Path | None = None
+) -> Path | None:
+    """Copy a hidden specimen test into its declared repo-relative destination post-agent."""
+    if not task.evaluator_test_project:
+        return None
+    src_root = _task_evaluator_dir(task, evaluator_dir) / task.task_id
+    source_project = src_root / task.evaluator_test_project
+    if not source_project.is_file():
+        return None
+    shutil.copytree(src_root, repo_path, dirs_exist_ok=True)
+    project = repo_path / task.evaluator_test_project
+    return project if project.is_file() else None
+
+
 def inject_evaluator_tests(
     repo_path: Path, task_id: str, *, evaluator_dir: Path | None = None
 ) -> Path | None:
@@ -53,7 +77,8 @@ def _task_id(task: str | TaskSpec) -> str:
 def _existing_test_project(repo_path: Path, task: str | TaskSpec) -> tuple[Path | None, str | None]:
     if not isinstance(task, TaskSpec) or not task.evaluator_test_project:
         return None, None
-    return (repo_path / task.evaluator_test_project).resolve(), task.evaluator_test_filter
+    project = (repo_path / task.evaluator_test_project).resolve()
+    return (project if project.is_file() else None), task.evaluator_test_filter
 
 
 def _run_build(repo_path: Path, task: str | TaskSpec, build_fn: Callable[[Path], Any] | None):
@@ -78,7 +103,13 @@ def run_evaluator(
     backend = backends.backend_for_spec(task) if isinstance(task, TaskSpec) else backends.get_backend("csharp")
     project, test_filter = _existing_test_project(repo_path, task)
     injected = False
-    if project is None and (not isinstance(task, TaskSpec) or task.language == "csharp"):
+    if project is None and isinstance(task, TaskSpec):
+        project = inject_task_evaluator(repo_path, task, evaluator_dir=evaluator_dir)
+        injected = project is not None
+        if project is None and task.language == "csharp":
+            project = inject_evaluator_tests(repo_path, task.task_id, evaluator_dir=evaluator_dir)
+            injected = project is not None
+    elif project is None:
         project = inject_evaluator_tests(repo_path, _task_id(task), evaluator_dir=evaluator_dir)
         injected = project is not None
     build = _run_build(repo_path, task, build_fn)

@@ -75,6 +75,10 @@ class TaskSpec:
     build_solution: str = "TemplateBlueprint.sln"  # hidden: solution passed to dotnet build/test tools
     required_language_tier: str | None = None  # hidden: "risk_only" | "partial" | "full" preflight floor
     requires_measured_benefit: bool = False  # hidden: fail preflight unless RCA measured this patch
+    requires_natural_safe_route: bool = False  # hidden: reference must re-assess to proceed without proof
+    assay_p_success: float = 0.75  # hidden: task-specific benefit evidence used by the real advisory
+    assay_immediate_benefit: float = 0.5
+    assay_review_cost: float = 0.1
     language: str = "csharp"  # hidden: selects the build/test backend (csharp | javascript | typescript)
     harness_id: str = "dotnet"  # hidden: fixed backend profile family (dotnet | node)
     specimen: str = "csharp"  # hidden: specimen package under specimens/<name>/corpus

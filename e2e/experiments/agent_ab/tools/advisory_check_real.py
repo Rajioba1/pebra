@@ -40,7 +40,8 @@ class AdvisoryOutput(dict[str, Any]):
 
 
 def _build_request(
-    payload: dict[str, Any], *, revise_safer_attempt: int = 0, max_revise_safer_attempts: int = 1
+    payload: dict[str, Any], *, revise_safer_attempt: int = 0, max_revise_safer_attempts: int = 1,
+    p_success: float = 0.75, immediate_benefit: float = 0.5, review_cost: float = 0.1,
 ) -> dict[str, Any]:
     target = payload.get("target_file", "")
     summary = payload.get("change_summary", "proposed change")
@@ -56,9 +57,10 @@ def _build_request(
         "max_revise_safer_attempts": max(1, int(max_revise_safer_attempts)),
     }
     evidence = {
-        "events": [], "p_success": 0.75, "immediate_benefit": 0.5, "review_cost": 0.1,
+        "events": [], "p_success": p_success, "immediate_benefit": immediate_benefit,
+        "review_cost": review_cost,
         "criticality_stage": "C3", "criticality_value": 0.8,
-        "edit_confidence_factors": {"p_success": 0.75, "evidence_quality": 0.7, "testability": 0.7,
+        "edit_confidence_factors": {"p_success": p_success, "evidence_quality": 0.7, "testability": 0.7,
                                     "reversibility": 0.7, "source_reliability": 0.7,
                                     "scope_control": 0.7},
     }
@@ -157,12 +159,14 @@ def _shape_output(result: dict[str, Any]) -> dict[str, Any]:
 
 def advise(
     payload: dict[str, Any], *, repo_root: Path | str, db: Path | str, revise_safer_attempt: int = 0,
-    max_revise_safer_attempts: int = 1,
+    max_revise_safer_attempts: int = 1, p_success: float = 0.75,
+    immediate_benefit: float = 0.5, review_cost: float = 0.1,
 ) -> dict[str, Any]:
     """Run PEBRA on the proposed change and return the shared, arm-neutral advisory shape."""
     request = _build_request(
         payload, revise_safer_attempt=revise_safer_attempt,
         max_revise_safer_attempts=max_revise_safer_attempts,
+        p_success=p_success, immediate_benefit=immediate_benefit, review_cost=review_cost,
     )
     trusted_verification = payload.get("candidate_verification")
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:

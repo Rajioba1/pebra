@@ -1,14 +1,15 @@
-diff --git a/packages/zod/src/v3/types.ts b/packages/zod/src/v3/types.ts
-index f4028549..71814464 100644
---- a/packages/zod/src/v3/types.ts
-+++ b/packages/zod/src/v3/types.ts
-@@ -168,6 +168,9 @@ export abstract class ZodType<Output = any, Def extends ZodTypeDef = ZodTypeDef,
-   "~standard": StandardSchemaV1.Props<Input, Output>;
+diff --git a/packages/zod/src/v3/helpers/util.ts b/packages/zod/src/v3/helpers/util.ts
+index 030ea821..1d7eeb59 100644
+--- a/packages/zod/src/v3/helpers/util.ts
++++ b/packages/zod/src/v3/helpers/util.ts
+@@ -78,6 +78,10 @@ export namespace util {
+   };
+ }
  
-   abstract _parse(input: ParseInput): ParseReturnType<Output>;
-+  _schemaTypeLabel(): string {
-+    return "schema";
-+  }
- 
-   _getType(input: ParseInput): string {
-     return getParsedType(input.data);
++export function schemaTypeLabel(schema: { _def: { typeName: string } }): string {
++  return schema._def.typeName.replace(/^Zod/, "").toLowerCase();
++}
++
+ export namespace objectUtil {
+   export type MergeShapes<U, V> =
+     // fast path when there is no keys overlap

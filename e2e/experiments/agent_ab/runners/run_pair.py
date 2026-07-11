@@ -245,9 +245,16 @@ def _advisory_backend(
                 payload = {**payload, "candidate_verification":
                            _verify_candidate_for_repair(payload, repo_path, spec or TaskSpec(
                                "_", "", (), "safe", ("_",), "none", False))}
+            benefit_profile = {}
+            if spec is not None:
+                benefit_profile = {
+                    "p_success": spec.assay_p_success,
+                    "immediate_benefit": spec.assay_immediate_benefit,
+                    "review_cost": spec.assay_review_cost,
+                }
             result = advisory_check_real.advise(
                 payload, repo_root=repo_path, db=db_path, revise_safer_attempt=attempt,
-                max_revise_safer_attempts=max_attempts,
+                max_revise_safer_attempts=max_attempts, **benefit_profile,
             )
             assessment_id = getattr(result, "assessment_id", None)
             if telemetry is not None and isinstance(assessment_id, str):

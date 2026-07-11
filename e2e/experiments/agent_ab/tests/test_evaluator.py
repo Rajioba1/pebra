@@ -123,6 +123,8 @@ def test_existing_repo_test_filter_runs_without_injection(tmp_path):
 
 def test_typescript_existing_repo_test_uses_backend_without_csproj_injection(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "a.test.ts").write_text("test('existing', () => {});", encoding="utf-8")
     spec = TaskSpec(
         "JS1", "d", ("src/a.ts",), "risky", ("src/a.ts",), "test_failure", False,
         evaluator_test_project="src/a.test.ts",
@@ -150,3 +152,35 @@ def test_typescript_existing_repo_test_uses_backend_without_csproj_injection(tmp
         "build_language": "typescript",
         "test": ("typescript", repo / "src/a.test.ts", "handles safe route"),
     }
+
+
+def test_typescript_hidden_test_is_injected_only_after_subject_run(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    test_rel = "packages/zod/src/v3/tests/schema-type-label.test.ts"
+    spec = TaskSpec(
+        "JS1", "d", ("src/a.ts",), "risky", ("src/a.ts",), "build_failure", True,
+        evaluator_test_project=test_rel, language="typescript", specimen="javascript",
+    )
+    evaluator_dir = tmp_path / "evaluator_tests"
+    hidden = evaluator_dir / "JS1" / test_rel
+    hidden.parent.mkdir(parents=True)
+    hidden.write_text("test('hidden', () => {});", encoding="utf-8")
+    seen = {}
+    assert not (repo / test_rel).exists()
+
+    class FakeBackend:
+        def run_build(self, repo_path, spec_arg):
+            return _b(True)
+
+        def run_tests(self, repo_path, spec_arg, *, project=None, test_filter=None):
+            seen["project"] = project
+            return _b(True)
+
+    monkeypatch.setattr(evaluator.backends, "backend_for_spec", lambda spec_arg: FakeBackend())
+
+    build, test, injected = evaluator.run_evaluator(repo, spec, evaluator_dir=evaluator_dir)
+
+    assert build.passed is True and test is not None
+    assert injected is True
+    assert seen["project"] == repo / test_rel
+    assert (repo / test_rel).read_text(encoding="utf-8") == "test('hidden', () => {});"
