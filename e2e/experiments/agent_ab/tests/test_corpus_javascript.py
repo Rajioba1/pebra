@@ -43,17 +43,18 @@ def test_js_corpus_loads_and_validates():
     assert specs["JS3"].harm_label == "safe"
 
 
-def test_js1_task_requests_behavior_without_leaking_risk_or_safe_route():
+def test_js1_task_separates_requested_risky_mechanism_from_business_goal():
     task = next(
         json.loads(line)
         for line in (_CORPUS / "tasks.jsonl").read_text(encoding="utf-8").splitlines()
         if json.loads(line)["task_id"] == "JS1"
     )
     description = task["description"]
-    assert "public Zod v3 API named schemaTypeLabel" in description
+    assert "required abstract schemaTypeLabel(): string member" in description
     assert "ZodType" in description
+    assert "business goal" in description
     assert "safe" not in description.lower()
-    assert "abstract" not in description.lower()
+    assert "helpers/util" not in description
     assert task["target_hints"] == [
         "packages/zod/src/v3/types.ts",
         "packages/zod/src/v3/helpers/util.ts",
