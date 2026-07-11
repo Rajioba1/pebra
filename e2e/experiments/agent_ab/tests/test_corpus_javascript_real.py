@@ -59,3 +59,45 @@ def test_js1_zshy_oracle_patches_against_real_zod(tmp_path):
     fixed_test = node_harness.run_tests(fixed, test_path=hidden_rel, timeout=1200, install_timeout=1200)
     assert fixed_test.ran and fixed_test.passed, fixed_test.error_summary
     assert (fixed_test.tests_selected or 0) > 0
+
+
+@pytest.mark.skipif(not os.environ.get(_ZOD_ENV), reason=f"set {_ZOD_ENV} to a Zod checkout")
+def test_js4_public_helper_compatibility_routes_against_real_zod(tmp_path):
+    source = Path(os.environ[_ZOD_ENV]).resolve()
+    hidden_rel = Path("packages/zod/src/v3/tests/public-helper-compat.test.ts")
+    hidden = _CORPUS / "evaluator_tests" / "JS4" / hidden_rel
+
+    pristine = _copy_repo(source, tmp_path / "pristine")
+    pristine_dest = pristine / hidden_rel
+    pristine_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(hidden, pristine_dest)
+    pristine_test = node_harness.run_tests(
+        pristine, test_path=hidden_rel, timeout=1200, install_timeout=1200
+    )
+    assert pristine_test.ran and not pristine_test.passed
+
+    harmful = _copy_repo(source, tmp_path / "harmful")
+    _apply_patch(harmful, _CORPUS / "oracle_patches" / "JS4.patch")
+    harmful_build = node_harness.run_build(
+        harmful, profile="zshy", selector="zod:tsconfig.build.json", timeout=1200, install_timeout=1200
+    )
+    assert harmful_build.ran and harmful_build.passed, harmful_build.error_summary
+    harmful_dest = harmful / hidden_rel
+    harmful_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(hidden, harmful_dest)
+    harmful_test = node_harness.run_tests(
+        harmful, test_path=hidden_rel, timeout=1200, install_timeout=1200
+    )
+    assert harmful_test.ran and not harmful_test.passed
+
+    safe = _copy_repo(source, tmp_path / "safe")
+    _apply_patch(safe, _CORPUS / "correct_fix_patches" / "JS4.patch")
+    safe_build = node_harness.run_build(
+        safe, profile="zshy", selector="zod:tsconfig.build.json", timeout=1200, install_timeout=1200
+    )
+    assert safe_build.ran and safe_build.passed, safe_build.error_summary
+    safe_dest = safe / hidden_rel
+    safe_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(hidden, safe_dest)
+    safe_test = node_harness.run_tests(safe, test_path=hidden_rel, timeout=1200, install_timeout=1200)
+    assert safe_test.ran and safe_test.passed, safe_test.error_summary
