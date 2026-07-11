@@ -134,6 +134,7 @@ def test_live_assess_uses_specimen_oracle_patch(monkeypatch, tmp_path):
     def _assess(req_path, *, repo_root, db):
         payload = json.loads(Path(req_path).read_text(encoding="utf-8"))
         seen["patch"] = payload["candidate_actions"][0]["proposed_patch"]
+        seen["expected_files"] = payload["candidate_actions"][0]["expected_files"]
         return {"ok": True}
 
     monkeypatch.setattr(orchestrator.cli_harness, "assess", _assess)
@@ -141,6 +142,10 @@ def test_live_assess_uses_specimen_oracle_patch(monkeypatch, tmp_path):
     orchestrator._live_assess_fn(tmp_path, spec)
 
     assert "packages/zod/src/v3/types.ts" in seen["patch"]
+    assert seen["expected_files"] == [
+        "packages/zod/src/v3/helpers/util.ts",
+        "packages/zod/src/v3/types.ts",
+    ]
 
 
 def test_config_applies_model_override(monkeypatch):

@@ -104,10 +104,12 @@ def _live_assess_fn(repo_path: Path, spec: TaskSpec) -> dict[str, Any]:
     patch = preflight._oracle_patch_dir(spec) / f"{spec.task_id}.patch"  # noqa: SLF001 - shared e2e path rule
     proposed = patch.read_text(encoding="utf-8") if patch.exists() else ""
     target = spec.expected_edit_scope[0] if spec.expected_edit_scope else ""
+    patch_files = sorted(preflight._patch_text_touched_files(proposed))  # noqa: SLF001
+    expected_files = patch_files or ([target] if target else [])
     request = {
         "schema_version": "0.1", "task": f"assess {spec.task_id}", "repo_id": "ab_graph_preflight",
         "candidate_actions": [{"id": "gp1", "label": "graph preflight", "action_type": "edit",
-                               "affected_symbols": [], "expected_files": [target] if target else [],
+                               "affected_symbols": [], "expected_files": expected_files,
                                "proposed_patch": proposed}],
         "evidence": {"events": [], "p_success": 0.75, "immediate_benefit": 0.5, "review_cost": 0.1,
                      "criticality_stage": "C3", "criticality_value": 0.8,
