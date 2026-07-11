@@ -17,8 +17,9 @@ Hard invariants:
   ``RepositoryRegistry.resolve`` (which runs ``ensure_pebra_dir`` and would create ``.pebra/`` + edit
   ``.gitignore``). Store access is a raw read-only sqlite connection (``?mode=ro``) — importing
   ``SqliteStore`` would create the db file on connect and break fail-open.
-- **Fail-open**: graph absent / git error / store absent / any parse error -> allow (+ a warning). The
-  gate is a safety net, never a hard dependency.
+- **Fail-open**: graph absent / git error / unreadable store / infrastructure parse error -> allow (+ a
+  warning). A missing store means "not assessed" and denies an impactful edit; candidate mismatch or
+  an unmaterializable host edit also denies and requires reassessment.
 - **Only graph-impactful targets are gated** (high per-symbol fan-in OR architecture anchor); trivial
   local edits pass friction-free.
 
@@ -37,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pebra.adapters import paths
+from pebra.adapters import candidate_binding, paths
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
 
 _IMPACT_THRESHOLD = 0.90  # matches modify_risk_model._HIGH_FANIN_THRESHOLD
@@ -50,6 +51,7 @@ _REVIEW_DECISIONS = frozenset({"ask_human", "reject"})
 _REVISE_DECISIONS = frozenset({"revise_safer"})
 _EDIT_TOOLS = ("Edit", "Write")
 _APPLY_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$", re.MULTILINE)
+_GIT_DIFF_FILE_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -101,7 +103,13 @@ def extract_target_paths(event: dict[str, Any]) -> list[str]:
         command = ti.get("command") or ""
         if not isinstance(command, str):
             return []
-        return [_abs(p) for p in _APPLY_PATCH_FILE_RE.findall(command) if p]
+        paths = [p for p in _APPLY_PATCH_FILE_RE.findall(command) if p]
+        if not paths:
+            for old_path, new_path in _GIT_DIFF_FILE_RE.findall(command):
+                for path in (old_path, new_path):
+                    if path and path not in paths:
+                        paths.append(path)
+        return [_abs(p) for p in paths]
     return []
 
 
@@ -133,6 +141,22 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
     matched = _matched_row(rows, targets, head, repo_root)
     if matched is None:
         return GateDecision("deny", "must_consult", reason=_deny_reason(targets, head))
+    expected_candidate = _candidate_binding(matched)
+    if expected_candidate is None:
+        return GateDecision("deny", "candidate_unbound", reason=_candidate_reason(targets, head))
+    attempted_candidate = candidate_binding.binding_for_event(event, repo_root)
+    if attempted_candidate is None:
+        return GateDecision(
+            "deny", "candidate_unverifiable", reason=_candidate_reason(targets, head)
+        )
+    attempted_files = attempted_candidate.get("files") or {}
+    expected_files = expected_candidate.get("files") or {}
+    if (
+        attempted_candidate.get("algorithm") != expected_candidate.get("algorithm")
+        or not attempted_files
+        or any(expected_files.get(path) != digest for path, digest in attempted_files.items())
+    ):
+        return GateDecision("deny", "candidate_mismatch", reason=_candidate_reason(targets, head))
     if str(matched.get("decision")) in _REVISE_DECISIONS:
         return GateDecision("deny", "consulted_revise", reason=_revise_reason(targets, head))
     # Phase 6 verdict tier: interactive hosts can ask for approval; consult-only hosts have no
@@ -150,6 +174,14 @@ def _deny_reason(targets: list[str], head: str) -> str:
     names = ", ".join(os.path.basename(t) for t in targets[:3])
     return (f"Consultation required before editing {names} (high-impact at commit {head[:8]}). "
             "Run the pre-edit assessment for the target file(s), then re-issue the edit.")
+
+
+def _candidate_reason(targets: list[str], head: str) -> str:
+    names = ", ".join(os.path.basename(t) for t in targets[:3])
+    return (
+        f"The attempted edit to {names} does not match the exact candidate assessed at commit "
+        f"{head[:8]}. Assess this candidate, then re-issue the same edit."
+    )
 
 
 def _review_reason(targets: list[str], head: str) -> str:
@@ -274,6 +306,29 @@ def _matched_row(rows: list[dict[str, Any]], targets: list[str], head_sha: str,
         except (ValueError, TypeError, AttributeError):
             continue
     return None
+
+
+def _candidate_binding(row: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        content = json.loads(row["content_json"] or "{}")
+        binding = ((content.get("model_guidance_packet") or {}).get("binding") or {})
+        candidate = binding.get("candidate")
+        if not isinstance(candidate, dict):
+            return None
+        algorithm = candidate.get("algorithm")
+        files = candidate.get("files")
+        if algorithm != "sha256-normalized-content-v1" or not isinstance(files, dict) or not files:
+            return None
+        if not all(
+            isinstance(path, str)
+            and isinstance(digest, str)
+            and re.fullmatch(r"[0-9a-f]{64}", digest)
+            for path, digest in files.items()
+        ):
+            return None
+        return {"algorithm": algorithm, "files": dict(files)}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
 
 
 def _fresh_match(rows: list[dict[str, Any]], targets: list[str], head_sha: str, repo_root: str) -> bool:

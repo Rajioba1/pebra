@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from e2e.experiments.agent_ab.metrics import oracle, scorecard
-from e2e.experiments.agent_ab.models import ARM_CONTROL, ARM_TREATMENT, RunOutcome, TaskSpec
+from e2e.experiments.agent_ab.models import ARM_CONTROL, ARM_SHAM, ARM_TREATMENT, RunOutcome, TaskSpec
 from e2e.experiments.agent_ab.reports import render_report
 from e2e.experiments.agent_ab.runners import preflight, run_artifacts, run_gate, run_pair, subject_protocol
 from e2e.experiments.agent_ab.specimens import loader as specimen_loader
@@ -244,6 +244,31 @@ def _completed_units(outcomes: list[RunOutcome], specs_by_id: dict[str, TaskSpec
     return done
 
 
+def _sham_admission_failures(
+    outcomes: list[RunOutcome], plan: list[tuple[TaskSpec, int]]
+) -> list[str]:
+    """Require observed sham harm per risky task before spending on the remaining assay arms."""
+    failures: list[str] = []
+    risky_ids = sorted({spec.task_id for spec, _seed in plan if spec.harm_label == "risky"})
+    for task_id in risky_ids:
+        rows = [
+            outcome for outcome in outcomes
+            if outcome.task_id == task_id and outcome.arm == ARM_SHAM
+        ]
+        scorable = [
+            outcome for outcome in rows
+            if not outcome.error and not outcome.blinding_leak and not outcome.no_attempt
+        ]
+        harmed = sum(outcome.harm_materialized for outcome in scorable)
+        if harmed <= 0:
+            excluded = len(rows) - len(scorable)
+            failures.append(
+                f"{task_id}: {harmed}/{len(scorable)} scorable sham runs materialized harm "
+                f"({excluded} excluded of {len(rows)} total)"
+            )
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the blinded agent A/B experiment (gated).")
     parser.add_argument("--run-id", required=True)
@@ -324,13 +349,53 @@ def main(argv: list[str] | None = None) -> int:
         outcomes_path = out_dir / "outcomes.json"
         existing = _load_existing_outcomes(outcomes_path)
         completed = _completed_units(existing, specs_by_id) if is_assay else _completed_pairs(existing)
-        # Keep only outcomes from fully-completed units; drop any partial unit so it is re-run cleanly.
+        # Keep fully-completed units. For the JS assay only, also preserve a completed sham-stage row so
+        # the paid headroom check is reusable on resume and sham is not paid for twice.
         outcomes: list[RunOutcome] = [o for o in existing if (o.task_id, o.seed) in completed]
+        if args.mode == "assay_js":
+            planned = {(spec.task_id, seed): spec for spec, seed in plan}
+            outcomes.extend(
+                o for o in existing
+                if (o.task_id, o.seed) not in completed
+                and o.arm == ARM_SHAM
+                and (spec := planned.get((o.task_id, o.seed))) is not None
+                and spec.harm_label == "risky"
+            )
+            present_sham = {(o.task_id, o.seed) for o in outcomes if o.arm == ARM_SHAM}
+            for spec, seed in plan:
+                key = (spec.task_id, seed)
+                if spec.harm_label != "risky" or key in completed or key in present_sham:
+                    continue
+                (subject,) = run_pair.run_trial(
+                    spec, seed, args.run_id, arms=(ARM_SHAM,)
+                )
+                if subject.error:
+                    raise ExperimentRunError(
+                        f"sham run for {spec.task_id} seed {seed} errored: {subject.error}"
+                    )
+                outcomes.append(oracle.score_run(subject, spec))
+                present_sham.add(key)
+                _write_outcomes(outcomes_path, outcomes, args.run_id)
+            if failures := _sham_admission_failures(outcomes, plan):
+                raise ExperimentRunError(
+                    "sham admission failed; full assay arms were not run: " + "; ".join(failures)
+                )
         for spec, seed in plan:
             if (spec.task_id, seed) in completed:
                 continue  # resume: this unit already has all its arms recorded
-            results = (run_pair.run_trial(spec, seed, args.run_id) if is_assay
-                       else run_pair.run_pair(spec, seed, args.run_id))
+            if is_assay:
+                present_arms = {
+                    o.arm for o in outcomes if (o.task_id, o.seed) == (spec.task_id, seed)
+                }
+                if args.mode == "assay_js":
+                    missing_arms = tuple(
+                        arm for arm in run_pair.arms_for(spec.harm_label) if arm not in present_arms
+                    )
+                    results = run_pair.run_trial(spec, seed, args.run_id, arms=missing_arms)
+                else:
+                    results = run_pair.run_trial(spec, seed, args.run_id)
+            else:
+                results = run_pair.run_pair(spec, seed, args.run_id)
             for res in results:
                 if res.error:
                     raise ExperimentRunError(

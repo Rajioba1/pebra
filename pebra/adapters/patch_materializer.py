@@ -60,14 +60,17 @@ def _git_init(cwd: Path) -> bool:
     return res.returncode == 0
 
 
-def _git_apply(cwd: Path, patch_file: Path) -> bool:
+def _git_apply(root: Path, patch_file: Path, *, apply_dir: str = ".") -> bool:
     """Apply inside the temp work tree, git-style ``-p1`` then plain ``-p0``. No ``--unsafe-paths``: git
     refuses absolute / ``..`` paths in a real work tree, so a patch cannot escape the temp dir."""
     for strip in ("-p1", "-p0"):
         try:
+            argv = ["git", "apply", strip]
+            if apply_dir != ".":
+                argv.append(f"--directory={apply_dir}")
+            argv.append(str(patch_file))
             res = subprocess.run(
-                ["git", "apply", strip, str(patch_file)],
-                cwd=str(cwd), capture_output=True, text=True, timeout=30,
+                argv, cwd=str(root), capture_output=True, text=True, timeout=30
             )
         except (OSError, subprocess.SubprocessError):
             return False
@@ -77,7 +80,7 @@ def _git_apply(cwd: Path, patch_file: Path) -> bool:
 
 
 def materialize_patch(
-    before: Mapping[str, str | None], patch: str
+    before: Mapping[str, str | None], patch: str, *, apply_dir: str = "."
 ) -> dict[str, str | None] | None:
     """Apply ``patch`` to a throwaway copy of ``before`` and return the after-content per file.
 
@@ -87,7 +90,7 @@ def materialize_patch(
     caller's, not enforced here."""
     # Reject unsafe keys BEFORE any filesystem write — `root / "../x"` would escape the temp dir at
     # write_text time (git apply only guards the patch's OWN paths, not our seed/read-back).
-    if any(_unsafe_rel(rel) for rel in before):
+    if any(_unsafe_rel(rel) for rel in before) or _unsafe_rel(apply_dir):
         return None
     with tempfile.TemporaryDirectory(prefix="pebra-materialize-") as td:
         scratch = Path(td)
@@ -103,7 +106,8 @@ def materialize_patch(
             fp.write_bytes(content.encode("utf-8"))
         patch_file = scratch / "patch.diff"
         patch_file.write_bytes(patch.encode("utf-8"))
-        if not _git_apply(root, patch_file):
+        (root / apply_dir).mkdir(parents=True, exist_ok=True)
+        if not _git_apply(root, patch_file, apply_dir=apply_dir):
             return None
         after: dict[str, str | None] = {}
         for rel in before:

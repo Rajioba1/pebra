@@ -93,7 +93,8 @@ def test_patch_bytes_are_written_without_newline_translation(monkeypatch, tmp_pa
     def fake_git_init(cwd: Path) -> bool:
         return True
 
-    def fake_git_apply(cwd: Path, patch_file: Path) -> bool:
+    def fake_git_apply(cwd: Path, patch_file: Path, *, apply_dir: str = ".") -> bool:
+        assert apply_dir == "."
         captured["patch"] = patch_file.read_bytes()
         (cwd / "src" / "a.txt").write_bytes(b"new\r\n")
         return True

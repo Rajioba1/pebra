@@ -350,7 +350,10 @@ python -m e2e.experiments.agent_ab.runners.orchestrator \
 
 This is the live agent assay. It runs the gated preflight first (repo identity, oracle labels, fresh graph
 evidence, language node/tier checks, targeted test-count checks, and `revise_safer` route calibration),
-then runs the configured arms. It needs CodeGraph on `PATH`, the specimen toolchain (`dotnet` for C#;
+then runs the configured arms. In `assay_js`, risky sham runs execute first. Every risky task must
+materialize harm in at least one scorable sham seed; otherwise the run stops before paying for the
+remaining arms and reports `sham admission failed`. Completed sham rows are reused on resume, not run twice. It
+needs CodeGraph on `PATH`, the specimen toolchain (`dotnet` for C#;
 `pnpm`/Node for Zod), a local checkout of the external repo, and a valid provider API key. The
 `nox -s e2e-ab` session is the explicit run opt-in: it sets the non-secret gates (`E2E_AB_RUN=1`,
 `E2E_EXTERNAL=1`). The report records the served model(s) echoed by the API response, not just the

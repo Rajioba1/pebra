@@ -8,7 +8,7 @@
 
 ## 1. Purpose
 
-The spec defines **what** PEBRA computes (benefit-risk scores → a 5-way decision). This document defines **how** to implement it: a lean, stdlib-first, hexagonal Python tool whose **pure decision core** is dependency-free and auditable, with all messy I/O pushed to adapters.
+The spec defines **what** PEBRA computes (benefit-risk scores -> a 6-way decision). This document defines **how** to implement it: a lean, stdlib-first, hexagonal Python tool whose **pure decision core** is dependency-free and auditable, with all messy I/O pushed to adapters.
 
 It also records **29 Architecture Decisions (AD-1…AD-29)** that resolve gaps the spec left open, and the **human-facing label glossary** so the output is readable by people, not just agents.
 
@@ -145,7 +145,7 @@ It also records **29 Architecture Decisions (AD-1…AD-29)** that resolve gaps t
 
 ## 4. Canonical Constants & Vocabulary  (`core/constants.py`)
 
-**Decision enum (exactly 5):** `proceed · inspect_first · test_first · ask_human · reject`. Companion fields (NOT decisions): `requires_confirmation: bool`, `action_status: pending|completed|skipped|rejected`.
+**Decision enum (exactly 6):** `proceed · inspect_first · test_first · revise_safer · ask_human · reject`. Companion fields (NOT decisions): `requires_confirmation: bool`, `action_status: pending|completed|skipped|rejected`.
 
 **STAGE_MAP** (spec §2.7) — ordinal stage → cardinal value; the raw stage is never multiplied, only mapped:
 `C0→0.10 · C1→0.30 · C2→0.50 · C3→0.80 · C4→1.00`
@@ -256,7 +256,7 @@ Layer 1 symbol/scope resolution
 Layer 2 scores
   p_event, p_success, expected_loss, risk_budget_used, RAU, confidence, review_cost
 Layer 3 gates
-  exactly five decisions: proceed / inspect_first / test_first / ask_human / reject
+  exactly six decisions: proceed / inspect_first / test_first / revise_safer / ask_human / reject
 Layer 4 risk annotations
   risk_mode, high_risk_triggers[], trigger_summary, suppression reasons
 Layer 5 controls
@@ -435,8 +435,8 @@ Ordered; the first matching risk gate sets a provisional decision. Sanction reso
 
 1. policy violation → **reject** with `high_risk_triggers[]` if the violation is risk/control related
 2. `criticality_stage == C4` and `c4_always_ask_human` and the symbol diff is consequential or unknown → **ask_human** (`requires_confirmation=true`) with a C4/consequence trigger. Verified `COSMETIC` / safe `TEST_ONLY` edits in C4 paths remain sensitive-context edits, not controlled-high-risk edits.
-3. `expected_loss > effective_threshold` → **ask_human** (or **reject** if `expected_utility < 0`) with the threshold trigger that fired
-4. **`RAU < 0` → ask_human** (default) / reject if `ask_on_negative_rau=false` configured  *(AD-2 — now a formal numbered gate in spec §8.2)*
+3. `expected_loss > effective_threshold` → **revise_safer** only when the edit is risky but plausibly beneficial and narrowing headroom exists; otherwise **ask_human**, or **reject** when `expected_utility < 0`
+4. **`RAU < 0`** follows the same `revise_safer` eligibility; otherwise ask_human (default) / reject if `ask_on_negative_rau=false` configured  *(AD-2 — now a formal numbered gate in spec §8.2)*
 5. not MC and `utility_sd > max_utility_sd_without_human` and `expected_utility > 0` → **ask_human**  *(AD-3: EU<0 already handled by gate 3/4)*
 6. MC available and `P(utility<0) > max_p_negative_utility` → ask_human/reject *(v1.5)*
 7. `decision_instability > threshold` → **inspect_first** / **test_first**
@@ -572,6 +572,12 @@ Regular risk reports also carry `symbol_scope_evidence` with `scope_basis`, chan
 ```
 
 Binding fields are enforced later by `pebra_verify`; advisory fields steer the model but do not create new hard gates. This gives the model risk-aware editing context without letting the model reinterpret PEBRA's score. `risky_scope` is assessment-invalidating by default, not banned by default: touching a `requires_reassessment` item makes the prior risk score stale and forces a new assessment. Only `action: forbidden` is a hard rejection.
+
+The pre-edit gate also binds the assessment to the normalized resulting contents of the proposed
+candidate. Supported `Write`, `Edit`, `MultiEdit`, and `apply_patch` events must match the assessed
+per-file digest; repository, HEAD, and path matching alone never authorizes different content. A
+multi-file candidate may be applied one assessed file at a time, but each attempted file must match
+its own digest. Missing legacy bindings, ambiguous edits, and mismatches require reassessment.
 
 The packet may render trigger flags as prompt text, MCP fields, or PR-card rows, but the content must be reconstructable from canonical JSON. Trigger flags are advisory evidence; required controls and binding scope/check fields are what `pebra_verify` enforces.
 

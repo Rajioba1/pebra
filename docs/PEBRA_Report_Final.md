@@ -65,6 +65,7 @@ This section is the source of truth for names used elsewhere in the spec.
 | `proceed` | The selected edit action may be performed, subject to `requires_confirmation` and policy gates |
 | `inspect_first` | Gather non-test repo evidence before editing |
 | `test_first` | Run or add targeted tests before editing |
+| `revise_safer` | Do not apply the current candidate; produce a safer candidate and reassess it |
 | `ask_human` | User or reviewer input is required before editing |
 | `reject` | Do not perform this action |
 
@@ -1371,11 +1372,23 @@ else:
     max_expected_loss_limit = thresholds.max_expected_loss_without_human
 
 if expected_loss > max_expected_loss_limit:
-    ask_human or reject
+    if expected_utility > 0 and narrowing_headroom and revise_attempt_not_exhausted:
+        if trusted candidate verification passes and is bound to this exact patch:
+            proceed
+        else:
+            revise_safer
+    else:
+        ask_human or reject
 
 if risk_adjusted_utility < 0:
-    ask_human                                 # default (AD-2)
-    # reject instead, if thresholds.ask_on_negative_rau is false
+    if expected_utility > 0 and narrowing_headroom and revise_attempt_not_exhausted:
+        if trusted candidate verification passes and is bound to this exact patch:
+            proceed
+        else:
+            revise_safer
+    else:
+        ask_human                             # default (AD-2)
+        # reject instead, if thresholds.ask_on_negative_rau is false
 
 if monte_carlo_gate_available            # v1.5 gate; v1 skips when unavailable
 and P(utility < 0) > thresholds.max_p_negative_utility:
@@ -1420,7 +1433,7 @@ else:
 
 Criticality affects gates only through this section. Section 5 may describe gate pressure, but Section 8 is the sole decision authority.
 
-High-risk routing is never a bare decision. If a high-risk condition causes `test_first`, `ask_human`, `reject`, or `risk_mode=controlled_high_risk`, the response must include `high_risk_triggers[]` and either a mapped control blueprint or a suppression reason. The decision enum remains exactly five values; trigger flags are explanatory and auditable companion evidence.
+High-risk routing is never a bare decision. If a high-risk condition causes `test_first`, `revise_safer`, `ask_human`, `reject`, or `risk_mode=controlled_high_risk`, the response must include `high_risk_triggers[]` and either a mapped control blueprint or a suppression reason. The decision enum has exactly six values; trigger flags are explanatory and auditable companion evidence.
 
 Sanction resolution is part of the gate sequence, not a post-hoc override. It may override risk-threshold gates only after authorized risk acceptance and verified controls. It must not silently override hard policy violations; policy exceptions require a distinct higher-scrutiny sanction type. If `pebra_verify` later detects stale evidence, scope drift, missing controls, or a more severe actual symbol diff, it invalidates the sanction and routes back through this gate sequence.
 
@@ -3667,14 +3680,14 @@ The following are intentionally left open for product decisions; they do not blo
 
 PEBRA should claim integration novelty, not primitive novelty.
 
-Expected utility, calibration, abstention, blast-radius analysis, criticality tagging, risk-adaptive escalation, and post-generation code assurance already exist in separate fields. PEBRA's contribution is the integration point: a pre-edit decision controller for coding agents that combines repo-grounded blast radius, criticality/stakes, calibrated confidence, expected loss, and RAU into a five-way action decision before the agent edits.
+Expected utility, calibration, abstention, blast-radius analysis, criticality tagging, risk-adaptive escalation, and post-generation code assurance already exist in separate fields. PEBRA's contribution is the integration point: a pre-edit decision controller for coding agents that combines repo-grounded blast radius, criticality/stakes, calibrated confidence, expected loss, and RAU into a six-way action decision before the agent edits.
 
 ### 16.1 Positioning Claim
 
-PEBRA is not another blast-radius graph or post-hoc code scanner. It is a pre-edit decision controller that integrates repo-grounded blast radius, criticality/stakes, and calibrated confidence into an expected-loss/RAU score, then emits one of five decisions:
+PEBRA is not another blast-radius graph or post-hoc code scanner. It is a pre-edit decision controller that integrates repo-grounded blast radius, criticality/stakes, and calibrated confidence into an expected-loss/RAU score, then emits one of six decisions:
 
 ```text
-proceed | inspect_first | test_first | ask_human | reject
+proceed | inspect_first | test_first | revise_safer | ask_human | reject
 ```
 
 The defensible distinctions are:
@@ -3682,7 +3695,7 @@ The defensible distinctions are:
 | Distinction | PEBRA Position |
 |---|---|
 | Timing | Pre-edit, before the agent changes code |
-| Action space | Five-way decision, not only proceed/reject |
+| Action space | Six-way decision, not only proceed/reject |
 | Evidence model | Repo-grounded blast radius plus criticality/stakes |
 | Decision math | Expected loss, RAU, confidence gates, and Monte Carlo gates when fitted/configured distributions exist |
 | Auditability | Provenance on scores, distributions, and evidence actions |
@@ -3693,7 +3706,7 @@ Blast-radius and code graph tools are useful evidence providers for PEBRA, but t
 
 | Neighbor | What It Covers | Distinction From PEBRA |
 |---|---|---|
-| `code-impact-mcp` | MCP-style code impact / blast-radius gate such as pass, warn, or block | Single-axis impact gate; no benefit, criticality, RAU, confidence state machine, or five-way action enum |
+| `code-impact-mcp` | MCP-style code impact / blast-radius gate such as pass, warn, or block | Single-axis impact gate; no benefit, criticality, RAU, confidence state machine, or six-way action enum |
 | `Ctxo` | Repo context, dependency information, and safe-edit style guardrails | Primarily context and edit-safety support; not an expected-loss decision controller |
 | CodeGraph, `codeindex`, Glyphtrail, code graph MCPs | Dependency graph, call graph, structural impact analysis | CodeGraph is PEBRA's required production graph engine; the others are comparators/references |
 | AgentMemory + Graphify / CodeGraph pairing | Persistent session memory plus architecture/code graph context | Useful model for "remember the repo before editing"; PEBRA uses CodeGraph for graph facts and owns risk/benefit decisions |
@@ -3733,7 +3746,7 @@ PEBRA may say:
 ```text
 Prior work gates one axis, one moment, or one binary choice.
 PEBRA integrates repo-grounded spread, criticality, calibrated confidence,
-expected-loss/RAU scoring, and a five-way pre-edit action enum.
+expected-loss/RAU scoring, and a six-way pre-edit action enum.
 ```
 
 ---

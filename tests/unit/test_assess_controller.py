@@ -106,6 +106,16 @@ class FakeSnapshotRead:
         return None
 
 
+class FakeCandidateBinding:
+    def bind_candidate(self, action, repo_root):
+        assert action.id == "a1"
+        assert repo_root == "/abs/path/to/example-repo"
+        return {
+            "algorithm": "sha256-normalized-content-v1",
+            "files": {"src/auth.py": "a" * 64},
+        }
+
+
 def _request():
     return m.AssessmentRequest.single_action(
         task="Fix failing login validation",
@@ -219,6 +229,25 @@ def test_controller_persists_and_returns_repo_scope() -> None:
     assert outcome.assessment_id == "asm_1"
     assert outcome.repo_id == "repo_local_example"
     assert len(store.persisted) == 1
+
+
+def test_controller_persists_exact_candidate_binding_in_guidance_packet() -> None:
+    store = FakeStore()
+    outcome = ac.assess(
+        _request_with_patch(),
+        thresholds=_THRESHOLDS,
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        candidate_binding_provider=FakeCandidateBinding(),
+    )
+
+    binding = outcome.recommended_result.model_guidance_packet["binding"]["candidate"]
+    assert binding["files"] == {"src/auth.py": "a" * 64}
 
 
 def test_snapshot_read_loaded_once_per_assess_not_per_action() -> None:

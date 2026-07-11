@@ -15,6 +15,7 @@ import os
 import sqlite3
 from pathlib import Path
 
+from pebra.adapters import candidate_binding
 from pebra.adapters import gate_check_adapter as gca
 from pebra.cli import gate_check as gc_cmd
 from pebra.cli.main import build_parser
@@ -54,6 +55,12 @@ def test_extract_codex_apply_patch_parses_command(tmp_path):
              "*** Add File: src/b.py\n+z\n*** End Patch\n")
     ev = {"tool_name": "apply_patch", "tool_input": {"command": patch}, "cwd": str(tmp_path)}
     assert gca.extract_target_paths(ev) == [_abs(tmp_path, "src/a.py"), _abs(tmp_path, "src/b.py")]
+
+
+def test_extract_codex_apply_patch_parses_git_unified_diff(tmp_path):
+    patch = "diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
+    ev = {"tool_name": "apply_patch", "tool_input": {"command": patch}, "cwd": str(tmp_path)}
+    assert gca.extract_target_paths(ev) == [_abs(tmp_path, "src/a.py")]
 
 
 def test_extract_codex_apply_patch_ignores_non_string_command(tmp_path):
@@ -102,12 +109,21 @@ def test_paths_match_canonicalizes_symlinked_repo_root(tmp_path):
 
 # ---- store freshness lookup (seeded temp db) ----------------------------------------------
 
-def _seed(db_path: Path, repo_id: str, head: str, files: list[str], decision: str = "inspect_first"):
+def _seed(
+    db_path: Path,
+    repo_id: str,
+    head: str,
+    files: list[str],
+    decision: str = "inspect_first",
+    candidate: dict | None = None,
+):
     con = sqlite3.connect(db_path)
     con.execute("CREATE TABLE assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                 "repo_id TEXT, decision TEXT, content_json TEXT)")
-    content = {"assessed_commit": head,
-               "model_guidance_packet": {"binding": {"safe_scope": {"files": files}}}}
+    binding = {"safe_scope": {"files": files}}
+    if candidate is not None:
+        binding["candidate"] = candidate
+    content = {"assessed_commit": head, "model_guidance_packet": {"binding": binding}}
     con.execute("INSERT INTO assessments (repo_id, decision, content_json) VALUES (?,?,?)",
                 (repo_id, decision, json.dumps(content)))
     con.commit()
@@ -142,7 +158,11 @@ def test_fresh_match_false_when_file_differs(tmp_path):
 # ---- decide() — orchestration (impact + head monkeypatched to isolate logic) --------------
 
 def _edit_event(root: Path, rel: str = "src/a.py"):
-    return {"tool_name": "Edit", "tool_input": {"file_path": _abs(root, rel)}, "cwd": str(root)}
+    return {
+        "tool_name": "Edit",
+        "tool_input": {"file_path": _abs(root, rel), "old_string": "old", "new_string": "new"},
+        "cwd": str(root),
+    }
 
 
 def test_decide_allows_non_edit_tool(tmp_path):
@@ -214,13 +234,115 @@ def _consulted(tmp_path, monkeypatch, decision: str):
     monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
     db = tmp_path / ".pebra" / "pebra.db"
     db.parent.mkdir(parents=True)
-    _seed(db, gca._repo_id(str(tmp_path)), "HEAD1", ["src/a.py"], decision=decision)
+    target = tmp_path / "src" / "a.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("old\n", encoding="utf-8")
+    event = _edit_event(tmp_path)
+    binding = candidate_binding.binding_for_event(event, tmp_path)
+    _seed(
+        db,
+        gca._repo_id(str(tmp_path)),
+        "HEAD1",
+        ["src/a.py"],
+        decision=decision,
+        candidate=binding,
+    )
 
 
 def test_decide_allow_consulted_when_decision_is_proceed(tmp_path, monkeypatch):
     _consulted(tmp_path, monkeypatch, "proceed")
     d = gca.decide(_edit_event(tmp_path))
     assert d.permission == "allow" and d.tier == "consulted"
+
+
+def test_decide_denies_different_candidate_for_same_head_and_path(tmp_path, monkeypatch):
+    _consulted(tmp_path, monkeypatch, "proceed")
+    event = _edit_event(tmp_path)
+    event["tool_input"]["new_string"] = "different"
+
+    decision = gca.decide(event)
+
+    assert decision.permission == "deny"
+    assert decision.tier == "candidate_mismatch"
+    assert "assess" in decision.reason.lower()
+
+
+def test_decide_denies_legacy_assessment_without_candidate_binding(tmp_path, monkeypatch):
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: True)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
+    target = tmp_path / "src" / "a.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    _seed(db, gca._repo_id(str(tmp_path)), "HEAD1", ["src/a.py"], decision="proceed")
+
+    decision = gca.decide(_edit_event(tmp_path))
+
+    assert decision.permission == "deny"
+    assert decision.tier == "candidate_unbound"
+
+
+def test_decide_denies_unmaterializable_host_edit(tmp_path, monkeypatch):
+    _consulted(tmp_path, monkeypatch, "proceed")
+    event = _edit_event(tmp_path)
+    event["tool_input"].pop("old_string")
+
+    decision = gca.decide(event)
+
+    assert decision.permission == "deny"
+    assert decision.tier == "candidate_unverifiable"
+
+
+def test_decide_denies_unencodable_content_instead_of_raising_to_hook_fail_open(
+    tmp_path, monkeypatch
+):
+    _consulted(tmp_path, monkeypatch, "proceed")
+    event = {
+        "tool_name": "Write", "cwd": str(tmp_path),
+        "tool_input": {"file_path": "src/a.py", "content": "\ud800"},
+    }
+
+    decision = gca.decide(event)
+
+    assert decision.permission == "deny"
+    assert decision.tier == "candidate_unverifiable"
+
+
+def test_decide_allows_each_file_of_assessed_multifile_candidate_and_denies_extra(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: True)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
+    for name in ("a.py", "b.py", "c.py"):
+        target = tmp_path / "src" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("old\n", encoding="utf-8")
+    patch = (
+        "diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
+        "@@ -1 +1 @@\n-old\n+new-a\n"
+        "diff --git a/src/b.py b/src/b.py\n--- a/src/b.py\n+++ b/src/b.py\n"
+        "@@ -1 +1 @@\n-old\n+new-b\n"
+    )
+    binding = candidate_binding.binding_for_patch(tmp_path, patch)
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    _seed(
+        db, gca._repo_id(str(tmp_path)), "HEAD1", ["src/a.py", "src/b.py"],
+        decision="proceed", candidate=binding,
+    )
+
+    def event(name, content):
+        return {
+            "tool_name": "Write", "cwd": str(tmp_path),
+            "tool_input": {"file_path": f"src/{name}", "content": content},
+        }
+
+    assert gca.decide(event("a.py", "new-a\n")).permission == "allow"
+    assert gca.decide(event("b.py", "new-b\n")).permission == "allow"
+    extra = gca.decide(event("c.py", "new-c\n"))
+    assert extra.permission == "deny"
+    assert extra.tier == "must_consult"
 
 
 def test_decide_ask_when_matched_assessment_is_reject(tmp_path, monkeypatch):

@@ -52,6 +52,20 @@ def test_allow_emits_nothing(monkeypatch, capsys):
     assert rc == 0 and out.strip() == ""  # defer to normal permission flow
 
 
+def test_fail_open_surfaces_warning_without_blocking(monkeypatch, capsys):
+    monkeypatch.setattr(
+        gca,
+        "decide",
+        lambda event, db_path=None: gca.GateDecision(
+            "allow", "fail_open", warn="graph evidence unavailable; enforcement degraded"
+        ),
+    )
+    rc, out = _run(json.dumps({"tool_name": "Edit"}), monkeypatch, capsys)
+    payload = json.loads(out)
+    assert rc == 0
+    assert payload == {"systemMessage": "graph evidence unavailable; enforcement degraded"}
+
+
 def test_malformed_stdin_is_silent_allow(monkeypatch, capsys):
     rc, out = _run("not json", monkeypatch, capsys)
     assert rc == 0 and out.strip() == ""

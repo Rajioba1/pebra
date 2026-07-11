@@ -126,7 +126,11 @@ def _gated_write(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
     ``deny``/``ask`` blocks the write (nothing is written) with an arm-neutral reason; a gate ERROR
     fails OPEN (the write proceeds) so a broken gate never bricks the run."""
     path = args.get("path", "")
-    event = {"tool_name": "Write", "tool_input": {"file_path": path}, "cwd": str(setup.repo_path)}
+    event = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": path, "content": args.get("content", "")},
+        "cwd": str(setup.repo_path),
+    }
     try:
         decision = setup.gate_check_backend(event)
     except Exception:  # noqa: BLE001 - a gate failure must never block the experiment write (fail-open)

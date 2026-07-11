@@ -38,6 +38,7 @@ from pebra.core.models import (
     FileFanInRollup,
 )
 from pebra.ports.blast_radius_port import BlastRadiusProvider
+from pebra.ports.candidate_binding_port import CandidateBindingProvider
 from pebra.ports.fanin_port import FanInProvider
 from pebra.ports.file_fanin_port import FileFanInProvider
 from pebra.ports.evidence_port import EvidenceProvider
@@ -412,6 +413,11 @@ def _score_action(
         result.provenance["graph_provenance"] = graph_provenance
     explanation = explanation_generator.render(result, inp.thresholds)
     packet = model_guidance.render(result, action, explanation)
+    candidate_binding_provider = ports.get("candidate_binding_provider")
+    if candidate_binding_provider is not None:
+        candidate_binding = candidate_binding_provider.bind_candidate(action, repo_root)
+        if candidate_binding is not None:
+            packet["binding"]["candidate"] = candidate_binding
     result.model_guidance_packet = packet
     # Milestone 4a: capture the prediction manifest from the in-flight evidence (p_success and the
     # projected deltas are dropped from result.scores, so this is the only faithful record). Pure;
@@ -558,6 +564,7 @@ def assess(
     materialized_diff_provider: MaterializedGraphDiffProvider | None = None,
     semantic_diff_enabled: bool = False,
     trusted_candidate_verification: dict[str, Any] | None = None,
+    candidate_binding_provider: CandidateBindingProvider | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     repo = repository_registry.resolve(start_path)
@@ -590,6 +597,7 @@ def assess(
                 language_capability_provider=language_capability_provider,
                 materialized_diff_provider=materialized_diff_provider,
                 semantic_diff_enabled=semantic_diff_enabled,
+                candidate_binding_provider=candidate_binding_provider,
                 trusted_candidate_verification=_trusted_verification_for_action(
                     trusted_candidate_verification, action
                 ),

@@ -22,6 +22,7 @@ from pebra.adapters.ast_import_graph import AstImportGraphAdapter
 from pebra.adapters.composite_evidence import CompositeEvidenceProvider
 from pebra.adapters.contract_surface import ContractSurfaceScanner
 from pebra.adapters.git_change_verifier import GitChangeVerifier
+from pebra.adapters.candidate_binding import CandidateBindingAdapter
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
 from pebra.adapters.codegraph_materialized_diff import CodeGraphMaterializedDiffAdapter
 from pebra.adapters.import_graph_cache import GraphProvider
@@ -136,6 +137,7 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         "materialized_diff_provider": CodeGraphMaterializedDiffAdapter(enabled=True),
         # Deployment dark gate: request thresholds alone cannot turn the expensive semantic tier on.
         "semantic_diff_enabled": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF") == "1",
+        "candidate_binding_provider": CandidateBindingAdapter(),
     }
 
 

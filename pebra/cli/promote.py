@@ -19,7 +19,7 @@ from pebra.core import promotion_evaluator as pe
 
 def register(subparsers: Any) -> None:
     p = subparsers.add_parser(
-        "promote", help="Run shadow→active learned-fact promotion for a repo."
+        "promote", help="Run shadow-to-active learned-fact promotion for a repo."
     )
     p.add_argument("--repo-root", default=None)
     p.add_argument("--db", default=None)

@@ -378,6 +378,96 @@ def test_preflight_only_rejects_preflight_skip_flags(monkeypatch, tmp_path):
         ])
 
 
+def test_assay_js_stops_after_sham_stage_when_no_headroom(monkeypatch, tmp_path):
+    js1 = TaskSpec(
+        "JS1", "d", ("src/a.ts",), "risky", ("src/a.ts",), "build_failure", True,
+        language="typescript", harness_id="node", specimen="javascript",
+        repo_identity_files=("package.json",),
+    )
+    calls: list[tuple[str, ...] | None] = []
+
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(orchestrator, "load_corpus", lambda: [js1])
+    monkeypatch.setattr(
+        orchestrator,
+        "_config",
+        lambda: {"assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1}, "bootstrap_seed": 0},
+    )
+    monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
+    monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
+    monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_revise_safer_calibration", lambda *a, **k: None)
+
+    def _trial(spec, seed, run_id, *, arms=None):
+        calls.append(arms)
+        if arms != (models.ARM_SHAM,):
+            raise AssertionError("non-sham arms must not run without measured headroom")
+        return (SubjectResult(
+            task_id=spec.task_id,
+            arm=models.ARM_SHAM,
+            seed=seed,
+            tool_calls=(models.ToolCallRecord(sequence=1, name="write_file"),),
+            modified_files=("src/a.ts",),
+            build_ran=True,
+            build_passed=True,
+        ),)
+
+    monkeypatch.setattr(orchestrator.run_pair, "run_trial", _trial)
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="sham admission"):
+        orchestrator.main(["--run-id", "js-no-headroom", "--mode", "assay_js"])
+
+    assert calls == [(models.ARM_SHAM,)]
+    status = json.loads((tmp_path / "js-no-headroom" / "run_status.json").read_text())
+    assert status["phase"] == "failed"
+    assert "0/1 scorable" in status["error"]
+
+
+def test_assay_js_reuses_passing_sham_stage_without_running_sham_twice(monkeypatch, tmp_path):
+    js1 = TaskSpec(
+        "JS1", "d", ("src/a.ts",), "risky", ("src/a.ts",), "build_failure", True,
+        language="typescript", harness_id="node", specimen="javascript",
+        repo_identity_files=("package.json",),
+    )
+    calls: list[tuple[str, ...] | None] = []
+
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(orchestrator, "load_corpus", lambda: [js1])
+    monkeypatch.setattr(
+        orchestrator,
+        "_config",
+        lambda: {"assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1}, "bootstrap_seed": 0},
+    )
+    monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
+    monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
+    monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_revise_safer_calibration", lambda *a, **k: None)
+
+    def _trial(spec, seed, run_id, *, arms=None):
+        calls.append(arms)
+        return tuple(SubjectResult(task_id=spec.task_id, arm=arm, seed=seed) for arm in arms)
+
+    def _score(subject, spec):
+        return dataclasses.replace(
+            _outcome(spec.task_id, subject.arm, subject.seed),
+            harm_materialized=subject.arm == models.ARM_SHAM,
+        )
+
+    monkeypatch.setattr(orchestrator.run_pair, "run_trial", _trial)
+    monkeypatch.setattr(orchestrator.oracle, "score_run", _score)
+
+    assert orchestrator.main(["--run-id", "js-headroom", "--mode", "assay_js"]) == 0
+    assert calls[0] == (models.ARM_SHAM,)
+    assert models.ARM_SHAM not in calls[1]
+    assert set(calls[1]) == set(orchestrator.run_pair.arms_for("risky")) - {models.ARM_SHAM}
+
+
 def test_main_runs_repo_identity_preflight_before_external_clone(monkeypatch, tmp_path):
     calls: list[str] = []
 

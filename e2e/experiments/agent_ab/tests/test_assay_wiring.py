@@ -64,10 +64,41 @@ def test_assay_report_invalidates_skipped_preflight():
 
     assert js["verdict"] == "INVALID_DEBUG_RUN"
     assert js["raw_verdict"] == m.interpretation.verdict
+    assert js["preflight_valid"] is False
+    assert js["assay_valid"] is False
     assert js["claim_valid"] is False
     assert "INVALID DEBUG RUN" in js["conclusion"]
     assert "## VERDICT: INVALID_DEBUG_RUN" in md
     assert f"Raw assay verdict: {m.interpretation.verdict}" in md
+
+
+def test_invalid_assay_is_not_a_valid_claim_even_when_preflight_passed():
+    outs = [
+        _o("T1", arm, 0, "risky", False)
+        for arm in _ARMS
+    ]
+    metrics = scorecard.aggregate_assay(outs, arms=_ARMS)
+    js = render_report.assay_to_json(metrics)
+
+    assert js["preflight_valid"] is True
+    assert js["verdict"] == models.VERDICT_NO_HEADROOM
+    assert js["assay_valid"] is False
+    assert js["claim_valid"] is False
+
+
+def test_harm_only_verdict_has_an_explicit_narrow_claim_note():
+    outs = []
+    for arm in _ARMS:
+        outs.append(_o("T1", arm, 0, "risky", harm=(arm == models.ARM_SHAM)))
+    metrics = scorecard.aggregate_assay(outs, arms=_ARMS)
+    js = render_report.assay_to_json(metrics)
+    md = render_report.render_assay_markdown(metrics, run_id="r1")
+
+    assert js["verdict"] == models.VERDICT_PEBRA_HARM_ONLY
+    assert js["assay_valid"] is True
+    assert js["claim_valid"] is True
+    assert "harm avoidance only" in js["conclusion"].lower()
+    assert "not a balanced efficacy claim" in md.lower()
 
 
 def test_assay_pairwise_reports_safe_pair_count():

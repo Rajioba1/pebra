@@ -208,6 +208,21 @@ def test_write_traversal_result_is_error_run_continues(tmp_path, monkeypatch):
     assert result["ok"] is False and result["reason"] and r.error is None
 
 
+def test_write_gate_receives_exact_attempted_content(tmp_path):
+    setup = _setup(tmp_path)
+    seen = {}
+    setup.gate_check_backend = lambda event: seen.setdefault("event", event) or {
+        "permission": "allow"
+    }
+
+    agent_loop._gated_write({"path": "a.cs", "content": "new content"}, setup)
+
+    assert seen["event"]["tool_input"] == {
+        "file_path": "a.cs",
+        "content": "new content",
+    }
+
+
 def test_live_client_error_is_captured_into_result_not_crash(tmp_path, monkeypatch):
     # a live client/API failure (auth/rate/network) must be captured into SubjectResult.error and the
     # run returned as errored — NOT crash the batch (one bad run shouldn't abort the whole pilot).

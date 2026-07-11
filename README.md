@@ -10,6 +10,8 @@ uses measured calibration data to promote learned facts for future assessments.
 
 - Pre-edit `assess` with expected loss, expected utility, RAU, edit confidence, and ordered gates.
 - Post-edit `verify` against the approved safe scope and required checks.
+- Candidate-bound pre-edit enforcement: an impactful host edit must produce the same normalized file
+  contents as the patch that was assessed; same repository/HEAD/path alone is not sufficient.
 - Outcome recording, shadow learning, promotion, scorecards, and learned-fact reapplication.
 - Read-only local Risk Observatory dashboard for assessment, calibration, learning, and graph state.
 - Explicit graph-engine setup and diagnostics through `pebra setup-graph` and `pebra doctor`.
@@ -70,7 +72,31 @@ pebra learn --assessment-id <assessment_id>
 pebra promote --repo-root <repo_root>
 pebra scorecard --repo-root <repo_root>
 pebra dashboard --port 4500 --open
+pebra capabilities --repo-root <repo_root>
 ```
+
+## Agent Enforcement
+
+Install the repository protocol for either host. Add `--with-hook` when you want pre-edit interception,
+not only instructions:
+
+```powershell
+pebra agent-init --target claude --repo-root . --with-hook
+pebra agent-init --target codex --repo-root . --with-hook
+pebra capabilities --repo-root .
+```
+
+The guarantees are deliberately different:
+
+| Host surface | Reported mode | Guarantee |
+|---|---|---|
+| Claude Code PreToolUse hook | `verified_enforcing` | Verified hook surface; candidate-bound checks deny or ask before supported structured edits. |
+| Codex repo-local hook | `best_effort` | Candidate-bound gate logic is installed, but repo-local hook loading remains host-dependent. |
+| MCP tools | `advisory_only` | Assess/verify tools are available, but MCP alone does not intercept another host's writes. |
+
+If graph or Git HEAD evidence is unavailable, an installed gate remains fail-open by policy and
+`capabilities` reports `degraded_fail_open`. The Claude hook also emits the degradation warning as a
+non-blocking system message. This is observable degradation, not a claim of hard enforcement.
 
 The dashboard is read-only. On a loopback bind (`localhost`, `127.0.0.1`, `::1`) the default is
 token-free for local convenience; `--auth token` forces a bearer token when you want the old locked

@@ -107,8 +107,8 @@ architecture adds them.)*
   validated request + `EvidenceBundle` + `BlastEvidence` + `SymbolDiffEvidence`(+`ChangeKind`) +
   `ArchitectureEvidence` + `BenefitDeltaEvidence` + active snapshot + resolved config + `repo_id`/`repo_root`.
 - **`AssessmentResult`** — produced by the engine, rendered by the backend: `recommended_decision`
-  (1 of 5), `requires_confirmation`, `action_status`, `risk_mode` (companion field — **not** a 6th
-  decision; the decision enum stays exactly 5), `scores{}`
+  (1 of 6), `requires_confirmation`, `action_status`, `risk_mode` (companion field, not a decision;
+  the decision enum has exactly 6 values), `scores{}`
   (`expected_loss`, `expected_utility`, `utility_sd`, `rau`, `edit_confidence`, `risk_budget_used`,
   `benefit_breakdown`, bands), `gates_fired[]`, `high_risk_triggers[]`, `model_guidance_packet`,
   `provenance{}`, `repo_id`, `repo_root`.

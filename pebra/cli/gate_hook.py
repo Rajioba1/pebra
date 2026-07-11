@@ -43,4 +43,8 @@ def run_gate_hook(args: Any) -> int:
             "permissionDecision": decision.permission,
             "permissionDecisionReason": decision.reason or "PEBRA pre-edit gate",
         }}))
+    elif decision.warn:
+        # Claude supports a non-blocking systemMessage. Keep the existing fail-open policy, but do not
+        # hide that enforcement degraded because graph/git/store evidence was unavailable.
+        print(json.dumps({"systemMessage": decision.warn}))
     return 0
