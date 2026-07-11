@@ -157,6 +157,7 @@ def test_main_writes_finished_run_status(monkeypatch, tmp_path):
                 SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
 
     _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
+    monkeypatch.delenv("E2E_AB_PARALLEL_ARMS", raising=False)
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
     orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
     status = json.loads((tmp_path / "t1" / "run_status.json").read_text(encoding="utf-8"))
@@ -169,6 +170,23 @@ def test_main_writes_finished_run_status(monkeypatch, tmp_path):
     assert status["run_metadata"]["parallel_arms"] is False
     assert status["run_metadata"]["protocol_file"] == ".agent-instructions/edit_protocol.md"
     assert set(status["run_metadata"]["protocol_hashes"]) >= {"sham", "pebra"}
+
+
+def test_main_run_status_records_parallel_arms_when_enabled(monkeypatch, tmp_path):
+    def _fake_pair(spec, seed, run_id):
+        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
+                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+
+    _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
+    monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
+    monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1")
+    monkeypatch.setenv("E2E_AB_MAX_WORKERS", "5")
+
+    orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
+
+    status = json.loads((tmp_path / "t1" / "run_status.json").read_text(encoding="utf-8"))
+    assert status["run_metadata"]["parallel_arms"] is True
+    assert status["run_metadata"]["max_workers_env"] == "5"
 
 
 def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):

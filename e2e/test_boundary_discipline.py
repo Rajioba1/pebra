@@ -9,6 +9,7 @@ A single ``import pebra`` / ``from pebra...`` anywhere under e2e/ fails this tes
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 _E2E_ROOT = Path(__file__).parent
@@ -74,13 +75,15 @@ def test_pebra_import_scanner_allows_subprocess_code_strings(tmp_path):
 
 def test_no_e2e_module_imports_pebra_internals():
     offenders: dict[str, list[str]] = {}
-    for py in sorted(_E2E_ROOT.rglob("*.py")):
-        rel = py.relative_to(_E2E_ROOT)
-        if rel.parts and rel.parts[0] in _EXCLUDED_TOP:
-            continue  # skip gitignored external clones / run artifacts under e2e/out/
-        hits = _pebra_imports(py)
-        if hits:
-            offenders[str(py.relative_to(_E2E_ROOT))] = hits
+    for root, dirs, files in os.walk(_E2E_ROOT):
+        dirs[:] = sorted(d for d in dirs if d not in _EXCLUDED_TOP)
+        for name in sorted(files):
+            if not name.endswith(".py"):
+                continue
+            py = Path(root) / name
+            hits = _pebra_imports(py)
+            if hits:
+                offenders[str(py.relative_to(_E2E_ROOT))] = hits
     assert not offenders, (
         "e2e must reach PEBRA only via the CLI/MCP/HTTP boundary, never by importing it. "
         f"Offending imports: {offenders}"
