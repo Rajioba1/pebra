@@ -324,6 +324,24 @@ class CandidateVerificationEvidence:
 
 
 @dataclass(frozen=True)
+class RevisionCompletenessEvidence:
+    """Whether a revised candidate preserves the origin action's declared envelope.
+
+    Controllers derive this from persisted action lineage. The pure engine only consumes the
+    resulting fact; it never reads a store. Trusted, patch-bound candidate verification may prove an
+    intentionally narrower route despite a dropped structural obligation.
+    """
+
+    is_revision: bool = False
+    origin_available: bool = True
+    origin_files: tuple[str, ...] = ()
+    origin_public_symbols: tuple[str, ...] = ()
+    missing_files: tuple[str, ...] = ()
+    missing_public_symbols: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class ActualDiffSummary:
     """What ChangeVerifier returns about the *actual* post-edit diff (Architecture §9)."""
 
@@ -417,6 +435,9 @@ class AssessmentInput:
     architecture_evidence: ArchitectureEvidence = field(default_factory=ArchitectureEvidence)
     candidate_verification: CandidateVerificationEvidence = field(
         default_factory=CandidateVerificationEvidence
+    )
+    revision_completeness_evidence: RevisionCompletenessEvidence = field(
+        default_factory=RevisionCompletenessEvidence
     )
     # Repo/language-wide MEASURED capability for the resolved edit's language (declared∩measured).
     # A repo-wide fact (not per-edit), so it rides AssessmentInput, not the frozen SymbolDiffEvidence.

@@ -38,6 +38,7 @@ from pebra.core.models import (
     CandidateAction,
     CandidateVerificationEvidence,
     FileFanInRollup,
+    RevisionCompletenessEvidence,
 )
 from pebra.ports.blast_radius_port import BlastRadiusProvider
 from pebra.ports.candidate_binding_port import CandidateBindingProvider
@@ -123,6 +124,67 @@ def _merge_event_max(existing: dict[str, Any], injected: dict[str, Any]) -> dict
     return merged
 
 
+def _norm_envelope_value(value: str) -> str:
+    normalized = value.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _public_symbols(symbol_diff: Any) -> set[str]:
+    if str(getattr(symbol_diff, "visibility", "")) not in {"exported", "public_api"}:
+        return set()
+    return {
+        str(symbol)
+        for symbol in (getattr(symbol_diff, "changed_symbols", ()) or ())
+        if isinstance(symbol, str) and symbol
+    }
+
+
+def _build_revision_completeness(
+    action: CandidateAction,
+    symbol_diff: Any,
+    *,
+    is_revision: bool,
+    origin: dict[str, Any] | None,
+) -> RevisionCompletenessEvidence:
+    if not is_revision:
+        return RevisionCompletenessEvidence()
+    if not origin or not origin.get("available"):
+        return RevisionCompletenessEvidence(
+            is_revision=True,
+            origin_available=False,
+            fallback_reason=(origin or {}).get("fallback_reason") or "origin envelope unavailable",
+        )
+    origin_files = {
+        _norm_envelope_value(str(value)) for value in origin.get("expected_files", ()) if value
+    }
+    origin_symbols = {str(value) for value in origin.get("public_symbols", ()) if value}
+    current_files = {_norm_envelope_value(value) for value in action.expected_files if value}
+    current_symbols = _public_symbols(symbol_diff)
+    return RevisionCompletenessEvidence(
+        is_revision=True,
+        origin_available=True,
+        origin_files=tuple(sorted(origin_files)),
+        origin_public_symbols=tuple(sorted(origin_symbols)),
+        missing_files=tuple(sorted(origin_files - current_files)),
+        missing_public_symbols=tuple(sorted(origin_symbols - current_symbols)),
+    )
+
+
+def _revision_envelope_payload(
+    action: CandidateAction, result: AssessmentResult
+) -> dict[str, list[str]]:
+    files = sorted({_norm_envelope_value(value) for value in action.expected_files if value})
+    scope = result.symbol_scope_evidence or {}
+    symbols: list[str] = []
+    if str(scope.get("visibility", "")) in {"exported", "public_api"}:
+        symbols = sorted({
+            str(value) for value in (scope.get("changed_symbols") or ()) if value
+        })
+    return {"expected_files": files, "public_symbols": symbols}
+
+
 def _build_input(
     request: AssessmentRequest,
     action: CandidateAction,
@@ -140,6 +202,8 @@ def _build_input(
     materialized_diff_provider: MaterializedGraphDiffProvider | None = None,
     semantic_diff_enabled: bool = False,
     trusted_candidate_verification: CandidateVerificationEvidence | None = None,
+    revision_origin: dict[str, Any] | None = None,
+    is_revision: bool = False,
 ) -> AssessmentInput:
     evidence = evidence_provider.gather_evidence(request, action, repo_root)
     symbol_diff = symbol_diff_provider.symbol_diff(action, repo_root)
@@ -366,6 +430,12 @@ def _build_input(
         variance_breakdown=evidence.variance_breakdown,
         benefit_delta_evidence=evidence.benefit_delta_evidence,
         candidate_verification=trusted_candidate_verification or evidence.candidate_verification,
+        revision_completeness_evidence=_build_revision_completeness(
+            action,
+            symbol_diff,
+            is_revision=is_revision,
+            origin=revision_origin,
+        ),
         symbol_diff_evidence=symbol_diff,
         fanin_evidence=fanin_ev,
         candidate_aggregate_evidence=candidate_aggregate,
@@ -398,6 +468,8 @@ def _score_action(
         materialized_diff_provider=ports.get("materialized_diff_provider"),
         semantic_diff_enabled=bool(ports.get("semantic_diff_enabled", False)),
         trusted_candidate_verification=ports.get("trusted_candidate_verification"),
+        revision_origin=ports.get("revision_origin"),
+        is_revision=bool(ports.get("is_revision", False)),
     )
     # Phase-4 reframe: capture structural features pre-scoring and attach to the IR for CAPTURE only.
     # assessment_builder/decision_engine ignore inp.structural_features (no score/gate change — Hard
@@ -605,6 +677,37 @@ def assess(
             action=action,
             task=request.task,
         )
+        try:
+            revise_attempt = int(action_thresholds.get("revise_safer_attempt", 0))
+        except (TypeError, ValueError):
+            revise_attempt = 0
+        revision_origin = None
+        if revise_attempt > 0:
+            origin_loader = getattr(store, "revision_origin_envelope", None)
+            if origin_loader is None:
+                revision_origin = {
+                    "available": False,
+                    "fallback_reason": "assessment store cannot load revision origin",
+                }
+            else:
+                try:
+                    revision_origin = origin_loader(
+                        repo.repo_id,
+                        assessed_commit,
+                        action.id,
+                        request.task,
+                        list(action.expected_files or []),
+                    )
+                except Exception:  # noqa: BLE001 - known revisions fail closed in the pure gate
+                    revision_origin = {
+                        "available": False,
+                        "fallback_reason": "assessment store could not load revision origin",
+                    }
+                if revision_origin is None:
+                    revision_origin = {
+                        "available": False,
+                        "fallback_reason": "revision origin assessment not found",
+                    }
         scored.append(
             _score_action(
                 request, action, repo.repo_id, repo.repo_root, action_thresholds,
@@ -625,16 +728,29 @@ def assess(
                 trusted_candidate_verification=_trusted_verification_for_action(
                     trusted_candidate_verification, action
                 ),
+                revision_origin=revision_origin,
+                is_revision=revise_attempt > 0,
             )
         )
 
     recommended = _recommended(scored)
+    recommended_verification = _trusted_verification_for_action(
+        trusted_candidate_verification, recommended.action
+    )
     assessment_id = store.persist_assessment(
         recommended.result,
         # persist the thresholds used so the post-edit verify path can reproduce the SAME consequential
         # fan-in threshold (otherwise verify silently falls back to the 0.90 default — assess/verify drift).
         {"task": request.task, "action_id": recommended.action.id,
-         "thresholds": dict(recommended.thresholds)},
+         "thresholds": dict(recommended.thresholds),
+         "candidate_verification_status": (
+             recommended_verification.status
+             if recommended_verification is not None
+             else "not_applicable"
+         ),
+         "revision_envelope": _revision_envelope_payload(
+             recommended.action, recommended.result
+         )},
         predictions=recommended.predictions,
     )
     return AssessmentOutcome(

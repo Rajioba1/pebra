@@ -40,6 +40,7 @@ def _persist_scoped(
     files: list[str] | None = None,
     action_id: str | None = "action-1",
     task: str = "t",
+    candidate_verification_status: str | None = None,
 ) -> str:
     res = AssessmentResult(
         recommended_decision=decision,
@@ -59,6 +60,8 @@ def _persist_scoped(
     request = {"task": task}
     if action_id is not None:
         request["action_id"] = action_id
+    if candidate_verification_status is not None:
+        request["candidate_verification_status"] = candidate_verification_status
     return store.persist_assessment(res, request)
 
 
@@ -98,6 +101,110 @@ def test_revise_safer_attempt_count_follows_action_across_files(tmp_path) -> Non
     assert store.revise_safer_attempt_count(
         "r", "abc123", ["src/LowImpact.cs"], "stable-revision-lineage", "t"
     ) == 1
+
+
+def test_revise_safer_attempt_count_does_not_charge_unavailable_verification(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(store, decision=Decision.REVISE_SAFER)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        candidate_verification_status="unavailable",
+    )
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        candidate_verification_status="failed",
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/Gamma.cs"], "action-1", "t"
+    ) == 2
+
+
+def test_revision_origin_envelope_returns_first_matching_action_at_head(tmp_path) -> None:
+    store = _store(tmp_path)
+    first = {
+        "expected_files": ["src/api.ts", "src/compat.ts"],
+        "public_symbols": ["pkg.oldName"],
+    }
+    second = {"expected_files": ["src/api.ts"], "public_symbols": []}
+    for envelope in (first, second):
+        res = AssessmentResult(
+            recommended_decision=Decision.REVISE_SAFER,
+            requires_confirmation=False,
+            action_status=ActionStatus.PENDING,
+            risk_mode=RiskMode.SENSITIVE_CONTEXT,
+            scores={},
+            repo_id="r",
+            repo_root="/x",
+            assessed_commit="abc123",
+        )
+        store.persist_assessment(
+            res,
+            {"task": "rename", "action_id": "a1", "revision_envelope": envelope},
+        )
+
+    assert store.revision_origin_envelope("r", "abc123", "a1", "rename") == {
+        "available": True,
+        **first,
+    }
+
+
+def test_revision_origin_envelope_marks_matching_legacy_row_unavailable(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        action_id="legacy",
+        task="rename",
+    )
+
+    assert store.revision_origin_envelope("r", "abc123", "legacy", "rename") == {
+        "available": False,
+        "fallback_reason": "origin assessment predates revision-envelope persistence",
+    }
+
+
+def test_changed_action_id_cannot_reset_revision_lineage(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/api.ts", "src/compat.ts"],
+        action_id="original-action",
+        task="rename safely",
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/api.ts"], "new-action", "rename safely"
+    ) == 1
+
+
+def test_origin_envelope_falls_back_to_scope_when_request_lineage_changes(tmp_path) -> None:
+    store = _store(tmp_path)
+    envelope = {
+        "expected_files": ["src/api.ts", "src/compat.ts"],
+        "public_symbols": ["pkg.oldName"],
+    }
+    res = AssessmentResult(
+        recommended_decision=Decision.REVISE_SAFER,
+        requires_confirmation=False,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.SENSITIVE_CONTEXT,
+        scores={},
+        repo_id="r",
+        repo_root="/x",
+        assessed_commit="abc123",
+    )
+    store.persist_assessment(
+        res,
+        {"task": "old wording", "action_id": "old-action", "revision_envelope": envelope},
+    )
+
+    assert store.revision_origin_envelope(
+        "r", "abc123", "new-action", "new wording", ["src/api.ts"]
+    ) == {"available": True, **envelope}
 
 
 def test_legacy_scope_fallback_does_not_cross_known_task_boundary(tmp_path) -> None:

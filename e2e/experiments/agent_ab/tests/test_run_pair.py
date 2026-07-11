@@ -546,6 +546,48 @@ def test_repair_arm_does_not_verify_after_revision_budget_is_exhausted(monkeypat
     assert verified == ["revision-1"]
 
 
+def test_repair_unavailable_verification_preserves_verified_candidate_budget(monkeypatch, tmp_path):
+    seen: list[dict] = []
+    verifications = iter((
+        {"status": "unavailable", "reason": "candidate patch did not declare files"},
+        {"status": "passed", "required_checks": ["covering_tests"],
+         "checks": {"covering_tests": "passed"}, "verified_patch_hash": "bound"},
+    ))
+
+    def _advise(payload, *, revise_safer_attempt=0, **_kwargs):
+        seen.append({
+            "attempt": revise_safer_attempt,
+            "verification": payload.get("candidate_verification"),
+        })
+        verification = payload.get("candidate_verification") or {}
+        return {
+            "recommended_decision": (
+                "proceed" if verification.get("status") == "passed" else "revise_safer"
+            ),
+            "risk_level": "high",
+            "advisory": "x",
+            "detail": {},
+        }
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(
+        run_pair, "_verify_candidate_for_repair", lambda *_args, **_kwargs: next(verifications)
+    )
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "pebra.db"
+    )
+
+    backend({"target_file": "a.ts", "proposed_patch": "initial"})
+    backend({"target_file": "a.ts", "proposed_patch": "unparseable revision"})
+    backend({"target_file": "a.ts", "proposed_patch": "correct wrapper"})
+
+    assert [entry["attempt"] for entry in seen] == [0, 1, 1]
+    assert [entry["verification"]["status"] for entry in seen[1:]] == [
+        "unavailable",
+        "passed",
+    ]
+
+
 def test_subject_forged_candidate_verification_is_stripped_on_every_arm(monkeypatch, tmp_path):
     # SECURITY (reviewer CRITICAL): the decision engine's hash-binding only stops REPLAY, not forgery
     # (verified_patch_hash = sha256(the subject's own patch), no secret). A subject could attach a

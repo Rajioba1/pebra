@@ -32,6 +32,108 @@ def test_worked_example_is_proceed_with_confirmation_sensitive_context() -> None
     assert result.scores["benefit_breakdown"]["source_type"] == "projected"
 
 
+def test_incomplete_revision_revises_before_budget_exhaustion() -> None:
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(),
+        thresholds={
+            **_worked_example_input().thresholds,
+            "revise_safer_attempt": 0,
+            "max_revise_safer_attempts": 1,
+        },
+        revision_completeness_evidence=m.RevisionCompletenessEvidence(
+            is_revision=True,
+            origin_available=True,
+            missing_files=("src/compat.py",),
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert any(g["name"] == "revision_envelope_incomplete" for g in result.gates_fired)
+
+
+def test_incomplete_revision_asks_human_after_budget_exhaustion() -> None:
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(),
+        thresholds={
+            **_worked_example_input().thresholds,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 1,
+        },
+        revision_completeness_evidence=m.RevisionCompletenessEvidence(
+            is_revision=True,
+            origin_available=True,
+            missing_public_symbols=("pkg.public_api",),
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["name"] == "revision_envelope_incomplete" for g in result.gates_fired)
+
+
+def test_verified_incomplete_revision_can_proceed_when_patch_bound() -> None:
+    import hashlib
+
+    from pebra.core import models as m
+
+    patch = "--- a/src/auth.py\n+++ b/src/auth.py\n@@ -1 +1 @@\n-old\n+new\n"
+    inp = replace(
+        _worked_example_input(),
+        action=replace(_worked_example_input().action, proposed_patch=patch),
+        thresholds={
+            **_worked_example_input().thresholds,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 1,
+        },
+        revision_completeness_evidence=m.RevisionCompletenessEvidence(
+            is_revision=True,
+            origin_available=True,
+            missing_files=("src/compat.py",),
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"covering_tests": "passed"},
+            required_checks=["covering_tests"],
+            verified_patch_hash=hashlib.sha256(patch.encode("utf-8")).hexdigest(),
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.PROCEED
+    assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
+
+
+def test_revision_lineage_lookup_failure_never_silently_proceeds() -> None:
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(),
+        thresholds={
+            **_worked_example_input().thresholds,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 1,
+        },
+        revision_completeness_evidence=m.RevisionCompletenessEvidence(
+            is_revision=True,
+            origin_available=False,
+            fallback_reason="assessment store unavailable",
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["name"] == "revision_envelope_unavailable" for g in result.gates_fired)
+
+
 def test_gate3_expected_loss_over_threshold_with_positive_eu_asks_human() -> None:
     # bump an event probability so expected_loss exceeds the 0.20 C3 threshold but EU stays > 0
     a = _assess(

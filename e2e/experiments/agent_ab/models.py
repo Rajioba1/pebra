@@ -145,6 +145,10 @@ ADH_DID_NOT_CALL = "did_not_call"
 ADH_HEEDED = "called_heeded"
 ADH_IGNORED = "called_ignored"
 ADH_NO_RESTRICTION = "called_no_restriction"  # advisory said proceed / gave no restriction
+GUIDANCE_NOT_APPLICABLE = "not_applicable"
+GUIDANCE_HEEDED_SAFE = "heeded_safe"
+GUIDANCE_HEEDED_THEN_HARMED = "heeded_then_harmed"
+GUIDANCE_IGNORED = "ignored"
 
 # over-caution causes
 OCC_GATE_BLOCKED = "gate_blocked"
@@ -181,6 +185,7 @@ class RunOutcome:
     served_models: tuple[str, ...] = ()
     over_caution_cause: str | None = None
     protocol_file_read: bool = False
+    guidance_outcome: str = GUIDANCE_NOT_APPLICABLE
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------

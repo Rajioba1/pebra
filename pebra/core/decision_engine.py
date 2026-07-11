@@ -219,6 +219,26 @@ def _revise_candidate_decision(
     return Decision.REVISE_SAFER, False, source_gate
 
 
+def _revision_completeness_issue(assessment: Assessment) -> dict[str, Any] | None:
+    evidence = assessment.input.revision_completeness_evidence
+    if not evidence.is_revision:
+        return None
+    if not evidence.origin_available:
+        return {
+            "gate": 9,
+            "name": "revision_envelope_unavailable",
+            "reason": evidence.fallback_reason or "origin revision envelope unavailable",
+        }
+    if not evidence.missing_files and not evidence.missing_public_symbols:
+        return None
+    return {
+        "gate": 9,
+        "name": "revision_envelope_incomplete",
+        "missing_files": list(evidence.missing_files),
+        "missing_public_symbols": list(evidence.missing_public_symbols),
+    }
+
+
 def _graph_evidence(blast: Any) -> dict[str, Any]:
     """Surface blast graph incompleteness (3c/3d) for rendering. Empty when the graph is fully
     resolved, so a clean assessment carries no uncertainty noise (and the worked example is unchanged)."""
@@ -319,6 +339,7 @@ def decide(
     cg = _fanin_validity(assessment.input)
     repo_blast = _repo_blast_gate(assessment.input)
     repo_blast_advisory = _repo_blast_advisory(assessment.input)
+    revision_issue = _revision_completeness_issue(assessment)
     flat = _flatten_scores(assessment)
 
     def _result(
@@ -420,6 +441,21 @@ def decide(
     ):
         provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 5
         gates_fired.append({"gate": 5, "name": "utility_sd_over_limit", "utility_sd": s["utility_sd"]})
+    # --- Gate 9: a safer revision may not win by silently dropping origin obligations ---
+    elif revision_issue:
+        verified_decision: Decision | None = None
+        if assessment.input.candidate_verification.status == "passed":
+            verified_decision, _, _ = _revise_candidate_decision(
+                assessment, gates_fired, source_gate=9
+            )
+        if verified_decision is Decision.PROCEED:
+            provisional, fired_gate = Decision.PROCEED, 7
+            requires_confirmation = stage in _SENSITIVE_STAGES
+        elif not _revision_exhausted(t):
+            provisional, fired_gate = Decision.REVISE_SAFER, 9
+        else:
+            provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 9
+        gates_fired.append(revision_issue)
     # --- Gate 8: low edit confidence ---
     elif assessment.confidence_band == "low":
         provisional, fired_gate = Decision.INSPECT_FIRST, 8

@@ -40,6 +40,17 @@ class StorePort(Protocol):
         """Count prior revisions at the same repo HEAD and action lineage, with path fallback."""
         ...
 
+    def revision_origin_envelope(
+        self,
+        repo_id: str,
+        assessed_commit: str | None,
+        action_id: str,
+        task: str | None = None,
+        target_files: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the first persisted envelope for an action at one HEAD, or None if no lineage."""
+        ...
+
     def load_predictions(self, assessment_id: str) -> list[dict[str, Any]]:
         """Return the captured prediction manifest for an assessment (Milestone 4a)."""
         ...

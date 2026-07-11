@@ -682,7 +682,9 @@ class SqliteStore:
             "WHERE repo_id = ? AND decision = 'revise_safer' ORDER BY id DESC",
             (repo_id,),
         ).fetchall()
-        count = 0
+        exact_matches = 0
+        task_matches = 0
+        scope_matches = 0
         for (content_json,) in rows:
             try:
                 content = json.loads(content_json)
@@ -690,6 +692,14 @@ class SqliteStore:
                     continue
                 stored_action_id = (content.get("request") or {}).get("action_id")
                 stored_task = (content.get("request") or {}).get("task")
+                verification_status = (content.get("request") or {}).get(
+                    "candidate_verification_status"
+                )
+                # Infrastructure/parsing unavailability is not a completed verification attempt.
+                # It remains persisted for audit, but must not exhaust the bounded semantic repair
+                # budget before a later well-formed candidate can actually be checked.
+                if verification_status == "unavailable":
+                    continue
                 same_action = (
                     bool(action_id)
                     and stored_action_id == action_id
@@ -702,17 +712,107 @@ class SqliteStore:
                 # Scope matching is a compatibility fallback for rows written before action lineage
                 # was persisted. Once a row has an action id, unrelated actions sharing a file must
                 # not exhaust each other's revision budget.
+                same_task = bool(task) and bool(stored_task) and stored_task == task
                 same_scope = (
-                    (not action_id or not stored_action_id)
-                    and (not task or not stored_task or stored_task == task)
-                    and bool(required)
+                    bool(required)
                     and required <= _path_scope_entries(files)
+                    and (
+                        stored_action_id is not None
+                        or not task
+                        or not stored_task
+                        or stored_task == task
+                    )
                 )
-                if same_action or same_scope:
-                    count += 1
+                exact_matches += int(same_action)
+                task_matches += int(same_task)
+                scope_matches += int(same_scope)
             except (TypeError, ValueError, AttributeError):
                 continue
-        return count
+        if exact_matches:
+            return exact_matches
+        if task_matches:
+            return task_matches
+        return scope_matches
+
+    def revision_origin_envelope(
+        self,
+        repo_id: str,
+        assessed_commit: str | None,
+        action_id: str,
+        task: str | None = None,
+        target_files: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        if assessed_commit is None or not action_id:
+            return None
+        rows = self._con.execute(
+            "SELECT content_json FROM assessments "
+            "WHERE repo_id = ? AND decision = 'revise_safer' ORDER BY id ASC",
+            (repo_id,),
+        ).fetchall()
+        required = {
+            _norm_scope_path(value)
+            for value in (target_files or ())
+            if isinstance(value, str) and value
+        }
+        exact: list[dict[str, Any]] = []
+        same_task: list[dict[str, Any]] = []
+        same_scope: list[dict[str, Any]] = []
+        for (content_json,) in rows:
+            try:
+                content = json.loads(content_json)
+                request = content.get("request") or {}
+                if content.get("assessed_commit") != assessed_commit:
+                    continue
+                envelope = request.get("revision_envelope")
+                if not isinstance(envelope, dict):
+                    candidate = {
+                        "available": False,
+                        "fallback_reason": (
+                            "origin assessment predates revision-envelope persistence"
+                        ),
+                    }
+                    candidate_files: set[str] = set()
+                else:
+                    files = envelope.get("expected_files")
+                    symbols = envelope.get("public_symbols")
+                    if not isinstance(files, list) or not isinstance(symbols, list):
+                        candidate = {
+                            "available": False,
+                            "fallback_reason": "origin revision envelope is malformed",
+                        }
+                        candidate_files = set()
+                    else:
+                        candidate = {
+                            "available": True,
+                            "expected_files": [str(value) for value in files],
+                            "public_symbols": [str(value) for value in symbols],
+                        }
+                        candidate_files = {
+                            _norm_scope_path(str(value)) for value in files if value
+                        }
+                stored_action_id = request.get("action_id")
+                stored_task = request.get("task")
+                if stored_action_id == action_id and (task is None or stored_task == task):
+                    exact.append(candidate)
+                if task is not None and stored_task == task:
+                    same_task.append(candidate)
+                if (
+                    required
+                    and required <= candidate_files
+                    and (
+                        stored_action_id is not None
+                        or not task
+                        or not stored_task
+                        or stored_task == task
+                    )
+                ):
+                    same_scope.append(candidate)
+            except (TypeError, ValueError, AttributeError):
+                continue
+        candidates = exact or same_task or same_scope
+        if candidates:
+            return candidates[0]
+        return None
 
     def guidance_packet_id_for_assessment(self, assessment_id: str) -> str | None:
         row_id = self._row_id(assessment_id)

@@ -252,9 +252,17 @@ def _advisory_backend(
         # gate 7 (with the default 1 it is exhausted first and gate 7 is unreachable). Other arms stay 1.
         max_attempts = 2 if is_repair else 1
 
+        total_submissions = 0
+
         def _real(payload: dict[str, Any]) -> dict[str, Any]:
-            nonlocal revise_attempt
+            nonlocal revise_attempt, total_submissions
+            total_submissions += 1
             attempt = revise_attempt
+            # Bound malformed/unavailable resubmissions independently from the verified-candidate
+            # budget. Three total submissions cover initial -> unavailable -> verified while ensuring
+            # a subject cannot obtain unlimited free retries by repeatedly sending malformed patches.
+            if is_repair and total_submissions > 3:
+                attempt = max_attempts
             # NEVER trust a subject-supplied candidate_verification. The hash-binding in the decision
             # engine only stops REPLAY against a different patch; it is NOT an authenticity check
             # (verified_patch_hash = sha256(the subject's own patch) is secret-free, so a subject could
@@ -283,7 +291,15 @@ def _advisory_backend(
             assessment_id = getattr(result, "assessment_id", None)
             if telemetry is not None and isinstance(assessment_id, str):
                 telemetry.last_assessment_id = assessment_id
-            if result.get("recommended_decision") == "revise_safer":
+            verification_status = (
+                payload.get("candidate_verification", {}).get("status")
+                if isinstance(payload.get("candidate_verification"), dict)
+                else None
+            )
+            if (
+                result.get("recommended_decision") == "revise_safer"
+                and verification_status != "unavailable"
+            ):
                 revise_attempt = min(max_attempts, attempt + 1)
                 if covering_hint:
                     result = {**result, "advisory": (result.get("advisory") or "") + covering_hint}

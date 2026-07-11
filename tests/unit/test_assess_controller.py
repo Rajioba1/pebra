@@ -931,3 +931,57 @@ def test_exposure_derivation_never_changes_risk() -> None:
     assert d["expected_loss"] == o["expected_loss"]
     assert d["loss_components"] == o["loss_components"]
     assert d["benefit"] > o["benefit"]
+
+
+def test_revision_completeness_detects_dropped_file_and_public_symbol() -> None:
+    action = m.CandidateAction(
+        id="a1",
+        label="compat rename",
+        action_type="edit",
+        expected_files=["src/api.ts"],
+    )
+    symbol_diff = m.SymbolDiffEvidence(
+        changed_symbols=["pkg.newName"],
+        visibility="public_api",
+    )
+
+    evidence = ac._build_revision_completeness(
+        action,
+        symbol_diff,
+        is_revision=True,
+        origin={
+            "available": True,
+            "expected_files": ["src/api.ts", "src/compat.ts"],
+            "public_symbols": ["pkg.oldName", "pkg.newName"],
+        },
+    )
+
+    assert evidence.missing_files == ("src/compat.ts",)
+    assert evidence.missing_public_symbols == ("pkg.oldName",)
+
+
+def test_revision_envelope_payload_retains_graph_derived_public_symbols() -> None:
+    action = m.CandidateAction(
+        id="a1",
+        label="compat rename",
+        action_type="edit",
+        expected_files=["./src/api.ts", "src/compat.ts"],
+    )
+    result = m.AssessmentResult(
+        recommended_decision=Decision.REVISE_SAFER,
+        requires_confirmation=False,
+        action_status=m.ActionStatus.PENDING,
+        risk_mode=RiskMode.SENSITIVE_CONTEXT,
+        scores={},
+        repo_id="r",
+        repo_root="/repo",
+        symbol_scope_evidence={
+            "visibility": "public_api",
+            "changed_symbols": ["pkg.oldName", "pkg.oldName"],
+        },
+    )
+
+    assert ac._revision_envelope_payload(action, result) == {
+        "expected_files": ["src/api.ts", "src/compat.ts"],
+        "public_symbols": ["pkg.oldName"],
+    }
