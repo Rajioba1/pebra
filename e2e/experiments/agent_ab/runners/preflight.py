@@ -538,6 +538,13 @@ def _benefit_discrimination_failure(
             return f"{spec.task_id}: {label} route exposed non-finite measured benefit"
         gains.append(float(gain))
         benefits.append(float(benefit))
+    if spec.requires_natural_safe_route:
+        if benefits[0] <= 0.0 or benefits[1] <= 0.0:
+            return (
+                f"{spec.task_id}: natural route has no positive benefit "
+                f"(bad={benefits[0]}, reference={benefits[1]})"
+            )
+        return None
     if math.isclose(benefits[0], benefits[1], rel_tol=0.0, abs_tol=1e-12):
         return (
             f"{spec.task_id}: decision-driving benefit did not vary between bad and reference "

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import stat
 from types import SimpleNamespace
@@ -211,6 +212,32 @@ def test_benefit_calibration_accepts_finite_candidate_specific_signal():
     assert preflight._benefit_discrimination_failure(
         _MEASURED_BENEFIT_TRAP, bad, fixed
     ) is None
+
+
+def test_natural_safe_route_accepts_equal_positive_measured_benefit():
+    spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
+    bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0,
+    }}}
+    fixed = {"scores": {"benefit": 0.65, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": -0.0,
+    }}}
+
+    assert preflight._benefit_discrimination_failure(spec, bad, fixed) is None
+
+
+def test_natural_safe_route_rejects_nonpositive_reference_benefit():
+    spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
+    bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0,
+    }}}
+    fixed = {"scores": {"benefit": 0.0, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": -0.2,
+    }}}
+
+    msg = preflight._benefit_discrimination_failure(spec, bad, fixed)
+
+    assert msg and "no positive benefit" in msg
 
 
 # ---- accumulate-ALL-failures (never first-fail) ----
