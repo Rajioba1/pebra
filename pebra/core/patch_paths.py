@@ -78,7 +78,7 @@ def touched_files(patch: str) -> tuple[str, ...]:
         if hunk_old > 0 or hunk_new > 0:
             if line.startswith("\\"):
                 continue
-            if line.startswith(" "):
+            if line.startswith(" ") or line == "":
                 hunk_old -= 1
                 hunk_new -= 1
             elif line.startswith("-"):

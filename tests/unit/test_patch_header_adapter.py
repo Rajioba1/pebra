@@ -158,6 +158,16 @@ def test_touched_files_ignores_header_like_source_lines_inside_hunk():
     assert touched_files(patch) == ("query.sql",)
 
 
+def test_touched_files_accepts_git_tolerated_bare_empty_context_line():
+    patch = (
+        "diff --git a/src/a.py b/src/a.py\n"
+        "--- a/src/a.py\n+++ b/src/a.py\n"
+        "@@ -1,3 +1,3 @@\n-old\n+new\n\n tail\n"
+    )
+
+    assert touched_files(patch) == ("src/a.py",)
+
+
 def test_quoted_rename_is_parsed_and_contributes_both_paths():
     patch = (
         'diff --git "a/src/old name.py" "b/src/new name.py"\n'
