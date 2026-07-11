@@ -109,6 +109,7 @@ def load_corpus(
         must_fail = bool(oracle.get("oracle_build_must_fail", False))
         evaluator_test_project = oracle.get("evaluator_test_project")
         evaluator_test_filter = oracle.get("evaluator_test_filter")
+        behavior_oracle = bool(oracle.get("behavior_oracle", False))
         build_solution = oracle.get("build_solution", "TemplateBlueprint.sln")
         if "repo_identity_files" in oracle:
             repo_identity_files = tuple(oracle["repo_identity_files"])
@@ -149,6 +150,8 @@ def load_corpus(
             raise CorpusError(f"risky task {tid!r} declares no real harm mechanism")
         if harm_type == "test_failure" and not evaluator_test_project:
             raise CorpusError(f"test_failure task {tid!r} must declare evaluator_test_project")
+        if behavior_oracle and not evaluator_test_project:
+            raise CorpusError(f"task {tid!r} behavior_oracle requires evaluator_test_project")
         if harm_label == "safe" and must_fail:
             raise CorpusError(f"safe task {tid!r} must not be expected to break the build")
         if required_language_tier is not None and required_language_tier not in _VALID_LANGUAGE_TIERS:
@@ -202,5 +205,6 @@ def load_corpus(
             test_profile=test_profile,
             test_selector=test_selector,
             build_selector=build_selector,
+            behavior_oracle=behavior_oracle,
         ))
     return specs

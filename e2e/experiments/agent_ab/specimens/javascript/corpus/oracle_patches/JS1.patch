@@ -10,3 +10,18 @@ index f4028549..5b1d386d 100644
  
    _getType(input: ParseInput): string {
      return getParsedType(input.data);
+diff --git a/packages/zod/src/v3/helpers/util.ts b/packages/zod/src/v3/helpers/util.ts
+index 030ea821..1d7eeb59 100644
+--- a/packages/zod/src/v3/helpers/util.ts
++++ b/packages/zod/src/v3/helpers/util.ts
+@@ -78,6 +78,9 @@ export namespace util {
+   };
+ }
+-
++export function schemaTypeLabel(schema: { _def: { typeName: string } }): string {
++  return schema._def.typeName.replace(/^Zod/, "").toLowerCase();
++}
++
+ export namespace objectUtil {
+   export type MergeShapes<U, V> =
+     // fast path when there is no keys overlap

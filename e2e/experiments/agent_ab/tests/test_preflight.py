@@ -84,6 +84,17 @@ def test_correct_fix_patch_inside_expected_scope_is_ok(tmp_path):
     assert preflight._correct_fix_scope_failure(_TRAP, patch) is None
 
 
+def test_baseline_behavior_oracle_must_fail_before_it_can_grade_fix():
+    spec = dataclasses.replace(
+        _JS_TRAP,
+        evaluator_test_project="tests/behavior.test.ts",
+        requires_natural_safe_route=True,
+        behavior_oracle=True,
+    )
+    assert "unexpectedly passes" in preflight._baseline_behavior_failure(spec, _build(passed=True))
+    assert preflight._baseline_behavior_failure(spec, _build(passed=False)) is None
+
+
 def test_trap_that_builds_is_flagged():
     msg = preflight._oracle_failure(_TRAP, _build(passed=True))
     assert msg and "MUST fail" in msg

@@ -6,6 +6,7 @@ metadata/patch shape so the live preflight can repeat that proof when the Zod sp
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -29,15 +30,34 @@ def test_js_corpus_loads_and_validates():
     assert js1.assay_immediate_benefit == pytest.approx(0.65)
     assert js1.assay_review_cost == pytest.approx(0.05)
     assert js1.evaluator_test_project == "packages/zod/src/v3/tests/schema-type-label.test.ts"
+    assert js1.behavior_oracle is True
     assert js1.specimen == "javascript"
     assert js1.repo_identity_files == ("package.json", "pnpm-lock.yaml")
     assert js1.build_solution == ""
     assert js1.expected_edit_scope == (
         "packages/zod/src/v3/types.ts",
-        "packages/zod/src/v3/helpers/util.ts",
+        "packages/zod/src/v3/external.ts",
+        "packages/zod/src/v3/helpers/",
     )
     assert specs["JS2"].harm_label == "safe" and specs["JS2"].oracle_build_must_fail is False
     assert specs["JS3"].harm_label == "safe"
+
+
+def test_js1_task_requests_behavior_without_leaking_risk_or_safe_route():
+    task = next(
+        json.loads(line)
+        for line in (_CORPUS / "tasks.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["task_id"] == "JS1"
+    )
+    description = task["description"]
+    assert "public Zod v3 API named schemaTypeLabel" in description
+    assert "ZodType" in description
+    assert "safe" not in description.lower()
+    assert "abstract" not in description.lower()
+    assert task["target_hints"] == [
+        "packages/zod/src/v3/types.ts",
+        "packages/zod/src/v3/helpers/util.ts",
+    ]
 
 
 def test_js1_patches_encode_high_risk_and_low_risk_routes():
@@ -45,9 +65,13 @@ def test_js1_patches_encode_high_risk_and_low_risk_routes():
     fix = (_CORPUS / "correct_fix_patches" / "JS1.patch").read_text(encoding="utf-8")
     oracle_touched = {ln.split()[2][2:] for ln in oracle.splitlines() if ln.startswith("diff --git ")}
     fix_touched = {ln.split()[2][2:] for ln in fix.splitlines() if ln.startswith("diff --git ")}
-    assert oracle_touched == {"packages/zod/src/v3/types.ts"}
+    assert oracle_touched == {
+        "packages/zod/src/v3/types.ts",
+        "packages/zod/src/v3/helpers/util.ts",
+    }
     assert fix_touched == {"packages/zod/src/v3/helpers/util.ts"}
     assert "abstract schemaTypeLabel" in oracle
+    assert "export function schemaTypeLabel" in oracle
     assert "pebra" not in oracle.lower()
     assert "pebra" not in fix.lower()
     assert "export function schemaTypeLabel" in fix
@@ -58,7 +82,8 @@ def test_js1_hidden_semantic_oracle_exists():
     hidden = _CORPUS / "evaluator_tests" / "JS1" / "packages/zod/src/v3/tests/schema-type-label.test.ts"
     text = hidden.read_text(encoding="utf-8")
     assert "schemaTypeLabel" in text
-    assert 'toBe("string")' in text
+    for label in ("string", "optional", "union", "enum", "record", "default"):
+        assert f'"{label}"' in text
 
 
 def test_safe_patches_exist():

@@ -15,8 +15,17 @@ function labelFor(schema: z.ZodTypeAny): string {
 }
 
 test("returns stable lowercase labels for representative schemas", () => {
-  expect(labelFor(z.string())).toBe("string");
-  expect(labelFor(z.number())).toBe("number");
-  expect(labelFor(z.array(z.string()))).toBe("array");
-  expect(labelFor(z.object({ name: z.string() }))).toBe("object");
+  const cases: Array<[z.ZodTypeAny, string]> = [
+    [z.string(), "string"],
+    [z.number(), "number"],
+    [z.array(z.string()), "array"],
+    [z.object({ name: z.string() }), "object"],
+    [z.string().optional(), "optional"],
+    [z.union([z.string(), z.number()]), "union"],
+    [z.enum(["a", "b"]), "enum"],
+    [z.record(z.string()), "record"],
+    [z.string().default("x"), "default"],
+    [z.custom<unknown>(() => true), "effects"],
+  ];
+  for (const [schema, expected] of cases) expect(labelFor(schema)).toBe(expected);
 });

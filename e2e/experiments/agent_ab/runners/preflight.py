@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab.models import TaskSpec
+from e2e.experiments.agent_ab.path_scope import is_in_scope
 from e2e.experiments.agent_ab.runners import evaluator, run_artifacts, run_pair
 from e2e.external.utils import repo_source as rs
 
@@ -146,8 +147,7 @@ def _single_patch_target(patch: str) -> str | None:
 
 def _correct_fix_scope_failure(spec: TaskSpec, patch_file: Path) -> str | None:
     touched = _patch_touched_files(patch_file)
-    expected = {p.replace("\\", "/").lstrip("./") for p in spec.expected_edit_scope}
-    outside = sorted(touched - expected)
+    outside = sorted(path for path in touched if not is_in_scope(path, spec.expected_edit_scope))
     if outside:
         return f"{spec.task_id}: correct-fix patch touches files outside expected scope: {', '.join(outside)}"
     if not touched:
@@ -243,6 +243,17 @@ def _correct_fix_test_failure(spec: TaskSpec, test) -> str | None:
     return None
 
 
+def _baseline_behavior_failure(spec: TaskSpec, test) -> str | None:
+    """Require the hidden behavior oracle to reject pristine source before it can grade a fix."""
+    if not spec.behavior_oracle or not spec.evaluator_test_project:
+        return None
+    if test is None or not test.ran:
+        return f"{spec.task_id}: pristine hidden behavior test did not run"
+    if test.passed:
+        return f"{spec.task_id}: pristine source unexpectedly passes hidden behavior test"
+    return None
+
+
 def run_oracle_preflight(
     corpus: list[TaskSpec],
     external: rs.ExternalRepo,
@@ -269,6 +280,14 @@ def run_oracle_preflight(
             if not patch_file.exists():
                 failures.append(f"{spec.task_id}: missing oracle patch at {patch_file}")
                 continue
+            if spec.behavior_oracle and spec.evaluator_test_project:
+                baseline_dest = out_dir / "preflight" / f"{spec.task_id}_baseline" / "repo"
+                baseline_repo = _clone_fresh(external, baseline_dest, out_dir=out_dir)
+                baseline_msg = _baseline_behavior_failure(
+                    spec, _run_spec_test(spec, baseline_repo, test_fn)
+                )
+                if baseline_msg:
+                    failures.append(baseline_msg)
             dest = out_dir / "preflight" / spec.task_id / "repo"
             repo_path = _clone_fresh(external, dest, out_dir=out_dir)
             _apply_patch(patch_file, repo_path)

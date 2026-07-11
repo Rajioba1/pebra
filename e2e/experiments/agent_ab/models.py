@@ -91,6 +91,7 @@ class TaskSpec:
     test_profile: str = "default"  # hidden: fixed profile name, never a shell command
     test_selector: str | None = None  # hidden: optional profile-specific selector
     build_selector: str | None = None  # hidden: optional profile-specific selector (e.g. "pkg:tsconfig")
+    behavior_oracle: bool = False  # hidden: evaluator test defines task completion across valid layouts
 
 
 # ---- one subject run (what the runner captures; scoring consumes it) --------------------------
