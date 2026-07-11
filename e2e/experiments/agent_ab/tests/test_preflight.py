@@ -228,36 +228,36 @@ def test_benefit_calibration_accepts_finite_candidate_specific_signal():
 def test_natural_safe_route_accepts_equal_positive_measured_benefit():
     spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
     bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
-        "source_type": "measured", "maintainability_gain": 0.0,
+        "source_type": "measured", "maintainability_gain": 0.0, "immediate_benefit": 0.65,
     }}}
     fixed = {"scores": {"benefit": 0.65, "benefit_breakdown": {
-        "source_type": "measured", "maintainability_gain": -0.0,
+        "source_type": "measured", "maintainability_gain": -0.0, "immediate_benefit": 0.65,
     }}}
 
     assert preflight._benefit_discrimination_failure(spec, bad, fixed) is None
 
 
-def test_natural_safe_route_rejects_unequal_modeled_benefit():
+def test_natural_safe_route_rejects_unequal_immediate_benefit():
     spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
     bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
-        "source_type": "measured", "maintainability_gain": 0.0,
+        "source_type": "measured", "maintainability_gain": 0.0, "immediate_benefit": 0.65,
     }}}
     fixed = {"scores": {"benefit": 0.650000001, "benefit_breakdown": {
-        "source_type": "measured", "maintainability_gain": 0.0,
+        "source_type": "measured", "maintainability_gain": 0.0, "immediate_benefit": 0.650000001,
     }}}
 
     msg = preflight._benefit_discrimination_failure(spec, bad, fixed)
 
-    assert msg and "modeled benefit differs" in msg
+    assert msg and "immediate benefit differs" in msg
 
 
-def test_natural_safe_route_accepts_modeled_benefit_within_tolerance():
+def test_natural_safe_route_accepts_higher_total_benefit_with_same_immediate_benefit():
     spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
-    bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
-        "source_type": "measured", "maintainability_gain": 0.0,
+    bad = {"scores": {"benefit": 0.32, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": -0.33, "immediate_benefit": 0.65,
     }}}
-    fixed = {"scores": {"benefit": 0.6500000000005, "benefit_breakdown": {
-        "source_type": "measured", "maintainability_gain": 0.0,
+    fixed = {"scores": {"benefit": 0.65, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0, "immediate_benefit": 0.65,
     }}}
 
     assert preflight._benefit_discrimination_failure(spec, bad, fixed) is None
@@ -266,15 +266,26 @@ def test_natural_safe_route_accepts_modeled_benefit_within_tolerance():
 def test_natural_safe_route_rejects_nonpositive_reference_benefit():
     spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
     bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
-        "source_type": "measured", "maintainability_gain": 0.0,
+        "source_type": "measured", "maintainability_gain": 0.0, "immediate_benefit": 0.65,
     }}}
     fixed = {"scores": {"benefit": 0.0, "benefit_breakdown": {
-        "source_type": "measured", "maintainability_gain": -0.2,
+        "source_type": "measured", "maintainability_gain": -0.2, "immediate_benefit": 0.65,
     }}}
 
     msg = preflight._benefit_discrimination_failure(spec, bad, fixed)
 
     assert msg and "no positive benefit" in msg
+
+
+def test_natural_safe_route_rejects_lower_total_benefit():
+    spec = dataclasses.replace(_MEASURED_BENEFIT_TRAP, requires_natural_safe_route=True)
+    bad = {"scores": {"benefit": 0.65, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": 0.0, "immediate_benefit": 0.65,
+    }}}
+    fixed = {"scores": {"benefit": 0.32, "benefit_breakdown": {
+        "source_type": "measured", "maintainability_gain": -0.33, "immediate_benefit": 0.65,
+    }}}
+    assert "reduces total" in preflight._benefit_discrimination_failure(spec, bad, fixed)
 
 
 # ---- accumulate-ALL-failures (never first-fail) ----

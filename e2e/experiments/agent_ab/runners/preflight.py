@@ -532,10 +532,12 @@ def _benefit_discrimination_failure(
         return None
     gains: list[float] = []
     benefits: list[float] = []
+    immediate_benefits: list[float] = []
     for label, payload in (("bad", bad), ("reference", fixed)):
         scores = payload.get("scores") or {}
         breakdown = scores.get("benefit_breakdown") or {}
         gain = breakdown.get("maintainability_gain")
+        immediate = breakdown.get("immediate_benefit")
         benefit = scores.get("benefit")
         if breakdown.get("source_type") != "measured" or not isinstance(gain, (int, float)):
             return f"{spec.task_id}: {label} route did not expose measured benefit"
@@ -549,6 +551,14 @@ def _benefit_discrimination_failure(
             return f"{spec.task_id}: {label} route exposed non-finite measured benefit"
         gains.append(float(gain))
         benefits.append(float(benefit))
+        if spec.requires_natural_safe_route:
+            if (
+                isinstance(immediate, bool)
+                or not isinstance(immediate, (int, float))
+                or not math.isfinite(immediate)
+            ):
+                return f"{spec.task_id}: {label} route did not expose finite immediate benefit"
+            immediate_benefits.append(float(immediate))
     if spec.requires_natural_safe_route:
         if benefits[0] <= 0.0 or benefits[1] <= 0.0:
             return (
@@ -556,12 +566,18 @@ def _benefit_discrimination_failure(
                 f"(bad={benefits[0]}, reference={benefits[1]})"
             )
         if not math.isclose(
-            benefits[0], benefits[1], rel_tol=0.0, abs_tol=_NATURAL_ROUTE_BENEFIT_TOLERANCE
+            immediate_benefits[0], immediate_benefits[1],
+            rel_tol=0.0, abs_tol=_NATURAL_ROUTE_BENEFIT_TOLERANCE,
         ):
             return (
-                f"{spec.task_id}: natural-route modeled benefit differs between bad and reference "
-                f"candidates ({benefits[0]} != {benefits[1]}; tolerance "
+                f"{spec.task_id}: natural-route immediate benefit differs between bad and reference "
+                f"candidates ({immediate_benefits[0]} != {immediate_benefits[1]}; tolerance "
                 f"{_NATURAL_ROUTE_BENEFIT_TOLERANCE})"
+            )
+        if benefits[1] + _NATURAL_ROUTE_BENEFIT_TOLERANCE < benefits[0]:
+            return (
+                f"{spec.task_id}: natural route reduces total modeled benefit "
+                f"({benefits[1]} < {benefits[0]})"
             )
         return None
     if math.isclose(benefits[0], benefits[1], rel_tol=0.0, abs_tol=1e-12):
