@@ -37,10 +37,10 @@
     "_note": "6-arm assay for risky tasks: sham, oracle_positive, enforced_control, blast_radius, pebra, pebra_graph_repair. Safe tasks omit only oracle and run sham/enforced_control/blast_radius/pebra/pebra_graph_repair so selective completion can be compared with blunt blocking. Oracle=endpoint floor, enforced_control=mechanical sensitivity positive control, blast_radius=CTXO-style graph-guidance diagnostic (PEBRA graph, not literal CTXO), pebra_graph_repair=PEBRA plus repair-context hint and host-produced candidate verification on narrowed resubmission. seeds_per_arm=1 is a cheap first assay pass; bump to >=3 for a real assay-validation run. Current MNGAMMA substrate has scout evidence of sham headroom; over-caution is not measured until safe Math.NET tasks are added."
   },
   "assay_js": {
-    "tasks": ["JS4", "JS2", "JS3"],
+    "tasks": ["JS4"],
     "seeds_per_arm": 1,
-    "claims": "Diagnostic-only JavaScript/TypeScript robustness run on pinned Zod: JS4 exercises a multi-file public-helper rename whose compatibility-preserving route must pass patch-bound verification, plus JS2/JS3 safe over-caution checks; no efficacy claim at one seed; preflight-only mode must pass before paid calls.",
-    "_note": "One-seed diagnostic configuration. Six arms run for the risky task; safe tasks omit only oracle so enforced-control over-caution is measured. Uses the node/zshy backend plus a post-agent hidden Vitest for JS4. The real advisory subprocess injects PEBRA_CODEGRAPH_SEMANTIC_DIFF=1 and codegraph_semantic_diff_enabled=1.0; --preflight-only proves oracle, graph tier, the risky revise-safer route, and patch-bound candidate verification without a provider key. Restore seeds_per_arm to at least 3 only after a structurally valid diagnostic run."
+    "claims": "Diagnostic-only JavaScript/TypeScript robustness run on pinned Zod: JS4 exercises a multi-file public-helper rename whose compatibility-preserving route must pass patch-bound verification; no over-caution or efficacy claim at one seed; preflight-only mode must pass before paid calls.",
+    "_note": "One-seed JS4-only diagnostic configuration. Six arms run for the risky task; safe-task over-caution is intentionally not measured in this run. Uses the node/zshy backend plus a post-agent hidden Vitest for JS4. The real advisory subprocess injects PEBRA_CODEGRAPH_SEMANTIC_DIFF=1 and codegraph_semantic_diff_enabled=1.0; --preflight-only proves oracle, graph tier, the risky revise-safer route, and patch-bound candidate verification without a provider key. Restore JS2/JS3 and seeds_per_arm to at least 3 only after a structurally valid diagnostic run."
   },
   "powered": {
     "tasks": ["T1", "T2", "B1", "B2"],

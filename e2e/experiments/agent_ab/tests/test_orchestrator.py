@@ -161,7 +161,7 @@ def test_config_has_one_pair_smoke_mode():
 
 def test_config_has_javascript_assay_mode():
     cfg = orchestrator._config()
-    assert cfg["assay_js"]["tasks"] == ["JS4", "JS2", "JS3"]
+    assert cfg["assay_js"]["tasks"] == ["JS4"]
     assert cfg["assay_js"]["seeds_per_arm"] == 1
     assert "Diagnostic-only" in cfg["assay_js"]["claims"]
     assert cfg["smoke"]["seeds_per_arm"] == 1
@@ -196,7 +196,7 @@ def test_run_metadata_records_rca_fingerprint_and_pin(monkeypatch):
     design = metadata["experiment_design"]
     assert design["provider"] == "anthropic"
     assert design["model"] == "claude-haiku-4-5-20251001"
-    assert design["mode_config"]["tasks"] == ["JS4", "JS2", "JS3"]
+    assert design["mode_config"]["tasks"] == ["JS4"]
     assert design["subject_prompt_template_sha256"]
     assert set(design["protocol_hashes"]) >= {"sham", "pebra"}
 
