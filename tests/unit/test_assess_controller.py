@@ -307,10 +307,41 @@ class FakeFanInProvider:
         return self.ev
 
 
-def _run_cg(ev, extra_thresholds=None):
+def test_controller_surfaces_single_candidate_aggregate_from_owner_evidence() -> None:
+    owners = (
+        m.OwnerRiskEvidence(
+            node_id="a", file_path="src/auth.py", language="python",
+            impact_percentile=0.7, impacted_node_ids=("caller:shared",),
+        ),
+        m.OwnerRiskEvidence(
+            node_id="b", file_path="src/helper.py", language="typescript",
+            impact_percentile=0.6, impacted_node_ids=("caller:other",),
+        ),
+    )
+    ev = m.FanInEvidence(
+        resolution_method="location", graph_freshness="fresh",
+        node_ids_resolved=("a", "b"), resolved_symbol_count=2,
+        resolved_languages=("python", "typescript"),
+        resolved_file_paths=("src/auth.py", "src/helper.py"),
+        modify_impact_count=2, modify_impact_percentile=0.8,
+        owner_risk=owners,
+    )
+    request = m.AssessmentRequest.single_action(
+        task="t", action_id="a", label="multi", action_type="edit",
+        expected_files=["src/auth.py", "src/helper.py"],
+    )
+
+    result = _run_cg(ev, request=request).recommended_result
+
+    assert result.scores["candidate_aggregate"]["file_count"] == 2
+    assert result.scores["candidate_aggregate"]["owner_count"] == 2
+    assert result.scores["candidate_aggregate"]["languages"] == ("python", "typescript")
+
+
+def _run_cg(ev, extra_thresholds=None, request=None):
     store = FakeStore()
     outcome = ac.assess(
-        _request(),
+        request or _request(),
         thresholds={**_THRESHOLDS, **(extra_thresholds or {})},
         start_path="/abs/path/to/example-repo/src",
         evidence_provider=FakeEvidence(),

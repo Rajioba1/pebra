@@ -3,6 +3,8 @@ lookup before reclassification, fail-soft when absent/erroring. Pure (no git).""
 
 from __future__ import annotations
 
+import pytest
+
 from pebra.adapters.git_change_verifier import GitChangeVerifier
 
 
@@ -64,6 +66,25 @@ def test_reclassify_python_benefit_via_injected_rca(monkeypatch) -> None:
     v = gcv.GitChangeVerifier(complexity_delta_fn=lambda f, b, a: (-1.0, 4.0))
     md = v._reclassify("/repo", ["a.py"], "x")[2]  # 3rd element = measured_deltas
     assert md == {"complexity_delta": -1.0, "maintainability_index_delta": 4.0}
+
+
+def test_reclassify_multifile_benefit_uses_provider_exposure_weight(monkeypatch) -> None:
+    from pebra.adapters import git_change_verifier as gcv
+
+    monkeypatch.setattr(gcv.git_adapter, "file_at_rev", lambda root, rev, f: "x = 1\n")
+    monkeypatch.setattr(gcv, "parses", lambda src: True)
+    monkeypatch.setattr(gcv, "compute_symbol_diff_rows", lambda b, a, f: [])
+
+    def measured(path, before, after):
+        return (-1.0, 10.0, 10.0) if path == "heavy.py" else (-1.0, 2.0, 1.0)
+
+    md = gcv.GitChangeVerifier(complexity_delta_fn=measured)._reclassify(
+        "/repo", ["heavy.py", "light.py"], "x"
+    )[2]
+
+    assert md["complexity_delta"] == -2.0
+    expected = 10.0 * (1.0 + 10.0 / 20.0) + 2.0 * (1.0 + 1.0 / 11.0)
+    assert md["maintainability_index_delta"] == pytest.approx(expected)
 
 
 def test_reclassify_measures_non_python_benefit_independent_of_python(monkeypatch) -> None:

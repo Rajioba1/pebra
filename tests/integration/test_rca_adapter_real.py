@@ -14,6 +14,7 @@ import difflib
 import pytest
 
 from pebra.adapters.rca_adapter import RustCodeAnalysisAdapter
+from pebra.core.benefit_aggregation import aggregate_file_deltas
 from pebra.core.rca_engine_paths import find_rca
 
 requires_rca = pytest.mark.skipif(find_rca() is None, reason="rust-code-analysis-cli not installed")
@@ -92,7 +93,6 @@ def test_pre_and_post_edit_paths_share_the_same_measurement(tmp_path) -> None:
         fromfile="m.py", tofile="m.py"))
     a = RustCodeAnalysisAdapter()
     pre = a.gather_benefit_evidence(str(tmp_path), ["m.py"], patch)
-    post = a.measure_delta("m.py", before, after)
+    post = a.measure_file_delta("m.py", before, after)
     assert pre.source_type == "measured" and post is not None
-    assert pre.deltas["complexity_delta"] == pytest.approx(post[0])
-    assert pre.deltas["maintainability_index_delta"] == pytest.approx(post[1])
+    assert pre.deltas == pytest.approx(aggregate_file_deltas({"m.py": post}))

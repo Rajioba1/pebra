@@ -15,11 +15,13 @@ from typing import Any
 
 from pebra.core import (
     assessment_builder,
+    candidate_aggregation,
     change_classifier,
     decision_engine,
     destructive_op_model,
     explanation_generator,
     exposure_model,
+    file_risk_aggregation,
     modify_risk_model,
     model_guidance,
     prediction_capture,
@@ -253,6 +255,21 @@ def _build_input(
                 ),
             )
 
+    candidate_aggregate = candidate_aggregation.aggregate_candidate(action, fanin_ev)
+    if (
+        is_trusted_fanin(fanin_ev)
+        and candidate_aggregate.owner_count > 0
+        and 0.0 < candidate_aggregate.resolution_coverage < 1.0
+    ):
+        # Keep the resolved owners' evidence, but reflect the unresolved part of a mixed candidate in
+        # confidence instead of erasing all graph evidence.
+        missing_fraction = 1.0 - candidate_aggregate.resolution_coverage
+        edit_confidence_factors["evidence_quality"] = max(
+            0.0,
+            edit_confidence_factors.get("evidence_quality", 1.0)
+            - min(0.20, 0.20 * missing_fraction),
+        )
+
     # Tier-3 benefit-exposure derivation: when RCA measured a real maintainability delta but nobody set
     # future_change_exposure (its unset default 0.0), derive the weight from the trusted graph fan-in so
     # the benefit is credited by DEFAULT — proportional to the code's future-change reach. An EXPLICIT
@@ -289,10 +306,7 @@ def _build_input(
              for fp in symbol_diff.file_operation_paths]
             if file_fanin_provider is not None else []
         )
-        file_fanin_rollup = (
-            max(rollups, key=lambda r: (r.file_symbol_fanin_rollup_percentile, r.distinct_caller_count))
-            if rollups else FileFanInRollup()
-        )
+        file_fanin_rollup = file_risk_aggregation.aggregate_file_rollups(rollups)
         # public_api_break only when the symbol is actually exported. NOT consequential_symbol_changed —
         # that flag means HIGH INTERNAL fan-in (many internal callers), not public API surface; using it
         # would inject a spurious public_api_break (and inflate expected_loss) for internal deletions.
@@ -320,6 +334,7 @@ def _build_input(
         criticality_stage=evidence.criticality_stage,
         is_migration=action.is_migration,
         is_schema_change=action.is_schema_change,
+        candidate_aggregate=candidate_aggregate,
     )
     if injected:
         events_list = list(events_list)
@@ -353,6 +368,7 @@ def _build_input(
         candidate_verification=trusted_candidate_verification or evidence.candidate_verification,
         symbol_diff_evidence=symbol_diff,
         fanin_evidence=fanin_ev,
+        candidate_aggregate_evidence=candidate_aggregate,
         language_capability=language_capability,
         file_fanin_rollup=file_fanin_rollup,
         blast_evidence=blast,

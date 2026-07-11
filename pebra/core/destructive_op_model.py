@@ -100,6 +100,9 @@ def events_for_destructive_op(
     if op_kind != "DELETE":
         return []
     p_event = min(
-        _P_EVENT_CAP, _baseline_p_event(arch, is_migration, is_schema_change) + _fan_in_bonus(rollup)
+        _P_EVENT_CAP,
+        _baseline_p_event(arch, is_migration, is_schema_change)
+        + _fan_in_bonus(rollup)
+        + rollup.cumulative_breadth_bonus,
     )
     return [_dominant_event(p_event=p_event, is_public_api=is_public_api)]

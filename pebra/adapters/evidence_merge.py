@@ -55,6 +55,7 @@ def _merge_benefit_delta_evidence(
         # auto-exposure eligibility is a trusted provider property; it is carried only when the provider
         # filled an otherwise-empty request benefit slot.
         auto_exposure_allowed=provider.auto_exposure_allowed,
+        file_deltas=dict(provider.file_deltas),
     )
 
 

@@ -174,6 +174,8 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             "resolution_method": rollup.resolution_method,
             "graph_freshness": rollup.graph_freshness,
             "fallback_reason": rollup.fallback_reason,
+            "file_count": rollup.file_count,
+            "cumulative_breadth_bonus": rollup.cumulative_breadth_bonus,
         }
         if rollup is not None
         else None
@@ -211,6 +213,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             # qualified-name identity the verify path re-resolves by). Aggregate counts can't do that.
             "resolved_qualified_names": list(fanin.resolved_qualified_names),
             "resolved_file_paths": list(fanin.resolved_file_paths),
+            "changed_owner_edge_count": fanin.changed_owner_edge_count,
         }
         if fanin is not None
         else None
@@ -220,6 +223,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         "loss_components": loss_components,
         "benefit": benefit,
         "benefit_breakdown": benefit_breakdown,
+        "benefit_file_deltas": {path: dict(values) for path, values in bd.file_deltas.items()},
         "expected_utility": expected_utility,
         "utility_sd": utility_sd,
         "variance_breakdown": variance_breakdown,
@@ -230,6 +234,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         "effective_threshold": effective_threshold,
         "budget_threshold_key": budget_key,
         "risk_budget_used": risk_budget,
+        "candidate_aggregate": dataclasses.asdict(inp.candidate_aggregate_evidence),
         "criticality_stage": inp.criticality_stage,
         "criticality_value": inp.criticality_value,
         "symbol_scope_evidence": {

@@ -394,6 +394,9 @@ def apply_snapshot(
             new_benefit_delta_evidence,
             deltas=deltas,
             source_type="learned_override",
+            # The learned aggregate is no longer the deterministic reduction of provider file rows.
+            # Clear those rows instead of publishing a contradictory decomposition.
+            file_deltas={},
         )
         applied.append(prov)  # type: ignore[arg-type]
 

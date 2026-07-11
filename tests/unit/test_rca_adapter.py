@@ -200,6 +200,12 @@ def test_measure_delta_none_side_is_none() -> None:
     assert adapter.measure_delta("a.py", "x", None) is None
 
 
+def test_measure_file_delta_treats_deleted_after_as_unchanged_for_assess_verify_symmetry() -> None:
+    adapter = RustCodeAnalysisAdapter(runner=_content_runner)
+
+    assert adapter.measure_file_delta("a.py", "if\n", None) == (0.0, 0.0, 2.0)
+
+
 def test_measure_delta_runner_failure_is_none() -> None:
     adapter = RustCodeAnalysisAdapter(runner=_none_runner)  # binary "missing"
     assert adapter.measure_delta("a.py", "a", "b") is None

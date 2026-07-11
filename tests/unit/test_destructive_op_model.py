@@ -77,6 +77,24 @@ def test_delete_high_fanin_rollup_scales_p_event():
     assert _by(events, "dependency_break")["p_event"] >= 0.25
 
 
+def test_multifile_delete_breadth_increases_probability() -> None:
+    single = _by(_events("DELETE", rollup=_rollup(0.40, resolved=True)), "dependency_break")
+    cumulative = _by(
+        _events(
+            "DELETE",
+            rollup=FileFanInRollup(
+                file_symbol_fanin_rollup_percentile=0.40,
+                resolution_method="file_location",
+                cumulative_breadth_bonus=0.04,
+                file_count=2,
+            ),
+        ),
+        "dependency_break",
+    )
+
+    assert cumulative["p_event"] > single["p_event"]
+
+
 def test_fan_in_bonus_zero_when_unresolved_even_if_percentile_set():
     # defensive: an unresolved rollup must contribute no fan-in bonus regardless of a stray percentile.
     events = _events("DELETE", rollup=_rollup(0.99, resolved=False))

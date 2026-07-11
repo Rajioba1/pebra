@@ -20,7 +20,12 @@ from pebra.core.graph_trust import (
     effective_impact_percentile as _effective_impact_percentile,
     is_trusted_fanin,
 )
-from pebra.core.models import ArchitectureEvidence, FanInEvidence, SymbolDiffEvidence
+from pebra.core.models import (
+    ArchitectureEvidence,
+    CandidateAggregateEvidence,
+    FanInEvidence,
+    SymbolDiffEvidence,
+)
 
 _P_EVENT_CAP = 0.45
 _HIGH_FANIN_THRESHOLD = 0.90
@@ -94,6 +99,7 @@ def _p_event(
     criticality_stage: str,
     is_schema_change: bool,
     is_migration: bool,
+    candidate_aggregate: CandidateAggregateEvidence,
 ) -> float:
     base = _BASELINE_PUBLIC_API if (_is_public(sde) or _graph_public_contract(fanin)) else _BASELINE_CONTRACT
     if is_schema_change or is_migration:
@@ -106,7 +112,9 @@ def _p_event(
         base += _LARGE_OWNER_BONUS
     if set(fanin.owner_kinds) & _RISKY_OWNER_KINDS:
         base += _OWNER_KIND_BONUS
-    if fanin.resolved_symbol_count > 1:
+    if candidate_aggregate.owner_count > 0:
+        base += candidate_aggregate.breadth_bonus
+    elif fanin.resolved_symbol_count > 1:
         base += min(_MULTI_SYMBOL_BONUS_MAX, 0.02 * (fanin.resolved_symbol_count - 1))
     outgoing_total = sum(fanin.outgoing_edge_counts.values())
     if outgoing_total:
@@ -126,6 +134,7 @@ def events_for_modify_risk(
     criticality_stage: str,
     is_schema_change: bool = False,
     is_migration: bool = False,
+    candidate_aggregate: CandidateAggregateEvidence = CandidateAggregateEvidence(),
 ) -> list[dict[str, Any]]:
     """Return graph-backed events for ordinary MODIFY edits.
 
@@ -177,6 +186,7 @@ def events_for_modify_risk(
         criticality_stage=criticality_stage,
         is_schema_change=is_schema_change,
         is_migration=is_migration,
+        candidate_aggregate=candidate_aggregate,
     )
     return [
         _dominant_event(

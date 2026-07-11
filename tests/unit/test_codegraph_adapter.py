@@ -920,6 +920,147 @@ def test_hunk_spanning_two_functions_resolves_both_and_unions_fanin(tmp_path) ->
     assert ev.resolution_method == "location"
     assert set(ev.node_ids_resolved) == {"func:A", "func:B"}
     assert ev.symbol_caller_count == 2  # union of distinct callers across both changed functions
+    assert {owner.node_id for owner in ev.owner_risk} == {"func:A", "func:B"}
+    assert {owner.file_path for owner in ev.owner_risk} == {"src/multi.py"}
+    assert ev.changed_owner_edge_count == 0
+
+
+def test_per_owner_reach_excludes_changed_targets_and_deduplicates_shared_caller(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "A", "src/a.py", 10, 15)
+    _node(con, "func:B", "function", "B", "B", "src/b.py", 20, 25)
+    _node(con, "src:1", "function", "caller", "caller", "src/x.py", 1, 2)
+    _edge(con, "src:1", "func:A", "calls")
+    _edge(con, "src:1", "func:B", "calls")
+    con.commit()
+    con.close()
+    patch = (
+        "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+        "--- a/src/b.py\n+++ b/src/b.py\n@@ -22 +22 @@\n-p\n+q\n"
+    )
+
+    ev = _adapter().fanin(CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch), str(tmp_path))
+
+    assert {node for owner in ev.owner_risk for node in owner.impacted_node_ids} == {"src:1"}
+
+
+def test_location_resolution_merges_unambiguous_named_owner_from_unresolved_file(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "A", "src/a.py", 10, 15)
+    _node(con, "func:B", "function", "B", "B", "src/b.py", 20, 25)
+    con.commit()
+    con.close()
+    patch = "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+    action = CandidateAction(
+        id="a",
+        label="p",
+        action_type="edit",
+        proposed_patch=patch,
+        affected_symbols=["src/b.py::B"],
+        expected_files=["src/a.py", "src/b.py"],
+    )
+
+    ev = _adapter().fanin(action, str(tmp_path))
+
+    assert ev.resolution_method == "location"
+    assert set(ev.node_ids_resolved) == {"func:A", "func:B"}
+
+
+def test_location_resolution_merges_named_owner_from_unresolved_range_in_same_file(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "A", "src/a.py", 10, 15)
+    _node(con, "func:B", "function", "B", "B", "src/a.py", 20, 25)
+    con.commit()
+    con.close()
+    patch = "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+    action = CandidateAction(
+        id="a", label="p", action_type="edit", proposed_patch=patch,
+        affected_symbols=["src/a.py::B"], expected_files=["src/a.py"],
+    )
+
+    assert set(_adapter().fanin(action, str(tmp_path)).node_ids_resolved) == {"func:A", "func:B"}
+
+
+def test_changed_owners_do_not_count_each_other_as_external_impact(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "A", "src/a.py", 10, 15)
+    _node(con, "func:B", "function", "B", "B", "src/b.py", 20, 25)
+    _edge(con, "func:A", "func:B", "calls")
+    con.commit()
+    con.close()
+    patch = (
+        "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+        "--- a/src/b.py\n+++ b/src/b.py\n@@ -22 +22 @@\n-p\n+q\n"
+    )
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert all(not owner.impacted_node_ids for owner in ev.owner_risk)
+    assert ev.symbol_caller_count == 0
+    assert ev.modify_impact_count == 0
+
+
+def test_transitive_reach_does_not_traverse_through_another_changed_owner(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "A", "src/a.py", 10, 15)
+    _node(con, "func:B", "function", "B", "B", "src/b.py", 20, 25)
+    _node(con, "external:X", "function", "X", "X", "src/x.py", 1, 5)
+    _edge(con, "external:X", "func:A", "calls")
+    _edge(con, "func:A", "func:B", "calls")
+    con.commit()
+    con.close()
+    patch = (
+        "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+        "--- a/src/b.py\n+++ b/src/b.py\n@@ -22 +22 @@\n-p\n+q\n"
+    )
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+    by_id = {owner.node_id: owner for owner in ev.owner_risk}
+
+    assert by_id["func:A"].impacted_node_ids == ("external:X",)
+    assert by_id["func:B"].impacted_node_ids == ()
+
+
+def test_per_owner_contract_inherits_public_interface_container(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "iface:I", "interface", "I", "I", "src/i.py", 1, 20)
+    _node(con, "method:m", "method", "m", "I::m", "src/i.py", 5, 8)
+    con.execute("UPDATE nodes SET visibility='public', is_exported=1 WHERE id='iface:I'")
+    _edge(con, "iface:I", "method:m", "contains")
+    con.commit()
+    con.close()
+    patch = "--- a/src/i.py\n+++ b/src/i.py\n@@ -6 +6 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    assert ev.owner_risk[0].is_public_contract is True
 
 
 def test_gamma_style_multisymbol_graph_scope_routes_to_revise_safer(tmp_path) -> None:

@@ -129,3 +129,43 @@ def test_touched_files_multiple_files_deduped_and_sorted():
 
 def test_touched_files_empty_patch_is_empty():
     assert touched_files("") == ()
+
+
+def test_touched_files_accepts_git_quoted_paths():
+    patch = (
+        'diff --git "a/src/a\\tb.py" "b/src/a\\tb.py"\n'
+        '--- "a/src/a\\tb.py"\n+++ "b/src/a\\tb.py"\n@@ -1 +1 @@\n-a\n+b\n'
+    )
+
+    assert touched_files(patch) == ("src/a\tb.py",)
+
+
+def test_touched_files_decodes_git_octal_utf8_path():
+    patch = (
+        'diff --git "a/src/\\303\\251.py" "b/src/\\303\\251.py"\n'
+        '--- "a/src/\\303\\251.py"\n+++ "b/src/\\303\\251.py"\n@@ -1 +1 @@\n-a\n+b\n'
+    )
+
+    assert touched_files(patch) == ("src/\u00e9.py",)
+
+
+def test_touched_files_ignores_header_like_source_lines_inside_hunk():
+    patch = (
+        "diff --git a/query.sql b/query.sql\n--- a/query.sql\n+++ b/query.sql\n"
+        "@@ -1 +1 @@\n--- old comment\n+++ new comment\n"
+    )
+
+    assert touched_files(patch) == ("query.sql",)
+
+
+def test_quoted_rename_is_parsed_and_contributes_both_paths():
+    patch = (
+        'diff --git "a/src/old name.py" "b/src/new name.py"\n'
+        "similarity index 100%\n"
+        'rename from "src/old name.py"\nrename to "src/new name.py"\n'
+    )
+
+    (operation,) = parse_patch_headers(patch)
+    assert operation.old_path == "src/old name.py"
+    assert operation.new_path == "src/new name.py"
+    assert touched_files(patch) == ("src/new name.py", "src/old name.py")

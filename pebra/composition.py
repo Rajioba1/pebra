@@ -161,7 +161,7 @@ def build_verify_ports() -> dict[str, Any]:
             language_capability_fn=codegraph.capability_for,
             semantic_diff_enabled=os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF") == "1",
             # Multi-language BENEFIT measurement (RCA), symmetric with the assess-path benefit provider.
-            complexity_delta_fn=RustCodeAnalysisAdapter().measure_delta,
+            complexity_delta_fn=RustCodeAnalysisAdapter().measure_file_delta,
         ),
         "contract_surface": ContractSurfaceScanner(),
     }

@@ -68,6 +68,8 @@ def _flatten_scores(a: Assessment) -> dict[str, Any]:
         "budget_threshold_key": s["budget_threshold_key"],
         "benefit": s["benefit"],
         "benefit_breakdown": asdict(s["benefit_breakdown"]),
+        "benefit_file_deltas": s["benefit_file_deltas"],
+        "candidate_aggregate": s["candidate_aggregate"],
         "criticality_stage": s["criticality_stage"],
         "criticality_value": s["criticality_value"],
         "confidence_band": a.confidence_band,

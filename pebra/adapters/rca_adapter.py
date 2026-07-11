@@ -29,6 +29,7 @@ from typing import Any, Callable
 
 from pebra.adapters._paths import safe_relative_files
 from pebra.adapters.patch_materializer import materialize_patch
+from pebra.core.benefit_aggregation import aggregate_file_deltas
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.models import BenefitDeltaEvidence
 from pebra.core.rca_engine_paths import RCA_ACCEPTED_VERSION, RCA_SOURCE_REVISION, find_rca
@@ -179,6 +180,21 @@ class RustCodeAnalysisAdapter:
             return None
         return after[0] - before[0], after[1] - before[1]
 
+    def measure_file_delta(
+        self, rel_path: str, before_src: str | None, after_src: str | None
+    ) -> tuple[float, float, float] | None:
+        """Verify-path delta plus baseline-complexity exposure weight for multi-file aggregation."""
+        if not _supported(rel_path) or before_src is None:
+            return None
+        if after_src is None:
+            after_src = before_src
+        suffix = Path(rel_path).suffix.lower()
+        before = self._measure_source(before_src, suffix)
+        after = self._measure_source(after_src, suffix)
+        if before is None or after is None:
+            return None
+        return after[0] - before[0], after[1] - before[1], max(1.0, before[0])
+
     def gather_benefit_evidence(
         self, repo_root: str, files: list[str], proposed_patch: str | None = None, *,
         future_change_exposure: float = 0.0,
@@ -209,8 +225,8 @@ class RustCodeAnalysisAdapter:
         after = {rel: (after[rel] if after[rel] is not None else before[rel]) for rel in before}
         if all(after[rel] == before[rel] for rel in before):
             return BenefitDeltaEvidence(scope=scope, source_type="projected", deltas={})
-        cc_delta = 0.0
-        mi_deltas: list[float] = []
+        measured: dict[str, tuple[float, float, float]] = {}
+        file_deltas: dict[str, dict[str, float]] = {}
         for rel, before_src in before.items():
             if before_src is None:
                 continue
@@ -219,16 +235,22 @@ class RustCodeAnalysisAdapter:
             a = self._measure_source(after[rel] or "", suffix)
             if b is None or a is None:
                 continue
-            cc_delta += a[0] - b[0]
-            mi_deltas.append(a[1] - b[1])
-        if not mi_deltas:
+            file_cc_delta, file_mi_delta = a[0] - b[0], a[1] - b[1]
+            # Baseline cyclomatic complexity is a deterministic exposure proxy available from the
+            # same measured RCA result. A floor of one keeps branch-free files represented.
+            weight = max(1.0, b[0])
+            measured[rel] = (file_cc_delta, file_mi_delta, weight)
+            file_deltas[rel] = {
+                "complexity_delta": file_cc_delta,
+                "maintainability_index_delta": file_mi_delta,
+                "exposure_weight": weight,
+            }
+        if not file_deltas:
             return BenefitDeltaEvidence(scope=scope, source_type="projected", deltas={})
-        deltas = {
-            "complexity_delta": cc_delta,
-            "maintainability_index_delta": sum(mi_deltas) / len(mi_deltas),
-        }
+        deltas = aggregate_file_deltas(measured)
         return BenefitDeltaEvidence(
             scope=scope, source_type="measured", deltas=deltas,
             future_change_exposure=future_change_exposure,
             auto_exposure_allowed=True,
+            file_deltas=file_deltas,
         )

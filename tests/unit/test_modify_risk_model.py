@@ -10,7 +10,12 @@ from __future__ import annotations
 import pytest
 
 from pebra.core import modify_risk_model as mrm
-from pebra.core.models import ArchitectureEvidence, FanInEvidence, SymbolDiffEvidence
+from pebra.core.models import (
+    ArchitectureEvidence,
+    CandidateAggregateEvidence,
+    FanInEvidence,
+    SymbolDiffEvidence,
+)
 
 
 def _sde(**over):
@@ -43,6 +48,7 @@ def _events(sde=None, fanin=None, **kw):
         criticality_stage=kw.pop("criticality_stage", "C3"),
         is_schema_change=kw.pop("is_schema_change", False),
         is_migration=kw.pop("is_migration", False),
+        candidate_aggregate=kw.pop("candidate_aggregate", CandidateAggregateEvidence()),
     )
 
 
@@ -393,6 +399,35 @@ def test_modify_probability_is_capped():
                      arch=ArchitectureEvidence(domain_entrypoint=True), is_schema_change=True)
 
     assert _by(events, "api_contract_break")["p_event"] <= mrm._P_EVENT_CAP
+
+
+def test_multi_owner_breadth_increases_probability_above_worst_owner_floor():
+    baseline = _by(_events(), "dependency_break")["p_event"]
+    aggregate = CandidateAggregateEvidence(
+        file_count=2,
+        owner_count=2,
+        max_owner_exposure=0.95,
+        cumulative_exposure=0.95,
+        breadth_bonus=0.04,
+    )
+
+    cumulative = _by(_events(candidate_aggregate=aggregate), "dependency_break")["p_event"]
+
+    assert cumulative > baseline
+    assert cumulative <= mrm._P_EVENT_CAP
+
+
+def test_single_owner_candidate_aggregate_preserves_existing_probability():
+    baseline = _events()
+    aggregate = CandidateAggregateEvidence(
+        file_count=1,
+        owner_count=1,
+        max_owner_exposure=0.95,
+        cumulative_exposure=0.95,
+        breadth_bonus=0.0,
+    )
+
+    assert _events(candidate_aggregate=aggregate) == baseline
 
 
 def test_public_unknown_low_graph_context_is_not_escalated():

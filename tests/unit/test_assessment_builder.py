@@ -82,6 +82,25 @@ def test_builder_reproduces_worked_example_scores() -> None:
     assert s["risk_budget_used"] == pytest.approx(0.50)
 
 
+def test_builder_surfaces_per_file_benefit_breakdown() -> None:
+    evidence = m.BenefitDeltaEvidence(
+        source_type="measured",
+        deltas={"complexity_delta": -2.0, "maintainability_index_delta": 4.0},
+        file_deltas={
+            "src/a.py": {
+                "complexity_delta": -2.0,
+                "maintainability_index_delta": 4.0,
+                "exposure_weight": 3.0,
+            }
+        },
+    )
+    scores = ab.build_assessment(
+        replace(_worked_example_input(), benefit_delta_evidence=evidence)
+    ).scores
+
+    assert scores["benefit_file_deltas"] == evidence.file_deltas
+
+
 def test_builder_sets_action_status_pending() -> None:
     a = ab.build_assessment(_worked_example_input())
     assert a.action_status is ActionStatus.PENDING

@@ -34,7 +34,7 @@ from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
 from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range
 from pebra.core.language_capability import EXPORT_AS_VISIBILITY_LANGUAGES, LanguageCapability
-from pebra.core.models import CandidateAction, FanInEvidence, FileFanInRollup
+from pebra.core.models import CandidateAction, FanInEvidence, FileFanInRollup, OwnerRiskEvidence
 from pebra.core.score_math import fractional_rank
 
 # Edge kinds that constitute per-symbol fan-in. 'imports' is deliberately excluded (file/module-level).
@@ -511,6 +511,8 @@ class CodeGraphAdapter:
                 self._impact_distribution(con, db_path),
                 self._transitive_impact_distribution(con, db_path),
             )
+            owner_risk = self._owner_risk_evidence(con, node_ids, db_path)
+            changed_owner_edge_count = self._changed_owner_edge_count(con, node_ids)
             return FanInEvidence(
                 symbol_fan_in_percentile=pctl,
                 symbol_caller_count=count,
@@ -544,6 +546,8 @@ class CodeGraphAdapter:
                 resolved_languages=ctx["resolved_languages"],
                 resolved_file_paths=ctx["resolved_file_paths"],
                 resolved_qualified_names=ctx["resolved_qualified_names"],
+                owner_risk=owner_risk,
+                changed_owner_edge_count=changed_owner_edge_count,
             )
         except (sqlite3.Error, OSError) as exc:
             # never let a corrupt/locked/half-written DB crash the assessment (fail-soft contract)
@@ -656,10 +660,32 @@ class CodeGraphAdapter:
         for raw_path, spans in ranges.items():
             rel = _repo_relative(raw_path, repo_root)
             for lo, hi in spans:
-                for nid in self._owners_at(con, rel, lo, hi):
+                owners = self._owners_at(con, rel, lo, hi)
+                for nid in owners:
                     if nid not in node_ids:
                         node_ids.append(nid)
         if node_ids:
+            # A multi-file candidate can resolve one file by location while another file has only a
+            # supplied symbol identity (for example an insertion with no old-side owner). Merge only
+            # unambiguous names from files location resolution did not already cover.
+            candidate_files = {
+                _repo_relative(path, repo_root) for path in action.expected_files if path
+            }
+            for symbol_id in action.affected_symbols:
+                file_part, _, _ = symbol_id.partition("::")
+                rel_symbol_file = _repo_relative(file_part, repo_root) if file_part else ""
+                if (
+                    not rel_symbol_file
+                    or (candidate_files and rel_symbol_file not in candidate_files)
+                    or (not candidate_files and rel_symbol_file not in ranges)
+                ):
+                    continue
+                named, ambiguous = self._resolve_named(con, symbol_id, repo_root)
+                if ambiguous:
+                    continue
+                for nid in named:
+                    if nid not in node_ids:
+                        node_ids.append(nid)
             return node_ids, "location"
         return self._name_fallback(con, action, repo_root)
 
@@ -811,6 +837,11 @@ class CodeGraphAdapter:
                 f"WHERE n.file_path = ? AND n.kind IN ({call_ph}) AND e.kind IN ({edge_ph})",
                 (rel, *_CALLABLE_KINDS, *_FANIN_EDGE_KINDS),
             ).fetchone()["c"])
+            caller_rows = con.execute(
+                f"SELECT DISTINCT e.source AS id FROM edges e JOIN nodes n ON n.id = e.target "
+                f"WHERE n.file_path = ? AND n.kind IN ({call_ph}) AND e.kind IN ({edge_ph})",
+                (rel, *_CALLABLE_KINDS, *_FANIN_EDGE_KINDS),
+            ).fetchall()
             mx = int(con.execute(
                 f"SELECT COALESCE(MAX(cnt), 0) AS mx FROM ("
                 f"SELECT COUNT(DISTINCT e.source) AS cnt FROM edges e JOIN nodes n ON n.id = e.target "
@@ -827,6 +858,7 @@ class CodeGraphAdapter:
                 max_caller_count=mx, distinct_caller_count=distinct, symbol_count=sym_count,
                 file_symbol_fanin_rollup_percentile=pctl, resolution_method="file_location",
                 graph_freshness="fresh",
+                caller_node_ids=tuple(sorted(str(row["id"]) for row in caller_rows)),
             )
         except (sqlite3.Error, OSError) as exc:
             return FileFanInRollup(fallback_reason=f"codegraph DB query failed: {exc}")
@@ -887,12 +919,95 @@ class CodeGraphAdapter:
         id_ph = ",".join("?" * len(node_ids))
         row = con.execute(
             f"SELECT COUNT(DISTINCT source) AS c FROM edges "
-            f"WHERE target IN ({id_ph}) AND kind IN ({edge_ph})",
-            (*node_ids, *_FANIN_EDGE_KINDS),
+            f"WHERE target IN ({id_ph}) AND kind IN ({edge_ph}) "
+            f"AND source NOT IN ({id_ph})",
+            (*node_ids, *_FANIN_EDGE_KINDS, *node_ids),
         ).fetchone()
         caller_count = int(row["c"])
         distribution = self._distribution(con, db_path)
         return caller_count, fractional_rank(caller_count, distribution)
+
+    def _owner_risk_evidence(
+        self, con: sqlite3.Connection, node_ids: list[str], db_path: Path
+    ) -> tuple[OwnerRiskEvidence, ...]:
+        """Retain per-owner reach so the core can deduplicate shared impacted nodes."""
+        impact_distribution = self._impact_distribution(con, db_path)
+        transitive_distribution = self._transitive_impact_distribution(con, db_path)
+        fanin_distribution = self._distribution(con, db_path)
+        placeholders = ",".join("?" * len(node_ids))
+        rows = con.execute(
+            f"SELECT id, kind, file_path, language, qualified_name, signature, return_type, "
+            f"type_parameters, visibility, is_exported, is_abstract "
+            f"FROM nodes WHERE id IN ({placeholders})",
+            tuple(node_ids),
+        ).fetchall()
+        by_id = {str(row["id"]): row for row in rows}
+        edge_placeholders = ",".join("?" * len(_FANIN_EDGE_KINDS))
+        caller_rows = con.execute(
+            f"SELECT target, COUNT(DISTINCT source) AS c FROM edges "
+            f"WHERE target IN ({placeholders}) AND kind IN ({edge_placeholders}) "
+            f"AND source NOT IN ({placeholders}) GROUP BY target",
+            (*node_ids, *_FANIN_EDGE_KINDS, *node_ids),
+        ).fetchall()
+        caller_counts = {str(row["target"]): int(row["c"]) for row in caller_rows}
+        changed_targets = {
+            target
+            for node_id in node_ids
+            for target in self._modify_impact_target_ids(con, [node_id])
+        }
+        out: list[OwnerRiskEvidence] = []
+        for node_id in sorted(node_ids):
+            row = by_id.get(node_id)
+            if row is None:
+                continue
+            caller_count = caller_counts.get(node_id, 0)
+            targets = self._modify_impact_target_ids(con, [node_id])
+            reached = [
+                (reached_id, depth)
+                for reached_id, depth in self._transitive_impact_nodes(
+                    con, targets, excluded_ids=changed_targets
+                )
+            ]
+            direct_count = sum(1 for _, depth in reached if depth == 1)
+            transitive_count = len(reached)
+            contract = self._contract_metadata(
+                [row], self._contract_container_rows(con, [node_id])
+            )
+            out.append(OwnerRiskEvidence(
+                node_id=node_id,
+                file_path=str(row["file_path"] or "").replace("\\", "/"),
+                language=str(row["language"] or ""),
+                qualified_name=str(row["qualified_name"] or ""),
+                fan_in_percentile=(
+                    fractional_rank(caller_count, fanin_distribution) if caller_count else 0.0
+                ),
+                impact_percentile=(
+                    fractional_rank(direct_count, impact_distribution) if direct_count else 0.0
+                ),
+                transitive_impact_percentile=(
+                    fractional_rank(transitive_count, transitive_distribution)
+                    if transitive_count else 0.0
+                ),
+                impacted_node_ids=tuple(sorted(node for node, _ in reached)),
+                is_public_contract=(
+                    contract["is_exported_contract"]
+                    or contract["is_abstract_or_interface_contract"]
+                ),
+            ))
+        return tuple(out)
+
+    @staticmethod
+    def _changed_owner_edge_count(con: sqlite3.Connection, node_ids: list[str]) -> int:
+        if len(node_ids) < 2:
+            return 0
+        placeholders = ",".join("?" * len(node_ids))
+        row = con.execute(
+            f"SELECT COUNT(*) AS c FROM (SELECT DISTINCT source, target, kind FROM edges "
+            f"WHERE source IN ({placeholders}) AND target IN ({placeholders}) "
+            "AND source != target AND kind != 'contains')",
+            (*node_ids, *node_ids),
+        ).fetchone()
+        return int(row["c"] or 0)
 
     @staticmethod
     def _graph_context(
@@ -990,14 +1105,16 @@ class CodeGraphAdapter:
         impact_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
         impact_count = int(con.execute(
             f"SELECT COUNT(DISTINCT source) AS c FROM edges "
-            f"WHERE target IN ({impact_id_ph}) AND kind IN ({impact_ph})",
-            (*impact_targets, *_MODIFY_IMPACT_EDGE_KINDS),
+            f"WHERE target IN ({impact_id_ph}) AND kind IN ({impact_ph}) "
+            f"AND source NOT IN ({impact_id_ph})",
+            (*impact_targets, *_MODIFY_IMPACT_EDGE_KINDS, *impact_targets),
         ).fetchone()["c"])
         impact_edges = {
             str(r["kind"]): int(r["c"]) for r in con.execute(
                 f"SELECT kind, COUNT(DISTINCT source) AS c FROM edges "
-                f"WHERE target IN ({impact_id_ph}) AND kind IN ({impact_ph}) GROUP BY kind",
-                (*impact_targets, *_MODIFY_IMPACT_EDGE_KINDS),
+                f"WHERE target IN ({impact_id_ph}) AND kind IN ({impact_ph}) "
+                f"AND source NOT IN ({impact_id_ph}) GROUP BY kind",
+                (*impact_targets, *_MODIFY_IMPACT_EDGE_KINDS, *impact_targets),
             ).fetchall()
         }
         return {
@@ -1186,36 +1303,48 @@ class CodeGraphAdapter:
         con: sqlite3.Connection, target_ids: list[str], *, max_depth: int = _TRANSITIVE_REACH_MAX_DEPTH
     ) -> tuple[int, dict[int, int]]:
         """Reverse CodeGraph reach from modified targets, deduped by nearest depth."""
+        rows = CodeGraphAdapter._transitive_impact_nodes(con, target_ids, max_depth=max_depth)
+        buckets: dict[int, int] = {}
+        for _, depth in rows:
+            buckets[depth] = buckets.get(depth, 0) + 1
+        return len(rows), dict(sorted(buckets.items()))
+
+    @staticmethod
+    def _transitive_impact_nodes(
+        con: sqlite3.Connection,
+        target_ids: list[str],
+        *,
+        max_depth: int = _TRANSITIVE_REACH_MAX_DEPTH,
+        excluded_ids: set[str] | None = None,
+    ) -> list[tuple[str, int]]:
         if not target_ids:
-            return 0, {}
+            return []
         target_ph = ",".join("?" * len(target_ids))
         edge_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
+        blocked = tuple(sorted(set(target_ids) | set(excluded_ids or ())))
+        blocked_ph = ",".join("?" * len(blocked))
         rows = con.execute(
             f"WITH RECURSIVE reach(id, depth) AS ("
             f"  SELECT e.source, 1 FROM edges e "
             f"  WHERE e.target IN ({target_ph}) AND e.kind IN ({edge_ph}) "
-            f"  AND e.source NOT IN ({target_ph}) "
+            f"  AND e.source NOT IN ({blocked_ph}) "
             f"  UNION "
             f"  SELECT e.source, reach.depth + 1 FROM reach "
             f"  JOIN edges e ON e.target = reach.id "
             f"  WHERE reach.depth < ? AND e.kind IN ({edge_ph}) "
-            f"  AND e.source NOT IN ({target_ph})"
+            f"  AND e.source NOT IN ({blocked_ph})"
             f") "
             f"SELECT id, MIN(depth) AS depth FROM reach GROUP BY id",
             (
                 *target_ids,
                 *_MODIFY_IMPACT_EDGE_KINDS,
-                *target_ids,
+                *blocked,
                 max_depth,
                 *_MODIFY_IMPACT_EDGE_KINDS,
-                *target_ids,
+                *blocked,
             ),
         ).fetchall()
-        buckets: dict[int, int] = {}
-        for row in rows:
-            depth = int(row["depth"])
-            buckets[depth] = buckets.get(depth, 0) + 1
-        return len(rows), dict(sorted(buckets.items()))
+        return [(str(row["id"]), int(row["depth"])) for row in rows]
 
     @staticmethod
     def _repo_graph_node_count(con: sqlite3.Connection) -> int:

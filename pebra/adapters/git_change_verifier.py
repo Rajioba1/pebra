@@ -17,6 +17,7 @@ from typing import Any
 from pebra.adapters import git_adapter
 from pebra.adapters.ast_diff_adapter import compute_symbol_diff_rows, parses
 from pebra.core import change_classifier
+from pebra.core.benefit_aggregation import aggregate_file_deltas
 from pebra.core.constants import ChangeKind
 from pebra.core.language_capability import classify_tier
 from pebra.core.models import ActualDiffSummary
@@ -50,7 +51,9 @@ class GitChangeVerifier:
         materialized_diff_fn: Callable[..., Any] | None = None,
         language_capability_fn: Callable[[str, str], Any] | None = None,
         semantic_diff_enabled: bool = False,
-        complexity_delta_fn: Callable[[str, str | None, str | None], tuple[float, float] | None]
+        complexity_delta_fn: Callable[
+            [str, str | None, str | None], tuple[float, float] | tuple[float, float, float] | None
+        ]
         | None = None,
     ) -> None:
         # Injected by composition (bound to CodeGraphAdapter.percentiles_by_name). None -> verify keeps
@@ -174,8 +177,7 @@ class GitChangeVerifier:
         or {} when nothing measured) + ``python_analyzed``.
         """
         rows: list[dict] = []
-        cc_delta = 0.0
-        mi_deltas: list[float] = []
+        file_benefit_deltas: dict[str, tuple[float, float, float]] = {}
         analyzed = False          # any reclassification attempted (Python OR structural)
         python_analyzed = False   # a Python file parsed cleanly -> complexity delta is real
         unparsable = False
@@ -225,16 +227,11 @@ class GitChangeVerifier:
             if self._complexity_delta_fn is not None:
                 d = self._complexity_delta_fn(f, before, after)
                 if d is not None:
-                    cc_delta += d[0]
-                    mi_deltas.append(d[1])
+                    weight = d[2] if len(d) >= 3 else 0.0
+                    file_benefit_deltas[f] = (d[0], d[1], weight)
 
         # Summed complexity + averaged MI delta over the files RCA measured on both sides ({} if none).
-        measured_deltas: dict[str, float] = {}
-        if mi_deltas:
-            measured_deltas = {
-                "complexity_delta": cc_delta,
-                "maintainability_index_delta": sum(mi_deltas) / len(mi_deltas),
-            }
+        measured_deltas = aggregate_file_deltas(file_benefit_deltas)
 
         # Which tier the post-edit reclassification used (for assess/verify symmetry). Prefer the most
         # informative tier actually produced: semantic (reproduced) > structural > python > unavailable.

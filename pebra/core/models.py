@@ -91,6 +91,41 @@ class SymbolDiffEvidence:
 
 
 @dataclass(frozen=True)
+class OwnerRiskEvidence:
+    """Graph evidence retained for one changed owner inside a candidate envelope."""
+
+    node_id: str
+    file_path: str = ""
+    language: str = ""
+    qualified_name: str = ""
+    fan_in_percentile: float = 0.0
+    impact_percentile: float = 0.0
+    transitive_impact_percentile: float = 0.0
+    impacted_node_ids: tuple[str, ...] = ()
+    is_public_contract: bool = False
+
+
+@dataclass(frozen=True)
+class CandidateAggregateEvidence:
+    """One deterministic multi-owner summary used by the action-level risk/benefit decision."""
+
+    file_count: int = 0
+    resolved_file_count: int = 0
+    unresolved_file_count: int = 0
+    owner_count: int = 0
+    languages: tuple[str, ...] = ()
+    domain_count: int = 0
+    impacted_node_count: int = 0
+    public_contract_count: int = 0
+    changed_owner_edge_count: int = 0
+    max_owner_exposure: float = 0.0
+    weighted_owner_exposure: float = 0.0
+    cumulative_exposure: float = 0.0
+    breadth_bonus: float = 0.0
+    resolution_coverage: float = 0.0
+
+
+@dataclass(frozen=True)
 class MaterializedGraphDiffRow:
     """One before/after owner metadata comparison from a dark-gated CodeGraph materialization."""
 
@@ -170,6 +205,10 @@ class FanInEvidence:
     resolved_languages: tuple[str, ...] = ()
     resolved_file_paths: tuple[str, ...] = ()
     resolved_qualified_names: tuple[str, ...] = ()
+    # Per-owner evidence is retained until the final action-level aggregation. Existing aggregate
+    # fields remain the compatibility floor for providers that cannot supply owner detail.
+    owner_risk: tuple[OwnerRiskEvidence, ...] = ()
+    changed_owner_edge_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -188,6 +227,9 @@ class FileFanInRollup:
     resolution_method: str = "unresolved"  # 'file_location' | 'unresolved'
     graph_freshness: str = "unknown"
     fallback_reason: str | None = None
+    caller_node_ids: tuple[str, ...] = ()
+    file_count: int = 1
+    cumulative_breadth_bonus: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -254,6 +296,9 @@ class BenefitDeltaEvidence:
     # caller left exposure unset. Request JSON never sets this; it prevents caller-supplied "measured"
     # deltas from being auto-credited as if an adapter had measured them.
     auto_exposure_allowed: bool = False
+    # Measured per-file detail behind the action-level deltas. Kept for audit and deterministic
+    # exposure-weighting; request evidence and unsupported providers leave it empty.
+    file_deltas: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -363,6 +408,9 @@ class AssessmentInput:
     # M5c.5: language-agnostic per-symbol fan-in (codegraph-backed). None until the adapter is wired
     # / codegraph is present; carried for provenance even when resolution_method='unresolved'.
     fanin_evidence: "FanInEvidence | None" = None
+    candidate_aggregate_evidence: CandidateAggregateEvidence = field(
+        default_factory=CandidateAggregateEvidence
+    )
     # File-level fan-in roll-up for whole-file destructive ops; None for ordinary edits / no graph.
     file_fanin_rollup: "FileFanInRollup | None" = None
     blast_evidence: BlastEvidence = field(default_factory=BlastEvidence)

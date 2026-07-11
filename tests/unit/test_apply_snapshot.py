@@ -4,10 +4,12 @@ override, not a blended calibrated prior — blend is v2), clamped to [0.01, 0.9
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from pebra.core.apply_snapshot import SnapshotBundle, SnapshotFact, apply_snapshot
-from pebra.core.models import AssessmentRequest
+from pebra.core.models import AssessmentRequest, BenefitDeltaEvidence
 
 
 def _inp(*, p_success=0.70, events=None, features=None, action_type="edit", expected_files=None):
@@ -312,8 +314,16 @@ def test_benefit_binary_fact_overrides_immediate_benefit() -> None:
 
 
 def test_benefit_continuous_delta_fact_updates_delta_evidence() -> None:
-    out = apply_snapshot(
+    inp = replace(
         _inp(),
+        benefit_delta_evidence=BenefitDeltaEvidence(
+            source_type="measured",
+            deltas={"complexity_delta": -1.0},
+            file_deltas={"src/a.py": {"complexity_delta": -1.0, "exposure_weight": 2.0}},
+        ),
+    )
+    out = apply_snapshot(
+        inp,
         _bundle(_fact(
             target_type="benefit_continuous",
             target_name="maintainability_delta.complexity_delta",
@@ -322,6 +332,7 @@ def test_benefit_continuous_delta_fact_updates_delta_evidence() -> None:
     )
     assert out.benefit_delta_evidence.deltas["complexity_delta"] == pytest.approx(-3.0)
     assert out.benefit_delta_evidence.source_type == "learned_override"
+    assert out.benefit_delta_evidence.file_deltas == {}
 
 
 def test_measured_benefit_fact_sets_final_benefit_override() -> None:
