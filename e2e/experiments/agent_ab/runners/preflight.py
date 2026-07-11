@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab.models import TaskSpec
+from e2e.experiments.agent_ab.patch_files import touched_files
 from e2e.experiments.agent_ab.path_scope import is_in_scope
 from e2e.experiments.agent_ab.runners import evaluator, run_artifacts, run_pair
 from e2e.external.utils import repo_source as rs
@@ -122,18 +123,7 @@ def _oracle_failure(spec: TaskSpec, build) -> str | None:
 
 
 def _patch_text_touched_files(patch: str) -> set[str]:
-    touched: set[str] = set()
-    for line in patch.splitlines():
-        if not line.startswith("diff --git "):
-            continue
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        for raw in parts[2:4]:
-            path = raw[2:] if raw.startswith(("a/", "b/")) else raw
-            if path != "/dev/null":
-                touched.add(path.replace("\\", "/"))
-    return touched
+    return set(touched_files(patch))
 
 
 def _patch_touched_files(patch_file: Path) -> set[str]:

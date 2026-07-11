@@ -27,6 +27,7 @@ from typing import Any, Callable
 from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab import forbidden, models
 from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
+from e2e.experiments.agent_ab.patch_files import touched_files
 from e2e.experiments.agent_ab.tools import (
     advisory_blast_radius, advisory_check_real, advisory_check_sham, advisory_contract,
     candidate_materializer, candidate_verifier, covering_tests_resolver,
@@ -164,12 +165,7 @@ def _covering_tests_hint(spec: TaskSpec) -> str:
 
 
 def _patch_touched_files(patch: str) -> tuple[str, ...]:
-    paths: set[str] = set()
-    for line in patch.splitlines():
-        if m := _DIFF_GIT.match(line):
-            paths.add(m.group(1).replace("\\", "/"))
-            paths.add(m.group(2).replace("\\", "/"))
-    return tuple(sorted(paths))
+    return touched_files(patch)
 
 
 def _correct_patch_dir(spec: TaskSpec) -> Path:

@@ -148,6 +148,17 @@ def test_build_request_leaves_maintainability_evidence_open_for_production_measu
     assert "benefit_delta_evidence" not in req["evidence"]
 
 
+def test_build_request_declares_every_file_in_multifile_patch():
+    patch = (
+        "diff --git a/src/a.ts b/src/a.ts\n"
+        "diff --git a/src/b.ts b/src/b.ts\n"
+    )
+    req = real._build_request({
+        "target_file": "src/a.ts", "change_summary": "change", "proposed_patch": patch,
+    })
+    assert req["candidate_actions"][0]["expected_files"] == ["src/a.ts", "src/b.ts"]
+
+
 def test_build_request_does_not_carry_candidate_verification_in_untrusted_evidence():
     req = real._build_request({
         "target_file": "src/Numerics/SpecialFunctions/Gamma.cs",

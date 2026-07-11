@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from e2e.experiments.agent_ab import forbidden
+from e2e.experiments.agent_ab.patch_files import touched_files
 from e2e.experiments.agent_ab.tools import advisory_contract
 from e2e.utils import cli_harness
 
@@ -48,6 +49,7 @@ def _build_request(
     patch = payload.get("proposed_patch", "")
     if not patch:
         raise ValueError("advisory_check requires proposed_patch so PEBRA can assess the intended edit")
+    expected_files = list(touched_files(patch)) or ([target] if target else [])
     thresholds = {
         **_THRESHOLDS,
         "revise_safer_attempt": max(0, int(revise_safer_attempt)),
@@ -68,7 +70,7 @@ def _build_request(
         "schema_version": "0.1", "task": summary, "repo_id": "ab_experiment",
         "candidate_actions": [{
             "id": "ab1", "label": summary, "action_type": "edit",
-            "affected_symbols": [], "expected_files": [target] if target else [],
+            "affected_symbols": [], "expected_files": expected_files,
             "proposed_patch": patch,
         }],
         "evidence": evidence,
