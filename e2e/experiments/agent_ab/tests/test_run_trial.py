@@ -274,10 +274,10 @@ def test_run_trial_parallel_preserves_arm_order(monkeypatch):
 
 def test_parallel_worker_count_is_bounded(monkeypatch):
     monkeypatch.delenv("E2E_AB_MAX_WORKERS", raising=False)
-    assert run_pair._max_arm_workers(5) == 2
+    assert run_pair._max_arm_workers(5) == 5
     monkeypatch.setenv("E2E_AB_MAX_WORKERS", "2")
     assert run_pair._max_arm_workers(5) == 2
     monkeypatch.setenv("E2E_AB_MAX_WORKERS", "999")
     assert run_pair._max_arm_workers(5) == 5
     monkeypatch.setenv("E2E_AB_MAX_WORKERS", "not-an-int")
-    assert run_pair._max_arm_workers(5) == 2
+    assert run_pair._max_arm_workers(5) == 5

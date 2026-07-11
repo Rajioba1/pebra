@@ -38,7 +38,7 @@ from e2e.utils import cli_harness
 _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _MIN_CSHARP_NODES = 50
 _DIFF_GIT = re.compile(r"^diff --git a/(.*) b/(.*)$")
-_DEFAULT_MAX_ARM_WORKERS = 2
+_DEFAULT_MAX_ARM_WORKERS = 5
 
 # ---- assay arm sets (legacy 2-arm control/treatment map onto sham/pebra behavior) ---------------
 _RISKY_ARMS = (
