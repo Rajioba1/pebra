@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from e2e.experiments.agent_ab.runners import agent_loop
 from e2e.experiments.agent_ab.runners import model_client as mc
 
 
@@ -57,6 +58,24 @@ def test_response_to_turn_maps_text_and_tool_use():
     assert turn.served_model == "claude-haiku-4-5-20251001"
 
 
+def test_response_to_turn_preserves_thinking_block_for_tool_call_replay():
+    resp = _Resp(
+        content=[
+            _Block(type="thinking", thinking="private reasoning", signature="signed"),
+            _Block(type="tool_use", id="tu_1", name="read_file", input={"path": "a.ts"}),
+        ],
+        stop_reason="tool_use",
+    )
+
+    turn = mc._response_to_turn(resp)
+
+    assert turn.provider_content == [
+        {"type": "thinking", "thinking": "private reasoning", "signature": "signed"},
+        {"type": "tool_use", "id": "tu_1", "name": "read_file", "input": {"path": "a.ts"}},
+    ]
+    assert agent_loop._turn_to_content(turn) == turn.provider_content
+
+
 def test_response_to_turn_joins_text_and_defaults_empty():
     resp = _Resp(content=[_Block(type="text", text="a"), _Block(type="text", text="b")],
                  stop_reason="end_turn")
@@ -100,6 +119,28 @@ def test_anthropic_client_passes_base_url_to_sdk(monkeypatch):
         "api_key": "sk-test",
         "base_url": "https://api.deepseek.com/anthropic",
     }
+
+
+def test_anthropic_client_can_explicitly_disable_thinking_for_diagnostic_run(monkeypatch):
+    request = {}
+
+    class _Messages:
+        def create(self, **kwargs):
+            request.update(kwargs)
+            return _Resp(content=[_Block(type="text", text="ok")], stop_reason="end_turn")
+
+    class _Anthropic:
+        def __init__(self, **_kwargs):
+            self.messages = _Messages()
+
+    monkeypatch.setattr(mc, "_import_anthropic", lambda: type("SDK", (), {"Anthropic": _Anthropic}))
+    client = mc.AnthropicClient(
+        model="deepseek-v4-pro", api_key="sk-test", thinking_enabled=False
+    )
+
+    client.send([], [], "system", max_tokens=10)
+
+    assert request["thinking"] == {"type": "disabled"}
 
 
 def test_anthropic_client_retries_transient_errors(monkeypatch):

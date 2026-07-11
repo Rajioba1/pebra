@@ -49,7 +49,10 @@ def test_materialize_excludes_build_and_vcs_dirs(tmp_path):
     (repo / ".git" / "x").write_text("v", encoding="utf-8")
     (repo / "bin").mkdir()
     (repo / "bin" / "artifact.dll").write_text("bin", encoding="utf-8")
+    (repo / "node_modules").mkdir()
+    (repo / "node_modules" / "typescript.js").write_text("dependency", encoding="utf-8")
     scratch = cm.materialize_candidate(repo, _MODIFY)
     assert scratch is not None
     assert not (scratch / "bin").exists()  # bin/obj/.git excluded from the scratch copy
+    assert not (scratch / "node_modules").exists()
     cm.cleanup(scratch)

@@ -19,7 +19,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-_IGNORE = shutil.ignore_patterns(".git", ".codegraph", ".pebra", "bin", "obj", "__pycache__")
+_IGNORE = shutil.ignore_patterns(
+    ".git", ".codegraph", ".pebra", "bin", "obj", "node_modules", "__pycache__"
+)
 
 
 def _git(cwd: Path, *args: str) -> bool:

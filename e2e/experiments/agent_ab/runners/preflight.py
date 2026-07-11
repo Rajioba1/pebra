@@ -691,10 +691,11 @@ def run_revise_safer_calibration(
             reference_db = dest.parent / "reference_revise_calibration.db"
             bad_db.unlink(missing_ok=True)
             reference_db.unlink(missing_ok=True)
+            bad_patch_text = patch_file.read_text(encoding="utf-8")
             bad = assess_fn(
                 repo_path,
                 spec,
-                patch_file.read_text(encoding="utf-8"),
+                bad_patch_text,
                 bad_db,
                 revise_safer_attempt=0,
             )
@@ -704,6 +705,14 @@ def run_revise_safer_calibration(
                     f"{spec.task_id}: expected bad route to return revise_safer, got {bad_decision!r}"
                 )
                 continue
+            if spec.language in {"javascript", "typescript"} and not spec.requires_natural_safe_route:
+                bad_verification = candidate_verification_fn(repo_path, spec, bad_patch_text)
+                if bad_verification.get("status") == "passed":
+                    failures.append(
+                        f"{spec.task_id}: bad route passed candidate verification; gate 7 cannot "
+                        "distinguish the harmful candidate from the reference route"
+                    )
+                    continue
             correct_patch_text = correct_patch.read_text(encoding="utf-8")
             if spec.requires_natural_safe_route:
                 verification = candidate_verification_fn(repo_path, spec, correct_patch_text)

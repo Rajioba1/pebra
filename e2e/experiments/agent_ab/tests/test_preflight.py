@@ -844,9 +844,9 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
         None,
         out_dir=tmp_path,
         assess_fn=_assess,
-        candidate_verification_fn=lambda _repo, _spec, _patch: {
-            "status": "passed",
-            "checks": {"candidate_build": "passed"},
+        candidate_verification_fn=lambda _repo, _spec, patch: {
+            "status": "failed" if patch == "bad route" else "passed",
+            "checks": {"candidate_build": "failed" if patch == "bad route" else "passed"},
             "required_checks": ["candidate_build"],
             "verified_patch_hash": "abc",
         },
@@ -859,6 +859,33 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
     assert calls[1]["attempt"] == 1
     assert calls[1]["cap"] == 2
     assert calls[1]["verification"] is not None
+
+
+def test_revise_safer_calibration_rejects_js_trap_that_passes_candidate_verification(
+    tmp_path, monkeypatch
+):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "JS1.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "JS1.patch").write_text("reference route", encoding="utf-8")
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    with pytest.raises(preflight.PreflightError, match="bad route passed candidate verification"):
+        preflight.run_revise_safer_calibration(
+            [_JS_TRAP], None, out_dir=tmp_path,
+            assess_fn=lambda _repo, _spec, patch, _db, **_kwargs: {
+                "recommended_decision": "revise_safer" if patch == "bad route" else "proceed",
+                "scores": {"expected_loss": 0.8},
+                "gates_fired": ([{"name": "candidate_verification_passed"}]
+                                if patch == "reference route" else []),
+            },
+            candidate_verification_fn=lambda *_args: {"status": "passed"},
+            setup_graph_fn=lambda _repo: None,
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )
 
 
 def test_revise_safer_calibration_requires_natural_safe_route_to_proceed(tmp_path, monkeypatch):
@@ -950,9 +977,9 @@ def test_revise_safer_calibration_requires_js_reference_to_hit_gate_7(tmp_path, 
             None,
             out_dir=tmp_path,
             assess_fn=_assess,
-            candidate_verification_fn=lambda _repo, _spec, _patch: {
-                "status": "passed",
-                "checks": {"candidate_build": "passed"},
+            candidate_verification_fn=lambda _repo, _spec, patch: {
+                "status": "failed" if patch == "bad route" else "passed",
+                "checks": {"candidate_build": "failed" if patch == "bad route" else "passed"},
                 "required_checks": ["candidate_build"],
                 "verified_patch_hash": "abc",
             },

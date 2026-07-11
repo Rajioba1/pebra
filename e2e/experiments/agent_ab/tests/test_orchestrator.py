@@ -201,6 +201,17 @@ def test_run_metadata_records_rca_fingerprint_and_pin(monkeypatch):
     assert set(design["protocol_hashes"]) >= {"sham", "pebra"}
 
 
+def test_run_metadata_records_diagnostic_thinking_override(monkeypatch):
+    monkeypatch.setenv("E2E_AB_PROVIDER", "deepseek")
+    monkeypatch.setenv("E2E_AB_THINKING", "0")
+    args = type("Args", (), {"mode": "assay_js"})()
+
+    metadata = orchestrator._run_metadata(args, orchestrator._config())
+
+    assert metadata["thinking_mode"] == "disabled"
+    assert metadata["env"]["E2E_AB_THINKING"] == "0"
+
+
 def test_experiment_design_hash_changes_with_provider_model_prompt_tasks_and_arms(monkeypatch):
     cfg = orchestrator._config()
     args = type("Args", (), {"mode": "assay_js"})()

@@ -287,6 +287,7 @@ def _experiment_design(
             "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
             "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
             "semantic_diff_env": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF"),
+            "thinking_env": os.environ.get("E2E_AB_THINKING"),
         },
         "subject_prompt_template_sha256": _sha256_text(run_pair._SUBJECT_PROMPT),  # noqa: SLF001
         "protocol_hashes": protocol_hashes,
@@ -315,6 +316,7 @@ def _run_metadata(
     model = os.environ.get("E2E_AB_MODEL")
     if not model:
         model = "deepseek-v4-flash" if provider == "deepseek" else subject_cfg.get("model")
+    thinking_enabled = run_pair._subject_thinking_enabled(provider)  # noqa: SLF001 - shared run policy
     seeds_per_arm = int(cfg[args.mode]["seeds_per_arm"])
     design = _experiment_design(
         args,
@@ -335,6 +337,10 @@ def _run_metadata(
         ),
         "provider": provider,
         "model": model,
+        "thinking_mode": (
+            "provider_default" if thinking_enabled is None
+            else "enabled" if thinking_enabled else "disabled"
+        ),
         "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
         "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
         "env": {
@@ -342,6 +348,7 @@ def _run_metadata(
             "E2E_AB_MAX_WORKERS": os.environ.get("E2E_AB_MAX_WORKERS"),
             "E2E_AB_MODEL": os.environ.get("E2E_AB_MODEL"),
             "E2E_AB_PROVIDER": os.environ.get("E2E_AB_PROVIDER"),
+            "E2E_AB_THINKING": os.environ.get("E2E_AB_THINKING"),
             "PEBRA_CODEGRAPH_SEMANTIC_DIFF": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF"),
         },
         "subject_prompt_template_sha256": design["subject_prompt_template_sha256"],

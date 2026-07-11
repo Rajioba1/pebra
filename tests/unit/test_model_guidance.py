@@ -128,6 +128,9 @@ def test_revise_safer_guidance_is_structural_not_generic() -> None:
     assert "resubmit" in safer_route["summary"].lower()
     assert any("public" in c.lower() for c in safer_route["constraints"])
     rendered_constraints = " ".join(safer_route["constraints"]).lower()
+    assert "alias" in rendered_constraints
+    assert "wrapper" in rendered_constraints
+    assert "compatibility" in rendered_constraints
     assert "lower-impact owner or file" in rendered_constraints
     assert "declare every intended file" in rendered_constraints
     assert "inside the assessed file scope" not in rendered_constraints

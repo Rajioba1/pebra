@@ -5,6 +5,7 @@ documented wire convention, recomputed here); the backend is monkeypatched so th
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from types import SimpleNamespace
 
 from e2e.experiments.agent_ab.tools import candidate_verifier as cv
@@ -152,3 +153,110 @@ def test_javascript_covering_test_uses_backend(tmp_path, monkeypatch):
 
     assert ev["status"] == "passed"
     assert seen == {"language": "typescript", "project": "src/foo.test.ts", "filter": None}
+
+
+_TS_RENAME_PATCH = (
+    "diff --git a/src/public.ts b/src/public.ts\n"
+    "--- a/src/public.ts\n"
+    "+++ b/src/public.ts\n"
+    "@@ -1 +1 @@\n"
+    "-export function oldName(): void {}\n"
+    "+export function newName(): void {}\n"
+)
+
+
+def test_typescript_removed_export_fails_even_when_public_tests_pass(tmp_path, monkeypatch):
+    _stub_tests(monkeypatch, passed=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "public.ts").write_text(
+        "export function newName(): void {}\n", encoding="utf-8"
+    )
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_TS_RENAME_PATCH,
+        language="typescript",
+        test_project="src/public.test.ts",
+    )
+
+    assert ev["status"] == "failed"
+    assert ev["checks"]["public_contract_preserved"] == "failed"
+    assert "public_contract_preserved" in ev["required_checks"]
+    assert "oldName" in ev["reason"]
+
+
+def test_typescript_compatibility_alias_passes_public_contract_check(tmp_path, monkeypatch):
+    _stub_tests(monkeypatch, passed=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "public.ts").write_text(
+        "export function newName(): void {}\n"
+        "export { newName as oldName };\n",
+        encoding="utf-8",
+    )
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_TS_RENAME_PATCH,
+        language="typescript",
+        test_project="src/public.test.ts",
+    )
+
+    assert ev["status"] == "passed"
+    assert ev["checks"]["public_contract_preserved"] == "passed"
+    assert ev["required_checks"] == ["covering_tests", "public_contract_preserved"]
+
+
+def test_typescript_alias_with_incompatible_signature_fails_contract_check(tmp_path, monkeypatch):
+    _stub_tests(monkeypatch, passed=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "public.ts").write_text(
+        "export function newName(value: string): void {}\n"
+        "export { newName as oldName };\n",
+        encoding="utf-8",
+    )
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_TS_RENAME_PATCH,
+        language="typescript",
+        test_project="src/public.test.ts",
+    )
+
+    assert ev["status"] == "failed"
+    assert "signature" in ev["reason"]
+
+
+def test_candidate_timeout_is_forwarded_to_the_backend_spec(tmp_path, monkeypatch):
+    seen = {}
+
+    class FakeBackend:
+        def run_tests(self, repo_root, spec, *, project=None, test_filter=None):
+            seen["timeout"] = spec.command_timeout
+            return SimpleNamespace(
+                available=True, ran=True, passed=True, exit_code=0, error_summary="",
+                duration_seconds=0.1, tests_selected=1,
+            )
+
+    monkeypatch.setattr(cv.backends, "get_backend", lambda _language: FakeBackend())
+    ev = cv.verify_candidate(
+        repo_path=tmp_path, patch_text=_PATCH, language="csharp",
+        test_project="tests/A.csproj", timeout=123,
+    )
+
+    assert ev["status"] == "passed"
+    assert seen["timeout"] == 123
+
+
+def test_candidate_subprocess_timeout_fails_closed(tmp_path, monkeypatch):
+    class FakeBackend:
+        def run_tests(self, repo_root, spec, *, project=None, test_filter=None):
+            raise subprocess.TimeoutExpired(["test"], timeout=spec.command_timeout)
+
+    monkeypatch.setattr(cv.backends, "get_backend", lambda _language: FakeBackend())
+    ev = cv.verify_candidate(
+        repo_path=tmp_path, patch_text=_PATCH, language="csharp",
+        test_project="tests/A.csproj", timeout=2,
+    )
+
+    assert ev["status"] == "unavailable"
+    assert "timed out" in ev["reason"]

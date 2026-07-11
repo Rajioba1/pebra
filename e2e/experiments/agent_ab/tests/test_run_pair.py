@@ -103,14 +103,16 @@ def test_invoke_subject_agent_can_use_deepseek_provider(monkeypatch, tmp_path):
     created: dict[str, str | None] = {}
 
     class CapturingClient:
-        def __init__(self, *, model, api_key, base_url=None):
+        def __init__(self, *, model, api_key, base_url=None, thinking_enabled=None):
             created["model"] = model
             created["api_key"] = api_key
             created["base_url"] = base_url
+            created["thinking_enabled"] = thinking_enabled
 
     monkeypatch.setenv("E2E_AB_RUN", "1")
     monkeypatch.setenv("E2E_EXTERNAL", "1")
     monkeypatch.setenv("E2E_AB_PROVIDER", "deepseek")
+    monkeypatch.setenv("E2E_AB_THINKING", "0")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("E2E_AB_MODEL", raising=False)
@@ -139,6 +141,7 @@ def test_invoke_subject_agent_can_use_deepseek_provider(monkeypatch, tmp_path):
         "model": "deepseek-v4-flash",
         "api_key": "deepseek-key",
         "base_url": "https://api.deepseek.com/anthropic",
+        "thinking_enabled": False,
     }
 
 
@@ -512,6 +515,37 @@ def test_repair_arm_verifies_candidate_and_raises_cap(monkeypatch, tmp_path):
     assert seen[1]["attempt"] == 1 and seen[1]["cv"]["status"] == "passed"  # host-produced evidence injected
 
 
+def test_repair_arm_does_not_verify_after_revision_budget_is_exhausted(monkeypatch, tmp_path):
+    attempts: list[int] = []
+    verified: list[str] = []
+
+    def _advise(payload, *, revise_safer_attempt=0, **_kwargs):
+        attempts.append(revise_safer_attempt)
+        return {
+            "recommended_decision": "revise_safer",
+            "risk_level": "high",
+            "advisory": "x",
+            "detail": {},
+        }
+
+    def _verify(payload, _repo_path, _spec):
+        verified.append(payload["proposed_patch"])
+        return {"status": "failed"}
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(run_pair, "_verify_candidate_for_repair", _verify)
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "pebra.db"
+    )
+
+    backend({"target_file": "a.ts", "proposed_patch": "initial"})
+    backend({"target_file": "a.ts", "proposed_patch": "revision-1"})
+    backend({"target_file": "a.ts", "proposed_patch": "revision-after-cap"})
+
+    assert attempts == [0, 1, 2]
+    assert verified == ["revision-1"]
+
+
 def test_subject_forged_candidate_verification_is_stripped_on_every_arm(monkeypatch, tmp_path):
     # SECURITY (reviewer CRITICAL): the decision engine's hash-binding only stops REPLAY, not forgery
     # (verified_patch_hash = sha256(the subject's own patch), no secret). A subject could attach a
@@ -604,6 +638,37 @@ def test_repair_candidate_verification_accepts_atomic_multifile_candidate(monkey
     assert seen["repo_path"] == scratch
     assert seen["test_project"] is None  # conflicting per-file selectors use the full-build fallback
     assert seen["allow_build_fallback"] is True
+
+
+def test_repair_candidate_verification_records_stage_timings(monkeypatch, tmp_path):
+    patch = "diff --git a/src/A.ts b/src/A.ts\n--- a/src/A.ts\n+++ b/src/A.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    scratch = tmp_path / "scratch"
+    monkeypatch.setattr(run_pair.candidate_materializer, "materialize_candidate", lambda *_: scratch)
+    monkeypatch.setattr(run_pair.candidate_materializer, "cleanup", lambda *_: None)
+    monkeypatch.setattr(
+        run_pair.covering_tests_resolver,
+        "find_covering_tests",
+        lambda *_args, **_kwargs: ("src/A.test.ts", None),
+    )
+    monkeypatch.setattr(
+        run_pair.candidate_verifier,
+        "verify_candidate",
+        lambda **_kwargs: {"status": "passed", "provenance": {"tests_selected": 1}},
+    )
+    ticks = iter((10.0, 11.0, 12.5, 15.0))
+    monkeypatch.setattr(run_pair.time, "monotonic", lambda: next(ticks))
+
+    result = run_pair._verify_candidate_for_repair(
+        {"target_file": "src/A.ts", "proposed_patch": patch}, tmp_path,
+        replace(_SPEC, language="typescript", harness_id="node"),
+    )
+
+    assert result["provenance"] == {
+        "tests_selected": 1,
+        "materialize_seconds": 1.0,
+        "resolve_seconds": 1.5,
+        "verification_seconds": 2.5,
+    }
 
 
 def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):
@@ -801,14 +866,19 @@ def test_prepare_arm_writes_blinded_protocol_file_for_every_arm(tmp_path, monkey
 
     pebra_protocol = (pebra.repo_path / subject_protocol.INSTRUCTION_REL_PATH).read_text(encoding="utf-8")
     sham_protocol = (sham.repo_path / subject_protocol.INSTRUCTION_REL_PATH).read_text(encoding="utf-8")
-    assert "resubmit a narrower candidate" in pebra_protocol
+    assert "resubmit a safer or compatibility-preserving candidate" in pebra_protocol
+    assert "alias" in pebra_protocol
+    assert "wrapper" in pebra_protocol
     assert "Draft the intended patch" in sham_protocol
 
 
 def test_real_advisory_arm_membership_has_one_source_of_truth():
     assert run_pair._REAL_ADVISORY_ARMS == models.REAL_ADVISORY_ARMS
     for arm in models.REAL_ADVISORY_ARMS:
-        assert "resubmit a narrower candidate" in subject_protocol.protocol_for_arm(arm)
+        protocol = subject_protocol.protocol_for_arm(arm)
+        assert "resubmit a safer or compatibility-preserving candidate" in protocol
+        assert "alias" in protocol
+        assert "wrapper" in protocol
 
 
 def test_subject_prompt_does_not_include_absolute_repo_path_or_engine_name(tmp_path):

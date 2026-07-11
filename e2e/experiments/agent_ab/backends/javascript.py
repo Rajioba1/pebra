@@ -19,11 +19,13 @@ class JavaScriptBackend:
         self._nh = harness
 
     def run_build(self, repo_root: Any, spec: Any) -> Any:
-        return self._nh.run_build(
-            repo_root,
-            profile=getattr(spec, "build_profile", "default"),
-            selector=getattr(spec, "build_selector", None),
-        )
+        kwargs = {
+            "profile": getattr(spec, "build_profile", "default"),
+            "selector": getattr(spec, "build_selector", None),
+        }
+        if hasattr(spec, "command_timeout"):
+            kwargs.update(timeout=spec.command_timeout, install_timeout=min(spec.command_timeout, 120))
+        return self._nh.run_build(repo_root, **kwargs)
 
     def run_build_delta(self, repo_root: Any, spec: Any, *, baseline_keys: Any = None) -> Any:
         return self.run_build(repo_root, spec)  # no compiler-diagnostic delta for the node build
@@ -31,4 +33,7 @@ class JavaScriptBackend:
     def run_tests(
         self, repo_root: Any, spec: Any, *, project: Any = None, test_filter: str | None = None
     ) -> Any:
-        return self._nh.run_tests(repo_root, test_path=project, test_filter=test_filter)
+        kwargs = {"test_path": project, "test_filter": test_filter}
+        if hasattr(spec, "command_timeout"):
+            kwargs.update(timeout=spec.command_timeout, install_timeout=min(spec.command_timeout, 120))
+        return self._nh.run_tests(repo_root, **kwargs)

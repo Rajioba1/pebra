@@ -26,6 +26,9 @@ class ModelTurn:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)  # [{"id","name","input"}]
     stop_reason: str = "end_turn"  # "end_turn" | "tool_use" | "max_tokens"
     served_model: str | None = None
+    # Exact provider blocks must be replayed after a thinking-mode tool call. Reconstructing only
+    # text/tool_use drops DeepSeek's signed reasoning block and makes the next request invalid.
+    provider_content: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ModelClient(Protocol):
@@ -77,20 +80,37 @@ def _response_to_turn(resp: Any) -> ModelTurn:
     a tool call ``{"id","name","input"}``. Text blocks are joined; stop_reason falls back to end_turn."""
     text_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
+    provider_content: list[dict[str, Any]] = []
     for block in getattr(resp, "content", None) or []:
         btype = getattr(block, "type", None)
         if btype == "text":
-            text_parts.append(getattr(block, "text", "") or "")
+            block_text = getattr(block, "text", "") or ""
+            text_parts.append(block_text)
+            provider_content.append({"type": "text", "text": block_text})
         elif btype == "tool_use":
-            tool_calls.append({
+            tool_call = {
                 "id": getattr(block, "id", None),
                 "name": getattr(block, "name", None),
                 "input": getattr(block, "input", None) or {},
+            }
+            tool_calls.append(tool_call)
+            provider_content.append({"type": "tool_use", **tool_call})
+        elif btype == "thinking":
+            provider_content.append({
+                "type": "thinking",
+                "thinking": getattr(block, "thinking", "") or "",
+                "signature": getattr(block, "signature", "") or "",
+            })
+        elif btype == "redacted_thinking":
+            provider_content.append({
+                "type": "redacted_thinking",
+                "data": getattr(block, "data", "") or "",
             })
     text = "\n".join(p for p in text_parts if p) or None
     return ModelTurn(text=text, tool_calls=tool_calls,
                      stop_reason=getattr(resp, "stop_reason", None) or "end_turn",
-                     served_model=getattr(resp, "model", None))
+                     served_model=getattr(resp, "model", None),
+                     provider_content=provider_content)
 
 
 class AnthropicClient:
@@ -104,11 +124,13 @@ class AnthropicClient:
         *,
         transient_retries: int = 2,
         base_url: str | None = None,
+        thinking_enabled: bool | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._transient_retries = transient_retries
         self._base_url = base_url
+        self._thinking_enabled = thinking_enabled
         self._client: Any = None  # lazily constructed on first send (needs the SDK + a real key)
 
     def send(self, messages, tools, system, *, max_tokens) -> ModelTurn:  # pragma: no cover - live only
@@ -120,13 +142,18 @@ class AnthropicClient:
         attempts = self._transient_retries + 1
         for attempt in range(attempts):
             try:
-                resp = self._client.messages.create(
-                    model=self._model,
-                    max_tokens=max_tokens,
-                    system=system,
-                    tools=tools,
-                    messages=messages,
-                )
+                request: dict[str, Any] = {
+                    "model": self._model,
+                    "max_tokens": max_tokens,
+                    "system": system,
+                    "tools": tools,
+                    "messages": messages,
+                }
+                if self._thinking_enabled is not None:
+                    request["thinking"] = {
+                        "type": "enabled" if self._thinking_enabled else "disabled"
+                    }
+                resp = self._client.messages.create(**request)
                 break
             except Exception as exc:
                 status = getattr(exc, "status_code", None)

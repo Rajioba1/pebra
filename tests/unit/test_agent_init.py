@@ -56,6 +56,9 @@ def test_skill_protocol_requires_reassessing_revise_safer(tmp_path):
     assert "permits" in lowered
     assert "stable action id" in lowered
     assert "same task text" in lowered
+    assert "compatibility-preserving" in lowered
+    assert "alias" in lowered
+    assert "wrapper" in lowered
 
 
 def test_skill_protocol_omits_dead_candidate_verification_self_report(tmp_path):

@@ -46,6 +46,10 @@ def _safer_route(result: AssessmentResult, action: CandidateAction) -> dict[str,
         str(sse.get("max_change_kind", "")) == "CONTRACT"
     ):
         constraints.append("Preserve the public surface and existing public signatures unless explicitly authorized.")
+        constraints.append(
+            "For a public contract change, prefer a compatibility-preserving alias, wrapper, adapter, "
+            "default implementation, or deprecation bridge over removing the existing entry point."
+        )
     constraints.append(
         "Consider moving the implementation to a lower-impact owner or file when that preserves "
         "the goal and public behavior."

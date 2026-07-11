@@ -16,9 +16,10 @@ _SAFE_EDIT_PROTOCOL = """# Repository edit protocol
 
 1. Treat the pre-edit advisory as a required step, not background text.
 2. If the advisory says revise_safer, the current patch is not acceptable. Do not write it.
-3. For revise_safer, preserve the existing public behavior, make the smallest sufficient change,
-   resubmit a narrower candidate to advisory_check, and write only after the narrower candidate is no
-   longer blocked.
+3. For revise_safer, preserve the existing public behavior and make the smallest sufficient change.
+   For a public contract change, consider a compatibility alias, wrapper, adapter, default, or
+   deprecation bridge; resubmit a safer or compatibility-preserving candidate to advisory_check, and
+   write only after that candidate is no longer blocked.
 4. After writing, run the relevant build or tests before stopping.
 """
 

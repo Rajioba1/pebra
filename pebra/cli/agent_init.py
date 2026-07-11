@@ -37,13 +37,15 @@ obligation, not optional. Do not skip these steps:
    unified diff in `proposed_patch`. Read the returned decision, `scores.expected_loss`, safe edit
    scope, and required checks before touching the code.
 2. **Revise when asked.** If the decision is `revise_safer`, do not apply the original patch. Use
-   `model_guidance_packet.advisory.safer_route` (its `summary` and `constraints`) to draft a narrower
-   candidate, then resubmit by running `pebra assess` again with that new `proposed_patch`. Keep
+   `model_guidance_packet.advisory.safer_route` (its `summary` and `constraints`) to draft a safer or
+   compatibility-preserving candidate. For public contract changes, consider retaining the existing
+   entry point through an alias, wrapper, adapter, default implementation, or deprecation bridge.
+   Then resubmit by running `pebra assess` again with that new `proposed_patch`. Keep
    the same task text and stable action ID across these revision requests, even when the safer route
-   moves to a different file, so the bounded revision lineage cannot reset. Keep narrowing scope and resubmitting
+   moves to a different file, so the bounded revision lineage cannot reset. Keep reducing risk and resubmitting
    until the reassessment permits editing and shows lower risk (for example, lower
    `scores.expected_loss` or a less severe decision). PEBRA does not accept
-   self-reported candidate verification in the request, so narrow the change until the risk drops on
+   self-reported candidate verification in the request, so revise the change until the risk drops on
    its own; if it will not, escalate as in step 3.
 3. **Escalate when asked.** If the decision is `ask_human` or `reject`, stop and ask the user for
    approval or a different route; do not treat it as permission to edit.

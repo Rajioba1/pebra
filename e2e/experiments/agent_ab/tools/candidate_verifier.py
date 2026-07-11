@@ -26,10 +26,12 @@ guarantee before calling this module.
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from e2e.experiments.agent_ab import backends
+from e2e.experiments.agent_ab.tools import public_contract_verifier
 
 _SUPPORTED_LANGUAGES = frozenset({"csharp", "javascript", "typescript"})
 _COVERING_CHECK = "covering_tests"
@@ -106,18 +108,41 @@ def verify_candidate(
     except ValueError:
         return _evidence("unavailable", patch_hash=patch_hash,
                          reason=f"no validated test runner for language {language!r}")
+    contract_required = False
+    if language in {"javascript", "typescript"}:
+        contract_status, _contract_failures, contract_reason = (
+            public_contract_verifier.check_typescript_public_contract(repo_path, patch_text)
+        )
+        if contract_status in {"failed", "unavailable"}:
+            return _evidence(
+                contract_status,
+                patch_hash=patch_hash,
+                checks={"public_contract_preserved": contract_status},
+                required_checks=["public_contract_preserved"],
+                domain="public_contract",
+                reason=contract_reason,
+            )
+        contract_required = contract_status == "passed"
+
     spec = type("_Spec", (), {
         "language": language,
         "harness_id": harness_id or language,
         "build_solution": build_solution,
         "build_profile": build_profile,
         "build_selector": build_selector,
+        "command_timeout": timeout,
     })()
     if not test_project:
         if not allow_build_fallback:
             return _evidence("unavailable", patch_hash=patch_hash,
                              reason="no covering tests declared for this candidate")
-        result = backend.run_build(Path(repo_path), spec)
+        try:
+            result = backend.run_build(Path(repo_path), spec)
+        except subprocess.TimeoutExpired:
+            return _evidence(
+                "unavailable", patch_hash=patch_hash, required_checks=[_BUILD_CHECK],
+                domain=_BUILD_CHECK, reason=f"candidate build timed out after {timeout} seconds",
+            )
         if not result.available or not result.ran:
             return _evidence(
                 "unavailable",
@@ -127,16 +152,30 @@ def verify_candidate(
                 reason=result.error_summary or "candidate build did not execute",
             )
         status = "passed" if result.passed else "failed"
+        checks = {_BUILD_CHECK: status}
+        required_checks = [_BUILD_CHECK]
+        if contract_required:
+            checks["public_contract_preserved"] = "passed"
+            required_checks.append("public_contract_preserved")
         return _evidence(
             status,
             patch_hash=patch_hash,
-            checks={_BUILD_CHECK: status},
-            required_checks=[_BUILD_CHECK],
+            checks=checks,
+            required_checks=required_checks,
             domain=_BUILD_CHECK,
             reason=None if result.passed else (result.error_summary or "candidate build failed"),
         )
 
-    result = backend.run_tests(Path(repo_path), spec, project=test_project, test_filter=test_filter)
+    try:
+        result = backend.run_tests(
+            Path(repo_path), spec, project=test_project, test_filter=test_filter
+        )
+    except subprocess.TimeoutExpired:
+        return _evidence(
+            "unavailable", patch_hash=patch_hash, required_checks=[_COVERING_CHECK],
+            reason=f"candidate tests timed out after {timeout} seconds",
+            test_project=test_project, test_filter=test_filter,
+        )
     if not result.available or not result.ran:
         return _evidence("unavailable", patch_hash=patch_hash,
                          reason=result.error_summary or "covering-test run did not execute",
@@ -144,7 +183,13 @@ def verify_candidate(
                          tests_selected=result.tests_selected)
 
     status = "passed" if result.passed else "failed"
-    return _evidence(status, patch_hash=patch_hash, checks={_COVERING_CHECK: status},
+    checks = {_COVERING_CHECK: status}
+    required_checks = [_COVERING_CHECK]
+    if contract_required:
+        checks["public_contract_preserved"] = "passed"
+        required_checks.append("public_contract_preserved")
+    return _evidence(status, patch_hash=patch_hash, checks=checks,
+                     required_checks=required_checks,
                      reason=None if result.passed else (result.error_summary or "covering tests failed"),
                      test_project=test_project, test_filter=test_filter,
                      tests_selected=result.tests_selected)

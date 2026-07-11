@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,7 @@ _GRAPH_ARMS = frozenset(
     {models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_BLAST_RADIUS})
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 _DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
+_CANDIDATE_VERIFICATION_TIMEOUT_SECONDS = 300
 
 
 def arms_for(harm_label: str) -> tuple[str, ...]:
@@ -192,7 +194,9 @@ def _verify_candidate_for_repair(
         return {**unavailable, "reason": "candidate patch must declare at least one target file"}
     if declared_target and declared_target not in touched:
         return {**unavailable, "reason": "candidate patch target does not match advisory target"}
+    started = time.monotonic()
     scratch = candidate_materializer.materialize_candidate(repo_path, patch)
+    materialized_at = time.monotonic()
     if scratch is None:
         return {**unavailable, "reason": "candidate patch did not apply cleanly"}
     try:
@@ -202,19 +206,29 @@ def _verify_candidate_for_repair(
             )
             for target in touched
         }
+        resolved_at = time.monotonic()
         checks.discard((None, None))
         if len(checks) > 1 and spec.language not in {"javascript", "typescript"}:
             return {**unavailable, "reason": "candidate requires multiple covering-test targets"}
         # A JS/TS multi-file candidate with different selectors falls back to the fixed full build;
         # single-project candidates keep the narrower covering-test check.
         project, test_filter = next(iter(checks)) if len(checks) == 1 else (None, None)
-        return candidate_verifier.verify_candidate(
+        result = candidate_verifier.verify_candidate(
             repo_path=scratch, patch_text=patch, language=spec.language,
             test_project=project, test_filter=test_filter, build_solution=spec.build_solution,
             harness_id=spec.harness_id, build_profile=spec.build_profile,
             build_selector=spec.build_selector,
             allow_build_fallback=spec.language in {"javascript", "typescript"},
+            timeout=_CANDIDATE_VERIFICATION_TIMEOUT_SECONDS,
         )
+        verified_at = time.monotonic()
+        provenance = dict(result.get("provenance") or {})
+        provenance.update({
+            "materialize_seconds": round(materialized_at - started, 3),
+            "resolve_seconds": round(resolved_at - materialized_at, 3),
+            "verification_seconds": round(verified_at - resolved_at, 3),
+        })
+        return {**result, "provenance": provenance}
     finally:
         candidate_materializer.cleanup(scratch)
 
@@ -251,7 +265,7 @@ def _advisory_backend(
             payload = {k: v for k, v in payload.items() if k != "candidate_verification"}
             # On the narrowed RESUBMISSION (attempt >= 1) the repair arm host-produces the verification
             # and injects it — this is the only path by which candidate_verification reaches the engine.
-            if is_repair and attempt >= 1:
+            if is_repair and 1 <= attempt < max_attempts:
                 payload = {**payload, "candidate_verification":
                            _verify_candidate_for_repair(payload, repo_path, spec or TaskSpec(
                                "_", "", (), "safe", ("_",), "none", False))}
@@ -461,6 +475,20 @@ def _subject_model(cfg: dict[str, Any], provider: str) -> str:
     return _DEEPSEEK_DEFAULT_MODEL if provider == "deepseek" else cfg["model"]
 
 
+def _subject_thinking_enabled(provider: str) -> bool | None:
+    if provider != "deepseek":
+        return None
+    raw = os.environ.get("E2E_AB_THINKING")
+    if raw is None or not raw.strip():
+        return None  # preserve DeepSeek V4's normal thinking-enabled default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "off", "disabled"}:
+        return False
+    raise RunPairError("E2E_AB_THINKING must be enabled/disabled or a boolean equivalent")
+
+
 def _subject_api_key(provider: str) -> str:
     import os  # noqa: PLC0415
     key_name = "DEEPSEEK_API_KEY" if provider == "deepseek" else "ANTHROPIC_API_KEY"
@@ -528,6 +556,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
     client_kwargs: dict[str, Any] = {}
     if provider == "deepseek":
         client_kwargs["base_url"] = _DEEPSEEK_BASE_URL
+        client_kwargs["thinking_enabled"] = _subject_thinking_enabled(provider)
     client = AnthropicClient(
         model=run_cfg.model,
         api_key=_subject_api_key(provider),

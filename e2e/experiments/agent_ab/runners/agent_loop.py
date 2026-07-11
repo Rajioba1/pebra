@@ -253,6 +253,8 @@ def _gitignore_diff_is_pebra_only(repo_path: Path) -> bool:
 
 
 def _turn_to_content(turn) -> list[dict[str, Any]]:
+    if turn.provider_content:
+        return [dict(block) for block in turn.provider_content]
     content: list[dict[str, Any]] = []
     if turn.text:
         content.append({"type": "text", "text": turn.text})
