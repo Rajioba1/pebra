@@ -108,7 +108,8 @@ def test_config_has_one_pair_smoke_mode():
 def test_config_has_javascript_assay_mode():
     cfg = orchestrator._config()
     assert cfg["assay_js"]["tasks"] == ["JS1", "JS2", "JS3"]
-    assert cfg["assay_js"]["seeds_per_arm"] == 3
+    assert cfg["assay_js"]["seeds_per_arm"] == 1
+    assert "Diagnostic-only" in cfg["assay_js"]["claims"]
     assert cfg["smoke"]["seeds_per_arm"] == 1
     assert cfg["smoke"]["total_runs"] == 2
 
