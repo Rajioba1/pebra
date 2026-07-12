@@ -206,6 +206,46 @@ def test_typescript_compatibility_alias_passes_public_contract_check(tmp_path, m
     assert ev["required_checks"] == ["covering_tests", "public_contract_preserved"]
 
 
+def test_typescript_callable_const_alias_passes_public_contract_check(tmp_path, monkeypatch):
+    _stub_tests(monkeypatch, passed=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "public.ts").write_text(
+        "export function newName(): void {}\n"
+        "export const oldName = newName;\n",
+        encoding="utf-8",
+    )
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_TS_RENAME_PATCH,
+        language="typescript",
+        test_project="src/public.test.ts",
+    )
+
+    assert ev["status"] == "passed"
+    assert ev["checks"]["public_contract_preserved"] == "passed"
+
+
+def test_typescript_callable_wrapper_does_not_claim_signature_equivalence(tmp_path, monkeypatch):
+    _stub_tests(monkeypatch, passed=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "public.ts").write_text(
+        "export function newName(): void {}\n"
+        "export const oldName = (...args: unknown[]) => newName(...args);\n",
+        encoding="utf-8",
+    )
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_TS_RENAME_PATCH,
+        language="typescript",
+        test_project="src/public.test.ts",
+    )
+
+    assert ev["status"] == "failed"
+    assert ev["checks"]["public_contract_preserved"] == "failed"
+
+
 def test_typescript_alias_with_incompatible_signature_fails_contract_check(tmp_path, monkeypatch):
     _stub_tests(monkeypatch, passed=True)
     (tmp_path / "src").mkdir()

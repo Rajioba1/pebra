@@ -378,6 +378,17 @@ def _advisory_backend(
             nonlocal revise_attempt
             backend_started = time.monotonic()
             attempt = revise_attempt
+            approved_candidate_binding = None
+            if is_human_review and telemetry is not None and telemetry.human_approval_granted:
+                approved = telemetry.pending_human_approval
+                if (
+                    isinstance(approved, dict)
+                    and approved.get("assessment_id")
+                    == telemetry.human_approval_assessment_id
+                ):
+                    profile = approved.get("risk_profile")
+                    if isinstance(profile, dict):
+                        approved_candidate_binding = profile.get("candidate_binding")
             candidate_edits = payload.get("candidate_edits")
             if isinstance(candidate_edits, list) and candidate_edits:
                 generated = cli_harness.candidate_patch(
@@ -461,13 +472,14 @@ def _advisory_backend(
                 if result.get("recommended_decision") == "ask_human":
                     telemetry.human_approval_offered = True
                     pending = _human_approval_spec(result)
-                    pending_id = pending.get("assessment_id") if isinstance(pending, dict) else None
                     if (
-                        telemetry.human_approval_granted
-                        and pending_id != telemetry.human_approval_assessment_id
+                        approved_candidate_binding is not None
+                        and isinstance(pending, dict)
+                        and isinstance(pending.get("risk_profile"), dict)
+                        and pending["risk_profile"].get("candidate_binding")
+                        == approved_candidate_binding
                     ):
-                        telemetry.post_approval_reassessment = False
-                        telemetry.approved_reassessment_id = None
+                        telemetry.post_approval_reassessment = True
                     telemetry.pending_human_approval = pending
                 elif (
                     telemetry.human_approval_granted

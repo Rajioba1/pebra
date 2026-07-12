@@ -16,6 +16,10 @@ _DECLARATION = re.compile(
 )
 _EXPORT_LIST = re.compile(r"\bexport\s*(?:type\s*)?\{([^}]*)\}", re.DOTALL)
 _IDENTIFIER = re.compile(r"^[A-Za-z_$][\w$]*$")
+_VALUE_ALIAS = re.compile(
+    r"^\s*export\s+const\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"
+    r"(?P<target>[A-Za-z_$][\w$]*)\s*;\s*$"
+)
 
 
 def _listed_exports(body: str) -> dict[str, str]:
@@ -47,7 +51,29 @@ def _exports_in_source(source: str) -> tuple[dict[str, str | None], dict[str, st
     aliases: dict[str, str] = {}
     for match in _EXPORT_LIST.finditer(source):
         aliases.update(_listed_exports(match.group(1)))
+    for line in source.splitlines():
+        if (match := _VALUE_ALIAS.match(line)) is not None:
+            aliases[match.group("name")] = match.group("target")
     return declarations, aliases
+
+
+def _resolved_signature(
+    name: str, declarations: dict[str, str | None], aliases: dict[str, str]
+) -> str | None:
+    """Resolve at most two exact same-file identifier aliases to a function signature."""
+    target = name
+    visited: set[str] = set()
+    for _ in range(3):
+        if target in visited:
+            return None
+        visited.add(target)
+        signature = declarations.get(target)
+        if signature is not None:
+            return signature
+        target = aliases.get(target, "")
+        if not target:
+            return None
+    return None
 
 
 def _removed_exports(patch_text: str) -> tuple[dict[str, dict[str, str | None]], bool]:
@@ -104,11 +130,10 @@ def check_typescript_public_contract(
             return "unavailable", (), f"could not inspect candidate public surface for {rel}"
         declarations, aliases = _exports_in_source(source)
         for name, required_signature in sorted(requirements.items()):
-            target = name if name in declarations else aliases.get(name)
-            if target is None or target not in declarations:
+            if name not in declarations and name not in aliases:
                 failures.append(f"{rel}::{name} (missing)")
                 continue
-            candidate_signature = declarations[target]
+            candidate_signature = _resolved_signature(name, declarations, aliases)
             if required_signature is not None and candidate_signature != required_signature:
                 failures.append(f"{rel}::{name} (signature changed)")
     if failures:

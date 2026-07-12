@@ -489,8 +489,12 @@ def test_real_advisory_backend_threads_task_benefit_profile(monkeypatch, tmp_pat
     assert seen["review_cost"] == pytest.approx(0.05)
 
 
+@pytest.mark.parametrize(
+    ("reassessment_decision", "reassessment_risk_mode"),
+    [("proceed", "controlled_high_risk"), ("ask_human", "sensitive_context")],
+)
 def test_human_review_arm_requires_model_request_before_host_sanction_and_reassessment(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, reassessment_decision, reassessment_risk_mode,
 ):
     calls: list[dict] = []
     approvals: list[dict] = []
@@ -550,7 +554,11 @@ def test_human_review_arm_requires_model_request_before_host_sanction_and_reasse
         return (
             _output("ask_human", assessment_id="asm_1", risk_mode="elevated_review")
             if len(calls) == 1
-            else _output("proceed", assessment_id="asm_2", risk_mode="controlled_high_risk")
+            else _output(
+                reassessment_decision,
+                assessment_id="asm_2",
+                risk_mode=reassessment_risk_mode,
+            )
         )
 
     monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
@@ -599,7 +607,7 @@ def test_human_review_arm_requires_model_request_before_host_sanction_and_reasse
 
     second = advisory_backend(payload)
 
-    assert second["recommended_decision"] == "proceed"
+    assert second["recommended_decision"] == reassessment_decision
     assert len(calls) == 2
     assert telemetry.post_approval_reassessment is True
     assert telemetry.human_approval_assessment_id == "asm_1"
