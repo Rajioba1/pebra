@@ -114,7 +114,13 @@ def blinding_presend_check(texts: list[str]) -> None:
             )
 
 
-def _dispatch(name: str, args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
+def _dispatch(
+    name: str,
+    args: dict[str, Any],
+    setup: "ArmSetup",
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     repo = setup.repo_path
     if name == "read_file":
         return tool_impl.read_file(args.get("path", ""), repo)
@@ -131,12 +137,18 @@ def _dispatch(name: str, args: dict[str, Any], setup: "ArmSetup") -> dict[str, A
                                      path=args.get("path"), file_glob=args.get("file_glob"))
     if name == "run_build":
         return tool_impl.run_build(repo, backend=getattr(setup, "build_backend", None),
-                                   spec=getattr(setup, "spec", None), sln=setup.build_solution)
+                                   spec=getattr(setup, "spec", None), sln=setup.build_solution,
+                                   timeout_seconds=timeout_seconds)
     if name == "run_tests":
         return tool_impl.run_tests(repo, backend=getattr(setup, "build_backend", None),
-                                   spec=getattr(setup, "spec", None), sln=setup.build_solution)
+                                   spec=getattr(setup, "spec", None), sln=setup.build_solution,
+                                   timeout_seconds=timeout_seconds)
     if name == advisory_contract.TOOL_NAME:
-        return tool_impl.advisory_check(args, setup.advisory_backend)
+        return tool_impl.advisory_check(
+            args,
+            setup.advisory_backend,
+            timeout_seconds=timeout_seconds,
+        )
     return {"error": f"unknown tool {name!r}"}
 
 
@@ -290,6 +302,7 @@ def run(
     turns: list[dict[str, Any]] = []
     tools_seen: list[dict[str, Any]] = []
     limit_reason: str | None = None
+    deadline = start + config.max_wall_seconds_per_run
 
     try:
         while True:
@@ -337,6 +350,11 @@ def run(
 
             results_content: list[dict[str, Any]] = []
             for tc in turn.tool_calls:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    limit_reason = "wall_clock"
+                    break
                 if seq >= config.max_tool_calls_per_run:
                     limit_reason = "tool_call_limit"
                     results_content.append({"type": "tool_result", "tool_use_id": tc["id"],
@@ -344,7 +362,12 @@ def run(
                     continue
                 name, args = tc["name"], tc.get("input", {})
                 tool_started = time.monotonic()
-                result = _dispatch(name, args, setup)
+                result = _dispatch(
+                    name,
+                    args,
+                    setup,
+                    timeout_seconds=max(0.001, deadline - tool_started),
+                )
                 tool_ended = time.monotonic()
                 # Blinding: scan harness-authored outputs (advisory result AND any write reason — a gate
                 # deny or a write error), never file reads/content. Any reason text reaches the model.
@@ -371,6 +394,8 @@ def run(
                 seq += 1
                 results_content.append({"type": "tool_result", "tool_use_id": tc["id"],
                                         "content": json.dumps(result)})
+            if timed_out:
+                break
             messages.append({"role": "user", "content": results_content})
     except BlindingViolationError:
         raise  # not caught: a blinding violation aborts the run loudly

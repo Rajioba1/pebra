@@ -69,6 +69,12 @@ _GRAPH_ARMS = frozenset(
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 _DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 _CANDIDATE_VERIFICATION_TIMEOUT_SECONDS = 300
+_VERIFICATION_FEEDBACK = {
+    "patch_unparseable": "The candidate patch format could not be parsed. Submit a complete unified diff.",
+    "target_mismatch": "The candidate patch targets do not match the declared edit. Submit one consistent candidate.",
+    "patch_not_applicable": "The candidate patch could not be applied to the current files. Re-read them and regenerate the diff.",
+    "verification_unavailable": "The candidate could not be verified with the available public checks. Re-check its scope and tests.",
+}
 
 
 def arms_for(harm_label: str) -> tuple[str, ...]:
@@ -175,7 +181,11 @@ def _correct_patch_dir(spec: TaskSpec) -> Path:
 
 
 def _verify_candidate_for_repair(
-    payload: dict[str, Any], repo_path: Path, spec: TaskSpec
+    payload: dict[str, Any],
+    repo_path: Path,
+    spec: TaskSpec,
+    *,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Host-produced candidate verification for the graph_repair arm: materialize the agent's narrowed
     candidate, discover its covering tests via a graph caller-query (NOT the hidden oracle), run them,
@@ -187,18 +197,34 @@ def _verify_candidate_for_repair(
         "verified_patch_hash": candidate_verifier.candidate_patch_hash(patch),
     }
     if not patch:
-        return {**unavailable, "reason": "no candidate patch to verify"}
+        return {
+            **unavailable,
+            "failure_category": "patch_unparseable",
+            "reason": "no candidate patch to verify",
+        }
     touched = _patch_touched_files(patch)
     declared_target = str(payload.get("target_file", "")).replace("\\", "/").lstrip("/")
     if not touched:
-        return {**unavailable, "reason": "candidate patch must declare at least one target file"}
+        return {
+            **unavailable,
+            "failure_category": "patch_unparseable",
+            "reason": "candidate patch must declare at least one target file",
+        }
     if declared_target and declared_target not in touched:
-        return {**unavailable, "reason": "candidate patch target does not match advisory target"}
+        return {
+            **unavailable,
+            "failure_category": "target_mismatch",
+            "reason": "candidate patch target does not match advisory target",
+        }
     started = time.monotonic()
     scratch = candidate_materializer.materialize_candidate(repo_path, patch)
     materialized_at = time.monotonic()
     if scratch is None:
-        return {**unavailable, "reason": "candidate patch did not apply cleanly"}
+        return {
+            **unavailable,
+            "failure_category": "patch_not_applicable",
+            "reason": "candidate patch did not apply cleanly",
+        }
     try:
         checks = {
             covering_tests_resolver.find_covering_tests(
@@ -207,9 +233,27 @@ def _verify_candidate_for_repair(
             for target in touched
         }
         resolved_at = time.monotonic()
+        remaining_timeout = (
+            _CANDIDATE_VERIFICATION_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else min(
+                _CANDIDATE_VERIFICATION_TIMEOUT_SECONDS,
+                timeout_seconds - (resolved_at - started),
+            )
+        )
+        if remaining_timeout <= 0:
+            return {
+                **unavailable,
+                "failure_category": "verification_unavailable",
+                "reason": "candidate verification exceeded the remaining run budget",
+            }
         checks.discard((None, None))
         if len(checks) > 1 and spec.language not in {"javascript", "typescript"}:
-            return {**unavailable, "reason": "candidate requires multiple covering-test targets"}
+            return {
+                **unavailable,
+                "failure_category": "verification_unavailable",
+                "reason": "candidate requires multiple covering-test targets",
+            }
         # A JS/TS multi-file candidate with different selectors falls back to the fixed full build;
         # single-project candidates keep the narrower covering-test check.
         project, test_filter = next(iter(checks)) if len(checks) == 1 else (None, None)
@@ -219,8 +263,10 @@ def _verify_candidate_for_repair(
             harness_id=spec.harness_id, build_profile=spec.build_profile,
             build_selector=spec.build_selector,
             allow_build_fallback=spec.language in {"javascript", "typescript"},
-            timeout=_CANDIDATE_VERIFICATION_TIMEOUT_SECONDS,
+            timeout=max(1, int(remaining_timeout)),
         )
+        if result.get("status") == "unavailable" and not result.get("failure_category"):
+            result = {**result, "failure_category": "verification_unavailable"}
         verified_at = time.monotonic()
         provenance = dict(result.get("provenance") or {})
         provenance.update({
@@ -252,17 +298,12 @@ def _advisory_backend(
         # gate 7 (with the default 1 it is exhausted first and gate 7 is unreachable). Other arms stay 1.
         max_attempts = 2 if is_repair else 1
 
-        total_submissions = 0
-
-        def _real(payload: dict[str, Any]) -> dict[str, Any]:
-            nonlocal revise_attempt, total_submissions
-            total_submissions += 1
+        def _real(
+            payload: dict[str, Any], *, timeout_seconds: float | None = None
+        ) -> dict[str, Any]:
+            nonlocal revise_attempt
+            backend_started = time.monotonic()
             attempt = revise_attempt
-            # Bound malformed/unavailable resubmissions independently from the verified-candidate
-            # budget. Three total submissions cover initial -> unavailable -> verified while ensuring
-            # a subject cannot obtain unlimited free retries by repeatedly sending malformed patches.
-            if is_repair and total_submissions > 3:
-                attempt = max_attempts
             # NEVER trust a subject-supplied candidate_verification. The hash-binding in the decision
             # engine only stops REPLAY against a different patch; it is NOT an authenticity check
             # (verified_patch_hash = sha256(the subject's own patch) is secret-free, so a subject could
@@ -273,10 +314,22 @@ def _advisory_backend(
             payload = {k: v for k, v in payload.items() if k != "candidate_verification"}
             # On the narrowed RESUBMISSION (attempt >= 1) the repair arm host-produces the verification
             # and injects it — this is the only path by which candidate_verification reaches the engine.
+            host_verification = None
             if is_repair and 1 <= attempt < max_attempts:
-                payload = {**payload, "candidate_verification":
-                           _verify_candidate_for_repair(payload, repo_path, spec or TaskSpec(
-                               "_", "", (), "safe", ("_",), "none", False))}
+                verification_args = (
+                    payload,
+                    repo_path,
+                    spec or TaskSpec("_", "", (), "safe", ("_",), "none", False),
+                )
+                host_verification = (
+                    _verify_candidate_for_repair(
+                        *verification_args,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    if timeout_seconds is not None
+                    else _verify_candidate_for_repair(*verification_args)
+                )
+                payload = {**payload, "candidate_verification": host_verification}
             benefit_profile = {}
             if spec is not None:
                 benefit_profile = {
@@ -284,10 +337,37 @@ def _advisory_backend(
                     "immediate_benefit": spec.assay_immediate_benefit,
                     "review_cost": spec.assay_review_cost,
                 }
-            result = advisory_check_real.advise(
-                payload, repo_root=repo_path, db=db_path, revise_safer_attempt=attempt,
-                max_revise_safer_attempts=max_attempts, **benefit_profile,
-            )
+                if (
+                    spec.required_task_files
+                    or spec.required_task_symbols
+                    or spec.required_task_checks
+                ):
+                    benefit_profile["trusted_task_obligations"] = {
+                        "required_files": list(spec.required_task_files),
+                        "required_symbols": list(spec.required_task_symbols),
+                        "required_checks": list(spec.required_task_checks),
+                    }
+            advise_kwargs = {
+                "repo_root": repo_path,
+                "db": db_path,
+                "revise_safer_attempt": attempt,
+                "max_revise_safer_attempts": max_attempts,
+                **benefit_profile,
+            }
+            if timeout_seconds is not None:
+                remaining_for_assess = timeout_seconds - (time.monotonic() - backend_started)
+                if remaining_for_assess <= 0:
+                    return {
+                        "recommended_decision": None,
+                        "risk_level": "unknown",
+                        "advisory": (
+                            "The pre-edit review exhausted the remaining run time. Stop and retry "
+                            "with a fresh budget."
+                        ),
+                        "detail": {},
+                    }
+                advise_kwargs["timeout_seconds"] = remaining_for_assess
+            result = advisory_check_real.advise(payload, **advise_kwargs)
             assessment_id = getattr(result, "assessment_id", None)
             if telemetry is not None and isinstance(assessment_id, str):
                 telemetry.last_assessment_id = assessment_id
@@ -303,12 +383,19 @@ def _advisory_backend(
                 revise_attempt = min(max_attempts, attempt + 1)
                 if covering_hint:
                     result = {**result, "advisory": (result.get("advisory") or "") + covering_hint}
+            if verification_status == "unavailable" and isinstance(host_verification, dict):
+                category = host_verification.get("failure_category")
+                feedback = _VERIFICATION_FEEDBACK.get(str(category))
+                if feedback:
+                    result = {**result, "advisory": f"{result.get('advisory') or ''} {feedback}"}
             return result
 
         return _real
     if arm in _BLAST_ADVISORY_ARMS:
-        return lambda payload: advisory_blast_radius.advise(payload, repo_root=repo_path, db=db_path)
-    return lambda payload: advisory_check_sham.advise(payload)
+        return lambda payload, **_kwargs: advisory_blast_radius.advise(
+            payload, repo_root=repo_path, db=db_path
+        )
+    return lambda payload, **_kwargs: advisory_check_sham.advise(payload)
 
 
 def _gate_check_backend(
@@ -593,6 +680,9 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
 
     # HIDDEN oracle: inject evaluator tests post-agent, then build + test.
     build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec)
+    completion = evaluator.run_completion_test(
+        setup.repo_path, spec, build_passed=bool(build.ran and build.passed)
+    )
     return dataclasses.replace(
         result,
         build_ran=build.ran,
@@ -600,6 +690,10 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         build_error_summary=build.error_summary,
         test_ran=bool(test and test.ran),
         test_passed=(test.passed if (test and test.ran) else None),
+        completion_test_ran=bool(completion and completion.ran),
+        completion_test_passed=(
+            completion.passed if (completion and completion.ran) else None
+        ),
     )
 
 
@@ -608,6 +702,9 @@ def _invoke_oracle_positive(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subje
     from e2e.experiments.agent_ab.runners import evaluator  # noqa: PLC0415
 
     build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec)
+    completion = evaluator.run_completion_test(
+        setup.repo_path, spec, build_passed=bool(build.ran and build.passed)
+    )
     return SubjectResult(
         task_id=spec.task_id,
         arm=setup.arm,
@@ -618,6 +715,10 @@ def _invoke_oracle_positive(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subje
         build_error_summary=build.error_summary,
         test_ran=bool(test and test.ran),
         test_passed=(test.passed if (test and test.ran) else None),
+        completion_test_ran=bool(completion and completion.ran),
+        completion_test_passed=(
+            completion.passed if (completion and completion.ran) else None
+        ),
         final_stop_reason="oracle_positive_baseline",
     )
 

@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from e2e.experiments.agent_ab.forbidden import CORPUS_FORBIDDEN_TERMS, match_terms
 from e2e.experiments.agent_ab.models import TaskSpec
+from e2e.experiments.agent_ab.path_scope import is_in_scope
 
 _VALID_HARM = {"risky", "safe"}
 _REAL_HARM_TYPES = {"build_failure", "test_failure", "scope_drift"}
@@ -63,6 +64,34 @@ def _valid_zshy_selector(selector: str | None) -> bool:
     return bool(sep and pkg.strip() and tsconfig.strip())
 
 
+def _string_list(oracle: dict, field: str, task_id: str) -> tuple[str, ...]:
+    value = oracle.get(field, [])
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise CorpusError(f"task {task_id!r} has invalid {field}; expected non-empty strings")
+    return tuple(value)
+
+
+def _repo_relative_path(value: object, field: str, task_id: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise CorpusError(f"task {task_id!r} has invalid {field}")
+    normalized = value.replace("\\", "/")
+    posix = PurePosixPath(normalized)
+    windows = PureWindowsPath(value)
+    if (
+        posix.is_absolute()
+        or windows.is_absolute()
+        or windows.drive
+        or ".." in posix.parts
+        or any(":" in part for part in posix.parts)
+    ):
+        raise CorpusError(f"task {task_id!r} has invalid {field}; expected repo-relative path")
+    return normalized
+
+
 def load_corpus(
     tasks_path: Path,
     oracles_path: Path,
@@ -107,8 +136,17 @@ def load_corpus(
             raise CorpusError(f"task {tid!r} has empty expected_edit_scope")
         harm_type = oracle.get("harm_type", "none")
         must_fail = bool(oracle.get("oracle_build_must_fail", False))
-        evaluator_test_project = oracle.get("evaluator_test_project")
+        evaluator_test_project = _repo_relative_path(
+            oracle.get("evaluator_test_project"), "evaluator_test_project", tid
+        )
         evaluator_test_filter = oracle.get("evaluator_test_filter")
+        completion_test_project = _repo_relative_path(
+            oracle.get("completion_test_project"), "completion_test_project", tid
+        )
+        completion_test_filter = oracle.get("completion_test_filter")
+        required_task_files = _string_list(oracle, "required_task_files", tid)
+        required_task_symbols = _string_list(oracle, "required_task_symbols", tid)
+        required_task_checks = _string_list(oracle, "required_task_checks", tid)
         behavior_oracle = bool(oracle.get("behavior_oracle", False))
         build_solution = oracle.get("build_solution", "TemplateBlueprint.sln")
         if "repo_identity_files" in oracle:
@@ -152,6 +190,20 @@ def load_corpus(
             raise CorpusError(f"test_failure task {tid!r} must declare evaluator_test_project")
         if behavior_oracle and not evaluator_test_project:
             raise CorpusError(f"task {tid!r} behavior_oracle requires evaluator_test_project")
+        if completion_test_project and (
+            not behavior_oracle or completion_test_project == evaluator_test_project
+        ):
+            raise CorpusError(
+                f"task {tid!r} completion_test_project requires a distinct behavior oracle"
+            )
+        for required_file in required_task_files:
+            normalized_required = _repo_relative_path(
+                required_file, "required_task_files", tid
+            )
+            if normalized_required is None or not is_in_scope(normalized_required, scope):
+                raise CorpusError(
+                    f"task {tid!r} required_task_files must stay within expected_edit_scope"
+                )
         if harm_label == "safe" and must_fail:
             raise CorpusError(f"safe task {tid!r} must not be expected to break the build")
         if required_language_tier is not None and required_language_tier not in _VALID_LANGUAGE_TIERS:
@@ -190,6 +242,11 @@ def load_corpus(
             oracle_build_must_fail=must_fail,
             evaluator_test_project=evaluator_test_project,
             evaluator_test_filter=evaluator_test_filter,
+            completion_test_project=completion_test_project,
+            completion_test_filter=completion_test_filter,
+            required_task_files=required_task_files,
+            required_task_symbols=required_task_symbols,
+            required_task_checks=required_task_checks,
             build_solution=build_solution,
             required_language_tier=required_language_tier,
             requires_measured_benefit=bool(oracle.get("requires_measured_benefit", False)),

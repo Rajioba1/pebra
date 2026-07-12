@@ -163,6 +163,8 @@ def advise(
     payload: dict[str, Any], *, repo_root: Path | str, db: Path | str, revise_safer_attempt: int = 0,
     max_revise_safer_attempts: int = 1, p_success: float = 0.75,
     immediate_benefit: float = 0.5, review_cost: float = 0.1,
+    trusted_task_obligations: dict[str, Any] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Run PEBRA on the proposed change and return the shared, arm-neutral advisory shape."""
     request = _build_request(
@@ -175,22 +177,33 @@ def advise(
         json.dump(request, fh)
         req_path = fh.name
     trusted_path = None
+    obligations_path = None
     if isinstance(trusted_verification, dict):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
             json.dump(trusted_verification, fh)
             trusted_path = fh.name
+    if isinstance(trusted_task_obligations, dict):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+            json.dump(trusted_task_obligations, fh)
+            obligations_path = fh.name
     try:
-        result = cli_harness.assess(
-            req_path,
-            repo_root=repo_root,
-            db=db,
-            trusted_candidate_verification_path=trusted_path,
-            extra_env={"PEBRA_CODEGRAPH_SEMANTIC_DIFF": "1"},
-        )
+        assess_kwargs = {
+            "repo_root": repo_root,
+            "db": db,
+            "trusted_candidate_verification_path": trusted_path,
+            "extra_env": {"PEBRA_CODEGRAPH_SEMANTIC_DIFF": "1"},
+        }
+        if timeout_seconds is not None:
+            assess_kwargs["timeout"] = max(1, int(timeout_seconds))
+        if obligations_path is not None:
+            assess_kwargs["trusted_task_obligations_path"] = obligations_path
+        result = cli_harness.assess(req_path, **assess_kwargs)
     finally:
         Path(req_path).unlink(missing_ok=True)
         if trusted_path is not None:
             Path(trusted_path).unlink(missing_ok=True)
+        if obligations_path is not None:
+            Path(obligations_path).unlink(missing_ok=True)
     assessment_id = result.get("assessment_id")
     return AdvisoryOutput(
         _shape_output(result),

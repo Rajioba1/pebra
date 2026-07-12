@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import stat
 from types import SimpleNamespace
@@ -93,6 +94,90 @@ def test_baseline_behavior_oracle_must_fail_before_it_can_grade_fix():
     )
     assert "unexpectedly passes" in preflight._baseline_behavior_failure(spec, _build(passed=True))
     assert preflight._baseline_behavior_failure(spec, _build(passed=False)) is None
+
+
+def test_split_behavior_oracle_requires_pristine_safe_but_incomplete():
+    spec = dataclasses.replace(
+        _JS_TRAP,
+        evaluator_test_project="tests/safety.test.ts",
+        completion_test_project="tests/completion.test.ts",
+        behavior_oracle=True,
+    )
+
+    assert preflight._baseline_behavior_failure(
+        spec, _build(passed=True), _build(passed=False)
+    ) is None
+    assert "safety" in preflight._baseline_behavior_failure(
+        spec, _build(passed=False), _build(passed=False)
+    )
+    assert "already complete" in preflight._baseline_behavior_failure(
+        spec, _build(passed=True), _build(passed=True)
+    )
+
+
+def test_completion_oracle_requires_harmful_and_safe_routes_to_complete():
+    spec = dataclasses.replace(_JS_TRAP, completion_test_project="tests/completion.test.ts")
+
+    assert preflight._completion_test_failure(spec, _build(passed=True), "oracle") is None
+    assert "should pass" in preflight._completion_test_failure(
+        spec, _build(passed=False), "oracle"
+    )
+
+
+def test_live_revise_calibration_threads_same_host_obligations(monkeypatch, tmp_path):
+    from e2e.utils import cli_harness
+
+    spec = dataclasses.replace(
+        _JS_TRAP,
+        required_task_files=("src/a.ts",),
+        required_task_checks=("candidate_build",),
+    )
+    seen = {}
+
+    def _assess(_request_path, **kwargs):
+        path = kwargs["trusted_task_obligations_path"]
+        seen.update(json.loads(path.read_text(encoding="utf-8")))
+        return {"recommended_decision": "revise_safer"}
+
+    monkeypatch.setattr(cli_harness, "assess", _assess)
+
+    preflight._live_revise_safer_assess(
+        tmp_path,
+        spec,
+        "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n",
+        tmp_path / "p.db",
+    )
+
+    assert seen == {
+        "required_files": ["src/a.ts"],
+        "required_symbols": [],
+        "required_checks": ["candidate_build"],
+    }
+
+
+def test_preflight_safety_run_excludes_hidden_completion_test(monkeypatch, tmp_path):
+    spec = dataclasses.replace(
+        _JS_TRAP,
+        evaluator_test_project="tests/safety.test.ts",
+        completion_test_project="tests/completion.test.ts",
+    )
+
+    def _inject(repo_path, _spec):
+        for rel in (spec.evaluator_test_project, spec.completion_test_project):
+            path = repo_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("test", encoding="utf-8")
+        return repo_path / spec.evaluator_test_project
+
+    def _test(repo_path, *, project):
+        assert not (repo_path / spec.completion_test_project).exists()
+        return _build(passed=True)
+
+    monkeypatch.setattr(preflight.evaluator, "inject_task_evaluator", _inject)
+
+    result = preflight._run_spec_test(spec, tmp_path, _test)
+
+    assert result.passed is True
 
 
 def test_trap_that_builds_is_flagged():
@@ -811,6 +896,7 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
         return dest
 
     calls: list[dict[str, object]] = []
+    gate_calls: list[tuple[str, str]] = []
 
     def _assess(
         _repo_path,
@@ -839,6 +925,14 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
 
     monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _clone)
 
+    def _gate(event, *, db, consult_only):
+        assert consult_only is True
+        command = (event.get("tool_input") or {}).get("command")
+        gate_calls.append((db.name, event["tool_name"]))
+        if db.name == "reference_revise_calibration.db" and command == "reference route":
+            return {"permission": "allow", "tier": "consulted"}
+        return {"permission": "deny", "tier": "candidate_mismatch"}
+
     preflight.run_revise_safer_calibration(
         [_JS_TRAP],
         None,
@@ -850,6 +944,7 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
             "required_checks": ["candidate_build"],
             "verified_patch_hash": "abc",
         },
+        gate_check_fn=_gate,
         setup_graph_fn=lambda _repo: None,
         patch_dir=patch_dir,
         correct_patch_dir=correct_dir,
@@ -859,6 +954,11 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
     assert calls[1]["attempt"] == 1
     assert calls[1]["cap"] == 2
     assert calls[1]["verification"] is not None
+    assert gate_calls == [
+        ("reference_revise_calibration.db", "apply_patch"),
+        ("reference_revise_calibration.db", "apply_patch"),
+        ("bad_revise_calibration.db", "Write"),
+    ]
 
 
 def test_revise_safer_calibration_rejects_js_trap_that_passes_candidate_verification(

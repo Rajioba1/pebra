@@ -39,6 +39,7 @@ from pebra.core.models import (
     CandidateVerificationEvidence,
     FileFanInRollup,
     RevisionCompletenessEvidence,
+    TaskObligationsEvidence,
 )
 from pebra.ports.blast_radius_port import BlastRadiusProvider
 from pebra.ports.candidate_binding_port import CandidateBindingProvider
@@ -202,6 +203,7 @@ def _build_input(
     materialized_diff_provider: MaterializedGraphDiffProvider | None = None,
     semantic_diff_enabled: bool = False,
     trusted_candidate_verification: CandidateVerificationEvidence | None = None,
+    trusted_task_obligations: TaskObligationsEvidence | None = None,
     revision_origin: dict[str, Any] | None = None,
     is_revision: bool = False,
 ) -> AssessmentInput:
@@ -430,6 +432,7 @@ def _build_input(
         variance_breakdown=evidence.variance_breakdown,
         benefit_delta_evidence=evidence.benefit_delta_evidence,
         candidate_verification=trusted_candidate_verification or evidence.candidate_verification,
+        task_obligations=trusted_task_obligations or TaskObligationsEvidence(),
         revision_completeness_evidence=_build_revision_completeness(
             action,
             symbol_diff,
@@ -468,6 +471,7 @@ def _score_action(
         materialized_diff_provider=ports.get("materialized_diff_provider"),
         semantic_diff_enabled=bool(ports.get("semantic_diff_enabled", False)),
         trusted_candidate_verification=ports.get("trusted_candidate_verification"),
+        trusted_task_obligations=ports.get("trusted_task_obligations"),
         revision_origin=ports.get("revision_origin"),
         is_revision=bool(ports.get("is_revision", False)),
     )
@@ -638,6 +642,82 @@ def _trusted_verification_for_action(
     return None
 
 
+def _trusted_task_obligations_for_action(
+    raw: dict[str, Any] | None, action: CandidateAction
+) -> TaskObligationsEvidence:
+    """Parse host-only task obligations; request evidence never reaches this function."""
+    if not isinstance(raw, dict):
+        return TaskObligationsEvidence()
+    if not raw:
+        raise ValueError("trusted task obligations must not be empty")
+    allowed = {"required_files", "required_symbols", "required_checks"}
+    if action.id in raw:
+        selected = raw[action.id]
+    elif set(raw).issubset(allowed):
+        selected = raw
+    elif all(isinstance(value, dict) for value in raw.values()):
+        return TaskObligationsEvidence()
+    else:
+        unknown = sorted(set(raw) - allowed)
+        raise ValueError(f"unknown trusted task obligations fields: {unknown}")
+    if not isinstance(selected, dict):
+        raise ValueError(f"trusted task obligations for action {action.id!r} must be an object")
+    if not selected:
+        raise ValueError(
+            f"trusted task obligations for action {action.id!r} must not be empty"
+        )
+    unknown = sorted(set(selected) - allowed)
+    if unknown:
+        raise ValueError(f"unknown trusted task obligations fields: {unknown}")
+
+    def _strings(key: str) -> tuple[str, ...]:
+        if key not in selected:
+            return ()
+        values = selected[key]
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value for value in values
+        ):
+            raise ValueError(f"trusted task obligations {key!r} must be a list of non-empty strings")
+        return tuple(dict.fromkeys(values))
+
+    evidence = TaskObligationsEvidence(
+        required_files=_strings("required_files"),
+        required_symbols=_strings("required_symbols"),
+        required_checks=_strings("required_checks"),
+    )
+    if not (
+        evidence.required_files
+        or evidence.required_symbols
+        or evidence.required_checks
+    ):
+        raise ValueError("trusted task obligations must contain at least one requirement")
+    return evidence
+
+
+def _validate_trusted_task_obligations(
+    raw: dict[str, Any] | None, actions: list[CandidateAction]
+) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("trusted task obligations must be a non-empty object")
+    fields = {"required_files", "required_symbols", "required_checks"}
+    if set(raw).issubset(fields):
+        _trusted_task_obligations_for_action(raw, actions[0])
+        return
+    action_by_id = {action.id: action for action in actions}
+    unknown = sorted(set(raw) - set(action_by_id))
+    if unknown:
+        raise ValueError(f"trusted task obligations reference unknown action ids: {unknown}")
+    missing = sorted(set(action_by_id) - set(raw))
+    if missing:
+        raise ValueError(f"trusted task obligations missing action ids: {missing}")
+    for action_id, selected in raw.items():
+        _trusted_task_obligations_for_action(
+            {action_id: selected}, action_by_id[action_id]
+        )
+
+
 def assess(
     request: AssessmentRequest,
     *,
@@ -659,9 +739,13 @@ def assess(
     materialized_diff_provider: MaterializedGraphDiffProvider | None = None,
     semantic_diff_enabled: bool = False,
     trusted_candidate_verification: dict[str, Any] | None = None,
+    trusted_task_obligations: dict[str, Any] | None = None,
     candidate_binding_provider: CandidateBindingProvider | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
+    _validate_trusted_task_obligations(
+        trusted_task_obligations, request.candidate_actions
+    )
     repo = repository_registry.resolve(start_path)
     active_snapshot_bundle = (
         snapshot_read_port.load_active_snapshot(repo.repo_id) if snapshot_read_port is not None else None
@@ -728,6 +812,9 @@ def assess(
                 trusted_candidate_verification=_trusted_verification_for_action(
                     trusted_candidate_verification, action
                 ),
+                trusted_task_obligations=_trusted_task_obligations_for_action(
+                    trusted_task_obligations, action
+                ),
                 revision_origin=revision_origin,
                 is_revision=revise_attempt > 0,
             )
@@ -736,6 +823,9 @@ def assess(
     recommended = _recommended(scored)
     recommended_verification = _trusted_verification_for_action(
         trusted_candidate_verification, recommended.action
+    )
+    recommended_obligations = _trusted_task_obligations_for_action(
+        trusted_task_obligations, recommended.action
     )
     assessment_id = store.persist_assessment(
         recommended.result,
@@ -748,6 +838,11 @@ def assess(
              if recommended_verification is not None
              else "not_applicable"
          ),
+         "task_obligations": {
+             "required_files": list(recommended_obligations.required_files),
+             "required_symbols": list(recommended_obligations.required_symbols),
+             "required_checks": list(recommended_obligations.required_checks),
+         },
          "revision_envelope": _revision_envelope_payload(
              recommended.action, recommended.result
          )},

@@ -76,6 +76,11 @@ class TaskSpec:
     oracle_build_must_fail: bool        # hidden: the intended change should break `dotnet build`
     evaluator_test_project: str | None = None  # hidden: existing repo test project to run post-edit
     evaluator_test_filter: str | None = None   # hidden: optional dotnet test filter for that project
+    completion_test_project: str | None = None  # hidden: acceptance check, never the harm oracle
+    completion_test_filter: str | None = None
+    required_task_files: tuple[str, ...] = ()
+    required_task_symbols: tuple[str, ...] = ()
+    required_task_checks: tuple[str, ...] = ()
     build_solution: str = "TemplateBlueprint.sln"  # hidden: solution passed to dotnet build/test tools
     required_language_tier: str | None = None  # hidden: "risk_only" | "partial" | "full" preflight floor
     requires_measured_benefit: bool = False  # hidden: fail preflight unless RCA measured this patch
@@ -122,6 +127,8 @@ class SubjectResult:
     build_error_summary: str = ""
     test_ran: bool = False
     test_passed: bool | None = None
+    completion_test_ran: bool = False
+    completion_test_passed: bool | None = None
     duration_seconds: float = 0.0
     timed_out: bool = False
     error: str | None = None

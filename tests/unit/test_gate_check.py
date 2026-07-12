@@ -197,6 +197,134 @@ def test_decide_pass_when_not_impactful(tmp_path, monkeypatch):
     assert d.permission == "allow" and d.tier == "pass"
 
 
+def test_pending_restriction_prevents_low_impact_scope_bypass(tmp_path, monkeypatch):
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: False)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    _seed(
+        db,
+        gca._repo_id(str(tmp_path)),
+        "HEAD1",
+        ["src/risky.py"],
+        decision="revise_safer",
+    )
+
+    decision = gca.decide(_edit_event(tmp_path, "src/debug.py"))
+
+    assert decision.permission == "deny"
+    assert decision.tier == "must_consult"
+
+
+def test_pending_restriction_clears_when_head_changes(tmp_path, monkeypatch):
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: False)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD2")
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    _seed(
+        db,
+        gca._repo_id(str(tmp_path)),
+        "HEAD1",
+        ["src/risky.py"],
+        decision="revise_safer",
+    )
+
+    decision = gca.decide(_edit_event(tmp_path, "src/debug.py"))
+
+    assert decision.permission == "allow"
+    assert decision.tier == "pass"
+
+
+def test_pending_restriction_is_not_hidden_by_assessment_query_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: False)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    repo_id = gca._repo_id(str(tmp_path))
+    _seed(db, repo_id, "HEAD1", ["src/risky.py"], decision="revise_safer")
+    con = sqlite3.connect(db)
+    content = json.dumps({"assessed_commit": "HEAD1", "model_guidance_packet": {}})
+    con.executemany(
+        "INSERT INTO assessments (repo_id, decision, content_json) VALUES (?,?,?)",
+        [(repo_id, "proceed", content) for _ in range(gca._QUERY_LIMIT + 1)],
+    )
+    con.commit()
+    con.close()
+
+    decision = gca.decide(_edit_event(tmp_path, "src/debug.py"))
+
+    assert decision.permission == "deny"
+    assert decision.tier == "must_consult"
+
+
+def test_pre_restriction_assessment_cannot_authorize_later_low_impact_edit(tmp_path, monkeypatch):
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: False)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
+    target = tmp_path / "src" / "debug.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    event = _edit_event(tmp_path, "src/debug.py")
+    candidate = candidate_binding.binding_for_event(event, tmp_path)
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    repo_id = gca._repo_id(str(tmp_path))
+    _seed(
+        db,
+        repo_id,
+        "HEAD1",
+        ["src/debug.py"],
+        decision="proceed",
+        candidate=candidate,
+    )
+    con = sqlite3.connect(db)
+    content = json.dumps({
+        "assessed_commit": "HEAD1",
+        "model_guidance_packet": {"binding": {"safe_scope": {"files": ["src/risky.py"]}}},
+    })
+    con.execute(
+        "INSERT INTO assessments (repo_id, decision, content_json) VALUES (?,?,?)",
+        (repo_id, "revise_safer", content),
+    )
+    con.commit()
+    con.close()
+
+    decision = gca.decide(event)
+
+    assert decision.permission == "deny"
+    assert decision.tier == "must_consult"
+
+
+def test_newest_restrictive_assessment_is_itself_matched(tmp_path, monkeypatch):
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: False)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
+    target = tmp_path / "src" / "debug.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    event = _edit_event(tmp_path, "src/debug.py")
+    candidate = candidate_binding.binding_for_event(event, tmp_path)
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    repo_id = gca._repo_id(str(tmp_path))
+    _seed(db, repo_id, "HEAD1", ["src/debug.py"], decision="proceed", candidate=candidate)
+    con = sqlite3.connect(db)
+    content = json.dumps({
+        "assessed_commit": "HEAD1",
+        "model_guidance_packet": {
+            "binding": {"safe_scope": {"files": ["src/debug.py"]}, "candidate": candidate}
+        },
+    })
+    con.execute(
+        "INSERT INTO assessments (repo_id, decision, content_json) VALUES (?,?,?)",
+        (repo_id, "ask_human", content),
+    )
+    con.commit()
+    con.close()
+
+    decision = gca.decide(event)
+
+    assert decision.permission == "ask"
+
+
 def test_decide_fail_open_when_graph_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: None)
     d = gca.decide(_edit_event(tmp_path))

@@ -102,6 +102,64 @@ def test_late_turn_write_is_not_dispatched_after_wall_clock_expires(tmp_path, mo
     assert (tmp_path / "a.ts").read_text(encoding="utf-8") == "export const existing = 1;\n"
 
 
+def test_tool_batch_stops_before_dispatching_next_call_after_wall_clock(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    ticks = iter([0.0, 0.0, 0.0, 1.0, 2.0, 601.0, 601.0])
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(ticks, 601.0))
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        agent_loop,
+        "_dispatch",
+        lambda name, args, setup, **kwargs: dispatched.append(name) or {"ok": True},
+    )
+    turn = ModelTurn(
+        tool_calls=[
+            {"id": "1", "name": "list_dir", "input": {}},
+            {"id": "2", "name": "advisory_check", "input": {}},
+        ],
+        stop_reason="tool_use",
+    )
+
+    result = agent_loop.run(
+        _setup(tmp_path),
+        _SPEC,
+        0,
+        client=ScriptedClient([turn]),
+        config=agent_loop.RunConfig(model="m", max_wall_seconds_per_run=600, tools=_CFG.tools),
+    )
+
+    assert dispatched == ["list_dir"]
+    assert result.timed_out is True
+    assert result.limit_reason == "wall_clock"
+
+
+def test_advisory_dispatch_receives_remaining_wall_budget(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    ticks = iter([0.0, 0.0, 100.0, 100.0, 101.0, 101.0, 101.0, 101.0])
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(ticks, 101.0))
+    remaining: list[float | None] = []
+    monkeypatch.setattr(
+        agent_loop,
+        "_dispatch",
+        lambda name, args, setup, **kwargs: remaining.append(kwargs.get("timeout_seconds"))
+        or {"ok": True},
+    )
+    turn = ModelTurn(
+        tool_calls=[{"id": "1", "name": "advisory_check", "input": {}}],
+        stop_reason="tool_use",
+    )
+
+    agent_loop.run(
+        _setup(tmp_path),
+        _SPEC,
+        0,
+        client=ScriptedClient([turn, ModelTurn(stop_reason="end_turn")]),
+        config=agent_loop.RunConfig(model="m", max_wall_seconds_per_run=600, tools=_CFG.tools),
+    )
+
+    assert remaining == [pytest.approx(499.0)]
+
+
 def test_prompt_leak_aborts_before_first_send(tmp_path, monkeypatch):
     _no_git(monkeypatch)
     with pytest.raises(agent_loop.BlindingViolationError):

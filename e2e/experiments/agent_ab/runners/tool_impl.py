@@ -11,6 +11,7 @@ No pebra import.
 
 from __future__ import annotations
 
+import inspect
 import re
 import subprocess
 import tempfile
@@ -294,10 +295,12 @@ def search_grep(pattern: str, repo_root: Path, *, path: str | None = None,
 
 def run_build(
     repo_root: Path, *, backend: Any | None = None, spec: Any | None = None,
-    sln: str = "TemplateBlueprint.sln",
+    sln: str = "TemplateBlueprint.sln", timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     backend = backend or CSharpBackend()
     spec = spec or type("_Spec", (), {"build_solution": sln})()
+    if timeout_seconds is not None:
+        spec = _TimeoutSpec(spec, timeout_seconds)
     r = backend.run_build(repo_root, spec)
     return {"available": r.available, "passed": r.passed,
             "error_summary": model_safe_text(r.error_summary)}
@@ -305,16 +308,32 @@ def run_build(
 
 def run_tests(
     repo_root: Path, *, backend: Any | None = None, spec: Any | None = None,
-    sln: str = "TemplateBlueprint.sln",
+    sln: str = "TemplateBlueprint.sln", timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     backend = backend or CSharpBackend()
     spec = spec or type("_Spec", (), {"build_solution": sln})()
+    if timeout_seconds is not None:
+        spec = _TimeoutSpec(spec, timeout_seconds)
     r = backend.run_tests(repo_root, spec)
     return {"available": r.available, "passed": r.passed,
             "error_summary": model_safe_text(r.error_summary)}
 
 
-def advisory_check(payload: dict[str, Any], advisory_backend: Callable[..., dict[str, Any]]) -> dict[str, Any]:
+class _TimeoutSpec:
+    def __init__(self, wrapped: Any, timeout_seconds: float) -> None:
+        self._wrapped = wrapped
+        self.command_timeout = max(1, int(timeout_seconds))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
+
+
+def advisory_check(
+    payload: dict[str, Any],
+    advisory_backend: Callable[..., dict[str, Any]],
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     """Dispatch to the arm's backend (bound in run_pair) and coerce to the shared, arm-neutral shape."""
     missing = [k for k in advisory_contract.INPUT_SCHEMA["required"] if not payload.get(k)]
     if missing:
@@ -326,7 +345,17 @@ def advisory_check(payload: dict[str, Any], advisory_backend: Callable[..., dict
             "detail": {},
         })
     try:
-        raw = advisory_backend(payload)
+        parameters = inspect.signature(advisory_backend).parameters.values()
+        accepts_timeout = any(
+            parameter.name == "timeout_seconds"
+            or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        raw = (
+            advisory_backend(payload, timeout_seconds=timeout_seconds)
+            if accepts_timeout
+            else advisory_backend(payload)
+        )
     except Exception:
         return advisory_contract.normalize_output({
             "recommended_decision": None,

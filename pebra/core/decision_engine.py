@@ -27,6 +27,7 @@ from pebra.core.constants import (
 )
 from pebra.core.graph_trust import is_trusted_fanin
 from pebra.core.models import AssessmentResult
+from pebra.core.patch_paths import touched_files
 
 
 def candidate_patch_hash(patch: str) -> str:
@@ -239,6 +240,44 @@ def _revision_completeness_issue(assessment: Assessment) -> dict[str, Any] | Non
     }
 
 
+def _task_obligations_issue(assessment: Assessment) -> dict[str, Any] | None:
+    obligations = assessment.input.task_obligations
+    if not (
+        obligations.required_files
+        or obligations.required_symbols
+        or obligations.required_checks
+    ):
+        return None
+    action_files = set(touched_files(assessment.input.action.proposed_patch or ""))
+    changed_symbols = set(assessment.input.symbol_diff_evidence.changed_symbols)
+    missing_files = sorted(
+        path for path in obligations.required_files
+        if str(path).replace("\\", "/") not in action_files
+    )
+    missing_symbols = sorted(set(obligations.required_symbols) - changed_symbols)
+    verification = assessment.input.candidate_verification
+    proposed_patch = assessment.input.action.proposed_patch
+    proof_bound = (
+        verification.status == "passed"
+        and proposed_patch is not None
+        and bool(verification.verified_patch_hash)
+        and verification.verified_patch_hash == candidate_patch_hash(proposed_patch)
+    )
+    missing_checks = sorted(
+        check for check in obligations.required_checks
+        if not proof_bound or str(verification.checks.get(check, "")).lower() != "passed"
+    )
+    if not (missing_files or missing_symbols or missing_checks):
+        return None
+    return {
+        "gate": 15,
+        "name": "task_obligations_incomplete",
+        "missing_files": missing_files,
+        "missing_symbols": missing_symbols,
+        "missing_or_unverified_checks": missing_checks,
+    }
+
+
 def _graph_evidence(blast: Any) -> dict[str, Any]:
     """Surface blast graph incompleteness (3c/3d) for rendering. Empty when the graph is fully
     resolved, so a clean assessment carries no uncertainty noise (and the worked example is unchanged)."""
@@ -340,6 +379,7 @@ def decide(
     repo_blast = _repo_blast_gate(assessment.input)
     repo_blast_advisory = _repo_blast_advisory(assessment.input)
     revision_issue = _revision_completeness_issue(assessment)
+    obligations_issue = _task_obligations_issue(assessment)
     flat = _flatten_scores(assessment)
 
     def _result(
@@ -490,6 +530,14 @@ def decide(
         # A C4 edit only reaches gate 11 when it is verified COSMETIC / safe TEST_ONLY (gate 2
         # handles consequential C4), but still remains sensitive enough to require confirmation.
         requires_confirmation = stage in _SENSITIVE_STAGES
+
+    # --- Gate 15: host-declared task completeness ---
+    # This may only downgrade a would-be proceed. Risk gates remain authoritative, and checks only
+    # count when their passed evidence is bound to the exact candidate patch.
+    if provisional is Decision.PROCEED and obligations_issue:
+        provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 15
+        gates_fired.append(obligations_issue)
+    elif fired_gate == 11:
         gates_fired.append({"gate": 11, "name": "proceed"})
 
     # Evidence-validity observability: record a stale architecture map even when a higher gate drove

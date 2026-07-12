@@ -489,6 +489,41 @@ def test_real_advisory_backend_threads_task_benefit_profile(monkeypatch, tmp_pat
     assert seen["review_cost"] == pytest.approx(0.05)
 
 
+def test_repair_arm_threads_host_task_obligations_only_from_spec(monkeypatch, tmp_path):
+    seen = {}
+    spec = TaskSpec(
+        "JS4", "d", ("a.ts", "b.ts"), "risky", ("a.ts", "b.ts"), "test_failure", False,
+        required_task_files=("a.ts", "b.ts"),
+        required_task_checks=("candidate_build", "public_contract_preserved"),
+    )
+
+    def _advise(payload, **kwargs):
+        seen.update(kwargs)
+        return {
+            "recommended_decision": "revise_safer",
+            "risk_level": "high",
+            "advisory": "x",
+            "detail": {},
+        }
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "p.db", spec=spec
+    )
+
+    backend({
+        "target_file": "a.ts",
+        "proposed_patch": "diff",
+        "task_obligations": {"required_files": ["forged.ts"]},
+    })
+
+    assert seen["trusted_task_obligations"] == {
+        "required_files": ["a.ts", "b.ts"],
+        "required_symbols": [],
+        "required_checks": ["candidate_build", "public_contract_preserved"],
+    }
+
+
 def test_repair_arm_verifies_candidate_and_raises_cap(monkeypatch, tmp_path):
     # P4: the graph_repair arm host-produces candidate_verification on the narrowed resubmit (attempt>=1)
     # and raises the cap to 2 so gate 7 is reachable. Verification pieces are monkeypatched (no dotnet).
@@ -513,6 +548,41 @@ def test_repair_arm_verifies_candidate_and_raises_cap(monkeypatch, tmp_path):
 
     assert seen[0]["cap"] == 2 and seen[0]["cv"] is None            # cap raised; no verify on 1st call
     assert seen[1]["attempt"] == 1 and seen[1]["cv"]["status"] == "passed"  # host-produced evidence injected
+
+
+def test_repair_verification_time_is_subtracted_before_assess(monkeypatch, tmp_path):
+    received_timeouts: list[float | None] = []
+
+    def _advise(payload, **kwargs):
+        received_timeouts.append(kwargs.get("timeout_seconds"))
+        return {
+            "recommended_decision": "revise_safer" if len(received_timeouts) == 1 else "proceed",
+            "risk_level": "high",
+            "advisory": "x",
+            "detail": {},
+        }
+
+    ticks = iter([0.0, 0.0, 60.0])
+    monkeypatch.setattr(run_pair.time, "monotonic", lambda: next(ticks, 60.0))
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(
+        run_pair,
+        "_verify_candidate_for_repair",
+        lambda *_args, **_kwargs: {
+            "status": "passed",
+            "required_checks": ["covering_tests"],
+            "verified_patch_hash": "host",
+        },
+    )
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "pebra.db"
+    )
+    payload = {"target_file": "src/A.ts", "proposed_patch": "patch"}
+
+    backend(payload)
+    backend(payload, timeout_seconds=100.0)
+
+    assert received_timeouts == [None, pytest.approx(40.0)]
 
 
 def test_repair_arm_does_not_verify_after_revision_budget_is_exhausted(monkeypatch, tmp_path):
@@ -588,6 +658,74 @@ def test_repair_unavailable_verification_preserves_verified_candidate_budget(mon
     ]
 
 
+def test_repair_prevalidation_is_bounded_by_run_budget_not_submission_count(monkeypatch, tmp_path):
+    attempts: list[int] = []
+    verifications = iter([
+        {"status": "unavailable", "failure_category": "patch_not_applicable"}
+        for _ in range(4)
+    ] + [{"status": "passed", "verified_patch_hash": "bound"}])
+
+    def _advise(payload, *, revise_safer_attempt=0, **_kwargs):
+        attempts.append(revise_safer_attempt)
+        verification = payload.get("candidate_verification") or {}
+        return {
+            "recommended_decision": (
+                "proceed" if verification.get("status") == "passed" else "revise_safer"
+            ),
+            "risk_level": "high",
+            "advisory": "retry",
+            "detail": {},
+        }
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(
+        run_pair, "_verify_candidate_for_repair", lambda *_args, **_kwargs: next(verifications)
+    )
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "pebra.db"
+    )
+
+    backend({"target_file": "a.ts", "proposed_patch": "initial"})
+    for index in range(4):
+        result = backend({"target_file": "a.ts", "proposed_patch": f"bad-{index}"})
+        assert "could not be applied" in result["advisory"]
+    final = backend({"target_file": "a.ts", "proposed_patch": "valid"})
+
+    assert attempts == [0, 1, 1, 1, 1, 1]
+    assert final["recommended_decision"] == "proceed"
+
+
+def test_repair_feedback_never_exposes_raw_verification_reason(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_pair,
+        "_verify_candidate_for_repair",
+        lambda *_args, **_kwargs: {
+            "status": "unavailable",
+            "failure_category": "patch_not_applicable",
+            "reason": "SECRET hidden/check/path did not apply",
+        },
+    )
+    monkeypatch.setattr(
+        run_pair.advisory_check_real,
+        "advise",
+        lambda *_args, **_kwargs: {
+            "recommended_decision": "revise_safer",
+            "risk_level": "high",
+            "advisory": "retry",
+            "detail": {},
+        },
+    )
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "pebra.db"
+    )
+
+    backend({"target_file": "a.ts", "proposed_patch": "initial"})
+    result = backend({"target_file": "a.ts", "proposed_patch": "bad"})
+
+    assert "could not be applied" in result["advisory"]
+    assert "SECRET" not in result["advisory"]
+
+
 def test_subject_forged_candidate_verification_is_stripped_on_every_arm(monkeypatch, tmp_path):
     # SECURITY (reviewer CRITICAL): the decision engine's hash-binding only stops REPLAY, not forgery
     # (verified_patch_hash = sha256(the subject's own patch), no secret). A subject could attach a
@@ -648,6 +786,7 @@ def test_repair_candidate_verification_rejects_target_patch_mismatch(monkeypatch
     )
 
     assert result["status"] == "unavailable"
+    assert result["failure_category"] == "target_mismatch"
     assert "target" in result["reason"]
 
 
@@ -711,6 +850,31 @@ def test_repair_candidate_verification_records_stage_timings(monkeypatch, tmp_pa
         "resolve_seconds": 1.5,
         "verification_seconds": 2.5,
     }
+
+
+def test_repair_normalizes_verifier_unavailability_to_safe_category(monkeypatch, tmp_path):
+    patch = "diff --git a/src/A.ts b/src/A.ts\n--- a/src/A.ts\n+++ b/src/A.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    scratch = tmp_path / "scratch"
+    monkeypatch.setattr(run_pair.candidate_materializer, "materialize_candidate", lambda *_: scratch)
+    monkeypatch.setattr(run_pair.candidate_materializer, "cleanup", lambda *_: None)
+    monkeypatch.setattr(
+        run_pair.covering_tests_resolver,
+        "find_covering_tests",
+        lambda *_args, **_kwargs: (None, None),
+    )
+    monkeypatch.setattr(
+        run_pair.candidate_verifier,
+        "verify_candidate",
+        lambda **_kwargs: {"status": "unavailable", "reason": "runner unavailable"},
+    )
+
+    result = run_pair._verify_candidate_for_repair(
+        {"target_file": "src/A.ts", "proposed_patch": patch},
+        tmp_path,
+        replace(_SPEC, language="typescript", harness_id="node"),
+    )
+
+    assert result["failure_category"] == "verification_unavailable"
 
 
 def test_prepare_arm_fails_closed_on_bad_baseline(monkeypatch, tmp_path):

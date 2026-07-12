@@ -20,8 +20,9 @@ Hard invariants:
 - **Fail-open**: graph absent / git error / unreadable store / infrastructure parse error -> allow (+ a
   warning). A missing store means "not assessed" and denies an impactful edit; candidate mismatch or
   an unmaterializable host edit also denies and requires reassessment.
-- **Only graph-impactful targets are gated** (high per-symbol fan-in OR architecture anchor); trivial
-  local edits pass friction-free.
+- **Graph-impactful targets are gated by default** (high per-symbol fan-in OR architecture anchor).
+  After a restrictive assessment at the same HEAD, all edits must consult until the candidate is
+  applied and committed; this prevents switching to a low-impact file to bypass a pending restriction.
 
 Boundaries ("one rule"): ADAPTER — imports ``pebra.core``/``pebra.ports``/sibling adapters + stdlib only.
 """
@@ -151,24 +152,48 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
     else:
         impactful = impact_result
         impact_reason = None
-    if impactful is None:
-        detail = f": {impact_reason}" if impact_reason else ""
-        return GateDecision(
-            "allow", "fail_open",
-            warn=f"gate: graph unavailable{detail}; skipping consult check",
-        )
-    if not impactful:
-        return GateDecision("allow", "pass")
+    head: str | None = None
+    rows: list[dict[str, Any]] | None = None
+    db = db_path or str(Path(repo_root) / ".pebra" / "pebra.db")
+    if impactful is not True:
+        head = _head_sha(repo_root)
+        if head is None:
+            if impactful is None:
+                detail = f": {impact_reason}" if impact_reason else ""
+                return GateDecision(
+                    "allow", "fail_open",
+                    warn=f"gate: graph unavailable{detail}; skipping consult check",
+                )
+            return GateDecision("allow", "pass")
+        pending = _query_pending_restriction(db, _repo_id(repo_root), head)
+        if pending is None:
+            return GateDecision("allow", "fail_open", warn="gate: assessment store unavailable")
+        if not pending:
+            if impactful is None:
+                detail = f": {impact_reason}" if impact_reason else ""
+                return GateDecision(
+                    "allow", "fail_open",
+                    warn=f"gate: graph unavailable{detail}; skipping consult check",
+                )
+            return GateDecision("allow", "pass")
+        rows = _query_assessments(db, _repo_id(repo_root))
+        if rows is None:
+            return GateDecision("allow", "fail_open", warn="gate: assessment store unavailable")
 
-    head = _head_sha(repo_root)
+    head = head or _head_sha(repo_root)
     if head is None:
         return GateDecision("allow", "fail_open", warn="gate: git HEAD unavailable; skipping consult check")
 
-    db = db_path or str(Path(repo_root) / ".pebra" / "pebra.db")
-    rows = _query_assessments(db, _repo_id(repo_root))
+    rows = rows if rows is not None else _query_assessments(db, _repo_id(repo_root))
     if rows is None:
         return GateDecision("allow", "fail_open", warn="gate: assessment store unavailable")
-    matched = _matched_row(rows, targets, head, repo_root)
+    matched = _matched_row(
+        rows,
+        targets,
+        head,
+        repo_root,
+        newer_than_id=int(pending or 0) if impactful is not True else 0,
+    )
     if matched is None:
         return GateDecision("deny", "must_consult", reason=_deny_reason(targets, head))
     expected_candidate = _candidate_binding(matched)
@@ -322,21 +347,62 @@ def _query_assessments(db_path: str, repo_id: str) -> list[dict[str, Any]] | Non
     try:
         con.row_factory = sqlite3.Row
         cur = con.execute(
-            "SELECT decision, content_json FROM assessments WHERE repo_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT id, decision, content_json FROM assessments WHERE repo_id = ? ORDER BY id DESC LIMIT ?",
             (repo_id, _QUERY_LIMIT),
         )
-        return [{"decision": r["decision"], "content_json": r["content_json"]} for r in cur.fetchall()]
+        return [
+            {"id": r["id"], "decision": r["decision"], "content_json": r["content_json"]}
+            for r in cur.fetchall()
+        ]
     except sqlite3.Error:
         return None
     finally:
         con.close()
 
 
-def _matched_row(rows: list[dict[str, Any]], targets: list[str], head_sha: str,
-                 repo_root: str) -> dict[str, Any] | None:
+def _query_pending_restriction(db_path: str, repo_id: str, head_sha: str) -> int | None:
+    """Return newest restrictive assessment id, 0 when absent, or None when unreadable."""
+    if not Path(db_path).is_file():
+        return 0
+    try:
+        con = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    try:
+        decisions = tuple(sorted(_REVISE_DECISIONS | _REVIEW_DECISIONS))
+        placeholders = ",".join("?" for _ in decisions)
+        cur = con.execute(
+            f"SELECT id, content_json FROM assessments WHERE repo_id = ? "
+            f"AND decision IN ({placeholders}) ORDER BY id DESC",
+            (repo_id, *decisions),
+        )
+        for row in cur.fetchall():
+            try:
+                content = json.loads(row[1] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if content.get("assessed_commit") == head_sha:
+                return int(row[0])
+        return 0
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+
+
+def _matched_row(
+    rows: list[dict[str, Any]],
+    targets: list[str],
+    head_sha: str,
+    repo_root: str,
+    *,
+    newer_than_id: int = 0,
+) -> dict[str, Any] | None:
     """The first assessment row covering ALL targets (same assessed_commit AND every target path inside
     its path-filtered safe_scope.files), or None. The row carries ``decision`` for the verdict tier."""
     for row in rows:
+        if int(row.get("id") or 0) < newer_than_id:
+            continue
         # A corrupt/partial row must never crash a host edit — skip it and keep the gate fail-open.
         try:
             content = json.loads(row["content_json"] or "{}")

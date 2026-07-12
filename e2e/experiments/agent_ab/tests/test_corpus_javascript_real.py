@@ -64,17 +64,27 @@ def test_js1_zshy_oracle_patches_against_real_zod(tmp_path):
 @pytest.mark.skipif(not os.environ.get(_ZOD_ENV), reason=f"set {_ZOD_ENV} to a Zod checkout")
 def test_js4_public_helper_compatibility_routes_against_real_zod(tmp_path):
     source = Path(os.environ[_ZOD_ENV]).resolve()
-    hidden_rel = Path("packages/zod/src/v3/tests/public-helper-compat.test.ts")
-    hidden = _CORPUS / "evaluator_tests" / "JS4" / hidden_rel
+    safety_rel = Path("packages/zod/src/v3/tests/public-helper-compat.test.ts")
+    completion_rel = Path("packages/zod/src/v3/tests/public-helper-completion.test.ts")
+    safety = _CORPUS / "evaluator_tests" / "JS4" / safety_rel
+    completion = _CORPUS / "evaluator_tests" / "JS4" / completion_rel
+
+    def _inject_and_run(repo: Path, rel: Path, source_test: Path):
+        destination = repo / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_test, destination)
+        try:
+            return node_harness.run_tests(
+                repo, test_path=rel, timeout=1200, install_timeout=1200
+            )
+        finally:
+            destination.unlink(missing_ok=True)
 
     pristine = _copy_repo(source, tmp_path / "pristine")
-    pristine_dest = pristine / hidden_rel
-    pristine_dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(hidden, pristine_dest)
-    pristine_test = node_harness.run_tests(
-        pristine, test_path=hidden_rel, timeout=1200, install_timeout=1200
-    )
-    assert pristine_test.ran and not pristine_test.passed
+    pristine_safety = _inject_and_run(pristine, safety_rel, safety)
+    pristine_completion = _inject_and_run(pristine, completion_rel, completion)
+    assert pristine_safety.ran and pristine_safety.passed
+    assert pristine_completion.ran and not pristine_completion.passed
 
     harmful = _copy_repo(source, tmp_path / "harmful")
     _apply_patch(harmful, _CORPUS / "oracle_patches" / "JS4.patch")
@@ -82,13 +92,10 @@ def test_js4_public_helper_compatibility_routes_against_real_zod(tmp_path):
         harmful, profile="zshy", selector="zod:tsconfig.build.json", timeout=1200, install_timeout=1200
     )
     assert harmful_build.ran and harmful_build.passed, harmful_build.error_summary
-    harmful_dest = harmful / hidden_rel
-    harmful_dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(hidden, harmful_dest)
-    harmful_test = node_harness.run_tests(
-        harmful, test_path=hidden_rel, timeout=1200, install_timeout=1200
-    )
-    assert harmful_test.ran and not harmful_test.passed
+    harmful_safety = _inject_and_run(harmful, safety_rel, safety)
+    harmful_completion = _inject_and_run(harmful, completion_rel, completion)
+    assert harmful_safety.ran and not harmful_safety.passed
+    assert harmful_completion.ran and harmful_completion.passed
 
     safe = _copy_repo(source, tmp_path / "safe")
     _apply_patch(safe, _CORPUS / "correct_fix_patches" / "JS4.patch")
@@ -96,8 +103,7 @@ def test_js4_public_helper_compatibility_routes_against_real_zod(tmp_path):
         safe, profile="zshy", selector="zod:tsconfig.build.json", timeout=1200, install_timeout=1200
     )
     assert safe_build.ran and safe_build.passed, safe_build.error_summary
-    safe_dest = safe / hidden_rel
-    safe_dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(hidden, safe_dest)
-    safe_test = node_harness.run_tests(safe, test_path=hidden_rel, timeout=1200, install_timeout=1200)
-    assert safe_test.ran and safe_test.passed, safe_test.error_summary
+    safe_safety = _inject_and_run(safe, safety_rel, safety)
+    safe_completion = _inject_and_run(safe, completion_rel, completion)
+    assert safe_safety.ran and safe_safety.passed, safe_safety.error_summary
+    assert safe_completion.ran and safe_completion.passed, safe_completion.error_summary

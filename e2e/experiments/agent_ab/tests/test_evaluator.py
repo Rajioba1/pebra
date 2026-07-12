@@ -3,7 +3,10 @@ injected and the build passes; tests target the injected .csproj directly (no fa
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from e2e.experiments.agent_ab.models import TaskSpec
 from e2e.experiments.agent_ab.runners import evaluator
@@ -183,4 +186,126 @@ def test_typescript_hidden_test_is_injected_only_after_subject_run(tmp_path, mon
     assert build.passed is True and test is not None
     assert injected is True
     assert seen["project"] == repo / test_rel
-    assert (repo / test_rel).read_text(encoding="utf-8") == "test('hidden', () => {});"
+    assert not (repo / test_rel).exists()
+
+
+def test_hidden_test_injection_refuses_to_overwrite_repository_file(tmp_path):
+    repo = _repo(tmp_path)
+    test_rel = "tests/existing.test.ts"
+    destination = repo / test_rel
+    destination.parent.mkdir()
+    destination.write_text("repository test\n", encoding="utf-8")
+    evaluator_dir = tmp_path / "evaluator_tests"
+    source = evaluator_dir / "JS4" / test_rel
+    source.parent.mkdir(parents=True)
+    source.write_text("hidden test\n", encoding="utf-8")
+    spec = TaskSpec(
+        "JS4", "d", ("src/a.ts",), "risky", ("src/a.ts",), "test_failure", False,
+        evaluator_test_project=test_rel,
+        language="typescript",
+        harness_id="node",
+    )
+
+    with pytest.raises(RuntimeError, match="already exists"):
+        evaluator.inject_task_evaluator(repo, spec, evaluator_dir=evaluator_dir)
+
+    assert destination.read_text(encoding="utf-8") == "repository test\n"
+
+
+def test_run_evaluator_rejects_subject_created_hidden_test_path(tmp_path):
+    repo = _repo(tmp_path)
+    test_rel = "tests/safety.test.ts"
+    destination = repo / test_rel
+    destination.parent.mkdir()
+    destination.write_text("subject test\n", encoding="utf-8")
+    evaluator_dir = tmp_path / "evaluator_tests"
+    source = evaluator_dir / "JS4" / test_rel
+    source.parent.mkdir(parents=True)
+    source.write_text("hidden test\n", encoding="utf-8")
+    spec = TaskSpec(
+        "JS4", "d", ("src/a.ts",), "risky", ("src/a.ts",), "test_failure", False,
+        evaluator_test_project=test_rel,
+        language="typescript",
+        harness_id="node",
+    )
+
+    with pytest.raises(RuntimeError, match="already exists"):
+        evaluator.run_evaluator(repo, spec, evaluator_dir=evaluator_dir)
+
+    assert destination.read_text(encoding="utf-8") == "subject test\n"
+
+
+def test_completion_test_runs_separately_from_safety_test(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    safety_rel = "tests/safety.test.ts"
+    completion_rel = "tests/completion.test.ts"
+    (repo / "tests").mkdir()
+    (repo / safety_rel).write_text("test('safe', () => {});", encoding="utf-8")
+    (repo / completion_rel).write_text("test('complete', () => {});", encoding="utf-8")
+    spec = TaskSpec(
+        "JS4", "d", ("src/a.ts",), "risky", ("src/a.ts",), "test_failure", False,
+        evaluator_test_project=safety_rel,
+        completion_test_project=completion_rel,
+        language="typescript",
+    )
+    seen: list[Path] = []
+
+    class FakeBackend:
+        def run_build(self, repo_path, spec_arg):
+            return _b(True)
+
+        def run_tests(self, repo_path, spec_arg, *, project=None, test_filter=None):
+            seen.append(project)
+            return _b(project == repo / safety_rel)
+
+    monkeypatch.setattr(evaluator.backends, "backend_for_spec", lambda spec_arg: FakeBackend())
+
+    build, safety, _ = evaluator.run_evaluator(repo, spec, evaluator_dir=tmp_path / "evtests")
+    completion = evaluator.run_completion_test(repo, spec, build_passed=build.passed)
+
+    assert safety.passed is True
+    assert completion.ran is True and completion.passed is False
+    assert seen == [repo / safety_rel, repo / completion_rel]
+
+
+def test_hidden_completion_test_is_not_present_during_safety_run(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    safety_rel = "tests/safety.test.ts"
+    completion_rel = "tests/completion.test.ts"
+    evaluator_dir = tmp_path / "evtests"
+    hidden_root = evaluator_dir / "JS4"
+    (hidden_root / "tests").mkdir(parents=True)
+    (hidden_root / safety_rel).write_text("test('safe', () => {});", encoding="utf-8")
+    (hidden_root / completion_rel).write_text("test('complete', () => {});", encoding="utf-8")
+    spec = TaskSpec(
+        "JS4", "d", ("src/a.ts",), "risky", ("src/a.ts",), "test_failure", False,
+        evaluator_test_project=safety_rel,
+        completion_test_project=completion_rel,
+        language="typescript",
+    )
+    completion_visibility: list[bool] = []
+
+    class FakeBackend:
+        def run_build(self, repo_path, spec_arg):
+            return _b(True)
+
+        def run_tests(self, repo_path, spec_arg, *, project=None, test_filter=None):
+            completion_visibility.append((repo_path / completion_rel).exists())
+            return _b(True)
+
+    monkeypatch.setattr(evaluator.backends, "backend_for_spec", lambda spec_arg: FakeBackend())
+
+    build, safety, _ = evaluator.run_evaluator(
+        repo, spec, evaluator_dir=evaluator_dir
+    )
+    completion = evaluator.run_completion_test(
+        repo,
+        spec,
+        build_passed=build.passed,
+        evaluator_dir=evaluator_dir,
+    )
+
+    assert safety.passed and completion.passed
+    assert completion_visibility == [False, True]
+    assert not (repo / safety_rel).exists()
+    assert not (repo / completion_rel).exists()

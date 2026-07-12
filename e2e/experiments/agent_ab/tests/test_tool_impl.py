@@ -301,6 +301,24 @@ def test_build_and_test_summaries_are_safe_for_model_when_paths_contain_repo_nam
     assert blinding.scan_text(tests["error_summary"]) == (False, ())
 
 
+def test_build_and_test_receive_remaining_command_timeout(tmp_path):
+    seen: list[int] = []
+
+    class FakeBackend:
+        def run_build(self, repo_root, spec):
+            seen.append(spec.command_timeout)
+            return SimpleNamespace(available=True, passed=True, error_summary="")
+
+        def run_tests(self, repo_root, spec):
+            seen.append(spec.command_timeout)
+            return SimpleNamespace(available=True, passed=True, error_summary="")
+
+    tool_impl.run_build(tmp_path, backend=FakeBackend(), timeout_seconds=7.9)
+    tool_impl.run_tests(tmp_path, backend=FakeBackend(), timeout_seconds=6.2)
+
+    assert seen == [7, 6]
+
+
 def test_search_grep_finds_match(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "x.cs").write_text("line one\nfind ME here\n")

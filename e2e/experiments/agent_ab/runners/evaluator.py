@@ -44,9 +44,45 @@ def inject_task_evaluator(
     source_project = src_root / task.evaluator_test_project
     if not source_project.is_file():
         return None
+    collisions = [
+        source.relative_to(src_root)
+        for source in src_root.rglob("*")
+        if source.is_file() and (repo_path / source.relative_to(src_root)).exists()
+    ]
+    if collisions:
+        raise RuntimeError(
+            f"hidden evaluator destination already exists: {collisions[0].as_posix()}"
+        )
     shutil.copytree(src_root, repo_path, dirs_exist_ok=True)
     project = repo_path / task.evaluator_test_project
     return project if project.is_file() else None
+
+
+def _hidden_task_evaluator_source(
+    task: TaskSpec, evaluator_dir: Path | None = None
+) -> Path | None:
+    if not task.evaluator_test_project:
+        return None
+    source = _task_evaluator_dir(task, evaluator_dir) / task.task_id / task.evaluator_test_project
+    return source if source.is_file() else None
+
+
+def remove_task_evaluator(
+    repo_path: Path, task: TaskSpec, *, evaluator_dir: Path | None = None
+) -> None:
+    src_root = _task_evaluator_dir(task, evaluator_dir) / task.task_id
+    if not src_root.is_dir():
+        return
+    for source in sorted(src_root.rglob("*"), reverse=True):
+        rel = source.relative_to(src_root)
+        destination = repo_path / rel
+        if source.is_file():
+            destination.unlink(missing_ok=True)
+        elif destination.is_dir():
+            try:
+                destination.rmdir()
+            except OSError:
+                pass
 
 
 def inject_evaluator_tests(
@@ -103,7 +139,15 @@ def run_evaluator(
     backend = backends.backend_for_spec(task) if isinstance(task, TaskSpec) else backends.get_backend("csharp")
     project, test_filter = _existing_test_project(repo_path, task)
     injected = False
-    if project is None and isinstance(task, TaskSpec):
+    hidden_source = (
+        _hidden_task_evaluator_source(task, evaluator_dir)
+        if isinstance(task, TaskSpec)
+        else None
+    )
+    if hidden_source is not None and isinstance(task, TaskSpec):
+        project = inject_task_evaluator(repo_path, task, evaluator_dir=evaluator_dir)
+        injected = project is not None
+    elif project is None and isinstance(task, TaskSpec):
         project = inject_task_evaluator(repo_path, task, evaluator_dir=evaluator_dir)
         injected = project is not None
         if project is None and task.language == "csharp":
@@ -112,13 +156,71 @@ def run_evaluator(
     elif project is None:
         project = inject_evaluator_tests(repo_path, _task_id(task), evaluator_dir=evaluator_dir)
         injected = project is not None
-    build = _run_build(repo_path, task, build_fn)
-    if project is not None and build.ran and build.passed:
-        if test_fn is not None:
-            test = (test_fn(repo_path, project=project, test_filter=test_filter)
-                    if test_filter else test_fn(repo_path, project=project))
+    if (
+        injected
+        and isinstance(task, TaskSpec)
+        and task.completion_test_project
+        and task.completion_test_project != task.evaluator_test_project
+    ):
+        (repo_path / task.completion_test_project).unlink(missing_ok=True)
+    try:
+        build = _run_build(repo_path, task, build_fn)
+        if project is not None and build.ran and build.passed:
+            if test_fn is not None:
+                test = (test_fn(repo_path, project=project, test_filter=test_filter)
+                        if test_filter else test_fn(repo_path, project=project))
+            else:
+                test = backend.run_tests(repo_path, task, project=project, test_filter=test_filter)
         else:
-            test = backend.run_tests(repo_path, task, project=project, test_filter=test_filter)
-    else:
-        test = None
+            test = None
+    finally:
+        if injected and isinstance(task, TaskSpec):
+            remove_task_evaluator(repo_path, task, evaluator_dir=evaluator_dir)
     return build, test, injected
+
+
+def run_completion_test(
+    repo_path: Path,
+    task: TaskSpec,
+    *,
+    build_passed: bool,
+    test_fn: Callable[..., Any] | None = None,
+    evaluator_dir: Path | None = None,
+) -> Any | None:
+    """Run the hidden acceptance check independently from the harm oracle."""
+    if not build_passed or not task.completion_test_project:
+        return None
+    project = (repo_path / task.completion_test_project).resolve()
+    source = (
+        _task_evaluator_dir(task, evaluator_dir)
+        / task.task_id
+        / task.completion_test_project
+    )
+    injected = False
+    if source.is_file():
+        if project.exists():
+            raise RuntimeError(
+                f"hidden evaluator destination already exists: {task.completion_test_project}"
+            )
+        project.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, project)
+        injected = True
+    elif not project.is_file():
+        return None
+    try:
+        if test_fn is not None:
+            return (
+                test_fn(repo_path, project=project, test_filter=task.completion_test_filter)
+                if task.completion_test_filter
+                else test_fn(repo_path, project=project)
+            )
+        backend = backends.backend_for_spec(task)
+        return backend.run_tests(
+            repo_path,
+            task,
+            project=project,
+            test_filter=task.completion_test_filter,
+        )
+    finally:
+        if injected:
+            project.unlink(missing_ok=True)

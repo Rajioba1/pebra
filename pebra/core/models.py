@@ -324,6 +324,15 @@ class CandidateVerificationEvidence:
 
 
 @dataclass(frozen=True)
+class TaskObligationsEvidence:
+    """Host-declared acceptance envelope; never accepted from request evidence."""
+
+    required_files: tuple[str, ...] = ()
+    required_symbols: tuple[str, ...] = ()
+    required_checks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RevisionCompletenessEvidence:
     """Whether a revised candidate preserves the origin action's declared envelope.
 
@@ -436,6 +445,7 @@ class AssessmentInput:
     candidate_verification: CandidateVerificationEvidence = field(
         default_factory=CandidateVerificationEvidence
     )
+    task_obligations: TaskObligationsEvidence = field(default_factory=TaskObligationsEvidence)
     revision_completeness_evidence: RevisionCompletenessEvidence = field(
         default_factory=RevisionCompletenessEvidence
     )

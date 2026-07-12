@@ -985,3 +985,106 @@ def test_revision_envelope_payload_retains_graph_derived_public_symbols() -> Non
         "expected_files": ["src/api.ts", "src/compat.ts"],
         "public_symbols": ["pkg.oldName"],
     }
+
+def test_trusted_task_obligations_are_selected_per_action() -> None:
+    action = m.AssessmentRequest.single_action(
+        task="t", action_id="a1", label="l", action_type="edit"
+    ).candidate_actions[0]
+
+    obligations = ac._trusted_task_obligations_for_action(
+        {
+            action.id: {
+                "required_files": ["src/auth.py"],
+                "required_symbols": ["src/auth.py::validate_login"],
+                "required_checks": ["public_contract"],
+            }
+        },
+        action,
+    )
+
+    assert obligations.required_files == ("src/auth.py",)
+    assert obligations.required_symbols == ("src/auth.py::validate_login",)
+    assert obligations.required_checks == ("public_contract",)
+
+
+def test_malformed_trusted_task_obligations_are_rejected() -> None:
+    action = m.AssessmentRequest.single_action(
+        task="t", action_id="a1", label="l", action_type="edit"
+    ).candidate_actions[0]
+
+    with pytest.raises(ValueError, match="task obligations"):
+        ac._trusted_task_obligations_for_action(
+            {"required_files": "src/auth.py", "required_checks": [None, 7]}, action
+        )
+
+
+def test_unknown_trusted_task_obligation_key_is_rejected() -> None:
+    action = m.AssessmentRequest.single_action(
+        task="t", action_id="a1", label="l", action_type="edit"
+    ).candidate_actions[0]
+
+    with pytest.raises(ValueError, match="unknown"):
+        ac._trusted_task_obligations_for_action(
+            {"required_file": ["src/auth.py"]}, action
+        )
+
+
+def test_trusted_task_obligations_require_every_action_and_nonempty_evidence() -> None:
+    actions = m.AssessmentRequest(
+        task="t",
+        candidate_actions=[
+            m.CandidateAction(id="a1", label="one", action_type="edit"),
+            m.CandidateAction(id="a2", label="two", action_type="edit"),
+        ],
+    ).candidate_actions
+    with pytest.raises(ValueError, match="missing action ids"):
+        ac._validate_trusted_task_obligations(
+            {"a1": {"required_files": ["src/a.py"]}}, actions
+        )
+    with pytest.raises(ValueError, match="empty|at least one"):
+        ac._validate_trusted_task_obligations(
+            {"a1": {}, "a2": {"required_files": []}}, actions
+        )
+
+
+def test_controller_rejects_unknown_task_obligation_action_id() -> None:
+    with pytest.raises(ValueError, match="unknown action"):
+        ac.assess(
+            _request(),
+            thresholds=_THRESHOLDS,
+            start_path="/abs/path/to/example-repo/src",
+            evidence_provider=FakeEvidence(),
+            symbol_diff_provider=FakeSymbolDiff(),
+            blast_provider=FakeBlast(),
+            sanction_port=FakeSanction(),
+            repository_registry=FakeRegistry(),
+            store=FakeStore(),
+            trusted_task_obligations={
+                "typo_action": {"required_files": ["src/auth.py"]}
+            },
+        )
+
+
+def test_controller_persists_host_task_obligations_for_audit() -> None:
+    store = FakeStore()
+    ac.assess(
+        _request(),
+        thresholds=_THRESHOLDS,
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        trusted_task_obligations={
+            "required_files": ["src/auth.py"],
+            "required_checks": ["public_contract"],
+        },
+    )
+
+    assert store.persisted[0][1]["task_obligations"] == {
+        "required_files": ["src/auth.py"],
+        "required_symbols": [],
+        "required_checks": ["public_contract"],
+    }

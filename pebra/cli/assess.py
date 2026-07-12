@@ -38,6 +38,11 @@ def register(subparsers: Any) -> None:
         default=None,
         help="Host-produced candidate verification JSON, outside untrusted request.evidence.",
     )
+    p.add_argument(
+        "--trusted-task-obligations-file",
+        default=None,
+        help="Host-produced task obligations JSON, outside untrusted request evidence.",
+    )
     p.set_defaults(func=run)
 
 
@@ -49,6 +54,11 @@ def run(args: Any) -> int:
         if args.trusted_candidate_verification_file
         else None
     )
+    trusted_task_obligations = (
+        _load_trusted_task_obligations(Path(args.trusted_task_obligations_file))
+        if args.trusted_task_obligations_file
+        else None
+    )
 
     start_path = args.repo_root or "."
     ctx = composition.resolve_repo_and_db(start_path, args.db)
@@ -58,6 +68,7 @@ def run(args: Any) -> int:
             thresholds=request.thresholds,
             start_path=start_path,
             trusted_candidate_verification=trusted_candidate_verification,
+            trusted_task_obligations=trusted_task_obligations,
             **composition.build_assess_ports(request, ctx),
         )
         if args.as_json:
@@ -67,6 +78,16 @@ def run(args: Any) -> int:
     finally:
         ctx.store.close()  # close even if the controller raises (no leaked SQLite connection)
     return 0
+
+
+def _load_trusted_task_obligations(path: Path) -> dict[str, Any]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("trusted task obligations must be a non-empty object")
+    fields = {"required_files", "required_symbols", "required_checks"}
+    if set(raw).issubset(fields) and not any(raw.values()):
+        raise ValueError("trusted task obligations must contain at least one requirement")
+    return raw
 
 
 def _fmt_float(value: Any) -> str:

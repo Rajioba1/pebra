@@ -190,3 +190,26 @@ def test_real_advise_enables_semantic_diff_in_subprocess_env(monkeypatch, tmp_pa
 
     assert out["recommended_decision"] == "proceed"
     assert seen["extra_env"] == {"PEBRA_CODEGRAPH_SEMANTIC_DIFF": "1"}
+
+
+def test_real_advise_forwards_remaining_timeout_to_cli(monkeypatch, tmp_path):
+    seen = {}
+
+    def _assess(req_path, **kwargs):
+        seen.update(kwargs)
+        return {"recommended_decision": "proceed", "scores": {"expected_loss": 0.0}}
+
+    monkeypatch.setattr(real.cli_harness, "assess", _assess)
+
+    real.advise(
+        {
+            "target_file": "x.ts",
+            "change_summary": "change x",
+            "proposed_patch": "diff --git a/x.ts b/x.ts\n",
+        },
+        repo_root=tmp_path,
+        db=tmp_path / "pebra.db",
+        timeout_seconds=9.8,
+    )
+
+    assert seen["timeout"] == 9

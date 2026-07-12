@@ -50,8 +50,11 @@ def _run(args: list[str], *, extra_env: dict[str, str] | None = None,
     return proc
 
 
-def _run_json(args: list[str], *, extra_env: dict[str, str] | None = None) -> dict:
-    proc = _run(args, extra_env=extra_env)
+def _run_json(
+    args: list[str], *, extra_env: dict[str, str] | None = None,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> dict:
+    proc = _run(args, extra_env=extra_env, timeout=timeout)
     return _parse_json_stdout(proc.stdout, args)
 
 
@@ -61,7 +64,9 @@ def assess(
     repo_root: Path | str,
     db: Path | str,
     trusted_candidate_verification_path: Path | str | None = None,
+    trusted_task_obligations_path: Path | str | None = None,
     extra_env: dict[str, str] | None = None,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict:
     args = [
         "assess", str(request_path), "--json", "--repo-root", str(repo_root), "--db", str(db),
@@ -71,7 +76,9 @@ def assess(
             "--trusted-candidate-verification-file",
             str(trusted_candidate_verification_path),
         ]
-    return _run_json(args, extra_env=extra_env)
+    if trusted_task_obligations_path is not None:
+        args += ["--trusted-task-obligations-file", str(trusted_task_obligations_path)]
+    return _run_json(args, extra_env=extra_env, timeout=timeout)
 
 
 def record_outcome(

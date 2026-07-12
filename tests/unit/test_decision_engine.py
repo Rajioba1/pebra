@@ -32,6 +32,88 @@ def test_worked_example_is_proceed_with_confirmation_sensitive_context() -> None
     assert result.scores["benefit_breakdown"]["source_type"] == "projected"
 
 
+def test_missing_host_obligation_downgrades_would_be_proceed() -> None:
+    from pebra.core import models as m
+
+    assessment = _assess(
+        task_obligations=m.TaskObligationsEvidence(required_files=("src/compat.py",))
+    )
+
+    result = de.decide(assessment)
+
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    gate = next(g for g in result.gates_fired if g["name"] == "task_obligations_incomplete")
+    assert gate["missing_files"] == ["src/compat.py"]
+    assert not any(g["name"] == "proceed" for g in result.gates_fired)
+
+
+def test_host_required_check_needs_exact_patch_bound_verification() -> None:
+    from pebra.core import models as m
+
+    assessment = _assess(
+        task_obligations=m.TaskObligationsEvidence(required_checks=("public_contract",)),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"public_contract": "passed"},
+            required_checks=["public_contract"],
+            verified_patch_hash="unbound",
+        ),
+    )
+
+    result = de.decide(assessment)
+
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    gate = next(g for g in result.gates_fired if g["name"] == "task_obligations_incomplete")
+    assert gate["missing_or_unverified_checks"] == ["public_contract"]
+
+
+def test_satisfied_host_obligations_preserve_proceed() -> None:
+    import hashlib
+
+    from pebra.core import models as m
+
+    patch = "--- a/src/auth.py\n+++ b/src/auth.py\n@@ -1 +1 @@\n-old\n+new\n"
+    base = _worked_example_input()
+    inp = replace(
+        base,
+        action=replace(base.action, proposed_patch=patch, expected_files=["src/auth.py"]),
+        task_obligations=m.TaskObligationsEvidence(
+            required_files=("src/auth.py",),
+            required_symbols=("src/auth.py::validate_login",),
+            required_checks=("public_contract",),
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"public_contract": "passed"},
+            required_checks=["public_contract"],
+            verified_patch_hash=hashlib.sha256(patch.encode("utf-8")).hexdigest(),
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.PROCEED
+    assert not any(g["name"] == "task_obligations_incomplete" for g in result.gates_fired)
+
+
+def test_request_declared_file_cannot_spoof_host_obligation() -> None:
+    from pebra.core import models as m
+
+    patch = "--- a/src/other.py\n+++ b/src/other.py\n@@ -1 +1 @@\n-old\n+new\n"
+    base = _worked_example_input()
+    inp = replace(
+        base,
+        action=replace(base.action, proposed_patch=patch, expected_files=["src/required.py"]),
+        task_obligations=m.TaskObligationsEvidence(required_files=("src/required.py",)),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    gate = next(g for g in result.gates_fired if g["name"] == "task_obligations_incomplete")
+    assert gate["missing_files"] == ["src/required.py"]
+
+
 def test_incomplete_revision_revises_before_budget_exhaustion() -> None:
     from pebra.core import models as m
 

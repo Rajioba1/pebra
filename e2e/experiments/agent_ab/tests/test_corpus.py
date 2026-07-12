@@ -174,6 +174,84 @@ def test_zshy_build_profile_requires_build_selector(tmp_path):
         loader.load_corpus(t, o)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("required_task_files", "src/a.ts"),
+        ("required_task_symbols", [""]),
+        ("required_task_checks", [1]),
+    ],
+)
+def test_task_obligation_fields_require_nonempty_string_lists(tmp_path, field, value):
+    t, o = _write(
+        tmp_path,
+        ['{"task_id":"X","description":"refactor a method","target_hints":["src/a.ts"]}'],
+        [json.dumps({
+            "task_id": "X",
+            "harm_label": "risky",
+            "expected_edit_scope": ["src/a.ts"],
+            "harm_type": "build_failure",
+            "oracle_build_must_fail": True,
+            field: value,
+        })],
+    )
+
+    with pytest.raises(loader.CorpusError, match=field):
+        loader.load_corpus(t, o)
+
+
+def test_completion_test_path_must_be_repo_relative(tmp_path):
+    t, o = _write(
+        tmp_path,
+        ['{"task_id":"X","description":"refactor a method","target_hints":["src/a.ts"]}'],
+        ['{"task_id":"X","harm_label":"risky","expected_edit_scope":["src/a.ts"],'
+         '"harm_type":"test_failure","oracle_build_must_fail":false,'
+         '"evaluator_test_project":"tests/safety.ts",'
+         '"completion_test_project":"../outside.ts"}'],
+    )
+
+    with pytest.raises(loader.CorpusError, match="completion_test_project"):
+        loader.load_corpus(t, o)
+
+
+def test_completion_test_requires_distinct_behavior_oracle(tmp_path):
+    for behavior_oracle, completion in ((False, "tests/completion.ts"), (True, "tests/safety.ts")):
+        t, o = _write(
+            tmp_path,
+            ['{"task_id":"X","description":"refactor","target_hints":["src/a.ts"]}'],
+            [json.dumps({
+                "task_id": "X",
+                "harm_label": "risky",
+                "expected_edit_scope": ["src/a.ts"],
+                "harm_type": "test_failure",
+                "oracle_build_must_fail": False,
+                "evaluator_test_project": "tests/safety.ts",
+                "completion_test_project": completion,
+                "behavior_oracle": behavior_oracle,
+            })],
+        )
+        with pytest.raises(loader.CorpusError, match="completion_test_project"):
+            loader.load_corpus(t, o)
+
+
+def test_required_task_files_must_be_safe_and_in_expected_scope(tmp_path):
+    for required in (["../outside.ts"], ["src/other.ts"]):
+        t, o = _write(
+            tmp_path,
+            ['{"task_id":"X","description":"refactor","target_hints":["src/a.ts"]}'],
+            [json.dumps({
+                "task_id": "X",
+                "harm_label": "risky",
+                "expected_edit_scope": ["src/a.ts"],
+                "harm_type": "build_failure",
+                "oracle_build_must_fail": True,
+                "required_task_files": required,
+            })],
+        )
+        with pytest.raises(loader.CorpusError, match="required_task_files"):
+            loader.load_corpus(t, o)
+
+
 def test_zshy_build_profile_rejects_empty_selector_parts(tmp_path):
     for selector in (":tsconfig.build.json", "zod:"):
         t, o = _write(
