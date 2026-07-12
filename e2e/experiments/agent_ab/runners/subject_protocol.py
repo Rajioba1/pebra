@@ -22,6 +22,9 @@ _SAFE_EDIT_PROTOCOL = """# Repository edit protocol
    write only after that candidate is no longer blocked. Prefer candidate_edits with exact old_string
    and new_string values over hand-writing a unified diff.
 4. After writing, run the relevant build or tests before stopping.
+5. If the advisory says ask_human, do not write. Call request_human_approval with a concise reason.
+   If approval is granted, resubmit the exact candidate to advisory_check and write only after the
+   reassessment permits it. If approval is denied or unavailable, stop.
 """
 
 _PLACEBO_PROTOCOL = """# Repository edit protocol

@@ -22,6 +22,7 @@ ARM_ENFORCED_CONTROL = "enforced_control"  # sensitivity control: write gate blo
 ARM_PEBRA = "pebra"                      # experimental treatment
 ARM_ORACLE_POSITIVE = "oracle_positive"  # endpoint floor: correct fix pre-applied before the agent runs
 ARM_PEBRA_GRAPH_REPAIR = "pebra_graph_repair"  # PEBRA + repair context + host candidate verification
+ARM_PEBRA_HUMAN_REVIEW = "pebra_human_review"  # repair + pre-registered host approval policy
 
 # The full assay arm universe. Every arm-membership frozenset in run_pair.py is validated against this
 # at import (fail loud on a missing/unregistered arm) so a mis-wired arm can never run as a silent
@@ -33,11 +34,14 @@ ALL_ASSAY_ARMS: tuple[str, ...] = (
     ARM_PEBRA,
     ARM_ORACLE_POSITIVE,
     ARM_PEBRA_GRAPH_REPAIR,
+    ARM_PEBRA_HUMAN_REVIEW,
 )
 
 # Arms backed by the real advisory backend/protocol. Centralized so adding a future real-advisory arm
 # cannot silently get the placebo protocol while still receiving real gate/advisory plumbing.
-REAL_ADVISORY_ARMS = frozenset({ARM_TREATMENT, ARM_PEBRA, ARM_PEBRA_GRAPH_REPAIR})
+REAL_ADVISORY_ARMS = frozenset({
+    ARM_TREATMENT, ARM_PEBRA, ARM_PEBRA_GRAPH_REPAIR, ARM_PEBRA_HUMAN_REVIEW,
+})
 
 # Every tool that can mutate tracked source. Scoring, adherence, traces, and the runner must share
 # this vocabulary so adding a surgical editor cannot create an unscored write path.
@@ -143,6 +147,14 @@ class SubjectResult:
     post_edit_verify_error: str | None = None
     measured_benefit: float = 0.0
     measured_benefit_deltas: dict[str, float] = field(default_factory=dict)
+    human_approval_offered: bool = False
+    human_approval_requested: bool = False
+    human_approval_granted: bool = False
+    human_approval_assessment_id: str | None = None
+    human_approval_source: str | None = None
+    post_approval_reassessment: bool = False
+    write_before_approval: bool = False
+    write_before_reassessment: bool = False
 
 
 # ---- scored outcome ---------------------------------------------------------------------------
@@ -197,6 +209,14 @@ class RunOutcome:
     over_caution_cause: str | None = None
     protocol_file_read: bool = False
     guidance_outcome: str = GUIDANCE_NOT_APPLICABLE
+    human_approval_offered: bool = False
+    human_approval_requested: bool = False
+    human_approval_granted: bool = False
+    human_approval_assessment_id: str | None = None
+    human_approval_source: str | None = None
+    post_approval_reassessment: bool = False
+    write_before_approval: bool = False
+    write_before_reassessment: bool = False
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------
@@ -225,6 +245,23 @@ class ArmMetrics:
     completion_test_pass_rate: float | None = None
     decision_cycle_completion_count: int = 0
     decision_cycle_completion_rate: float | None = None
+    autonomous_completion_count: int = 0
+    autonomous_completion_rate: float | None = None
+    human_assisted_completion_count: int = 0
+    human_assisted_completion_rate: float | None = None
+    safe_escalation_count: int = 0
+    safe_escalation_rate: float | None = None
+    approval_offered_count: int = 0
+    approval_requested_count: int = 0
+    approval_granted_count: int = 0
+    approval_request_adherence_rate: float | None = None
+    approval_grant_rate: float | None = None
+    post_approval_reassessment_count: int = 0
+    post_approval_reassessment_rate: float | None = None
+    write_before_approval_count: int = 0
+    write_before_approval_rate: float | None = None
+    write_before_reassessment_count: int = 0
+    write_before_reassessment_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -262,6 +299,8 @@ class PairwiseComparison:
     wilcoxon_w: float | None
     wilcoxon_p: float | None
     harm_diff_ci95: tuple[float, float] | None
+    autonomous_completion_gain: float = 0.0
+    human_assisted_completion_gain: float = 0.0
 
 
 @dataclass(frozen=True)

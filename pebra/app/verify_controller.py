@@ -69,6 +69,18 @@ def verify(
     risky_scope = list(binding.get("risky_scope", []))
     required_checks = list(binding.get("required_checks_before_commit", []))
     sanction = store.active_sanction_for_assessment(assessment_id)
+    sanction_assessment_id = assessment_id
+    # A sanction is created against the assessment that returned ask_human. The required workflow then
+    # reassesses the exact action and produces a NEW controlled-high-risk assessment. Follow that
+    # action lineage so verify enforces the sanction's controls and invalidates the original approval
+    # on drift; never use an action-level sanction for an ordinary, unsanctioned assessment.
+    if sanction is None and stored.get("risk_mode") == "controlled_high_risk":
+        request = stored.get("request") or {}
+        action_id = request.get("action_id")
+        if isinstance(action_id, str) and action_id:
+            sanction = store.active_sanction_for_action(stored.get("repo_id", ""), action_id)
+            if sanction and isinstance(sanction.get("assessment_id"), str):
+                sanction_assessment_id = sanction["assessment_id"]
     if sanction:
         for check in sanction.get("pre_commit_required_controls", []):
             if check not in required_checks:
@@ -134,7 +146,7 @@ def verify(
     )
     if drift:
         invalidated = store.invalidate_sanctions_for_assessment(
-            assessment_id, f"verify drift: {result.pre_commit_decision.value}"
+            sanction_assessment_id, f"verify drift: {result.pre_commit_decision.value}"
         )
 
     return VerifyOutcome(

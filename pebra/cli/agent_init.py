@@ -47,8 +47,13 @@ obligation, not optional. Do not skip these steps:
    `scores.expected_loss` or a less severe decision). PEBRA does not accept
    self-reported candidate verification in the request, so revise the change until the risk drops on
    its own; if it will not, escalate as in step 3.
-3. **Escalate when asked.** If the decision is `ask_human` or `reject`, stop and ask the user for
-   approval or a different route; do not treat it as permission to edit.
+3. **Escalate when asked.** Treat the assess JSON `next_action` as authoritative. If the decision is
+   `ask_human`, present its reason, risk/benefit values, remaining uncertainty, required controls, and
+   exact candidate to the user. Ask for explicit approval; silence is not approval. A trusted human or host
+   must create the sanction with `pebra accept-risk`; do not create or claim the sanction yourself. After
+   the sanction exists, reassess the exact candidate and edit only if PEBRA returns `proceed` with
+   `risk_mode=controlled_high_risk`. If the decision is `reject`, stop and ask for a different route.
+   Never treat either decision as permission to edit.
 4. **Edit** within the safe scope PEBRA reports; keep to the smallest sufficient change.
 5. **Verify.** After editing, run `pebra verify --assessment-id <id> --scope staged` and resolve any
    scope drift or build failures it reports.

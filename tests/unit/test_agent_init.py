@@ -71,6 +71,17 @@ def test_skill_protocol_omits_dead_candidate_verification_self_report(tmp_path):
     assert "safer_route.candidate_verification" not in body
 
 
+def test_skill_protocol_uses_json_driven_trusted_human_approval_cycle(tmp_path):
+    _run("claude", tmp_path)
+    body = (tmp_path / _SKILL_REL).read_text(encoding="utf-8").lower()
+    assert "next_action" in body
+    assert "trusted human or host" in body
+    assert "pebra accept-risk" in body
+    assert "reassess the exact candidate" in body
+    assert "do not create or claim the sanction yourself" in body
+    assert "pebra verify" in body
+
+
 def test_codex_creates_agents_md(tmp_path):
     assert _run("codex", tmp_path) == 0
     agents = tmp_path / "AGENTS.md"

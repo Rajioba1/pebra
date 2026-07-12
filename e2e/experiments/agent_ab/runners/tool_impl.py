@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 from e2e.experiments.agent_ab.forbidden import EXPERIMENT_LEAK_TERMS
 from e2e.experiments.agent_ab.backends import CSharpBackend
-from e2e.experiments.agent_ab.tools import advisory_contract
+from e2e.experiments.agent_ab.tools import advisory_contract, approval_contract
 
 _MAX_READ_BYTES = 64_000
 _MAX_LIST_ENTRIES = 500
@@ -366,3 +366,35 @@ def advisory_check(
             "detail": {},
         })
     return advisory_contract.normalize_output(raw)
+
+
+def request_human_approval(
+    payload: dict[str, Any],
+    approval_backend: Callable[..., dict[str, Any]],
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return approval_contract.normalize_output({
+            "status": "unavailable",
+            "message": "Explain why the remaining risk needs human acceptance.",
+        })
+    try:
+        parameters = inspect.signature(approval_backend).parameters.values()
+        accepts_timeout = any(
+            parameter.name == "timeout_seconds"
+            or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        raw = (
+            approval_backend(payload, timeout_seconds=timeout_seconds)
+            if accepts_timeout
+            else approval_backend(payload)
+        )
+    except Exception:
+        raw = {
+            "status": "unavailable",
+            "message": "The approval channel is temporarily unavailable.",
+        }
+    return approval_contract.normalize_output(raw)

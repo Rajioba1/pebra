@@ -175,6 +175,49 @@ def build_sanction_port(ctx: RepoContext) -> SanctionPort:
 # --- canonical surface payloads (shared by CLI --json and MCP tool results) ----
 
 
+def _recommended_action_id(outcome: AssessmentOutcome) -> str | None:
+    result = outcome.recommended_result
+    for scored in outcome.scored_actions:
+        if scored.result is result:
+            return scored.action.id
+    return None
+
+
+def _next_action(outcome: AssessmentOutcome) -> dict[str, Any]:
+    result = outcome.recommended_result
+    decision = result.recommended_decision.value
+    reason = result.decision_reason
+    if decision == "ask_human":
+        packet = result.model_guidance_packet or {}
+        binding = packet.get("binding") or {}
+        scores = result.scores or {}
+        return {
+            "type": "request_human_approval",
+            "status": "pending",
+            "assessment_id": outcome.assessment_id,
+            "action_id": _recommended_action_id(outcome),
+            "candidate_binding": binding.get("candidate"),
+            "risk_benefit": {
+                key: scores.get(key)
+                for key in ("expected_loss", "benefit", "expected_utility", "rau")
+            },
+            "reason": reason,
+            "required_controls": list(binding.get("required_controls") or []),
+            # This packet is intentionally descriptive, not a ready-to-submit sanction. Approval must
+            # cross a trusted host/operator boundary; request JSON is not approval evidence.
+            "trusted_actor_required": True,
+        }
+    if decision == "revise_safer":
+        return {"type": "resubmit_safer_candidate", "reason": reason}
+    if decision == "inspect_first":
+        return {"type": "inspect_then_reassess", "reason": reason}
+    if decision == "test_first":
+        return {"type": "run_checks_then_reassess", "reason": reason}
+    if decision == "proceed":
+        return {"type": "apply_exact_candidate_then_verify", "reason": reason}
+    return {"type": "stop", "reason": reason}
+
+
 def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
     """The canonical assess result (the recommended action). Identical bytes for `assess --json` and
     the pebra_assess MCP tool."""
@@ -192,6 +235,8 @@ def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
         "repo_id": outcome.repo_id,
         "assessment_id": outcome.assessment_id,
         "scores": r.scores,
+        "decision_reason": r.decision_reason,
+        "next_action": _next_action(outcome),
         "why": outcome.recommended_explanation.why,
         "gates_fired": r.gates_fired,
         "high_risk_triggers": r.high_risk_triggers,

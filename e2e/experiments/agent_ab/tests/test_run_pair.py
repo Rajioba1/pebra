@@ -489,6 +489,229 @@ def test_real_advisory_backend_threads_task_benefit_profile(monkeypatch, tmp_pat
     assert seen["review_cost"] == pytest.approx(0.05)
 
 
+def test_human_review_arm_requires_model_request_before_host_sanction_and_reassessment(
+    monkeypatch, tmp_path,
+):
+    calls: list[dict] = []
+    approvals: list[dict] = []
+
+    def _output(decision: str, *, assessment_id: str, risk_mode: str):
+        raw = {
+            "recommended_decision": decision,
+            "risk_mode": risk_mode,
+            "assessment_id": assessment_id,
+            "scores": {
+                "expected_loss": 0.36,
+                "benefit": 0.50,
+                "expected_utility": 0.14,
+                "rau": 0.08,
+            },
+            "high_risk_triggers": [{"trigger_id": "public_contract"}],
+            "model_guidance_packet": {
+                "binding": {
+                    "candidate": {
+                        "algorithm": "sha256-normalized-content-v1",
+                        "files": {"src/api.ts": "bound"},
+                    },
+                    "required_controls": ["human_review", "targeted_tests"],
+                }
+            },
+            "next_action": {
+                "type": "request_human_approval",
+                "assessment_id": assessment_id,
+                "action_id": "ab1",
+                "candidate_binding": {
+                    "algorithm": "sha256-normalized-content-v1",
+                    "files": {"src/api.ts": "bound"},
+                },
+                "risk_benefit": {
+                    "expected_loss": 0.36,
+                    "benefit": 0.50,
+                    "expected_utility": 0.14,
+                    "rau": 0.08,
+                },
+                "required_controls": ["human_review", "targeted_tests"],
+                "trusted_actor_required": True,
+            },
+        }
+        return run_pair.advisory_check_real.AdvisoryOutput(
+            {
+                "recommended_decision": decision,
+                "risk_level": "high",
+                "advisory": "review",
+                "detail": {},
+            },
+            assessment_id=assessment_id,
+            raw_payload=raw,
+        )
+
+    def _advise(_payload, **kwargs):
+        calls.append(dict(kwargs))
+        return (
+            _output("ask_human", assessment_id="asm_1", risk_mode="elevated_review")
+            if len(calls) == 1
+            else _output("proceed", assessment_id="asm_2", risk_mode="controlled_high_risk")
+        )
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "accept_risk",
+        lambda spec, **kwargs: approvals.append({"spec": spec, **kwargs}) or {"sanction_id": "sx_1"},
+    )
+    telemetry = run_pair.ArmTelemetry()
+    advisory_backend = run_pair._advisory_backend(
+        models.ARM_PEBRA_HUMAN_REVIEW,
+        tmp_path,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+
+    approval_backend = run_pair._approval_backend(
+        models.ARM_PEBRA_HUMAN_REVIEW,
+        tmp_path,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+    payload = {
+        "target_file": "src/api.ts",
+        "change_summary": "preserve compatibility",
+        "proposed_patch": "diff --git a/src/api.ts b/src/api.ts",
+    }
+
+    first = advisory_backend(payload)
+
+    assert first["recommended_decision"] == "ask_human"
+    assert len(calls) == 1
+    assert approvals == []
+    assert telemetry.human_approval_offered is True
+    assert telemetry.human_approval_requested is False
+
+    approval = approval_backend({"reason": "The remaining risk needs human acceptance."})
+
+    assert approval["status"] == "approved"
+    assert approvals[0]["spec"]["assessment_id"] == "asm_1"
+    assert approvals[0]["spec"]["action_id"] == "ab1"
+    assert approvals[0]["spec"]["pre_edit_authorization_controls_satisfied"] is True
+    assert approvals[0]["spec"]["converts_gates"] == [2, 3, 4, 9]
+    assert telemetry.human_approval_requested is True
+    assert telemetry.human_approval_granted is True
+
+    second = advisory_backend(payload)
+
+    assert second["recommended_decision"] == "proceed"
+    assert len(calls) == 2
+    assert telemetry.post_approval_reassessment is True
+    assert telemetry.human_approval_assessment_id == "asm_1"
+    assert telemetry.human_approval_source == "pre_registered_host_policy"
+
+
+def test_host_approval_policy_fails_closed_without_canonical_bound_request() -> None:
+    shaped_only = {
+        "recommended_decision": "ask_human",
+        "risk_level": "high",
+        "advisory": "review",
+        "detail": {},
+    }
+    reject = run_pair.advisory_check_real.AdvisoryOutput(
+        shaped_only,
+        assessment_id="asm_1",
+        raw_payload={
+            "recommended_decision": "reject",
+            "next_action": {"type": "stop"},
+        },
+    )
+    unbound = run_pair.advisory_check_real.AdvisoryOutput(
+        shaped_only,
+        assessment_id="asm_1",
+        raw_payload={
+            "recommended_decision": "ask_human",
+            "next_action": {
+                "type": "request_human_approval",
+                "assessment_id": "asm_1",
+                "action_id": "ab1",
+                "candidate_binding": None,
+                "trusted_actor_required": True,
+            },
+        },
+    )
+
+    assert run_pair._human_approval_spec(shaped_only) is None
+    assert run_pair._human_approval_spec(reject) is None
+    assert run_pair._human_approval_spec(unbound) is None
+
+
+def test_human_approval_backend_denies_without_creating_sanction(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("E2E_AB_HUMAN_APPROVAL_POLICY", "deny")
+    accepted = []
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "accept_risk",
+        lambda *args, **kwargs: accepted.append((args, kwargs)),
+    )
+    telemetry = run_pair.ArmTelemetry(
+        human_approval_offered=True,
+        pending_human_approval={"assessment_id": "asm_1"},
+    )
+    backend = run_pair._approval_backend(
+        models.ARM_PEBRA_HUMAN_REVIEW,
+        tmp_path,
+        tmp_path / "pebra.db",
+        telemetry,
+    )
+
+    result = backend({"reason": "review the residual risk"})
+
+    assert result["status"] == "denied"
+    assert telemetry.human_approval_requested is True
+    assert telemetry.human_approval_granted is False
+    assert accepted == []
+
+
+def test_human_approval_backend_is_unavailable_without_pending_candidate(tmp_path) -> None:
+    telemetry = run_pair.ArmTelemetry()
+    backend = run_pair._approval_backend(
+        models.ARM_PEBRA_HUMAN_REVIEW,
+        tmp_path,
+        tmp_path / "pebra.db",
+        telemetry,
+    )
+
+    result = backend({"reason": "review the residual risk"})
+
+    assert result["status"] == "unavailable"
+    assert telemetry.human_approval_requested is True
+    assert telemetry.human_approval_granted is False
+
+
+def test_human_review_gate_records_write_attempt_before_approval(monkeypatch, tmp_path) -> None:
+    telemetry = run_pair.ArmTelemetry(human_approval_offered=True)
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "gate_check",
+        lambda event, **_kwargs: {
+            "permission": "deny", "tier": "consulted_review_unavailable", "reason": "wait",
+        },
+    )
+    gate = run_pair._gate_check_backend(
+        models.ARM_PEBRA_HUMAN_REVIEW,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+
+    result = gate({
+        "tool_name": "Write",
+        "tool_input": {"file_path": "src/api.ts", "content": "unsafe"},
+        "cwd": str(tmp_path),
+    })
+
+    assert result["permission"] == "deny"
+    assert telemetry.write_before_approval is True
+    assert telemetry.write_before_reassessment is True
+
+
 def test_repair_arm_threads_host_task_obligations_only_from_spec(monkeypatch, tmp_path):
     seen = {}
     spec = TaskSpec(

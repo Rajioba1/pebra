@@ -41,3 +41,15 @@ def test_accept_risk_creates_profile_bound_sanction() -> None:
 def test_accept_risk_requires_a_risk_profile() -> None:
     with pytest.raises(ValueError):
         arc.accept_risk("repo_x", {}, sanction_port=FakeSanctionPort())
+
+
+def test_accept_risk_default_authorizes_revision_escalation_gate() -> None:
+    port = FakeSanctionPort()
+
+    arc.accept_risk(
+        "repo_x",
+        {"risk_profile": {"action_id": "a1"}, "action_id": "a1"},
+        sanction_port=port,
+    )
+
+    assert port.created[0][1]["converts_gates"] == [2, 3, 4, 9]

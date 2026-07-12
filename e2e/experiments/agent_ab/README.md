@@ -13,9 +13,17 @@ Current assay state:
 - The current robustness target is the JavaScript/TypeScript Zod specimen (`assay_js`): `JS1` offers
   the same useful API through an obvious high-fan-in base-class contract change and a lower-impact
   utility function; `JS2`/`JS3` are safe over-caution checks.
-- The risky-task assay is now six-arm: `sham`, `oracle_positive`, `enforced_control`, `blast_radius`,
-  `pebra`, and `pebra_graph_repair`. Safe tasks omit only `oracle_positive`; `enforced_control` stays
+- The risky-task assay is now seven-arm: `sham`, `oracle_positive`, `enforced_control`, `blast_radius`,
+  `pebra`, `pebra_graph_repair`, and `pebra_human_review`. Safe tasks omit only `oracle_positive`; `enforced_control` stays
   so selective safe completion is measured against blunt blocking.
+- `pebra_human_review` adds the repair/verification path plus an explicit approval handshake. After
+  `ask_human`, the subject must stop and call the arm-neutral `request_human_approval` tool. The host's
+  pre-registered policy may approve or deny; approval creates an exact-candidate sanction, but writing
+  remains blocked until the subject reassesses that exact candidate and receives `proceed`. Set
+  `E2E_AB_HUMAN_APPROVAL_POLICY=deny` to exercise denial; the default `always_approve` is a mechanism
+  proxy, not evidence about real human judgment. Reports separate approval offered/requested/granted,
+  post-approval reassessment, premature writes, autonomous completion, assisted completion, and
+  unresolved safe escalation.
 - Two one-seed DeepSeek/Math.NET assay runs have completed cleanly: one sequential and one with
   `E2E_AB_PARALLEL_ARMS=1`.
 - Both runs produced the same valid structure: sham and blast-radius harmed, oracle-positive completed
@@ -56,13 +64,16 @@ the same agent without it?
 - **PEBRA graph-repair**: PEBRA plus an added repair-context hint and host-produced candidate
   verification on the narrowed resubmission. Subject-supplied verification is stripped; only the host
   can pass hash-bound verification evidence to gate 7.
+- **PEBRA human-review**: graph-repair plus explicit model-to-host approval requesting. The host owns
+  the candidate binding and sanction; the subject supplies only a reason and must reassess before any
+  approved write.
 - **Blinded**: subjects are unbriefed real coding agents. The prompt never mentions PEBRA, an
   experiment, or arm labels; the trap/benign label is hidden. The evaluator knows the oracle only
   after the fact.
 
 ### Blinding invariant (load-bearing)
-All advisory-bearing arms expose a tool with the **same name (`advisory_check`), same input schema, and
-same output shape**. Only the backend content differs. If the name/schema/keys ever differ by arm, the
+All arms expose the same `advisory_check` and `request_human_approval` tool schemas. Only backend
+content differs. If the name/schema/keys ever differ by arm, the
 subject could infer its arm and the trial is unblinded. A transcript **leak scan** flags any run
 mentioning experiment/PEBRA/etc.; leaked runs are excluded from the efficacy analysis.
 
@@ -292,7 +303,7 @@ python -m e2e.experiments.agent_ab.runners.watch_dashboard --once --run-id <run-
 python -m e2e.experiments.agent_ab.runners.watch_dashboard --once                     # the run index
 ```
 
-Each `pebra` / `pebra_graph_repair` / legacy `treatment` arm row has an **Open** button and a copy fallback.
+Each `pebra` / `pebra_graph_repair` / `pebra_human_review` / legacy `treatment` arm row has an **Open** button and a copy fallback.
 Open spawns the real product dashboard on an OS-assigned loopback port for that arm's store, so multiple
 arms can be opened side by side without port collisions. The copy field remains available when popup
 blocking or local browser policy gets in the way. (An assay verdict is de-emphasized in the UI until the

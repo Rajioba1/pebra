@@ -573,6 +573,50 @@ def test_revised_candidate_with_negative_rau_asks_human_even_when_verified() -> 
     assert "rau=" in result.decision_reason
 
 
+def test_human_sanction_can_complete_gate9_revision_as_controlled_high_risk() -> None:
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(),
+        action=replace(_worked_example_input().action, proposed_patch=_CANDIDATE_PATCH),
+        events=[{"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80}],
+        immediate_benefit=0.5,
+        thresholds={
+            **_worked_example_input().thresholds,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 2,
+        },
+        revision_completeness_evidence=m.RevisionCompletenessEvidence(
+            is_revision=True,
+            origin_available=True,
+            origin_expected_loss=0.50,
+            origin_rau=-0.30,
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"public_typecheck": "passed"},
+            required_checks=["public_typecheck"],
+            domain="covering_tests",
+            verified_patch_hash=de.candidate_patch_hash(_CANDIDATE_PATCH),
+        ),
+        sanction={
+            "valid": True,
+            "pre_edit_authorization_controls_satisfied": True,
+            "converts_gates": [9],
+            "high_risk_triggers": [{"trigger_id": "human_approved_revision"}],
+        },
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.PROCEED
+    assert result.risk_mode is RiskMode.CONTROLLED_HIGH_RISK
+    assert any(
+        gate.get("name") == "sanction_resolution" and gate.get("converted_from") == "ask_human"
+        for gate in result.gates_fired
+    )
+
+
 def test_revised_candidate_that_does_not_reduce_loss_asks_human() -> None:
     from pebra.core import models as m
 

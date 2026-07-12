@@ -1347,7 +1347,7 @@ if confidence_upgrade_source == retrieval_only:
 
 Gate names must map directly to `.pebra.yml`.
 
-The first matching risk gate sets a provisional decision. Sanction resolution runs after that provisional decision and may finalize a risk-threshold `ask_human` / `reject` into controlled-high-risk `proceed` only when the sanction is valid and required controls are satisfied.
+The first matching risk gate sets a provisional decision. Sanction resolution runs after that provisional decision and may finalize a risk-threshold or exhausted-revision `ask_human` / `reject` from gates 2/3/4/9 into controlled-high-risk `proceed` only when the sanction is valid and required controls are satisfied.
 
 ```text
 if action violates policy:

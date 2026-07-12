@@ -114,12 +114,21 @@ function num(x) { return x == null ? "—" : Number(x).toFixed(3); }
 
 function renderArmTable(arms) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "n" }), el("th", { class: "num", text: "harm" }), el("th", { class: "num", text: "over-caution" }), el("th", { class: "num", text: "completion" }), el("th", { class: "num", text: "adherence" }), el("th", { class: "num", text: "no-attempt" }), el("th", { class: "num", text: "errors" }), el("th", { class: "num", text: "leaks" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "n" }), el("th", { class: "num", text: "harm" }), el("th", { class: "num", text: "over-caution" }), el("th", { class: "num", text: "completion" }), el("th", { class: "num", text: "autonomous" }), el("th", { class: "num", text: "human-assisted" }), el("th", { class: "num", text: "safe escalation" }), el("th", { class: "num", text: "approval request" }), el("th", { class: "num", text: "approval grant" }), el("th", { class: "num", text: "post-approval reassess" }), el("th", { class: "num", text: "write before approval" }), el("th", { class: "num", text: "write before reassess" }), el("th", { class: "num", text: "adherence" }), el("th", { class: "num", text: "no-attempt" }), el("th", { class: "num", text: "errors" }), el("th", { class: "num", text: "leaks" })]));
   for (const [arm, a] of Object.entries(arms || {})) {
     t.appendChild(el("tr", {}, [
       el("td", { text: arm }), el("td", { class: "num", text: a.n_runs }),
       el("td", { class: "num", text: pct(a.harm_rate) }), el("td", { class: "num", text: pct(a.over_caution_rate) }),
-      el("td", { class: "num", text: pct(a.task_completion_rate) }), el("td", { class: "num", text: pct(a.adherence_rate) }),
+      el("td", { class: "num", text: pct(a.task_completion_rate) }),
+      el("td", { class: "num", text: pct(a.autonomous_completion_rate) }),
+      el("td", { class: "num", text: pct(a.human_assisted_completion_rate) }),
+      el("td", { class: "num", text: pct(a.safe_escalation_rate) }),
+      el("td", { class: "num", text: pct(a.approval_request_adherence_rate) }),
+      el("td", { class: "num", text: pct(a.approval_grant_rate) }),
+      el("td", { class: "num", text: pct(a.post_approval_reassessment_rate) }),
+      el("td", { class: "num", text: pct(a.write_before_approval_rate) }),
+      el("td", { class: "num", text: pct(a.write_before_reassessment_rate) }),
+      el("td", { class: "num", text: pct(a.adherence_rate) }),
       el("td", { class: "num", text: a.no_attempt_count || 0 }),
       el("td", { class: "num", text: a.error_run_count }), el("td", { class: "num", text: a.blinding_leak_count }),
     ]));
@@ -128,11 +137,14 @@ function renderArmTable(arms) {
 }
 function renderPairwiseTable(pairwise) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "harm avoided" }), el("th", { class: "num", text: "completion Δ" }), el("th", { class: "num", text: "over-caution Δ" }), el("th", { class: "num", text: "net benefit" }), el("th", { class: "num", text: "risky pairs" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "harm avoided" }), el("th", { class: "num", text: "completion Δ" }), el("th", { class: "num", text: "autonomous Δ" }), el("th", { class: "num", text: "assisted Δ" }), el("th", { class: "num", text: "over-caution Δ" }), el("th", { class: "num", text: "net benefit" }), el("th", { class: "num", text: "risky pairs" })]));
   for (const p of pairwise || []) {
     t.appendChild(el("tr", {}, [
       el("td", { text: p.intervention }), el("td", { text: p.baseline }),
-      el("td", { class: "num", text: num(p.harm_avoided_rate) }), el("td", { class: "num", text: num(p.risky_completion_gain) }), el("td", { class: "num", text: num(p.over_caution_delta) }),
+      el("td", { class: "num", text: num(p.harm_avoided_rate) }), el("td", { class: "num", text: num(p.risky_completion_gain) }),
+      el("td", { class: "num", text: num(p.autonomous_completion_gain) }),
+      el("td", { class: "num", text: num(p.human_assisted_completion_gain) }),
+      el("td", { class: "num", text: num(p.over_caution_delta) }),
       el("td", { class: "num", text: num(p.net_benefit) }), el("td", { class: "num", text: p.n_pairs_risky }),
     ]));
   }
@@ -171,6 +183,12 @@ function renderMatrix(matrix) {
         else if (s.error) { title = "error: " + s.error; }
         if (s.completion_test_ran) title += " · completion check " + (s.completion_test_passed ? "passed" : "failed");
         if (s.decision_cycle_completed) title += " · governance " + s.terminal_governance_outcome;
+        if (s.human_approval_offered) title += " · approval offered";
+        if (s.human_approval_requested) title += " · approval requested";
+        if (s.human_approval_granted) title += " · approval granted";
+        if (s.post_approval_reassessment) title += " · exact candidate reassessed";
+        if (s.write_before_approval) title += " · wrote before approval";
+        if (s.write_before_reassessment) title += " · wrote before reassessment";
         title += s.protocol_file_read ? " · protocol read" : " · protocol not read";
         td.appendChild(el("span", { class: cls, title }));
       }

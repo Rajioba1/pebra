@@ -21,13 +21,15 @@ from e2e.utils import cli_harness
 def test_arms_for_risky_and_safe():
     assert run_pair.arms_for("risky") == (
         models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_ENFORCED_CONTROL,
-        models.ARM_BLAST_RADIUS, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)
+        models.ARM_BLAST_RADIUS, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR,
+        models.ARM_PEBRA_HUMAN_REVIEW)
     assert run_pair.arms_for("safe") == (
         models.ARM_SHAM, models.ARM_ENFORCED_CONTROL, models.ARM_BLAST_RADIUS,
-        models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)
+        models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA_HUMAN_REVIEW)
     assert models.ARM_ORACLE_POSITIVE not in run_pair.arms_for("safe")  # no harm to fix on safe tasks
     # the repair arm runs on safe tasks too, so its over-caution is measurable (Gate 6 net_benefit)
     assert models.ARM_PEBRA_GRAPH_REPAIR in run_pair.arms_for("safe")
+    assert models.ARM_PEBRA_HUMAN_REVIEW in run_pair.arms_for("safe")
 
 
 def _mark(name):
@@ -50,6 +52,7 @@ def test_advisory_backend_dispatch(monkeypatch):
     assert which(models.ARM_ORACLE_POSITIVE) == "sham"    # oracle uses sham advisory (mechanism = pre-patch)
     assert which(models.ARM_CONTROL) == "sham"
     assert which(models.ARM_PEBRA_GRAPH_REPAIR) == "real"  # repair arm is real PEBRA + appended repair context
+    assert which(models.ARM_PEBRA_HUMAN_REVIEW) == "real"
 
 
 def _revise(*_a, **_k):

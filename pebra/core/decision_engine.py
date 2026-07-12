@@ -3,7 +3,7 @@
 Runs the ordered gate sequence over a scored ``Assessment`` and returns an ``AssessmentResult``. The
 first matching risk gate sets a provisional decision; an authorized sanction (pre-fetched into
 ``AssessmentInput`` — the engine never calls a port, AD-26) may then convert a risk-threshold
-ask_human/reject from gates 2/3/4 into a controlled-high-risk proceed. It never overrides a gate-1
+ask_human/reject from gates 2/3/4/9 into a controlled-high-risk proceed. It never overrides a gate-1
 policy violation.
 
 The double-count guard holds: criticality already fed the disutility floor + threshold (in the
@@ -636,7 +636,7 @@ def decide(
     if (
         sanction
         and provisional in {Decision.ASK_HUMAN, Decision.REJECT}
-        and fired_gate in {2, 3, 4}
+        and fired_gate in {2, 3, 4, 9}
         and sanction.get("valid")
         and sanction.get("pre_edit_authorization_controls_satisfied")
         and fired_gate in set(sanction.get("converts_gates", []))

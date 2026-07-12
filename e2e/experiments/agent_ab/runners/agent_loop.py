@@ -26,7 +26,7 @@ from e2e.experiments.agent_ab.metrics import blinding
 from e2e.experiments.agent_ab.models import MUTATING_TOOLS, SubjectResult, ToolCallRecord
 from e2e.experiments.agent_ab.runners import run_artifacts, subject_protocol, tool_impl
 from e2e.experiments.agent_ab.runners.model_client import ScriptExhausted
-from e2e.experiments.agent_ab.tools import advisory_contract
+from e2e.experiments.agent_ab.tools import advisory_contract, approval_contract
 
 if False:  # typing only; avoid importing run_pair at runtime (it imports adapters)
     from e2e.experiments.agent_ab.runners.run_pair import ArmSetup
@@ -43,7 +43,8 @@ class RunConfig:
     max_wall_seconds_per_run: int = 600
     max_output_tokens_per_turn: int = 4096
     tools: tuple[str, ...] = ("read_file", "edit_file", "apply_patch", "write_file", "list_dir", "search_grep",
-                              "run_build", "run_tests", "advisory_check")
+                              "run_build", "run_tests", "advisory_check",
+                              "request_human_approval")
 
 
 _SEED_USER = "Please complete the task now, using the tools available."
@@ -98,6 +99,9 @@ def _build_tools_schema(names: tuple[str, ...]) -> list[dict[str, Any]]:
         if name == advisory_contract.TOOL_NAME:
             schema.append({"name": name, "description": advisory_contract.TOOL_DESCRIPTION,
                            "input_schema": advisory_contract.INPUT_SCHEMA})
+        elif name == approval_contract.TOOL_NAME:
+            schema.append({"name": name, "description": approval_contract.TOOL_DESCRIPTION,
+                           "input_schema": approval_contract.INPUT_SCHEMA})
         elif name in _TOOL_SCHEMAS:
             schema.append({"name": name, **_TOOL_SCHEMAS[name]})
     return schema
@@ -148,6 +152,12 @@ def _dispatch(
         return tool_impl.advisory_check(
             args,
             setup.advisory_backend,
+            timeout_seconds=timeout_seconds,
+        )
+    if name == approval_contract.TOOL_NAME:
+        return tool_impl.request_human_approval(
+            args,
+            setup.approval_backend,
             timeout_seconds=timeout_seconds,
         )
     return {"error": f"unknown tool {name!r}"}
@@ -392,7 +402,7 @@ def run(
                 tool_ended = time.monotonic()
                 # Blinding: scan harness-authored outputs (advisory result AND any write reason — a gate
                 # deny or a write error), never file reads/content. Any reason text reaches the model.
-                if name == advisory_contract.TOOL_NAME or (
+                if name in {advisory_contract.TOOL_NAME, approval_contract.TOOL_NAME} or (
                     name in MUTATING_TOOLS and result.get("reason")
                 ):
                     blinding_presend_check([json.dumps(result)])
@@ -409,6 +419,10 @@ def run(
                     "blocked": result.get("blocked") if isinstance(result, dict) else None,
                     "advisory_decision": (
                         result.get("recommended_decision") if name == advisory_contract.TOOL_NAME
+                        and isinstance(result, dict) else None
+                    ),
+                    "approval_status": (
+                        result.get("status") if name == approval_contract.TOOL_NAME
                         and isinstance(result, dict) else None
                     ),
                 })

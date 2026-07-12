@@ -1,8 +1,8 @@
-from pebra.app.assess_controller import AssessmentOutcome
+from pebra.app.assess_controller import AssessmentOutcome, ScoredAction
 from pebra import composition
 from pebra.core.constants import ActionStatus, Decision, RiskMode
 from pebra.core.explanation_generator import Explanation
-from pebra.core.models import AssessmentResult
+from pebra.core.models import AssessmentResult, CandidateAction
 
 
 def test_assess_payload_exposes_applied_snapshot_provenance_when_present() -> None:
@@ -188,3 +188,105 @@ def test_assess_payload_does_not_claim_graph_engine_without_graph_evidence() -> 
 
     assert payload["graph_provenance"]["engine"] is None
     assert payload["graph_provenance"]["graph_freshness"] == "unknown"
+
+
+def test_ask_human_payload_exposes_bound_approval_request_without_self_authorizing_spec() -> None:
+    explanation = Explanation(
+        risk_level_band="High",
+        value_after_risk_band="Positive",
+        confidence_band="medium",
+        confidence_percent=70,
+        code_sensitivity_label="High",
+        code_sensitivity_descriptor="public API",
+        expected_damage=0.36,
+        risk_budget_percent=180,
+        affected_area="shared contract",
+        why=["The proposed edit changes a high-impact public contract."],
+    )
+    candidate_binding = {
+        "algorithm": "sha256-normalized-content-v1",
+        "files": {"src/api.ts": "abc123"},
+    }
+    result = AssessmentResult(
+        recommended_decision=Decision.ASK_HUMAN,
+        requires_confirmation=True,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.ELEVATED_REVIEW,
+        scores={
+            "expected_loss": 0.36,
+            "benefit": 0.50,
+            "expected_utility": 0.14,
+            "rau": 0.08,
+            "symbol_scope_evidence": {},
+        },
+        repo_id="r",
+        repo_root="/repo",
+        decision_reason="Risk remains above the autonomous threshold after revision.",
+        model_guidance_packet={
+            "binding": {
+                "candidate": candidate_binding,
+                "required_controls": ["human_review", "targeted_tests"],
+            },
+            "advisory": {},
+        },
+    )
+    action = CandidateAction(
+        id="edit-api", label="edit api", action_type="modify",
+        expected_files=["src/api.ts"],
+    )
+    outcome = AssessmentOutcome(
+        recommended_result=result,
+        recommended_explanation=explanation,
+        assessment_id="asm_42",
+        repo_id="r",
+        repo_root="/repo",
+        scored_actions=[ScoredAction(action=action, result=result, explanation=explanation)],
+    )
+
+    payload = composition.assess_payload(outcome)
+
+    assert payload["decision_reason"] == result.decision_reason
+    assert payload["next_action"] == {
+        "type": "request_human_approval",
+        "status": "pending",
+        "assessment_id": "asm_42",
+        "action_id": "edit-api",
+        "candidate_binding": candidate_binding,
+        "risk_benefit": {
+            "expected_loss": 0.36,
+            "benefit": 0.50,
+            "expected_utility": 0.14,
+            "rau": 0.08,
+        },
+        "reason": result.decision_reason,
+        "required_controls": ["human_review", "targeted_tests"],
+        "trusted_actor_required": True,
+    }
+    assert "sanction_spec" not in payload["next_action"]
+
+
+def test_non_review_payload_does_not_claim_human_approval_is_required() -> None:
+    result = AssessmentResult(
+        recommended_decision=Decision.REJECT,
+        requires_confirmation=False,
+        action_status=ActionStatus.REJECTED,
+        risk_mode=RiskMode.NORMAL,
+        scores={"symbol_scope_evidence": {}},
+        repo_id="r",
+        repo_root="/repo",
+        decision_reason="Expected utility is negative.",
+    )
+    outcome = AssessmentOutcome(
+        recommended_result=result,
+        recommended_explanation=Explanation(
+            risk_level_band="High", value_after_risk_band="Negative", confidence_band="high",
+            confidence_percent=90, code_sensitivity_label="High",
+            code_sensitivity_descriptor="code", expected_damage=0.5,
+            risk_budget_percent=200, affected_area="shared code",
+        ),
+        assessment_id="asm_reject", repo_id="r", repo_root="/repo",
+    )
+
+    payload = composition.assess_payload(outcome)
+
+    assert payload["next_action"] == {"type": "stop", "reason": result.decision_reason}

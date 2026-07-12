@@ -288,6 +288,9 @@ def _experiment_design(
             "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
             "semantic_diff_env": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF"),
             "thinking_env": os.environ.get("E2E_AB_THINKING"),
+            "human_approval_policy": os.environ.get(
+                "E2E_AB_HUMAN_APPROVAL_POLICY", "always_approve"
+            ),
         },
         "subject_prompt_template_sha256": _sha256_text(run_pair._SUBJECT_PROMPT),  # noqa: SLF001
         "protocol_hashes": protocol_hashes,
@@ -343,12 +346,18 @@ def _run_metadata(
         ),
         "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
         "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
+        "human_approval_policy": os.environ.get(
+            "E2E_AB_HUMAN_APPROVAL_POLICY", "always_approve"
+        ),
         "env": {
             "E2E_AB_PARALLEL_ARMS": os.environ.get("E2E_AB_PARALLEL_ARMS"),
             "E2E_AB_MAX_WORKERS": os.environ.get("E2E_AB_MAX_WORKERS"),
             "E2E_AB_MODEL": os.environ.get("E2E_AB_MODEL"),
             "E2E_AB_PROVIDER": os.environ.get("E2E_AB_PROVIDER"),
             "E2E_AB_THINKING": os.environ.get("E2E_AB_THINKING"),
+            "E2E_AB_HUMAN_APPROVAL_POLICY": os.environ.get(
+                "E2E_AB_HUMAN_APPROVAL_POLICY"
+            ),
             "PEBRA_CODEGRAPH_SEMANTIC_DIFF": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF"),
         },
         "subject_prompt_template_sha256": design["subject_prompt_template_sha256"],

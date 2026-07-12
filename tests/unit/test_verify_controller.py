@@ -44,6 +44,9 @@ class FakeStore:
     def active_sanction_for_assessment(self, assessment_id):
         return None
 
+    def active_sanction_for_action(self, repo_id, action_id):
+        return None
+
     def invalidate_sanctions_for_assessment(self, assessment_id, reason):
         self.invalidated.append((assessment_id, reason))
         return ["sx_1"]
@@ -271,6 +274,50 @@ def test_sanction_pre_commit_controls_are_enforced() -> None:
     )
     assert outcome.result.pre_commit_decision is Decision.TEST_FIRST
     assert "migration dry-run" in outcome.result.missing_checks
+
+
+def test_controlled_reassessment_follows_sanction_lineage_for_controls_and_invalidation() -> None:
+    sanction = {
+        "assessment_id": "asm_origin",
+        "action_id": "ab1",
+        "pre_commit_required_controls": ["impact preview"],
+    }
+
+    class ReassessedStore(FakeStore):
+        def load_assessment(self, assessment_id):
+            stored = dict(_STORED)
+            stored["risk_mode"] = "controlled_high_risk"
+            stored["request"] = {"action_id": "ab1", "thresholds": {}}
+            return stored
+
+        def active_sanction_for_action(self, repo_id, action_id):
+            assert repo_id == "repo_local_example"
+            assert action_id == "ab1"
+            return sanction
+
+    store = ReassessedStore()
+    summary = ActualDiffSummary(
+        current_head="abc123",
+        changed_files=["src/auth.py", "src/payments/charge.py"],
+        actual_max_change_kind="BEHAVIORAL",
+    )
+
+    outcome = vc.verify(
+        "asm_controlled",
+        scope="staged",
+        completed_checks={
+            "pytest -q src/auth": "passed",
+            "impact preview": "passed",
+        },
+        repo_root="/abs/path",
+        store=store,
+        change_verifier=FakeVerifier(summary),
+        contract_surface=FakeContract(),
+    )
+
+    assert outcome.result.scope_drift_detected is True
+    assert store.invalidated == [("asm_origin", store.invalidated[0][1])]
+    assert outcome.invalidated_sanctions == ["sx_1"]
 
 
 def test_requires_dry_run_from_binding_routes_inspect_first_without_preview() -> None:

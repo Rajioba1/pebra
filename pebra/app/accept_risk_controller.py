@@ -29,7 +29,7 @@ def accept_risk(
         "pre_edit_authorization_controls_satisfied": bool(
             sanction_spec.get("pre_edit_authorization_controls_satisfied", False)
         ),
-        "converts_gates": list(sanction_spec.get("converts_gates", [2, 3, 4])),
+        "converts_gates": list(sanction_spec.get("converts_gates", [2, 3, 4, 9])),
         "pre_commit_required_controls": list(
             sanction_spec.get("pre_commit_required_controls", [])
         ),

@@ -110,6 +110,22 @@ def record_outcome(
     _run(args)
 
 
+def accept_risk(
+    sanction_spec: dict, *, repo_root: Path | str, db: Path | str,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> dict:
+    """Create a production sanction through the CLI boundary from host-owned experiment evidence."""
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+        json.dump(sanction_spec, fh)
+        spec_path = Path(fh.name)
+    try:
+        return _run_json([
+            "accept-risk", str(spec_path), "--repo-root", str(repo_root), "--db", str(db),
+        ], timeout=timeout)
+    finally:
+        spec_path.unlink(missing_ok=True)
+
+
 def learn(assessment_id: str, *, repo_root: Path | str, db: Path | str) -> dict:
     return _run_json([
         "learn", "--assessment-id", assessment_id, "--json", "--repo-root", str(repo_root),

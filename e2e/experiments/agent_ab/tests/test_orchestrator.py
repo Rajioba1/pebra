@@ -199,6 +199,8 @@ def test_run_metadata_records_rca_fingerprint_and_pin(monkeypatch):
     assert design["mode_config"]["tasks"] == ["JS4"]
     assert design["subject_prompt_template_sha256"]
     assert set(design["protocol_hashes"]) >= {"sham", "pebra"}
+    assert metadata["human_approval_policy"] == "always_approve"
+    assert design["execution"]["human_approval_policy"] == "always_approve"
 
 
 def test_run_metadata_records_diagnostic_thinking_override(monkeypatch):

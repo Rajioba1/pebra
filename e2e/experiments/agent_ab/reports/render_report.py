@@ -399,11 +399,30 @@ def assay_to_json(
                        "completion_test_pass_count": a.completion_test_pass_count,
                        "completion_test_pass_rate": a.completion_test_pass_rate,
                        "decision_cycle_completion_count": a.decision_cycle_completion_count,
-                       "decision_cycle_completion_rate": a.decision_cycle_completion_rate}
+                       "decision_cycle_completion_rate": a.decision_cycle_completion_rate,
+                       "autonomous_completion_count": a.autonomous_completion_count,
+                       "autonomous_completion_rate": a.autonomous_completion_rate,
+                       "human_assisted_completion_count": a.human_assisted_completion_count,
+                       "human_assisted_completion_rate": a.human_assisted_completion_rate,
+                       "safe_escalation_count": a.safe_escalation_count,
+                       "safe_escalation_rate": a.safe_escalation_rate,
+                       "approval_offered_count": a.approval_offered_count,
+                       "approval_requested_count": a.approval_requested_count,
+                       "approval_granted_count": a.approval_granted_count,
+                       "approval_request_adherence_rate": a.approval_request_adherence_rate,
+                       "approval_grant_rate": a.approval_grant_rate,
+                       "post_approval_reassessment_count": a.post_approval_reassessment_count,
+                       "post_approval_reassessment_rate": a.post_approval_reassessment_rate,
+                       "write_before_approval_count": a.write_before_approval_count,
+                       "write_before_approval_rate": a.write_before_approval_rate,
+                       "write_before_reassessment_count": a.write_before_reassessment_count,
+                       "write_before_reassessment_rate": a.write_before_reassessment_rate}
                  for arm, a in m.arm_metrics.items()},
         "pairwise": [{"intervention": p.intervention_arm, "baseline": p.baseline_arm,
                       "harm_avoided_rate": p.harm_avoided_rate,
                       "risky_completion_gain": p.risky_completion_gain,
+                      "autonomous_completion_gain": p.autonomous_completion_gain,
+                      "human_assisted_completion_gain": p.human_assisted_completion_gain,
                       "over_caution_delta": p.over_caution_delta,
                       "net_benefit": p.net_benefit, "n_pairs_risky": p.n_pairs_risky,
                       "n_pairs_safe": p.n_pairs_safe,
@@ -445,25 +464,32 @@ def render_assay_markdown(
         f"pebra_efficacy={i.pebra_has_efficacy}, pebra_exceeds_blast={i.pebra_exceeds_blast}, "
         f"graph_repair_exceeds_pebra={i.graph_repair_exceeds_pebra}", "",
         "## Per-arm endpoints", "",
-        "| arm | n | harm_rate | over_caution | quality_fail | scope_drift | completion | decision cycle | completion check | adherence | no_attempt |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| arm | n | harm_rate | over-caution | quality_fail | scope_drift | completion | autonomous | human-assisted | safe escalation | approval request | approval grant | post-approval reassess | write before approval | write before reassess | decision cycle | completion check | adherence | no-attempt |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for arm in sorted(m.arm_metrics):
         a = m.arm_metrics[arm]
         lines.append(f"| {arm} | {a.n_runs} | {_pct(a.harm_rate)} | {_pct(a.over_caution_rate)} | "
                      f"{_pct(a.quality_failure_rate)} | {_pct(a.scope_drift_rate)} | "
-                     f"{_pct(a.task_completion_rate)} | {_pct(a.decision_cycle_completion_rate)} | "
+                     f"{_pct(a.task_completion_rate)} | {_pct(a.autonomous_completion_rate)} | "
+                     f"{_pct(a.human_assisted_completion_rate)} | {_pct(a.safe_escalation_rate)} | "
+                     f"{_pct(a.approval_request_adherence_rate)} | "
+                     f"{_pct(a.approval_grant_rate)} | "
+                     f"{_pct(a.post_approval_reassessment_rate)} | "
+                     f"{_pct(a.write_before_approval_rate)} | "
+                     f"{_pct(a.write_before_reassessment_rate)} | "
+                     f"{_pct(a.decision_cycle_completion_rate)} | "
                      f"{a.completion_test_pass_count}/{a.completion_test_run_count} "
                      f"({_pct(a.completion_test_pass_rate)}) | {_pct(a.adherence_rate)} | "
                      f"{a.no_attempt_count} |")
     lines += ["", "## Pairwise (intervention vs baseline)", "",
-              "| intervention | baseline | harm_avoided | risky_completion_gain | over_caution_delta | "
-              "net_benefit | risky_pairs | safe_pairs | Cohen's d | Wilcoxon p |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
+              "| intervention | baseline | harm avoided | completion gain | autonomous gain | assisted gain | over-caution delta | net benefit | risky pairs | safe_pairs | Cohen's d | Wilcoxon p |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for p in m.pairwise:
         lines.append(f"| {p.intervention_arm} | {p.baseline_arm} | {_num(p.harm_avoided_rate)} | "
-                     f"{_num(p.risky_completion_gain)} | {_num(p.over_caution_delta)} | "
-                     f"{_num(p.net_benefit)} | {p.n_pairs_risky} | "
+                     f"{_num(p.risky_completion_gain)} | {_num(p.autonomous_completion_gain)} | "
+                     f"{_num(p.human_assisted_completion_gain)} | "
+                     f"{_num(p.over_caution_delta)} | {_num(p.net_benefit)} | {p.n_pairs_risky} | "
                      f"{p.n_pairs_safe} | {_num(p.cohens_d_paired)} | {_num(p.wilcoxon_p)} |")
     repair = _graph_repair_increment(m)
     if repair["available"]:

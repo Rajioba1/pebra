@@ -64,6 +64,32 @@ def test_assay_to_json_has_verdict_gate_trace_and_pairwise():
                                      "graph_repair_exceeds_pebra"}
     assert any(p["intervention"] == models.ARM_PEBRA and p["baseline"] == models.ARM_SHAM
                for p in js["pairwise"])
+    assert all(
+        {
+            "autonomous_completion_rate",
+            "human_assisted_completion_rate",
+            "safe_escalation_rate",
+            "approval_request_adherence_rate",
+            "approval_grant_rate",
+            "post_approval_reassessment_rate",
+            "write_before_approval_rate",
+            "write_before_reassessment_rate",
+        }
+        <= set(arm_payload)
+        for arm_payload in js["arms"].values()
+    )
+    assert all(
+        {"autonomous_completion_gain", "human_assisted_completion_gain"} <= set(comparison)
+        for comparison in js["pairwise"]
+    )
+    md = render_report.render_assay_markdown(
+        m, run_id="r1", run_metadata=_EFFICACY_METADATA
+    )
+    assert "human-assisted" in md
+    assert "approval request" in md
+    assert "post-approval reassess" in md
+    assert "write before approval" in md
+    assert "write before reassess" in md
 
 
 def test_one_pair_valid_assay_is_stamped_diagnostic_not_claim_valid():
@@ -221,17 +247,20 @@ def test_write_assay_report_writes_both_files(tmp_path):
     assert json.loads(json_path.read_text(encoding="utf-8"))["n_arms"] == 5
 
 
-def test_completed_units_risky_needs_all_six_arms():
+def test_completed_units_risky_needs_all_assay_arms():
     specs = {"T1": SimpleNamespace(task_id="T1", harm_label="risky")}
     partial = [_o("T1", a, 0, "risky", False)
                for a in (models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_ENFORCED_CONTROL,
                          models.ARM_BLAST_RADIUS, models.ARM_PEBRA)]  # missing pebra_graph_repair
     assert orchestrator._completed_units(partial, specs) == set()
-    full = partial + [_o("T1", models.ARM_PEBRA_GRAPH_REPAIR, 0, "risky", False)]
+    full = partial + [
+        _o("T1", models.ARM_PEBRA_GRAPH_REPAIR, 0, "risky", False),
+        _o("T1", models.ARM_PEBRA_HUMAN_REVIEW, 0, "risky", False),
+    ]
     assert ("T1", 0) in orchestrator._completed_units(full, specs)
 
 
-# The graph-repair arm (gate 6) is exercised on a LOCAL 6-arm set so the shared 5-arm `_ARMS`
+# The graph-repair arm (gate 6) is exercised on a local expanded arm set so the shared `_ARMS`
 # fixtures above keep asserting the base-verdict path unchanged.
 _SIX_ARMS = [*_ARMS, models.ARM_PEBRA_GRAPH_REPAIR]
 
@@ -331,10 +360,11 @@ def test_six_arm_report_surfaces_repair_gate_and_does_not_claim_unwired_candidat
     assert "candidate verification" not in md.lower()
 
 
-def test_completed_units_safe_needs_all_five_arms():
+def test_completed_units_safe_needs_all_assay_arms():
     specs = {"B1": SimpleNamespace(task_id="B1", harm_label="safe")}
-    five = [_o("B1", a, 0, "safe", False)
-            for a in (models.ARM_SHAM, models.ARM_ENFORCED_CONTROL, models.ARM_BLAST_RADIUS,
-                      models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR)]
-    assert ("B1", 0) in orchestrator._completed_units(five, specs)
-    assert orchestrator._completed_units(five[:4], specs) == set()  # missing an arm -> not complete
+    complete = [_o("B1", a, 0, "safe", False)
+                for a in (models.ARM_SHAM, models.ARM_ENFORCED_CONTROL, models.ARM_BLAST_RADIUS,
+                          models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR,
+                          models.ARM_PEBRA_HUMAN_REVIEW)]
+    assert ("B1", 0) in orchestrator._completed_units(complete, specs)
+    assert orchestrator._completed_units(complete[:-1], specs) == set()  # missing an arm -> not complete

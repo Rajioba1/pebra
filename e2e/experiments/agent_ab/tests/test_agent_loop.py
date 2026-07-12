@@ -17,11 +17,16 @@ _CFG = agent_loop.RunConfig(model="m", max_tool_calls_per_run=5, max_wall_second
                             tools=("read_file", "write_file", "list_dir", "advisory_check"))
 
 
-def _setup(tmp_path, *, prompt="Do the task.", backend=None):
+def _setup(tmp_path, *, prompt="Do the task.", backend=None, approval_backend=None):
     backend = backend or (lambda p: {"recommended_decision": None, "risk_level": "unknown",
                                       "advisory": "ok", "detail": {}})
-    return SimpleNamespace(arm="control", repo_path=tmp_path, advisory_backend=backend,
-                           subject_prompt=prompt)
+    approval_backend = approval_backend or (lambda _payload: {
+        "status": "unavailable", "approval_id": None, "message": "No approval is pending.",
+    })
+    return SimpleNamespace(
+        arm="control", repo_path=tmp_path, advisory_backend=backend,
+        approval_backend=approval_backend, subject_prompt=prompt,
+    )
 
 
 def _no_git(monkeypatch, files=()):
@@ -55,6 +60,32 @@ def test_write_capability_exposes_companion_edit_file_schema():
     edit_input = schemas["edit_file"]["input_schema"]
     assert edit_input["required"] == ["path", "old_string", "new_string"]
     assert edit_input["properties"]["replace_all"]["type"] == "boolean"
+
+
+def test_human_approval_tool_is_arm_neutral_and_dispatches_to_host_backend(tmp_path):
+    cfg = agent_loop.RunConfig(model="m", tools=("request_human_approval",))
+    schemas = {item["name"]: item for item in agent_loop._build_tools_schema(cfg.tools)}
+    seen: list[dict] = []
+    setup = _setup(
+        tmp_path,
+        approval_backend=lambda payload, **_kwargs: seen.append(payload) or {
+            "status": "approved",
+            "approval_id": "approval_1",
+            "message": "Approval recorded. Reassess the exact candidate before editing.",
+        },
+    )
+
+    result = agent_loop._dispatch(
+        "request_human_approval", {"reason": "remaining risk needs review"}, setup,
+    )
+
+    assert schemas["request_human_approval"]["input_schema"]["required"] == ["reason"]
+    assert seen == [{"reason": "remaining risk needs review"}]
+    assert result == {
+        "status": "approved",
+        "approval_id": "approval_1",
+        "message": "Approval recorded. Reassess the exact candidate before editing.",
+    }
 
 
 def test_two_calls_monotonic(tmp_path, monkeypatch):

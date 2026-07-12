@@ -431,7 +431,7 @@ Absolute caller counts may be shown as explanation, but the high-risk trigger mu
 
 ## 6. Decision Gate Sequence  (`core/decision_engine.py` — §8 is the SOLE authority)
 
-Ordered; the first matching risk gate sets a provisional decision. Sanction resolution may then finalize a risk-threshold `ask_human` / `reject` into controlled-high-risk `proceed` if the sanction is valid and pre-edit authorization controls are satisfied:
+Ordered; the first matching risk gate sets a provisional decision. Sanction resolution may then finalize a risk-threshold or exhausted-revision `ask_human` / `reject` from gates 2/3/4/9 into controlled-high-risk `proceed` if the sanction is valid and pre-edit authorization controls are satisfied:
 
 1. policy violation → **reject** with `high_risk_triggers[]` if the violation is risk/control related
 2. `criticality_stage == C4` and `c4_always_ask_human` and the symbol diff is consequential or unknown → **ask_human** (`requires_confirmation=true`) with a C4/consequence trigger. Verified `COSMETIC` / safe `TEST_ONLY` edits in C4 paths remain sensitive-context edits, not controlled-high-risk edits.
@@ -444,7 +444,7 @@ Ordered; the first matching risk gate sets a provisional decision. Sanction reso
 9. confidence-upgrade requested without `evidence_delta` → reject
 10. invalid/stale required graph evidence or stale architecture map → **inspect_first**
 11. trusted repo-relative CodeGraph blast over the configured guardrail → **inspect_first**
-12. authorized sanction resolution may convert a risk-threshold `ask_human` / `reject` from gates 2/3/4/6 into **proceed** with `risk_mode=controlled_high_risk`, `requires_confirmation=true`, and binding controls. It never overrides gate 1 policy violations unless a distinct policy-exception sanction type is ratified.
+12. authorized sanction resolution may convert a risk-threshold or exhausted-revision `ask_human` / `reject` from gates 2/3/4/9 into **proceed** with `risk_mode=controlled_high_risk`, `requires_confirmation=true`, and binding controls. It never overrides gate 1 policy violations unless a distinct policy-exception sanction type is ratified.
 13. else → **proceed** (set `requires_confirmation=true` if C3 or C4)
 
 Sanction controls are split by timing. `pre_edit_authorization_controls` must be satisfied before gate 10 can convert the provisional decision. `pre_commit_required_controls` are bound into the guidance packet and verified later by `pebra_verify`; missing or failed pre-commit controls invalidate the sanction before commit/outcome logging.
