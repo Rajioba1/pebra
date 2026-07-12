@@ -24,12 +24,18 @@ _UNAVAILABLE = "The advisory tool is temporarily unavailable. Continue with norm
 _MISSING = "Provide target_file, change_summary, and proposed_patch to get a pre-edit advisory."
 
 
-def advise(payload: dict[str, Any], *, repo_root: Path | str, db: Path | str | None = None) -> dict[str, Any]:
+def advise(
+    payload: dict[str, Any], *, repo_root: Path | str, db: Path | str | None = None,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     """Return the shared advisory shape with the dependent-file list in the advisory text (no verdict)."""
     if [k for k in advisory_contract.INPUT_SCHEMA["required"] if not payload.get(k)]:
         return advisory_contract.normalize_output({"advisory": _MISSING})
     try:
-        result = cli_harness.dependents_result(payload["target_file"], repo_root=repo_root)
+        kwargs = {"repo_root": repo_root}
+        if timeout_seconds is not None:
+            kwargs["timeout"] = max(1, int(timeout_seconds))
+        result = cli_harness.dependents_result(payload["target_file"], **kwargs)
     except Exception:  # noqa: BLE001 - a tool failure returns an arm-neutral fallback, never crashes the run
         return advisory_contract.normalize_output({"advisory": _UNAVAILABLE})
     if not result.get("available"):

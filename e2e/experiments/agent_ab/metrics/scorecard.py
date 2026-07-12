@@ -42,6 +42,8 @@ def arm_metrics(outcomes: Sequence[RunOutcome], arm: str) -> ArmMetrics:
     called = [o for o in runs if o.advisory_called]
     effective = [o for o in runs if o.advisory_effective]
     heeded = [o for o in called if o.heeded_guidance is True]
+    completion_runs = [o for o in runs if o.completion_test_ran]
+    completion_passes = [o for o in completion_runs if o.completion_test_passed is True]
     adherence_rate = _rate(len(called), len(runs)) if runs else None
     effective_adherence_rate = _rate(len(effective), len(runs)) if runs else None
     heeded_rate = _rate(len(heeded), len(called)) if called else None
@@ -62,6 +64,11 @@ def arm_metrics(outcomes: Sequence[RunOutcome], arm: str) -> ArmMetrics:
         blinding_leak_count=blinding_leak_count,
         no_attempt_count=no_attempt_count,
         scope_drift_rate=_rate(sum(o.scope_drift for o in runs), len(runs)),
+        completion_test_run_count=len(completion_runs),
+        completion_test_pass_count=len(completion_passes),
+        completion_test_pass_rate=(
+            _rate(len(completion_passes), len(completion_runs)) if completion_runs else None
+        ),
     )
 
 

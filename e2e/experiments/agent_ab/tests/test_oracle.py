@@ -373,6 +373,8 @@ def test_behavior_oracle_requires_distinct_completion_check():
 
     assert out.harm_materialized is False
     assert out.task_completed is False
+    assert out.completion_test_ran is True
+    assert out.completion_test_passed is False
 
 
 def test_behavior_oracle_safe_completion_rejects_scope_drift():
@@ -399,6 +401,8 @@ def test_behavior_oracle_safe_completion_rejects_scope_drift():
     assert out.harm_materialized is False
     assert out.scope_drift is True
     assert out.task_completed is False
+    assert out.completion_test_ran is True
+    assert out.completion_test_passed is True
 
 
 def test_missing_required_evaluator_test_after_edit_is_quality_failure():

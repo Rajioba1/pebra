@@ -9,7 +9,7 @@ from e2e.experiments.agent_ab.models import RunOutcome
 
 def _out(task_id, arm, seed, harm_label, *, harm=False, over=False, completed=True,
          quality=False, scope_drift=False, called=False, heeded=None, cycles=1, leak=False, error=None,
-         no_attempt=False, timed_out=False):
+         no_attempt=False, timed_out=False, completion_ran=False, completion_passed=None):
     return RunOutcome(
         task_id=task_id, arm=arm, seed=seed, harm_label=harm_label,
         harm_materialized=harm, task_completed=completed, over_cautious=over,
@@ -18,6 +18,8 @@ def _out(task_id, arm, seed, harm_label, *, harm=False, over=False, completed=Tr
         advisory_called=called, advisory_decision=None, heeded_guidance=heeded,
         adherence_state=models.ADH_DID_NOT_CALL, blinding_leak=leak, blinding_terms=(),
         timed_out=timed_out, no_attempt=no_attempt, error=error,
+        completion_test_ran=completion_ran,
+        completion_test_passed=completion_passed,
     )
 
 
@@ -91,6 +93,20 @@ def test_no_attempt_runs_excluded_from_metrics_and_counted():
     assert m.n_runs == 1 and m.n_risky == 1
     assert m.harm_rate == 1.0
     assert m.no_attempt_count == 1
+
+
+def test_arm_metrics_surface_completion_oracle_counts():
+    outs = [
+        _out("T1", "control", 0, "risky", completion_ran=True, completion_passed=False),
+        _out("T1", "control", 1, "risky", completion_ran=True, completion_passed=True),
+        _out("T1", "control", 2, "risky"),
+    ]
+
+    metrics = scorecard.arm_metrics(outs, "control")
+
+    assert metrics.completion_test_run_count == 2
+    assert metrics.completion_test_pass_count == 1
+    assert metrics.completion_test_pass_rate == 0.5
 
 
 def test_no_attempt_baseline_does_not_create_false_no_headroom_pair():

@@ -15,6 +15,7 @@ like "graph"/"oracle" legitimately appears in this UI codebase and must not abor
 from __future__ import annotations
 
 import json
+import inspect
 import subprocess
 import time
 from dataclasses import dataclass
@@ -125,11 +126,11 @@ def _dispatch(
     if name == "read_file":
         return tool_impl.read_file(args.get("path", ""), repo)
     if name == "write_file":
-        return _gated_write(args, setup)
+        return _gated_write(args, setup, timeout_seconds=timeout_seconds)
     if name == "edit_file":
-        return _gated_edit(args, setup)
+        return _gated_edit(args, setup, timeout_seconds=timeout_seconds)
     if name == "apply_patch":
-        return _gated_patch(args, setup)
+        return _gated_patch(args, setup, timeout_seconds=timeout_seconds)
     if name == "list_dir":
         return tool_impl.list_dir(args.get("path"), repo)
     if name == "search_grep":
@@ -152,7 +153,9 @@ def _dispatch(
     return {"error": f"unknown tool {name!r}"}
 
 
-def _gated_write(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
+def _gated_write(
+    args: dict[str, Any], setup: "ArmSetup", *, timeout_seconds: float | None = None
+) -> dict[str, Any]:
     """Route a write through the arm's gate-check backend, then normalize to a blinded ``{ok, blocked}``
     shape — IDENTICAL in both arms; only the value differs (control's sham always allows). A gate
     ``deny``/``ask`` blocks the write (nothing is written) with an arm-neutral reason; a gate ERROR
@@ -167,10 +170,13 @@ def _gated_write(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
         event,
         setup,
         lambda: tool_impl.write_file(path, args.get("content", ""), setup.repo_path),
+        timeout_seconds=timeout_seconds,
     )
 
 
-def _gated_edit(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
+def _gated_edit(
+    args: dict[str, Any], setup: "ArmSetup", *, timeout_seconds: float | None = None
+) -> dict[str, Any]:
     path = args.get("path", "")
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
@@ -191,10 +197,13 @@ def _gated_edit(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
         lambda: tool_impl.edit_file(
             path, old_string, new_string, setup.repo_path, replace_all=replace_all
         ),
+        timeout_seconds=timeout_seconds,
     )
 
 
-def _gated_patch(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
+def _gated_patch(
+    args: dict[str, Any], setup: "ArmSetup", *, timeout_seconds: float | None = None
+) -> dict[str, Any]:
     patch = args.get("patch", "")
     event = {
         "tool_name": "apply_patch",
@@ -205,14 +214,26 @@ def _gated_patch(args: dict[str, Any], setup: "ArmSetup") -> dict[str, Any]:
         event,
         setup,
         lambda: tool_impl.apply_patch(patch, setup.repo_path),
+        timeout_seconds=timeout_seconds,
     )
 
 
 def _gated_file_change(
-    event: dict[str, Any], setup: "ArmSetup", apply_change: Any
+    event: dict[str, Any], setup: "ArmSetup", apply_change: Any,
+    *, timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     try:
-        decision = setup.gate_check_backend(event)
+        parameters = inspect.signature(setup.gate_check_backend).parameters.values()
+        accepts_timeout = any(
+            parameter.name == "timeout_seconds"
+            or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        decision = (
+            setup.gate_check_backend(event, timeout_seconds=timeout_seconds)
+            if accepts_timeout
+            else setup.gate_check_backend(event)
+        )
     except Exception:  # noqa: BLE001 - a gate failure must never block the experiment write (fail-open)
         decision = {"permission": "allow"}
     # FIXED schema in every case and BOTH arms: {"ok", "blocked", "reason"}. A per-outcome key set (e.g.

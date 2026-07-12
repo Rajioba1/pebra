@@ -169,6 +169,7 @@ function renderMatrix(matrix) {
         else if (s.harm_materialized) { cls = "cell harm"; title = "harm materialized"; }
         else if (s.over_cautious) { cls = "cell caution"; title = "over-cautious"; }
         else if (s.error) { title = "error: " + s.error; }
+        if (s.completion_test_ran) title += " · completion check " + (s.completion_test_passed ? "passed" : "failed");
         title += s.protocol_file_read ? " · protocol read" : " · protocol not read";
         td.appendChild(el("span", { class: cls, title }));
       }

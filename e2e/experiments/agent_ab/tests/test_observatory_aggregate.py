@@ -72,6 +72,23 @@ def test_build_run_view_basic_ab(tmp_path):
     assert cells[("T1", 0, models.ARM_CONTROL)]["outcome_summary"]["protocol_file_read"] is True
 
 
+def test_matrix_summary_keeps_completion_oracle_evidence(tmp_path):
+    outcome = dataclasses.replace(
+        _oc("JS4", models.ARM_PEBRA_GRAPH_REPAIR, 0, harm=True, completed=False),
+        completion_test_ran=True,
+        completion_test_passed=True,
+    )
+    _write_run(tmp_path, "r1", [outcome])
+
+    view = aggregate.build_run_view(
+        "r1", ab_out=tmp_path, mode=None, corpus=[], config={"bootstrap_seed": 0}
+    )
+
+    summary = view["matrix"][0]["outcome_summary"]
+    assert summary["completion_test_ran"] is True
+    assert summary["completion_test_passed"] is True
+
+
 def test_mode_absent_gives_observed_only_matrix(tmp_path):
     outcomes = [_oc("T1", models.ARM_CONTROL, 0), _oc("T1", models.ARM_TREATMENT, 0)]
     _write_run(tmp_path, "r1", outcomes)

@@ -217,7 +217,13 @@ def _verify_candidate_for_repair(
             "reason": "candidate patch target does not match advisory target",
         }
     started = time.monotonic()
-    scratch = candidate_materializer.materialize_candidate(repo_path, patch)
+    scratch = (
+        candidate_materializer.materialize_candidate(repo_path, patch)
+        if timeout_seconds is None
+        else candidate_materializer.materialize_candidate(
+            repo_path, patch, timeout_seconds=timeout_seconds
+        )
+    )
     materialized_at = time.monotonic()
     if scratch is None:
         return {
@@ -392,8 +398,9 @@ def _advisory_backend(
 
         return _real
     if arm in _BLAST_ADVISORY_ARMS:
-        return lambda payload, **_kwargs: advisory_blast_radius.advise(
-            payload, repo_root=repo_path, db=db_path
+        return lambda payload, **kwargs: advisory_blast_radius.advise(
+            payload, repo_root=repo_path, db=db_path,
+            timeout_seconds=kwargs.get("timeout_seconds"),
         )
     return lambda payload, **_kwargs: advisory_check_sham.advise(payload)
 
@@ -416,8 +423,13 @@ def _gate_check_backend(
     if arm in _GATE_ARMS:
         # consult_only: the A/B has no human approver, so ask_human/reject stay conservative (deny)
         # instead of surfacing an interactive approval prompt.
-        def _real_gate(event: dict[str, Any]) -> dict[str, Any]:
-            decision = cli_harness.gate_check(event, db=db_path, consult_only=True)
+        def _real_gate(
+            event: dict[str, Any], *, timeout_seconds: float | None = None
+        ) -> dict[str, Any]:
+            kwargs = {"db": db_path, "consult_only": True}
+            if timeout_seconds is not None:
+                kwargs["timeout"] = max(1, int(timeout_seconds))
+            decision = cli_harness.gate_check(event, **kwargs)
             if (
                 telemetry is not None
                 and decision.get("permission") == "allow"

@@ -135,7 +135,10 @@ def scorecard(*, repo_root: Path | str, db: Path | str) -> dict:
     return _run_json(["scorecard", "--json", "--repo-root", str(repo_root), "--db", str(db)])
 
 
-def gate_check(event: dict, *, db: Path | str, consult_only: bool = False) -> dict:
+def gate_check(
+    event: dict, *, db: Path | str, consult_only: bool = False,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> dict:
     """`pebra gate-check` — the pure pre-edit gate DECISION for a proposed edit. The host event
     (``tool_name``/``tool_input``/``cwd``) goes in on STDIN; a ``{permission, tier, reason, warn}`` JSON
     comes out. gate-check always exits 0 (allow/deny/ask as data) — the caller enforces. The event
@@ -148,7 +151,7 @@ def gate_check(event: dict, *, db: Path | str, consult_only: bool = False) -> di
         cmd.append("--consult-only")
     env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
     proc = subprocess.run(cmd, input=json.dumps(event), capture_output=True, text=True,
-                          env=env, timeout=DEFAULT_TIMEOUT_SECONDS)
+                          env=env, timeout=timeout)
     _check_exit(proc.returncode, cmd, proc.stderr)
     return _parse_json_stdout(proc.stdout, cmd)
 
@@ -176,9 +179,14 @@ def dependents(target: str, *, repo_root: Path | str) -> list[str]:
     return list(files) if isinstance(files, list) else []
 
 
-def dependents_result(target: str, *, repo_root: Path | str) -> dict:
+def dependents_result(
+    target: str, *, repo_root: Path | str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+) -> dict:
     """Structured `pebra dependents --json` payload, including graph availability metadata."""
-    return _run_json(["dependents", "--target", str(target), "--repo-root", str(repo_root), "--json"])
+    return _run_json(
+        ["dependents", "--target", str(target), "--repo-root", str(repo_root), "--json"],
+        timeout=timeout,
+    )
 
 
 def dashboard_proc(

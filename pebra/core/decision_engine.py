@@ -570,6 +570,20 @@ def decide(
     ):
         gates_fired.append({"gate": 10, "name": "sanction_resolution",
                             "converted_from": provisional.value})
+        if obligations_issue:
+            gates_fired.append(obligations_issue)
+            return _result(
+                Decision.ASK_HUMAN,
+                requires_confirmation=True,
+                risk_mode=_risk_mode(
+                    Decision.ASK_HUMAN, stage, controlled=False, elevated=False
+                ),
+                gates_fired=gates_fired,
+                decision_reason=(
+                    "The sanction covers the risk decision but cannot waive incomplete "
+                    "host-declared task obligations."
+                ),
+            )
         return _result(
             Decision.PROCEED,
             requires_confirmation=True,

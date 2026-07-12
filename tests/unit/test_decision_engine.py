@@ -13,6 +13,7 @@ import pytest
 from pebra.core import assessment_builder as ab
 from pebra.core import decision_engine as de
 from pebra.core.constants import Decision, RiskMode
+from pebra.core.models import TaskObligationsEvidence
 from tests.unit.test_assessment_builder import _worked_example_input
 
 
@@ -1178,6 +1179,27 @@ def test_valid_sanction_converts_gate3_to_controlled_high_risk_proceed() -> None
     assert result.risk_mode is RiskMode.CONTROLLED_HIGH_RISK
     assert result.requires_confirmation is True
     assert result.high_risk_triggers
+
+
+def test_sanction_cannot_bypass_incomplete_task_obligations() -> None:
+    sanction = {
+        "valid": True,
+        "pre_edit_authorization_controls_satisfied": True,
+        "converts_gates": [2, 3, 4],
+    }
+    inp = replace(
+        _worked_example_input(),
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        sanction=sanction,
+        task_obligations=TaskObligationsEvidence(required_files=("src/compat.py",)),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["name"] == "sanction_resolution" for g in result.gates_fired)
+    assert any(g["name"] == "task_obligations_incomplete" for g in result.gates_fired)
 
 
 def test_gate7_reachable_at_attempt_1_only_with_cap_2() -> None:

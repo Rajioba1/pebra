@@ -185,6 +185,8 @@ class RunOutcome:
     blinding_leak: bool
     blinding_terms: tuple[str, ...]
     timed_out: bool
+    completion_test_ran: bool = False
+    completion_test_passed: bool | None = None
     no_attempt: bool = False             # stopped without an edit attempt or restrictive gate
     error: str | None = None            # non-None => run failed (e.g. live client error); excluded from metrics
     limit_reason: str | None = None
@@ -216,6 +218,9 @@ class ArmMetrics:
     blinding_leak_count: int = 0        # runs excluded due to transcript/tool visibility leaks
     no_attempt_count: int = 0            # runs excluded because the subject never made a scorable attempt
     scope_drift_rate: float = 0.0       # over all non-error, non-leaked runs
+    completion_test_run_count: int = 0
+    completion_test_pass_count: int = 0
+    completion_test_pass_rate: float | None = None
 
 
 @dataclass(frozen=True)
