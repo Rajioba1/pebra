@@ -951,9 +951,12 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
     )
 
     assert calls[0]["attempt"] == 0
-    assert calls[1]["attempt"] == 1
-    assert calls[1]["cap"] == 2
-    assert calls[1]["verification"] is not None
+    assert calls[1]["patch"] == "bad route"
+    assert calls[1]["attempt"] == 0
+    assert calls[1]["verification"] is None
+    assert calls[2]["attempt"] == 1
+    assert calls[2]["cap"] == 2
+    assert calls[2]["verification"] is not None
     assert gate_calls == [
         ("reference_revise_calibration.db", "apply_patch"),
         ("reference_revise_calibration.db", "apply_patch"),

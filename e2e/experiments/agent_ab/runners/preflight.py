@@ -816,6 +816,22 @@ def run_revise_safer_calibration(
                         f"({verification.get('status')!r}: {verification.get('reason', '')})"
                     )
                     continue
+                # A revision is meaningful only inside the same persisted assessment lineage. Keep
+                # the bad/reference stores independent, but seed the reference store with its own
+                # origin assessment before submitting the known-safe candidate at attempt 1.
+                reference_origin = assess_fn(
+                    repo_path,
+                    spec,
+                    bad_patch_text,
+                    reference_db,
+                    revise_safer_attempt=0,
+                )
+                if reference_origin.get("recommended_decision") != "revise_safer":
+                    failures.append(
+                        f"{spec.task_id}: reference lineage origin did not return revise_safer "
+                        f"({reference_origin.get('recommended_decision')!r})"
+                    )
+                    continue
                 fixed = assess_fn(
                     repo_path,
                     spec,
