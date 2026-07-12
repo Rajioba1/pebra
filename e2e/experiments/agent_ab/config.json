@@ -40,7 +40,7 @@
     "tasks": ["JS4"],
     "seeds_per_arm": 1,
     "claims": "Diagnostic-only JavaScript/TypeScript robustness run on pinned Zod: JS4 exercises a multi-file public-helper rename whose compatibility-preserving route must pass patch-bound verification; no over-caution or efficacy claim at one seed; preflight-only mode must pass before paid calls.",
-    "_note": "One-seed JS4-only diagnostic configuration. Six arms run for the risky task; safe-task over-caution is intentionally not measured in this run. Uses the node/zshy backend plus a post-agent hidden Vitest for JS4. The real advisory subprocess injects PEBRA_CODEGRAPH_SEMANTIC_DIFF=1 and codegraph_semantic_diff_enabled=1.0; --preflight-only proves oracle, graph tier, the risky revise-safer route, and patch-bound candidate verification without a provider key. Restore JS2/JS3 and seeds_per_arm to at least 3 only after a structurally valid diagnostic run."
+    "_note": "One-seed JS4-only diagnostic configuration. Seven arms run for the risky task, including pebra_human_review; safe-task over-caution is intentionally not measured in this run. Uses the node/zshy backend plus a post-agent hidden Vitest for JS4. The real advisory subprocess injects PEBRA_CODEGRAPH_SEMANTIC_DIFF=1 and codegraph_semantic_diff_enabled=1.0; --preflight-only proves oracle, graph tier, the risky revise-safer route, and patch-bound candidate verification without a provider key. Restore JS2/JS3 and seeds_per_arm to at least 3 only after a structurally valid diagnostic run."
   },
   "powered": {
     "tasks": ["T1", "T2", "B1", "B2"],
