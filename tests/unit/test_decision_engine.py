@@ -24,6 +24,17 @@ def _assess(**overrides):
     return ab.build_assessment(inp)
 
 
+def _origin_revision():
+    from pebra.core import models as m
+
+    return m.RevisionCompletenessEvidence(
+        is_revision=True,
+        origin_available=True,
+        origin_expected_loss=0.60,
+        origin_rau=-0.20,
+    )
+
+
 def test_worked_example_is_proceed_with_confirmation_sensitive_context() -> None:
     result = de.decide(_assess())
     assert result.recommended_decision is Decision.PROCEED
@@ -31,6 +42,7 @@ def test_worked_example_is_proceed_with_confirmation_sensitive_context() -> None
     assert result.risk_mode is RiskMode.SENSITIVE_CONTEXT
     assert result.scores["rau"] == pytest.approx(0.31)
     assert result.scores["benefit_breakdown"]["source_type"] == "projected"
+    assert result.scores["verified_risk_events_removed"] == []
 
 
 def test_missing_host_obligation_downgrades_would_be_proceed() -> None:
@@ -161,7 +173,7 @@ def test_incomplete_revision_asks_human_after_budget_exhaustion() -> None:
     assert any(g["name"] == "revision_envelope_incomplete" for g in result.gates_fired)
 
 
-def test_verified_incomplete_revision_can_proceed_when_patch_bound() -> None:
+def test_verified_incomplete_revision_escalates_when_patch_drops_origin_scope() -> None:
     import hashlib
 
     from pebra.core import models as m
@@ -190,8 +202,8 @@ def test_verified_incomplete_revision_can_proceed_when_patch_bound() -> None:
 
     result = de.decide(ab.build_assessment(inp))
 
-    assert result.recommended_decision is Decision.PROCEED
-    assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["name"] == "revision_envelope_incomplete" for g in result.gates_fired)
 
 
 def test_revision_lineage_lookup_failure_never_silently_proceeds() -> None:
@@ -433,6 +445,8 @@ def test_gate3_verified_safer_candidate_can_proceed_pre_edit() -> None:
         action=action,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
+        thresholds={**inp.thresholds, "revise_safer_attempt": 1, "max_revise_safer_attempts": 2},
+        revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
             changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
@@ -487,9 +501,104 @@ def test_gate3_verified_single_symbol_candidate_can_proceed_pre_edit() -> None:
 
     assert result.scores["expected_loss"] > result.scores["effective_threshold"]
     assert result.scores["expected_utility"] < 0
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert not any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
+
+
+def test_revised_candidate_with_lower_loss_and_nonnegative_rau_proceeds() -> None:
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(),
+        events=[{"event": "test_regression", "p_event": 0.55, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        thresholds={
+            **_worked_example_input().thresholds,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 2,
+        },
+        revision_completeness_evidence=m.RevisionCompletenessEvidence(
+            is_revision=True,
+            origin_available=True,
+            origin_expected_loss=0.36,
+            origin_rau=-0.20,
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.scores["expected_loss"] == pytest.approx(0.22)
+    assert result.scores["expected_loss"] > result.scores["effective_threshold"]
+    assert result.scores["rau"] >= 0
     assert result.recommended_decision is Decision.PROCEED
-    assert any(g["name"] == "candidate_verification_passed" for g in result.gates_fired)
-    assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
+    assert any(g["name"] == "revision_risk_benefit_improved" for g in result.gates_fired)
+
+
+def test_revised_candidate_with_negative_rau_asks_human_even_when_verified() -> None:
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(),
+        action=replace(_worked_example_input().action, proposed_patch=_CANDIDATE_PATCH),
+        events=[{"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80}],
+        immediate_benefit=0.5,
+        thresholds={
+            **_worked_example_input().thresholds,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 2,
+        },
+        revision_completeness_evidence=m.RevisionCompletenessEvidence(
+            is_revision=True,
+            origin_available=True,
+            origin_expected_loss=0.50,
+            origin_rau=-0.30,
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"public_typecheck": "passed"},
+            required_checks=["public_typecheck"],
+            domain="covering_tests",
+            verified_patch_hash=de.candidate_patch_hash(_CANDIDATE_PATCH),
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.scores["expected_loss"] < 0.50
+    assert result.scores["rau"] < 0
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["name"] == "revision_risk_still_outweighs_benefit" for g in result.gates_fired)
+    assert "expected_loss=" in result.decision_reason
+    assert "benefit=" in result.decision_reason
+    assert "rau=" in result.decision_reason
+
+
+def test_revised_candidate_that_does_not_reduce_loss_asks_human() -> None:
+    from pebra.core import models as m
+
+    inp = replace(
+        _worked_example_input(),
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        thresholds={
+            **_worked_example_input().thresholds,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 2,
+        },
+        revision_completeness_evidence=m.RevisionCompletenessEvidence(
+            is_revision=True,
+            origin_available=True,
+            origin_expected_loss=0.20,
+            origin_rau=-0.10,
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.scores["rau"] >= 0
+    assert result.scores["expected_loss"] >= 0.20
+    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert any(g["name"] == "revision_risk_not_reduced" for g in result.gates_fired)
 
 
 def test_request_supplied_candidate_verification_is_not_trusted_by_default() -> None:
@@ -528,6 +637,7 @@ def test_gate3_passed_verification_without_a_candidate_patch_cannot_proceed() ->
         inp,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
+        revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
             changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
@@ -559,6 +669,7 @@ def test_gate3_bad_or_unavailable_candidate_verification_stays_blocking(status: 
         inp,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
+        revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
             changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
@@ -590,6 +701,7 @@ def test_gate3_passed_candidate_verification_requires_declared_checks() -> None:
         inp,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
+        revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
             changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
@@ -622,6 +734,7 @@ def test_sensitive_verified_candidate_still_requires_confirmation() -> None:
         action=action,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
+        revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
             changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
@@ -667,6 +780,7 @@ def _verified_candidate_input(*, verified_patch_hash):
         action=action,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
+        revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
             changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
@@ -1202,10 +1316,9 @@ def test_sanction_cannot_bypass_incomplete_task_obligations() -> None:
     assert any(g["name"] == "task_obligations_incomplete" for g in result.gates_fired)
 
 
-def test_gate7_reachable_at_attempt_1_only_with_cap_2() -> None:
-    # P4 gate-7-reachability (real decision engine, not a fake): the narrowed 2nd resubmission carrying
-    # a verified candidate reaches gate 7 -> PROCEED ONLY when the cap is raised to 2. At cap 1 (plain
-    # PEBRA) the revise_safer budget is exhausted first and gate 7 is unreachable.
+def test_revision_cap_limits_more_revisions_but_does_not_block_valid_terminal_proceed() -> None:
+    # A valid revised candidate completes the decision cycle even when no further revision is allowed.
+    # The cap bounds another REVISE_SAFER response; it must not discard an already-good candidate.
     base = _verified_candidate_input(verified_patch_hash=de.candidate_patch_hash(_CANDIDATE_PATCH))
 
     cap2 = replace(base, thresholds={
@@ -1217,5 +1330,5 @@ def test_gate7_reachable_at_attempt_1_only_with_cap_2() -> None:
     cap1 = replace(base, thresholds={
         **base.thresholds, "revise_safer_attempt": 1, "max_revise_safer_attempts": 1})
     r1 = de.decide(ab.build_assessment(cap1))
-    assert r1.recommended_decision is not Decision.PROCEED  # exhausted -> gate 7 never reached
-    assert not any(g["name"] == "candidate_verification_passed" for g in r1.gates_fired)
+    assert r1.recommended_decision is Decision.PROCEED
+    assert any(g["name"] == "candidate_verification_passed" for g in r1.gates_fired)

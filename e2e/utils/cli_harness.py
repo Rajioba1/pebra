@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -79,6 +80,21 @@ def assess(
     if trusted_task_obligations_path is not None:
         args += ["--trusted-task-obligations-file", str(trusted_task_obligations_path)]
     return _run_json(args, extra_env=extra_env, timeout=timeout)
+
+
+def candidate_patch(
+    edits: list[dict], *, repo_root: Path | str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+) -> dict:
+    """Convert structured edits through the production CLI without importing PEBRA."""
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+        json.dump({"edits": edits}, fh)
+        request_path = Path(fh.name)
+    try:
+        return _run_json([
+            "candidate-patch", str(request_path), "--repo-root", str(repo_root), "--json",
+        ], timeout=timeout)
+    finally:
+        request_path.unlink(missing_ok=True)
 
 
 def record_outcome(

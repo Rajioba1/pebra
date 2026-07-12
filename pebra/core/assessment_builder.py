@@ -9,6 +9,7 @@ written only by the outcome logger.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -74,10 +75,34 @@ def _penalized_confidence_factor(current: float, penalty: float) -> float:
     return max(_MIN_CONFIDENCE_FACTOR, current - penalty)
 
 
+def _verified_event_filter(inp: AssessmentInput) -> tuple[list[dict[str, Any]], list[str]]:
+    """Remove only risk events directly disproved by exact, host-produced candidate evidence."""
+    verification = inp.candidate_verification
+    patch = inp.action.proposed_patch
+    bound = bool(
+        verification.status == "passed"
+        and patch is not None
+        and verification.verified_patch_hash
+        and verification.verified_patch_hash
+        == hashlib.sha256(patch.encode("utf-8")).hexdigest()
+    )
+    passed = {
+        check
+        for check in verification.required_checks
+        if str(verification.checks.get(check, "")).lower() == "passed"
+    }
+    if not bound or "public_contract_preserved" not in passed:
+        return list(inp.events), []
+    disproved = {"public_api_break", "api_contract_break"}
+    removed = sorted({str(event.get("event")) for event in inp.events} & disproved)
+    return [event for event in inp.events if event.get("event") not in disproved], removed
+
+
 def build_assessment(inp: AssessmentInput) -> Assessment:
     # --- expected_loss with event-class-aware disutility floor (AD-1) ---
     floored_events: list[dict[str, Any]] = []
-    for ev in inp.events:
+    risk_events, verified_risk_events_removed = _verified_event_filter(inp)
+    for ev in risk_events:
         disutility, floor_applied = score_math.apply_criticality_floor(
             ev["event"], ev["elicited_disutility"], inp.criticality_value
         )
@@ -220,6 +245,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
     )
     scores: dict[str, Any] = {
         "expected_loss": expected_loss,
+        "verified_risk_events_removed": verified_risk_events_removed,
         "loss_components": loss_components,
         "benefit": benefit,
         "benefit_breakdown": benefit_breakdown,

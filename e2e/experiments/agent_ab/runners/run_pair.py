@@ -310,6 +310,18 @@ def _advisory_backend(
             nonlocal revise_attempt
             backend_started = time.monotonic()
             attempt = revise_attempt
+            candidate_edits = payload.get("candidate_edits")
+            if isinstance(candidate_edits, list) and candidate_edits:
+                generated = cli_harness.candidate_patch(
+                    candidate_edits,
+                    repo_root=repo_path,
+                    timeout=(
+                        max(1, int(timeout_seconds))
+                        if timeout_seconds is not None
+                        else cli_harness.DEFAULT_TIMEOUT_SECONDS
+                    ),
+                )
+                payload = {**payload, "proposed_patch": generated["proposed_patch"]}
             # NEVER trust a subject-supplied candidate_verification. The hash-binding in the decision
             # engine only stops REPLAY against a different patch; it is NOT an authenticity check
             # (verified_patch_hash = sha256(the subject's own patch) is secret-free, so a subject could

@@ -118,6 +118,8 @@ def _summary(o: models.RunOutcome) -> dict:
     return {"harm_materialized": o.harm_materialized, "task_completed": o.task_completed,
             "completion_test_ran": o.completion_test_ran,
             "completion_test_passed": o.completion_test_passed,
+            "decision_cycle_completed": o.decision_cycle_completed,
+            "terminal_governance_outcome": o.terminal_governance_outcome,
             "over_cautious": o.over_cautious, "blinding_leak": o.blinding_leak,
             "quality_failure": o.quality_failure, "error": o.error,
             "timed_out": o.timed_out,

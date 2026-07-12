@@ -119,8 +119,9 @@ def test_revise_safer_advisory_surfaces_blinded_safer_route_constraints():
         assert term not in blob, f"engine vocab leaked into agent-facing output: {term!r}"
 
 
-def test_advisory_contract_requires_patch_evidence():
-    assert "proposed_patch" in advisory_contract.INPUT_SCHEMA["required"]
+def test_advisory_contract_accepts_patch_or_structured_candidate_edits():
+    assert "proposed_patch" not in advisory_contract.INPUT_SCHEMA["required"]
+    assert "candidate_edits" in advisory_contract.INPUT_SCHEMA["properties"]
     with pytest.raises(ValueError, match="requires proposed_patch"):
         real._build_request({"target_file": "x.cs", "change_summary": "change x"})
 

@@ -347,6 +347,8 @@ class RevisionCompletenessEvidence:
     origin_public_symbols: tuple[str, ...] = ()
     missing_files: tuple[str, ...] = ()
     missing_public_symbols: tuple[str, ...] = ()
+    origin_expected_loss: float | None = None
+    origin_rau: float | None = None
     fallback_reason: str | None = None
 
 

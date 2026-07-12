@@ -6,6 +6,7 @@ action_status=pending (AD-4), and reproduces the spec §10 worked-example score 
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 
 import pytest
@@ -405,3 +406,45 @@ def test_builder_scope_basis_unknown_fallback_when_no_symbols() -> None:
     )
     a = ab.build_assessment(inp)
     assert a.scores["symbol_scope_evidence"]["scope_basis"] == "unknown_fallback"
+
+
+def test_patch_bound_public_contract_proof_removes_that_loss_event_from_revision_math() -> None:
+    patch = "--- a/src/api.ts\n+++ b/src/api.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    base = _worked_example_input()
+    inp = replace(
+        base,
+        action=replace(base.action, proposed_patch=patch),
+        events=[{"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80}],
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"public_contract_preserved": "passed"},
+            required_checks=["public_contract_preserved"],
+            verified_patch_hash=hashlib.sha256(patch.encode("utf-8")).hexdigest(),
+        ),
+    )
+
+    result = ab.build_assessment(inp)
+
+    assert result.scores["expected_loss"] == 0.0
+    assert result.scores["verified_risk_events_removed"] == ["public_api_break"]
+
+
+def test_unbound_contract_proof_cannot_reduce_revision_risk() -> None:
+    patch = "--- a/src/api.ts\n+++ b/src/api.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    base = _worked_example_input()
+    inp = replace(
+        base,
+        action=replace(base.action, proposed_patch=patch),
+        events=[{"event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80}],
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"public_contract_preserved": "passed"},
+            required_checks=["public_contract_preserved"],
+            verified_patch_hash="wrong",
+        ),
+    )
+
+    result = ab.build_assessment(inp)
+
+    assert result.scores["expected_loss"] == pytest.approx(0.36)
+    assert result.scores["verified_risk_events_removed"] == []

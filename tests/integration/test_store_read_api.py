@@ -127,8 +127,15 @@ def test_revision_origin_envelope_returns_first_matching_action_at_head(tmp_path
     first = {
         "expected_files": ["src/api.ts", "src/compat.ts"],
         "public_symbols": ["pkg.oldName"],
+        "expected_loss": 0.36,
+        "rau": -0.12,
     }
-    second = {"expected_files": ["src/api.ts"], "public_symbols": []}
+    second = {
+        "expected_files": ["src/api.ts"],
+        "public_symbols": [],
+        "expected_loss": 0.18,
+        "rau": 0.20,
+    }
     for envelope in (first, second):
         res = AssessmentResult(
             recommended_decision=Decision.REVISE_SAFER,
@@ -186,6 +193,8 @@ def test_origin_envelope_falls_back_to_scope_when_request_lineage_changes(tmp_pa
     envelope = {
         "expected_files": ["src/api.ts", "src/compat.ts"],
         "public_symbols": ["pkg.oldName"],
+        "expected_loss": 0.36,
+        "rau": -0.12,
     }
     res = AssessmentResult(
         recommended_decision=Decision.REVISE_SAFER,

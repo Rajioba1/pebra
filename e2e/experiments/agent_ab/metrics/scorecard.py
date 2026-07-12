@@ -44,6 +44,7 @@ def arm_metrics(outcomes: Sequence[RunOutcome], arm: str) -> ArmMetrics:
     heeded = [o for o in called if o.heeded_guidance is True]
     completion_runs = [o for o in runs if o.completion_test_ran]
     completion_passes = [o for o in completion_runs if o.completion_test_passed is True]
+    governance_completions = [o for o in runs if o.decision_cycle_completed]
     adherence_rate = _rate(len(called), len(runs)) if runs else None
     effective_adherence_rate = _rate(len(effective), len(runs)) if runs else None
     heeded_rate = _rate(len(heeded), len(called)) if called else None
@@ -68,6 +69,10 @@ def arm_metrics(outcomes: Sequence[RunOutcome], arm: str) -> ArmMetrics:
         completion_test_pass_count=len(completion_passes),
         completion_test_pass_rate=(
             _rate(len(completion_passes), len(completion_runs)) if completion_runs else None
+        ),
+        decision_cycle_completion_count=len(governance_completions),
+        decision_cycle_completion_rate=(
+            _rate(len(governance_completions), len(runs)) if runs else None
         ),
     )
 

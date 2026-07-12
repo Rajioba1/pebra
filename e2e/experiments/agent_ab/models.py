@@ -187,6 +187,8 @@ class RunOutcome:
     timed_out: bool
     completion_test_ran: bool = False
     completion_test_passed: bool | None = None
+    decision_cycle_completed: bool = False
+    terminal_governance_outcome: str | None = None
     no_attempt: bool = False             # stopped without an edit attempt or restrictive gate
     error: str | None = None            # non-None => run failed (e.g. live client error); excluded from metrics
     limit_reason: str | None = None
@@ -221,6 +223,8 @@ class ArmMetrics:
     completion_test_run_count: int = 0
     completion_test_pass_count: int = 0
     completion_test_pass_rate: float | None = None
+    decision_cycle_completion_count: int = 0
+    decision_cycle_completion_rate: float | None = None
 
 
 @dataclass(frozen=True)

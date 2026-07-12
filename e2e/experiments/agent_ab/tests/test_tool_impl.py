@@ -349,6 +349,25 @@ def test_advisory_check_dispatches_and_normalizes(tmp_path):
     assert out == {"recommended_decision": "proceed", "risk_level": "low", "advisory": "ok", "detail": {}}
 
 
+def test_advisory_check_accepts_structured_candidate_edits():
+    seen = {}
+
+    def backend(payload):
+        seen.update(payload)
+        return {"recommended_decision": "revise_safer"}
+
+    out = tool_impl.advisory_check({
+        "target_file": "a.ts",
+        "change_summary": "preserve compatibility",
+        "candidate_edits": [{
+            "path": "a.ts", "old_string": "old", "new_string": "new",
+        }],
+    }, backend)
+
+    assert out["recommended_decision"] == "revise_safer"
+    assert seen["candidate_edits"][0]["path"] == "a.ts"
+
+
 def test_advisory_missing_patch_returns_arm_neutral_error():
     called = False
 
@@ -362,7 +381,7 @@ def test_advisory_missing_patch_returns_arm_neutral_error():
     assert out["recommended_decision"] is None
     assert out["risk_level"] == "unknown"
     assert out["detail"] == {}
-    assert "proposed_patch" in out["advisory"]
+    assert "proposed_patch or candidate_edits" in out["advisory"]
 
 
 def test_advisory_backend_exception_returns_arm_neutral_unavailable():

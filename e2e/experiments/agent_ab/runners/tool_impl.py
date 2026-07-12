@@ -336,12 +336,14 @@ def advisory_check(
 ) -> dict[str, Any]:
     """Dispatch to the arm's backend (bound in run_pair) and coerce to the shared, arm-neutral shape."""
     missing = [k for k in advisory_contract.INPUT_SCHEMA["required"] if not payload.get(k)]
+    if not payload.get("proposed_patch") and not payload.get("candidate_edits"):
+        missing.append("proposed_patch or candidate_edits")
     if missing:
         return advisory_contract.normalize_output({
             "recommended_decision": None,
             "risk_level": "unknown",
             "advisory": ("The advisory could not run because required pre-edit fields were missing. "
-                         "Provide target_file, change_summary, and proposed_patch."),
+                         "Provide target_file, change_summary, and proposed_patch or candidate_edits."),
             "detail": {},
         })
     try:

@@ -695,6 +695,51 @@ def test_repair_prevalidation_is_bounded_by_run_budget_not_submission_count(monk
     assert final["recommended_decision"] == "proceed"
 
 
+def test_real_backend_materializes_structured_edits_before_assess_and_verify(monkeypatch, tmp_path):
+    assessed: list[str] = []
+    verified: list[str] = []
+    canonical = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n"
+
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "candidate_patch",
+        lambda edits, *, repo_root, timeout=120: {
+            "proposed_patch": canonical,
+            "expected_files": ["a.ts"],
+        },
+    )
+
+    def _advise(payload, *, revise_safer_attempt=0, **_kwargs):
+        assessed.append(payload["proposed_patch"])
+        return {
+            "recommended_decision": "revise_safer" if revise_safer_attempt == 0 else "proceed",
+            "risk_level": "high",
+            "advisory": "retry",
+            "detail": {},
+        }
+
+    def _verify(payload, *_args, **_kwargs):
+        verified.append(payload["proposed_patch"])
+        return {"status": "passed", "verified_patch_hash": "bound"}
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(run_pair, "_verify_candidate_for_repair", _verify)
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR, tmp_path, tmp_path / "pebra.db"
+    )
+    payload = {
+        "target_file": "a.ts",
+        "change_summary": "preserve compatibility",
+        "candidate_edits": [{"path": "a.ts", "old_string": "old", "new_string": "new"}],
+    }
+
+    backend(payload)
+    backend(payload)
+
+    assert assessed == [canonical, canonical]
+    assert verified == [canonical]
+
+
 def test_repair_feedback_never_exposes_raw_verification_reason(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_pair,
@@ -1075,6 +1120,8 @@ def test_prepare_arm_writes_blinded_protocol_file_for_every_arm(tmp_path, monkey
     assert "resubmit a safer or compatibility-preserving candidate" in pebra_protocol
     assert "alias" in pebra_protocol
     assert "wrapper" in pebra_protocol
+    assert "candidate_edits" in pebra_protocol
+    assert "candidate_edits" in sham_protocol
     assert "Draft the intended patch" in sham_protocol
 
 

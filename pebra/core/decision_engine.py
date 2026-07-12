@@ -75,6 +75,7 @@ def _flatten_scores(a: Assessment) -> dict[str, Any]:
         "criticality_value": s["criticality_value"],
         "confidence_band": a.confidence_band,
         "loss_components": s["loss_components"],
+        "verified_risk_events_removed": s["verified_risk_events_removed"],
         "symbol_scope_evidence": s["symbol_scope_evidence"],
         "variance_breakdown": s["variance_breakdown"],
     }
@@ -238,6 +239,86 @@ def _revision_completeness_issue(assessment: Assessment) -> dict[str, Any] | Non
         "missing_files": list(evidence.missing_files),
         "missing_public_symbols": list(evidence.missing_public_symbols),
     }
+
+
+def _revision_risk_benefit_outcome(
+    assessment: Assessment,
+    gates_fired: list[dict[str, Any]],
+    revision_issue: dict[str, Any] | None,
+) -> tuple[bool, Decision | None]:
+    """Evaluate a resubmitted safer candidate against its persisted origin.
+
+    Returns ``(approved, terminal)``. An approved revision continues through the ordinary confidence
+    and evidence-validity gates; a terminal decision completes the revision loop. Candidate
+    verification is supporting evidence only and can never override unfavorable risk-adjusted utility.
+    """
+    evidence = assessment.input.revision_completeness_evidence
+    if not evidence.is_revision:
+        return False, None
+    if revision_issue:
+        gates_fired.append(revision_issue)
+        return (
+            (False, Decision.ASK_HUMAN)
+            if _revision_exhausted(assessment.input.thresholds)
+            else (False, Decision.REVISE_SAFER)
+        )
+    if evidence.origin_expected_loss is None or evidence.origin_rau is None:
+        gates_fired.append({
+            "gate": 9,
+            "name": "revision_origin_scores_unavailable",
+            "reason": "the origin risk-benefit scores are unavailable for comparison",
+        })
+        return False, Decision.ASK_HUMAN
+
+    scores = assessment.scores
+    if scores["benefit"] <= 0:
+        gates_fired.append({
+            "gate": 9,
+            "name": "revision_has_no_credible_benefit",
+            "benefit": scores["benefit"],
+        })
+        return False, Decision.REJECT
+    if scores["expected_loss"] >= evidence.origin_expected_loss:
+        gates_fired.append({
+            "gate": 9,
+            "name": "revision_risk_not_reduced",
+            "origin_expected_loss": evidence.origin_expected_loss,
+            "revised_expected_loss": scores["expected_loss"],
+            "origin_rau": evidence.origin_rau,
+            "revised_rau": scores["rau"],
+        })
+        return False, Decision.ASK_HUMAN
+    if scores["rau"] < 0:
+        gates_fired.append({
+            "gate": 9,
+            "name": "revision_risk_still_outweighs_benefit",
+            "origin_expected_loss": evidence.origin_expected_loss,
+            "revised_expected_loss": scores["expected_loss"],
+            "origin_rau": evidence.origin_rau,
+            "revised_rau": scores["rau"],
+        })
+        return False, Decision.ASK_HUMAN
+    verification = assessment.input.candidate_verification
+    if verification.status != "not_applicable":
+        verification_decision, _, _ = _revise_candidate_decision(
+            assessment, gates_fired, source_gate=9
+        )
+        if verification_decision is not Decision.PROCEED:
+            return (
+                (False, Decision.ASK_HUMAN)
+                if _revision_exhausted(assessment.input.thresholds)
+                else (False, Decision.REVISE_SAFER)
+            )
+
+    gates_fired.append({
+        "gate": 9,
+        "name": "revision_risk_benefit_improved",
+        "origin_expected_loss": evidence.origin_expected_loss,
+        "revised_expected_loss": scores["expected_loss"],
+        "origin_rau": evidence.origin_rau,
+        "revised_rau": scores["rau"],
+    })
+    return True, None
 
 
 def _task_obligations_issue(assessment: Assessment) -> dict[str, Any] | None:
@@ -431,6 +512,9 @@ def decide(
     provisional: Decision | None = None
     requires_confirmation = False
     fired_gate: int | None = None
+    revision_approved, revision_terminal = _revision_risk_benefit_outcome(
+        assessment, gates_fired, revision_issue
+    )
 
     # The codegraph_structural tier is COARSE: it proves an owner was touched, not what changed inside
     # it, so it is still uncertain and must inherit UNKNOWN's escalation rather than suppress it —
@@ -451,11 +535,14 @@ def decide(
         provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 2
         gates_fired.append({"gate": 2, "name": "c4_consequential_ask_human"})
     # --- Gate 3: expected_loss over effective threshold ---
-    elif s["expected_loss"] > s["effective_threshold"]:
+    elif revision_terminal is not None:
+        provisional = revision_terminal
+        requires_confirmation = revision_terminal is Decision.ASK_HUMAN
+        fired_gate = 9
+    elif s["expected_loss"] > s["effective_threshold"] and not revision_approved:
         if _should_revise_safer(assessment):
-            provisional, requires_confirmation, fired_gate = _revise_candidate_decision(
-                assessment, gates_fired, source_gate=3
-            )
+            provisional, requires_confirmation, fired_gate = Decision.REVISE_SAFER, False, 3
+            gates_fired.append({"gate": 6, "name": "revise_safer"})
         elif s["expected_utility"] < 0:
             provisional, fired_gate = Decision.REJECT, 3
         else:
@@ -464,11 +551,10 @@ def decide(
                             "expected_loss": s["expected_loss"],
                             "threshold": s["effective_threshold"]})
     # --- Gate 4: RAU < 0 ---
-    elif s["rau"] < 0:
+    elif s["rau"] < 0 and not revision_approved:
         if _should_revise_safer(assessment):
-            provisional, requires_confirmation, fired_gate = _revise_candidate_decision(
-                assessment, gates_fired, source_gate=4
-            )
+            provisional, requires_confirmation, fired_gate = Decision.REVISE_SAFER, False, 4
+            gates_fired.append({"gate": 6, "name": "revise_safer"})
         elif t.get("ask_on_negative_rau", True):
             provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 4
         else:
@@ -478,24 +564,11 @@ def decide(
     elif (
         s["utility_sd"] > t.get("max_utility_sd_without_human", 0.20)
         and s["expected_utility"] > 0
+        and not revision_approved
     ):
         provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 5
         gates_fired.append({"gate": 5, "name": "utility_sd_over_limit", "utility_sd": s["utility_sd"]})
     # --- Gate 9: a safer revision may not win by silently dropping origin obligations ---
-    elif revision_issue:
-        verified_decision: Decision | None = None
-        if assessment.input.candidate_verification.status == "passed":
-            verified_decision, _, _ = _revise_candidate_decision(
-                assessment, gates_fired, source_gate=9
-            )
-        if verified_decision is Decision.PROCEED:
-            provisional, fired_gate = Decision.PROCEED, 7
-            requires_confirmation = stage in _SENSITIVE_STAGES
-        elif not _revision_exhausted(t):
-            provisional, fired_gate = Decision.REVISE_SAFER, 9
-        else:
-            provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 9
-        gates_fired.append(revision_issue)
     # --- Gate 8: low edit confidence ---
     elif assessment.confidence_band == "low":
         provisional, fired_gate = Decision.INSPECT_FIRST, 8
@@ -595,10 +668,15 @@ def decide(
         )
 
     assert provisional is not None
+    terminal_reason = (
+        f"Decision {provisional.value} from gate {fired_gate}; "
+        f"expected_loss={s['expected_loss']:.3f}, benefit={s['benefit']:.3f}, "
+        f"expected_utility={s['expected_utility']:.3f}, rau={s['rau']:.3f}."
+    )
     return _result(
         provisional,
         requires_confirmation=requires_confirmation,
         risk_mode=_risk_mode(provisional, stage, controlled=False, elevated=elevated),
         gates_fired=gates_fired,
-        decision_reason=f"Decision {provisional.value} from gate {fired_gate}.",
+        decision_reason=terminal_reason,
     )

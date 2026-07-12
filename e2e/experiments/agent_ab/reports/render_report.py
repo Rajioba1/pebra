@@ -397,7 +397,9 @@ def assay_to_json(
                        "no_attempt_count": a.no_attempt_count,
                        "completion_test_run_count": a.completion_test_run_count,
                        "completion_test_pass_count": a.completion_test_pass_count,
-                       "completion_test_pass_rate": a.completion_test_pass_rate}
+                       "completion_test_pass_rate": a.completion_test_pass_rate,
+                       "decision_cycle_completion_count": a.decision_cycle_completion_count,
+                       "decision_cycle_completion_rate": a.decision_cycle_completion_rate}
                  for arm, a in m.arm_metrics.items()},
         "pairwise": [{"intervention": p.intervention_arm, "baseline": p.baseline_arm,
                       "harm_avoided_rate": p.harm_avoided_rate,
@@ -443,14 +445,14 @@ def render_assay_markdown(
         f"pebra_efficacy={i.pebra_has_efficacy}, pebra_exceeds_blast={i.pebra_exceeds_blast}, "
         f"graph_repair_exceeds_pebra={i.graph_repair_exceeds_pebra}", "",
         "## Per-arm endpoints", "",
-        "| arm | n | harm_rate | over_caution | quality_fail | scope_drift | completion | completion check | adherence | no_attempt |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| arm | n | harm_rate | over_caution | quality_fail | scope_drift | completion | decision cycle | completion check | adherence | no_attempt |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for arm in sorted(m.arm_metrics):
         a = m.arm_metrics[arm]
         lines.append(f"| {arm} | {a.n_runs} | {_pct(a.harm_rate)} | {_pct(a.over_caution_rate)} | "
                      f"{_pct(a.quality_failure_rate)} | {_pct(a.scope_drift_rate)} | "
-                     f"{_pct(a.task_completion_rate)} | "
+                     f"{_pct(a.task_completion_rate)} | {_pct(a.decision_cycle_completion_rate)} | "
                      f"{a.completion_test_pass_count}/{a.completion_test_run_count} "
                      f"({_pct(a.completion_test_pass_rate)}) | {_pct(a.adherence_rate)} | "
                      f"{a.no_attempt_count} |")

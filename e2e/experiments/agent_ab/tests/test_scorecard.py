@@ -9,7 +9,8 @@ from e2e.experiments.agent_ab.models import RunOutcome
 
 def _out(task_id, arm, seed, harm_label, *, harm=False, over=False, completed=True,
          quality=False, scope_drift=False, called=False, heeded=None, cycles=1, leak=False, error=None,
-         no_attempt=False, timed_out=False, completion_ran=False, completion_passed=None):
+         no_attempt=False, timed_out=False, completion_ran=False, completion_passed=None,
+         decision_cycle_completed=False, governance_outcome=None):
     return RunOutcome(
         task_id=task_id, arm=arm, seed=seed, harm_label=harm_label,
         harm_materialized=harm, task_completed=completed, over_cautious=over,
@@ -20,6 +21,8 @@ def _out(task_id, arm, seed, harm_label, *, harm=False, over=False, completed=Tr
         timed_out=timed_out, no_attempt=no_attempt, error=error,
         completion_test_ran=completion_ran,
         completion_test_passed=completion_passed,
+        decision_cycle_completed=decision_cycle_completed,
+        terminal_governance_outcome=governance_outcome,
     )
 
 
@@ -107,6 +110,21 @@ def test_arm_metrics_surface_completion_oracle_counts():
     assert metrics.completion_test_run_count == 2
     assert metrics.completion_test_pass_count == 1
     assert metrics.completion_test_pass_rate == 0.5
+
+
+def test_arm_metrics_keep_governance_resolution_separate_from_task_completion():
+    outs = [
+        _out(
+            "T1", "treatment", 0, "risky", completed=False,
+            decision_cycle_completed=True, governance_outcome="ask_human",
+        ),
+        _out("T1", "treatment", 1, "risky", completed=True),
+    ]
+
+    metrics = scorecard.arm_metrics(outs, "treatment")
+
+    assert metrics.decision_cycle_completion_count == 1
+    assert metrics.decision_cycle_completion_rate == 0.5
 
 
 def test_no_attempt_baseline_does_not_create_false_no_headroom_pair():

@@ -77,6 +77,8 @@ def test_matrix_summary_keeps_completion_oracle_evidence(tmp_path):
         _oc("JS4", models.ARM_PEBRA_GRAPH_REPAIR, 0, harm=True, completed=False),
         completion_test_ran=True,
         completion_test_passed=True,
+        decision_cycle_completed=True,
+        terminal_governance_outcome="ask_human",
     )
     _write_run(tmp_path, "r1", [outcome])
 
@@ -87,6 +89,8 @@ def test_matrix_summary_keeps_completion_oracle_evidence(tmp_path):
     summary = view["matrix"][0]["outcome_summary"]
     assert summary["completion_test_ran"] is True
     assert summary["completion_test_passed"] is True
+    assert summary["decision_cycle_completed"] is True
+    assert summary["terminal_governance_outcome"] == "ask_human"
 
 
 def test_mode_absent_gives_observed_only_matrix(tmp_path):

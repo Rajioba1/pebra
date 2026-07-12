@@ -786,6 +786,8 @@ class SqliteStore:
                             "available": True,
                             "expected_files": [str(value) for value in files],
                             "public_symbols": [str(value) for value in symbols],
+                            "expected_loss": envelope.get("expected_loss"),
+                            "rau": envelope.get("rau"),
                         }
                         candidate_files = {
                             _norm_scope_path(str(value)) for value in files if value

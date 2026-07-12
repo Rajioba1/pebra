@@ -972,7 +972,7 @@ def test_revision_envelope_payload_retains_graph_derived_public_symbols() -> Non
         requires_confirmation=False,
         action_status=m.ActionStatus.PENDING,
         risk_mode=RiskMode.SENSITIVE_CONTEXT,
-        scores={},
+        scores={"expected_loss": 0.36, "rau": -0.12},
         repo_id="r",
         repo_root="/repo",
         symbol_scope_evidence={
@@ -984,6 +984,8 @@ def test_revision_envelope_payload_retains_graph_derived_public_symbols() -> Non
     assert ac._revision_envelope_payload(action, result) == {
         "expected_files": ["src/api.ts", "src/compat.ts"],
         "public_symbols": ["pkg.oldName"],
+        "expected_loss": 0.36,
+        "rau": -0.12,
     }
 
 def test_trusted_task_obligations_are_selected_per_action() -> None:

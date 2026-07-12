@@ -170,12 +170,14 @@ def _build_revision_completeness(
         origin_public_symbols=tuple(sorted(origin_symbols)),
         missing_files=tuple(sorted(origin_files - current_files)),
         missing_public_symbols=tuple(sorted(origin_symbols - current_symbols)),
+        origin_expected_loss=origin.get("expected_loss"),
+        origin_rau=origin.get("rau"),
     )
 
 
 def _revision_envelope_payload(
     action: CandidateAction, result: AssessmentResult
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     files = sorted({_norm_envelope_value(value) for value in action.expected_files if value})
     scope = result.symbol_scope_evidence or {}
     symbols: list[str] = []
@@ -183,7 +185,12 @@ def _revision_envelope_payload(
         symbols = sorted({
             str(value) for value in (scope.get("changed_symbols") or ()) if value
         })
-    return {"expected_files": files, "public_symbols": symbols}
+    return {
+        "expected_files": files,
+        "public_symbols": symbols,
+        "expected_loss": result.scores.get("expected_loss"),
+        "rau": result.scores.get("rau"),
+    }
 
 
 def _build_input(
