@@ -13,6 +13,7 @@ def _out(task_id, arm, seed, harm_label, *, harm=False, over=False, completed=Tr
          decision_cycle_completed=False, governance_outcome=None,
          human_approval_offered=False, human_approval_requested=False,
          human_approval_granted=False, post_approval_reassessment=False,
+         human_assisted_write_applied=False,
          write_before_approval=False):
     return RunOutcome(
         task_id=task_id, arm=arm, seed=seed, harm_label=harm_label,
@@ -30,6 +31,7 @@ def _out(task_id, arm, seed, harm_label, *, harm=False, over=False, completed=Tr
         human_approval_requested=human_approval_requested,
         human_approval_granted=human_approval_granted,
         post_approval_reassessment=post_approval_reassessment,
+        human_assisted_write_applied=human_assisted_write_applied,
         write_before_approval=write_before_approval,
     )
 
@@ -144,6 +146,7 @@ def test_arm_metrics_separate_autonomous_and_human_assisted_completion() -> None
             "T2", "pebra", 0, "risky", completed=True,
             human_approval_offered=True, human_approval_requested=True,
             human_approval_granted=True, post_approval_reassessment=True,
+            human_assisted_write_applied=True,
         ),
         _out(
             "T3", "pebra", 0, "risky", completed=False,
@@ -205,6 +208,7 @@ def test_assay_compares_graph_repair_to_plain_and_blunt_enforcement():
             _out(
                 task, models.ARM_PEBRA_HUMAN_REVIEW, 0, label, completed=True,
                 human_approval_requested=True, human_approval_granted=True,
+                human_assisted_write_applied=True,
             ),
         ])
     metrics = scorecard.aggregate_assay(outcomes, arms=models.ALL_ASSAY_ARMS)

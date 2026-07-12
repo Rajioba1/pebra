@@ -8,9 +8,44 @@ Imports only core/ + ports/.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pebra.ports.sanction_port import SanctionPort
+
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validated_binding(
+    sanction_spec: dict[str, Any], risk_profile: Any
+) -> tuple[str, str, dict[str, Any]]:
+    if not isinstance(risk_profile, dict):
+        raise ValueError("a sanction risk_profile must be an exact candidate profile")
+    assessment_id = sanction_spec.get("assessment_id")
+    action_id = sanction_spec.get("action_id")
+    if not isinstance(assessment_id, str) or not assessment_id:
+        raise ValueError("a sanction must name its assessment_id")
+    if not isinstance(action_id, str) or not action_id:
+        raise ValueError("a sanction must name one action_id")
+    if risk_profile.get("assessment_id") != assessment_id:
+        raise ValueError("risk_profile assessment_id does not match the sanction")
+    if risk_profile.get("action_id") != action_id:
+        raise ValueError("risk_profile action_id does not match the sanction")
+    candidate = risk_profile.get("candidate_binding")
+    if not isinstance(candidate, dict) or candidate.get("algorithm") != "sha256-normalized-content-v1":
+        raise ValueError("a sanction must use the normalized-content candidate binding")
+    files = candidate.get("files")
+    if not isinstance(files, dict) or not files:
+        raise ValueError("a sanction candidate binding must contain files")
+    if any(
+        not isinstance(path, str)
+        or not path
+        or not isinstance(digest, str)
+        or _DIGEST.fullmatch(digest) is None
+        for path, digest in files.items()
+    ):
+        raise ValueError("a sanction candidate binding contains an invalid file digest")
+    return assessment_id, action_id, candidate
 
 
 def accept_risk(
@@ -19,13 +54,14 @@ def accept_risk(
     risk_profile = sanction_spec.get("risk_profile")
     if not risk_profile:
         raise ValueError("a sanction must be bound to a risk_profile (AD-26)")
+    assessment_id, action_id, _candidate = _validated_binding(sanction_spec, risk_profile)
 
     sanction = {
         "valid": True,
         "risk_profile": risk_profile,
-        "action_id": sanction_spec.get("action_id"),
-        "action_ids": list(sanction_spec.get("action_ids", [])),
-        "assessment_id": sanction_spec.get("assessment_id"),
+        "action_id": action_id,
+        "action_ids": [action_id],
+        "assessment_id": assessment_id,
         "pre_edit_authorization_controls_satisfied": bool(
             sanction_spec.get("pre_edit_authorization_controls_satisfied", False)
         ),

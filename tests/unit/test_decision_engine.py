@@ -1313,7 +1313,8 @@ def test_gate1_policy_violation_rejects_before_threshold() -> None:
 
 
 def test_sanction_never_overrides_policy_violation_gate1() -> None:
-    sanction = {"valid": True, "pre_edit_authorization_controls_satisfied": True,
+    sanction = {"valid": True, "assessment_id": "asm_origin",
+                "pre_edit_authorization_controls_satisfied": True,
                 "converts_gates": [1, 2, 3, 4]}
     inp = replace(_worked_example_input(), sanction=sanction)
     result = de.decide(ab.build_assessment(inp), policy_violations=["forbidden_path_edit"])
@@ -1322,7 +1323,8 @@ def test_sanction_never_overrides_policy_violation_gate1() -> None:
 
 
 def test_valid_sanction_converts_gate3_to_controlled_high_risk_proceed() -> None:
-    sanction = {"valid": True, "pre_edit_authorization_controls_satisfied": True,
+    sanction = {"valid": True, "assessment_id": "asm_origin",
+                "pre_edit_authorization_controls_satisfied": True,
                 "converts_gates": [2, 3, 4],
                 "high_risk_triggers": [{"trigger_id": "hrt_001", "risk_class": "payment_side_effect"}]}
     from dataclasses import replace as _replace
@@ -1337,6 +1339,8 @@ def test_valid_sanction_converts_gate3_to_controlled_high_risk_proceed() -> None
     assert result.risk_mode is RiskMode.CONTROLLED_HIGH_RISK
     assert result.requires_confirmation is True
     assert result.high_risk_triggers
+    gate = next(g for g in result.gates_fired if g["name"] == "sanction_resolution")
+    assert gate["sanction_assessment_id"] == "asm_origin"
 
 
 def test_sanction_cannot_bypass_incomplete_task_obligations() -> None:

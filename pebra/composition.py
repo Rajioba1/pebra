@@ -109,7 +109,7 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         "blast_provider": AstImportGraphAdapter(
             request.evidence.get("blast"), graph_provider=graph_provider
         ),
-        "sanction_port": SanctionStore(ctx.store),
+        "sanction_port": SanctionStore(ctx.store, repo_root=ctx.repo.repo_root),
         "repository_registry": ctx.registry,
         "store": ctx.store,
         "assessed_commit": git_adapter.head_commit(ctx.repo.repo_root),

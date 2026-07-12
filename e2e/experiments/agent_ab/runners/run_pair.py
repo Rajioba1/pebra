@@ -145,6 +145,8 @@ class ArmTelemetry:
     human_approval_source: str | None = None
     pending_human_approval: dict[str, Any] | None = None
     post_approval_reassessment: bool = False
+    approved_reassessment_id: str | None = None
+    human_assisted_write_applied: bool = False
     write_before_approval: bool = False
     write_before_reassessment: bool = False
 
@@ -162,7 +164,8 @@ class ArmSetup:
     oracle_modified_files: tuple[str, ...] = ()
     telemetry: ArmTelemetry = dataclasses.field(default_factory=ArmTelemetry)
     approval_backend: Callable[..., dict[str, Any]] = lambda payload: {
-        "status": "unavailable", "approval_id": None, "message": "No approval is pending.",
+        "status": "unavailable", "approval_id": None,
+        "message": "No exact candidate is pending approval.",
     }
     # SAME write-gate in both arms; only treatment is backed by real PEBRA. Default = sham-allow so any
     # ArmSetup built without an explicit backend never blocks a write.
@@ -463,10 +466,8 @@ def _advisory_backend(
                         telemetry.human_approval_granted
                         and pending_id != telemetry.human_approval_assessment_id
                     ):
-                        telemetry.human_approval_granted = False
-                        telemetry.human_approval_assessment_id = None
-                        telemetry.human_approval_source = None
                         telemetry.post_approval_reassessment = False
+                        telemetry.approved_reassessment_id = None
                     telemetry.pending_human_approval = pending
                 elif (
                     telemetry.human_approval_granted
@@ -475,6 +476,7 @@ def _advisory_backend(
                     raw = getattr(result, "raw_payload", None)
                     if isinstance(raw, dict) and raw.get("risk_mode") == "controlled_high_risk":
                         telemetry.post_approval_reassessment = True
+                        telemetry.approved_reassessment_id = assessment_id
                         telemetry.pending_human_approval = None
             verification_status = (
                 payload.get("candidate_verification", {}).get("status")
@@ -515,20 +517,17 @@ def _approval_backend(
     def _request(
         _payload: dict[str, Any], *, timeout_seconds: float | None = None
     ) -> dict[str, Any]:
+        unavailable = {
+            "status": "unavailable",
+            "approval_id": None,
+            "message": "No exact candidate is pending approval.",
+        }
         if arm != models.ARM_PEBRA_HUMAN_REVIEW:
-            return {
-                "status": "unavailable",
-                "approval_id": None,
-                "message": "No approval is pending.",
-            }
+            return unavailable
         telemetry.human_approval_requested = True
         sanction_spec = telemetry.pending_human_approval
         if not isinstance(sanction_spec, dict):
-            return {
-                "status": "unavailable",
-                "approval_id": None,
-                "message": "No exact candidate is pending human approval.",
-            }
+            return unavailable
         policy = os.environ.get(
             "E2E_AB_HUMAN_APPROVAL_POLICY", "always_approve"
         ).strip().lower()
@@ -544,7 +543,10 @@ def _approval_backend(
                 "approval_id": None,
                 "message": "The registered host approval policy is invalid.",
             }
-        if telemetry.human_approval_granted:
+        if (
+            telemetry.human_approval_granted
+            and telemetry.human_approval_assessment_id == sanction_spec.get("assessment_id")
+        ):
             return {
                 "status": "approved",
                 "approval_id": telemetry.human_approval_assessment_id,
@@ -609,6 +611,8 @@ def _gate_check_backend(
                 and telemetry.last_assessment_id is not None
             ):
                 telemetry.applied_assessment_id = telemetry.last_assessment_id
+                if telemetry.last_assessment_id == telemetry.approved_reassessment_id:
+                    telemetry.human_assisted_write_applied = True
             return decision
 
         return _real_gate
@@ -889,6 +893,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         human_approval_assessment_id=setup.telemetry.human_approval_assessment_id,
         human_approval_source=setup.telemetry.human_approval_source,
         post_approval_reassessment=setup.telemetry.post_approval_reassessment,
+        human_assisted_write_applied=setup.telemetry.human_assisted_write_applied,
         write_before_approval=setup.telemetry.write_before_approval,
         write_before_reassessment=setup.telemetry.write_before_reassessment,
     )

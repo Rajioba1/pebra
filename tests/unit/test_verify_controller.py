@@ -288,12 +288,14 @@ def test_controlled_reassessment_follows_sanction_lineage_for_controls_and_inval
             stored = dict(_STORED)
             stored["risk_mode"] = "controlled_high_risk"
             stored["request"] = {"action_id": "ab1", "thresholds": {}}
+            stored["gates_fired"] = [{
+                "name": "sanction_resolution",
+                "sanction_assessment_id": "asm_origin",
+            }]
             return stored
 
-        def active_sanction_for_action(self, repo_id, action_id):
-            assert repo_id == "repo_local_example"
-            assert action_id == "ab1"
-            return sanction
+        def active_sanction_for_assessment(self, assessment_id):
+            return sanction if assessment_id == "asm_origin" else None
 
     store = ReassessedStore()
     summary = ActualDiffSummary(

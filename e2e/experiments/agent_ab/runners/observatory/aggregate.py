@@ -126,6 +126,7 @@ def _summary(o: models.RunOutcome) -> dict:
             "human_approval_assessment_id": o.human_approval_assessment_id,
             "human_approval_source": o.human_approval_source,
             "post_approval_reassessment": o.post_approval_reassessment,
+            "human_assisted_write_applied": o.human_assisted_write_applied,
             "write_before_approval": o.write_before_approval,
             "write_before_reassessment": o.write_before_reassessment,
             "over_cautious": o.over_cautious, "blinding_leak": o.blinding_leak,

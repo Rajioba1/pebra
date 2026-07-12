@@ -21,6 +21,7 @@ _EFFICACY_METADATA = {
     "seeds_per_arm": 3,
     "minimum_pairs_for_efficacy": 3,
     "run_intent": "efficacy",
+    "human_approval_policy": "always_approve",
 }
 
 
@@ -58,6 +59,7 @@ def test_assay_to_json_has_verdict_gate_trace_and_pairwise():
     m = _assay_metrics()
     js = render_report.assay_to_json(m, run_metadata=_EFFICACY_METADATA)
     assert js["verdict"] == m.interpretation.verdict
+    assert js["human_approval_policy"] == "always_approve"
     assert set(js["arms"]) == set(_ARMS)
     assert set(js["gate_trace"]) == {"task_has_headroom", "assay_detects_realistic",
                                      "pebra_has_efficacy", "pebra_exceeds_blast",
@@ -90,6 +92,7 @@ def test_assay_to_json_has_verdict_gate_trace_and_pairwise():
     assert "post-approval reassess" in md
     assert "write before approval" in md
     assert "write before reassess" in md
+    assert "Human-review policy: always_approve" in md
 
 
 def test_one_pair_valid_assay_is_stamped_diagnostic_not_claim_valid():

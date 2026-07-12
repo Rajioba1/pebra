@@ -14,11 +14,20 @@ from pathlib import Path
 
 import pytest
 
+from pebra.adapters.candidate_binding import binding_for_patch
 from pebra.mcp_server import server
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "examples" / "login_patch.json"
 REQUIRED_CHECK = "run targeted tests for the touched scope before commit"
+_BOUND_PATCH = """diff --git a/src/auth.py b/src/auth.py
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1,2 +1,2 @@
+ def validate_login(u, p):
+-    return True
++    return bool(u and p)
+"""
 
 
 def _git(cwd, *args) -> None:
@@ -126,8 +135,22 @@ def test_compare_returns_all_scored_actions(tmp_path) -> None:
 
 
 def test_accept_risk_returns_sanction_id(tmp_path) -> None:
+    repo = _init_repo(tmp_path)
+    action = _request()["candidate_actions"][0]
+    binding = binding_for_patch(repo, _BOUND_PATCH)
     payload = server._handle_accept_risk(
-        {"sanction_spec": {"risk_profile": "rp_1"}, **_common(tmp_path)}
+        {
+            "sanction_spec": {
+                "assessment_id": "asm_1",
+                "action_id": action["id"],
+                "risk_profile": {
+                    "assessment_id": "asm_1",
+                    "action_id": action["id"],
+                    "candidate_binding": binding,
+                },
+            },
+            **_common(repo),
+        }
     )
     assert payload["sanction_id"]
     assert payload["repo_id"]

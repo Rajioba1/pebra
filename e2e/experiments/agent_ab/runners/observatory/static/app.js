@@ -93,6 +93,7 @@ function renderScoreboard(sb) {
     const panel = el("div", { class: "panel" }, [vrow]);
     if (weak) panel.appendChild(el("div", { class: "banner", text: "Too few matched pairs (" + nPairs + " < " + MIN_PAIRS_FOR_VERDICT + ") — this verdict is not yet meaningful. It will firm up as the run fills in." }));
     if (sb.conclusion) panel.appendChild(el("div", { class: "verdict-note", text: sb.conclusion }));
+    panel.appendChild(el("div", { class: "verdict-note", text: "Human-review policy: " + (sb.human_approval_policy || "unspecified") + ". Deterministic approval is not human judgment." }));
     panel.appendChild(renderArmTable(sb.arms));
     panel.appendChild(renderPairwiseTable(sb.pairwise));
     wrap.appendChild(panel);

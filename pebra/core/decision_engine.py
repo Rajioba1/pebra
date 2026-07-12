@@ -641,8 +641,12 @@ def decide(
         and sanction.get("pre_edit_authorization_controls_satisfied")
         and fired_gate in set(sanction.get("converts_gates", []))
     ):
-        gates_fired.append({"gate": 10, "name": "sanction_resolution",
-                            "converted_from": provisional.value})
+        gates_fired.append({
+            "gate": 10,
+            "name": "sanction_resolution",
+            "converted_from": provisional.value,
+            "sanction_assessment_id": sanction.get("assessment_id"),
+        })
         if obligations_issue:
             gates_fired.append(obligations_issue)
             return _result(

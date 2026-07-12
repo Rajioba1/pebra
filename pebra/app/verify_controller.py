@@ -72,15 +72,21 @@ def verify(
     sanction_assessment_id = assessment_id
     # A sanction is created against the assessment that returned ask_human. The required workflow then
     # reassesses the exact action and produces a NEW controlled-high-risk assessment. Follow that
-    # action lineage so verify enforces the sanction's controls and invalidates the original approval
-    # on drift; never use an action-level sanction for an ordinary, unsanctioned assessment.
+    # recorded gate-10 lineage so verify enforces the exact consumed sanction's controls and
+    # invalidates the original approval on drift; action ids are reusable and are not authorization.
     if sanction is None and stored.get("risk_mode") == "controlled_high_risk":
-        request = stored.get("request") or {}
-        action_id = request.get("action_id")
-        if isinstance(action_id, str) and action_id:
-            sanction = store.active_sanction_for_action(stored.get("repo_id", ""), action_id)
-            if sanction and isinstance(sanction.get("assessment_id"), str):
-                sanction_assessment_id = sanction["assessment_id"]
+        gate = next(
+            (
+                item for item in stored.get("gates_fired", [])
+                if item.get("name") == "sanction_resolution"
+            ),
+            None,
+        )
+        origin = gate.get("sanction_assessment_id") if isinstance(gate, dict) else None
+        if isinstance(origin, str) and origin:
+            sanction = store.active_sanction_for_assessment(origin)
+            if sanction is not None:
+                sanction_assessment_id = origin
     if sanction:
         for check in sanction.get("pre_commit_required_controls", []):
             if check not in required_checks:

@@ -686,6 +686,19 @@ def test_human_approval_backend_is_unavailable_without_pending_candidate(tmp_pat
     assert telemetry.human_approval_granted is False
 
 
+def test_approval_unavailable_output_is_identical_across_arms(tmp_path) -> None:
+    outputs = []
+    for arm in models.ALL_ASSAY_ARMS:
+        telemetry = run_pair.ArmTelemetry()
+        outputs.append(
+            run_pair._approval_backend(
+                arm, tmp_path, tmp_path / f"{arm}.db", telemetry
+            )({"reason": "review residual risk"})
+        )
+
+    assert all(output == outputs[0] for output in outputs)
+
+
 def test_human_review_gate_records_write_attempt_before_approval(monkeypatch, tmp_path) -> None:
     telemetry = run_pair.ArmTelemetry(human_approval_offered=True)
     monkeypatch.setattr(
@@ -710,6 +723,34 @@ def test_human_review_gate_records_write_attempt_before_approval(monkeypatch, tm
     assert result["permission"] == "deny"
     assert telemetry.write_before_approval is True
     assert telemetry.write_before_reassessment is True
+
+
+def test_human_assisted_write_attribution_is_sticky_across_later_candidate(
+    monkeypatch, tmp_path
+) -> None:
+    telemetry = run_pair.ArmTelemetry(
+        human_approval_granted=True,
+        post_approval_reassessment=True,
+        approved_reassessment_id="asm_2",
+        last_assessment_id="asm_2",
+    )
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "gate_check",
+        lambda event, **_kwargs: {"permission": "allow", "tier": "consulted"},
+    )
+    gate = run_pair._gate_check_backend(
+        models.ARM_PEBRA_HUMAN_REVIEW,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+
+    gate({"tool_name": "Write", "tool_input": {"file_path": "src/a.ts"}})
+    telemetry.human_approval_granted = False
+    telemetry.last_assessment_id = "asm_3"
+
+    assert telemetry.applied_assessment_id == "asm_2"
+    assert telemetry.human_assisted_write_applied is True
 
 
 def test_repair_arm_threads_host_task_obligations_only_from_spec(monkeypatch, tmp_path):

@@ -77,7 +77,12 @@ class StorePort(Protocol):
         ...
 
     def active_sanction_for_action(self, repo_id: str, action_id: str) -> dict[str, Any] | None:
-        """Return the active sanction explicitly bound to an action, or None."""
+        """Return the latest active/consumed sanction for verify lineage, or None."""
+
+    def claim_sanction_for_candidate(
+        self, repo_id: str, action_id: str, candidate_binding: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Atomically consume a sanction bound to this exact candidate."""
         ...
 
     def invalidate_sanctions_for_assessment(self, assessment_id: str, reason: str) -> list[str]:

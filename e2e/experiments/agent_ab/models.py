@@ -153,6 +153,7 @@ class SubjectResult:
     human_approval_assessment_id: str | None = None
     human_approval_source: str | None = None
     post_approval_reassessment: bool = False
+    human_assisted_write_applied: bool = False
     write_before_approval: bool = False
     write_before_reassessment: bool = False
 
@@ -215,6 +216,7 @@ class RunOutcome:
     human_approval_assessment_id: str | None = None
     human_approval_source: str | None = None
     post_approval_reassessment: bool = False
+    human_assisted_write_applied: bool = False
     write_before_approval: bool = False
     write_before_reassessment: bool = False
 

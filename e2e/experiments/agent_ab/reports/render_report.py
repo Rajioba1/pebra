@@ -384,6 +384,9 @@ def assay_to_json(
         "run_intent": state["run_intent"], "seeds_per_arm": state["seeds_per_arm"],
         "minimum_pairs_for_efficacy": state["minimum_pairs_for_efficacy"],
         "actual_pairs_for_efficacy": state["actual_pairs_for_efficacy"],
+        "human_approval_policy": (
+            run_metadata.get("human_approval_policy") if run_metadata else None
+        ),
         "gate_trace": {"task_has_headroom": i.task_has_headroom,
                        "assay_detects_realistic": i.assay_detects_realistic,
                        "pebra_has_efficacy": i.pebra_has_efficacy,
@@ -459,6 +462,8 @@ def render_assay_markdown(
         f"> Run intent: {state['run_intent'] or 'unspecified'}; seeds_per_arm="
         f"{state['seeds_per_arm'] if state['seeds_per_arm'] is not None else 'unknown'}; "
         f"minimum risky pairs for efficacy={state['minimum_pairs_for_efficacy']}.", "",
+        f"> Human-review policy: {(run_metadata or {}).get('human_approval_policy', 'unspecified')}. "
+        "A deterministic host policy is not evidence of human judgment.", "",
         f"## VERDICT: {verdict}", "", state["conclusion"], "",
         f"Gate trace: headroom={i.task_has_headroom}, assay_sensitive={i.assay_detects_realistic}, "
         f"pebra_efficacy={i.pebra_has_efficacy}, pebra_exceeds_blast={i.pebra_exceeds_blast}, "

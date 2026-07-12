@@ -126,6 +126,7 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         human_approval_assessment_id=result.human_approval_assessment_id,
         human_approval_source=result.human_approval_source,
         post_approval_reassessment=result.post_approval_reassessment,
+        human_assisted_write_applied=result.human_assisted_write_applied,
         write_before_approval=result.write_before_approval,
         write_before_reassessment=result.write_before_reassessment,
     )

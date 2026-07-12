@@ -9,12 +9,22 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pebra.adapters.candidate_binding import binding_for_patch
+
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "examples" / "login_patch.json"
 _VENV_WIN = REPO / ".venv" / "Scripts" / "python.exe"
 _VENV_POSIX = REPO / ".venv" / "bin" / "python"
 PY = str(_VENV_WIN if _VENV_WIN.exists() else _VENV_POSIX if _VENV_POSIX.exists() else Path(sys.executable))
 REQUIRED_CHECK = "run targeted tests for the touched scope before commit"
+_BOUND_PATCH = """diff --git a/src/auth.py b/src/auth.py
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1,2 +1,2 @@
+ def validate_login(u, p):
+-    return True
++    return bool(u and p)
+"""
 
 
 def _git(cwd, *args):
@@ -131,9 +141,20 @@ def test_syntax_error_diff_invalidates_bound_sanction(tmp_path) -> None:
     assert a.returncode == 0, a.stderr
 
     spec = repo / "sanction.json"
+    request = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    action = request["candidate_actions"][0]
+    binding = binding_for_patch(repo, _BOUND_PATCH)
     spec.write_text(
-        json.dumps({"risk_profile": "rp_1", "assessment_id": "asm_1",
-                    "pre_edit_authorization_controls_satisfied": True}),
+        json.dumps({
+            "risk_profile": {
+                "assessment_id": "asm_1",
+                "action_id": action["id"],
+                "candidate_binding": binding,
+            },
+            "assessment_id": "asm_1",
+            "action_id": action["id"],
+            "pre_edit_authorization_controls_satisfied": True,
+        }),
         encoding="utf-8",
     )
     s = _pebra(repo, "accept-risk", str(spec), "--repo-root", str(repo))

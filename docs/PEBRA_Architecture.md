@@ -444,7 +444,7 @@ Ordered; the first matching risk gate sets a provisional decision. Sanction reso
 9. confidence-upgrade requested without `evidence_delta` → reject
 10. invalid/stale required graph evidence or stale architecture map → **inspect_first**
 11. trusted repo-relative CodeGraph blast over the configured guardrail → **inspect_first**
-12. authorized sanction resolution may convert a risk-threshold or exhausted-revision `ask_human` / `reject` from gates 2/3/4/9 into **proceed** with `risk_mode=controlled_high_risk`, `requires_confirmation=true`, and binding controls. It never overrides gate 1 policy violations unless a distinct policy-exception sanction type is ratified.
+12. authorized sanction resolution may convert a risk-threshold or exhausted-revision `ask_human` / `reject` from gates 2/3/4/9 into **proceed** with `risk_mode=controlled_high_risk`, `requires_confirmation=true`, and binding controls. This intentionally includes C4 and hard-terminal risk events after explicit human authorization; their risk remains scored and visible, and obligations remain non-waivable. It never overrides gate 1 policy violations unless a distinct policy-exception sanction type is ratified. Sanctions are single-use and must match the exact normalized-content candidate binding approved by the human.
 13. else → **proceed** (set `requires_confirmation=true` if C3 or C4)
 
 Sanction controls are split by timing. `pre_edit_authorization_controls` must be satisfied before gate 10 can convert the provisional decision. `pre_commit_required_controls` are bound into the guidance packet and verified later by `pebra_verify`; missing or failed pre-commit controls invalidate the sanction before commit/outcome logging.

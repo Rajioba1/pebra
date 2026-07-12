@@ -1720,7 +1720,8 @@ class SqliteStore:
     def active_sanction_for_assessment(self, assessment_id: str) -> dict[str, Any] | None:
         row = self._con.execute(
             "SELECT sanction_json FROM sanction_events "
-            "WHERE assessment_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+            "WHERE assessment_id = ? AND status IN ('active', 'consumed') "
+            "ORDER BY id DESC LIMIT 1",
             (assessment_id,),
         ).fetchone()
         return json.loads(row[0]) if row else None
@@ -1735,7 +1736,7 @@ class SqliteStore:
             self._con.execute("BEGIN IMMEDIATE")
             rows = self._con.execute(
                 "SELECT sanction_json FROM sanction_events "
-                "WHERE repo_id = ? AND status = 'active' ORDER BY id DESC",
+                "WHERE repo_id = ? AND status IN ('active', 'consumed') ORDER BY id DESC",
                 (repo_id,),
             ).fetchall()
             self._con.commit()
@@ -1763,6 +1764,44 @@ class SqliteStore:
                 return sanction
         return None
 
+    def claim_sanction_for_candidate(
+        self, repo_id: str, action_id: str, candidate_binding: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Atomically consume the newest active sanction for this exact action and candidate."""
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            rows = self._con.execute(
+                "SELECT id, sanction_json FROM sanction_events "
+                "WHERE repo_id = ? AND status = 'active' ORDER BY id DESC",
+                (repo_id,),
+            ).fetchall()
+            for row_id, raw in rows:
+                sanction = json.loads(raw)
+                if sanction.get("valid") is not True:
+                    continue
+                profile = sanction.get("risk_profile")
+                if not isinstance(profile, dict):
+                    continue
+                if profile.get("action_id") != action_id:
+                    continue
+                if profile.get("candidate_binding") != candidate_binding:
+                    continue
+                updated = self._con.execute(
+                    "UPDATE sanction_events SET status = 'consumed' "
+                    "WHERE id = ? AND status = 'active'",
+                    (row_id,),
+                )
+                if updated.rowcount != 1:
+                    self._con.rollback()
+                    return None
+                self._con.commit()
+                return sanction
+            self._con.commit()
+            return None
+        except Exception:
+            self._con.rollback()
+            raise
+
     def invalidate_sanctions_for_assessment(self, assessment_id: str, reason: str) -> list[str]:
         """Invalidate every active sanction bound to an assessment (drift). Returns their ids."""
         try:
@@ -1770,13 +1809,14 @@ class SqliteStore:
             ids = [
                 r[0]
                 for r in self._con.execute(
-                    "SELECT id FROM sanction_events WHERE assessment_id = ? AND status = 'active'",
+                    "SELECT id FROM sanction_events "
+                    "WHERE assessment_id = ? AND status IN ('active', 'consumed')",
                     (assessment_id,),
                 )
             ]
             self._con.execute(
                 "UPDATE sanction_events SET status = 'invalidated', invalidated_reason = ? "
-                "WHERE assessment_id = ? AND status = 'active'",
+                "WHERE assessment_id = ? AND status IN ('active', 'consumed')",
                 (reason, assessment_id),
             )
             self._con.commit()
