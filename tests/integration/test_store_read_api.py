@@ -41,6 +41,7 @@ def _persist_scoped(
     action_id: str | None = "action-1",
     task: str = "t",
     candidate_verification_status: str | None = None,
+    graph_refinement_status: str | None = None,
 ) -> str:
     res = AssessmentResult(
         recommended_decision=decision,
@@ -62,6 +63,8 @@ def _persist_scoped(
         request["action_id"] = action_id
     if candidate_verification_status is not None:
         request["candidate_verification_status"] = candidate_verification_status
+    if graph_refinement_status is not None:
+        request["graph_refinement"] = {"status": graph_refinement_status}
     return store.persist_assessment(res, request)
 
 
@@ -120,6 +123,19 @@ def test_revise_safer_attempt_count_does_not_charge_unavailable_verification(tmp
     assert store.revise_safer_attempt_count(
         "r", "abc123", ["src/Gamma.cs"], "action-1", "t"
     ) == 2
+
+
+def test_revise_safer_attempt_count_does_not_charge_unavailable_graph_refinement(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        graph_refinement_status="unavailable",
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/Gamma.cs"], "action-1", "t"
+    ) == 0
 
 
 def test_revision_origin_envelope_returns_first_matching_action_at_head(tmp_path) -> None:

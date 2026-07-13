@@ -21,6 +21,7 @@ from pebra.adapters.ast_diff_adapter import AstDiffAdapter
 from pebra.adapters.ast_import_graph import AstImportGraphAdapter
 from pebra.adapters.composite_evidence import CompositeEvidenceProvider
 from pebra.adapters.contract_surface import ContractSurfaceScanner
+from pebra.adapters.codegraph_candidate_refinement import CodeGraphCandidateRefinementAdapter
 from pebra.adapters.git_change_verifier import GitChangeVerifier
 from pebra.adapters.candidate_binding import CandidateBindingAdapter
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
@@ -103,6 +104,16 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
     # One CodeGraphAdapter serves both the per-symbol fan-in and the whole-file roll-up (it satisfies
     # both ports structurally) — sharing the instance shares its distribution cache (one DB scan).
     codegraph = CodeGraphAdapter()
+
+    def dependent_context(repo_root: str, owner_files: tuple[str, ...]) -> tuple[str, ...]:
+        files: set[str] = set()
+        for owner_file in owner_files:
+            result = codegraph.dependent_files_result(owner_file, repo_root)
+            if not result.get("available") or result.get("graph_freshness") != "fresh":
+                raise RuntimeError("dependent graph context unavailable")
+            files.update(str(path) for path in result.get("dependent_files", ()) if path)
+        return tuple(sorted(files))
+
     return {
         "evidence_provider": CompositeEvidenceProvider(graph_provider=graph_provider),
         "symbol_diff_provider": AstDiffAdapter(request.evidence.get("symbol_diff")),
@@ -138,6 +149,12 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         # Deployment dark gate: request thresholds alone cannot turn the expensive semantic tier on.
         "semantic_diff_enabled": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF") == "1",
         "candidate_binding_provider": CandidateBindingAdapter(),
+        # Revision-only bounded after-graph refinement. Ordinary candidates stay on the existing graph;
+        # the controller cheap-ranks all alternatives before spending this provider's assess budget.
+        "graph_risk_refinement_provider": CodeGraphCandidateRefinementAdapter(
+            enabled=os.environ.get("PEBRA_GRAPH_REFINEMENT", "1") != "0",
+            context_files_fn=dependent_context,
+        ),
     }
 
 
@@ -227,6 +244,21 @@ def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
         "worktree_dirty": None,
         "assessed_repo_root": r.repo_root,
     }
+    recommended_scored = next(
+        (item for item in outcome.scored_actions if item.result is r), None
+    )
+    refinement = (
+        {
+            "eligible": recommended_scored.refinement_eligible,
+            "rank": recommended_scored.refinement_rank,
+            "selected": recommended_scored.refinement_selected,
+            "status": recommended_scored.refinement_status,
+            "rank_basis": dict(recommended_scored.refinement_rank_basis),
+            "evidence": asdict(recommended_scored.candidate_graph_risk_evidence),
+        }
+        if recommended_scored is not None
+        else None
+    )
     return {
         "recommended_decision": r.recommended_decision.value,
         "requires_confirmation": r.requires_confirmation,
@@ -244,6 +276,7 @@ def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
         "applied_snapshot_provenance": r.provenance.get("applied_snapshot_provenance"),
         "repo_state": repo_state,
         "graph_provenance": _graph_provenance(r),
+        "graph_refinement": refinement,
     }
 
 
@@ -290,6 +323,14 @@ def _scored_action_payload(scored: ScoredAction) -> dict[str, Any]:
         "why": scored.explanation.why,
         "gates_fired": r.gates_fired,
         "high_risk_triggers": r.high_risk_triggers,
+        "refinement": {
+            "eligible": scored.refinement_eligible,
+            "rank": scored.refinement_rank,
+            "selected": scored.refinement_selected,
+            "status": scored.refinement_status,
+            "rank_basis": dict(scored.refinement_rank_basis),
+            "evidence": asdict(scored.candidate_graph_risk_evidence),
+        },
     }
 
 

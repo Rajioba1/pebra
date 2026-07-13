@@ -45,6 +45,7 @@ def test_build_assess_ports_has_the_controller_keys(tmp_path) -> None:
         "evidence_provider", "symbol_diff_provider", "blast_provider",
         "sanction_port", "repository_registry", "store", "assessed_commit",
         "fanin_provider", "language_capability_provider", "materialized_diff_provider",
+        "graph_risk_refinement_provider",
     }
 
 
@@ -58,6 +59,16 @@ def test_build_assess_ports_semantic_provider_is_wired_but_dark(tmp_path) -> Non
     finally:
         ctx.store.close()
     assert hasattr(provider, "diff_for_patch")
+
+
+def test_build_assess_ports_wires_revision_graph_refinement_provider(tmp_path) -> None:
+    req = candidate_parser.parse({"task": "t", "candidate_actions": [{"id": "a1"}]})
+    ctx = composition.resolve_repo_and_db(str(tmp_path))
+    try:
+        provider = composition.build_assess_ports(req, ctx)["graph_risk_refinement_provider"]
+    finally:
+        ctx.store.close()
+    assert hasattr(provider, "analyze")
 
 
 def test_build_verify_ports_has_the_controller_keys() -> None:

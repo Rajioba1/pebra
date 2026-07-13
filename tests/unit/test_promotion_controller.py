@@ -91,6 +91,25 @@ def test_clean_pass_writes_active_snapshot():
     assert any(f["scope_kind"] == "global" for f in facts)
 
 
+def test_candidate_conditioned_graph_updates_are_never_promoted_globally():
+    rows = [_row(0.1, 1, "p_event.public_api_break") for _ in range(5)]
+    for row in rows:
+        row["features"]["graph_refinement"] = {
+            "status": "available", "fact_kinds": ["exported_binding_continuity"],
+        }
+    learning = _FakeLearning()
+
+    result = pc.run_promotion(
+        "r",
+        store=_FakeStore(rows),
+        learning_port=learning,
+        config=pe.PromotionConfig(min_calibration_samples=5),
+    )
+
+    assert result.promoted is False
+    assert learning.calls == []
+
+
 def test_delta_brier_negative_vetoed_no_write():
     store = _FakeStore([_row(0.5, 1), _row(0.5, 1), _row(0.5, 1), _row(0.5, 0)])
     learning = _FakeLearning()

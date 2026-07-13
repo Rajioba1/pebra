@@ -41,10 +41,11 @@ def _unsafe_rel(rel: str) -> bool:
     return False
 
 
-def _git_init(cwd: Path) -> bool:
+def _git_init(cwd: Path, timeout_seconds: float = 30.0) -> bool:
     try:
         res = subprocess.run(
-            ["git", "init", "-q"], cwd=str(cwd), capture_output=True, text=True, timeout=30
+            ["git", "init", "-q"], cwd=str(cwd), capture_output=True, text=True,
+            timeout=timeout_seconds,
         )
         if res.returncode != 0:
             return False
@@ -53,14 +54,16 @@ def _git_init(cwd: Path) -> bool:
             cwd=str(cwd),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.SubprocessError):
         return False
     return res.returncode == 0
 
 
-def _git_apply(root: Path, patch_file: Path, *, apply_dir: str = ".") -> bool:
+def _git_apply(
+    root: Path, patch_file: Path, *, apply_dir: str = ".", timeout_seconds: float = 30.0
+) -> bool:
     """Apply inside the temp work tree, git-style ``-p1`` then plain ``-p0``. No ``--unsafe-paths``: git
     refuses absolute / ``..`` paths in a real work tree, so a patch cannot escape the temp dir."""
     for strip in ("-p1", "-p0"):
@@ -70,7 +73,7 @@ def _git_apply(root: Path, patch_file: Path, *, apply_dir: str = ".") -> bool:
                 argv.append(f"--directory={apply_dir}")
             argv.append(str(patch_file))
             res = subprocess.run(
-                argv, cwd=str(root), capture_output=True, text=True, timeout=30
+                argv, cwd=str(root), capture_output=True, text=True, timeout=timeout_seconds
             )
         except (OSError, subprocess.SubprocessError):
             return False
@@ -80,7 +83,8 @@ def _git_apply(root: Path, patch_file: Path, *, apply_dir: str = ".") -> bool:
 
 
 def materialize_patch(
-    before: Mapping[str, str | None], patch: str, *, apply_dir: str = "."
+    before: Mapping[str, str | None], patch: str, *, apply_dir: str = ".",
+    timeout_seconds: float = 30.0,
 ) -> dict[str, str | None] | None:
     """Apply ``patch`` to a throwaway copy of ``before`` and return the after-content per file.
 
@@ -96,7 +100,7 @@ def materialize_patch(
         scratch = Path(td)
         root = scratch / "repo"
         root.mkdir()
-        if not _git_init(root):
+        if not _git_init(root, timeout_seconds):
             return None
         for rel, content in before.items():
             if content is None:
@@ -107,7 +111,9 @@ def materialize_patch(
         patch_file = scratch / "patch.diff"
         patch_file.write_bytes(patch.encode("utf-8"))
         (root / apply_dir).mkdir(parents=True, exist_ok=True)
-        if not _git_apply(root, patch_file, apply_dir=apply_dir):
+        if not _git_apply(
+            root, patch_file, apply_dir=apply_dir, timeout_seconds=timeout_seconds
+        ):
             return None
         after: dict[str, str | None] = {}
         for rel in before:

@@ -76,6 +76,8 @@ def _flatten_scores(a: Assessment) -> dict[str, Any]:
         "confidence_band": a.confidence_band,
         "loss_components": s["loss_components"],
         "verified_risk_events_removed": s["verified_risk_events_removed"],
+        "risk_probability_updates": s["risk_probability_updates"],
+        "graph_risk_events_updated": s["graph_risk_events_updated"],
         "symbol_scope_evidence": s["symbol_scope_evidence"],
         "variance_breakdown": s["variance_breakdown"],
     }

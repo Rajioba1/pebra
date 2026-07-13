@@ -12,7 +12,9 @@ from __future__ import annotations
 import pytest
 
 from pebra.adapters.codegraph_materialized_diff import CodeGraphMaterializedDiffAdapter
+from pebra.adapters.codegraph_candidate_refinement import CodeGraphCandidateRefinementAdapter
 from pebra.core.engine_paths import find_engine
+from pebra.core.models import CandidateAction, GraphRiskScope
 
 requires_codegraph = pytest.mark.skipif(
     find_engine() is None, reason="codegraph binary not installed"
@@ -85,3 +87,38 @@ def test_js_export_flip_surfaces_as_visibility_change_end_to_end(tmp_path):
     )
     assert r.available, r.fallback_reason
     assert any(row.visibility_changed for row in r.rows)
+
+
+_TS_CONTINUITY_PATCH = (
+    "diff --git a/src/api.ts b/src/api.ts\n--- a/src/api.ts\n+++ b/src/api.ts\n"
+    "@@ -1 +1,2 @@\n"
+    "-export function oldName(): void {}\n"
+    "+export function newName(): void {}\n"
+    "+export const oldName = newName;\n"
+)
+
+
+@requires_codegraph
+def test_materialized_graph_proves_exported_binding_continuity(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "api.ts").write_text(
+        "export function oldName(): void {}\n", encoding="utf-8"
+    )
+    action = CandidateAction(
+        id="rename", label="rename", action_type="edit", proposed_patch=_TS_CONTINUITY_PATCH
+    )
+    scope = GraphRiskScope(
+        event="public_api_break",
+        risk_source="graph_modify_risk",
+        owner_node_ids=("original-owner",),
+        owner_file_paths=("src/api.ts",),
+        owner_qualified_names=("oldName",),
+    )
+
+    result = CodeGraphCandidateRefinementAdapter(
+        cache_root=tmp_path / "host-cache"
+    ).analyze(action, str(tmp_path), scope)
+
+    assert result.status == "available", result.reason
+    assert result.facts[0].owner_node_ids == ("original-owner",)
+    assert result.facts[0].fact_kind == "exported_binding_continuity"

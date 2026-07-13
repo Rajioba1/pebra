@@ -24,6 +24,45 @@ _THRESHOLDS = {
 }
 
 
+def test_request_event_never_inherits_graph_owner_scope_when_it_wins_merge() -> None:
+    request_event = {
+        "event": "public_api_break", "p_event": 0.90, "elicited_disutility": 0.80,
+    }
+    graph_event = {
+        "event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.80,
+        "risk_source": "graph_modify_risk", "owner_node_ids": ["owner-1"],
+    }
+
+    merged = ac._merge_event_max(request_event, graph_event)
+
+    assert merged["p_event"] == 0.90
+    assert "risk_source" not in merged
+    assert "owner_node_ids" not in merged
+
+
+def test_graph_refinement_never_drops_below_independent_event_probability() -> None:
+    merged = ac._merge_event_max(
+        {"event": "public_api_break", "p_event": 0.40, "elicited_disutility": 0.70},
+        {
+            "event": "public_api_break", "p_event": 0.50, "elicited_disutility": 0.80,
+            "risk_source": "graph_modify_risk", "owner_node_ids": ["owner-1"],
+        },
+    )
+    evidence = m.CandidateGraphRiskEvidence(
+        status="available", verified_patch_hash="abc",
+        facts=(m.ScopedGraphRiskFact(
+            fact_kind="exported_binding_continuity", event="public_api_break",
+            risk_source="graph_modify_risk", owner_node_ids=("owner-1",),
+        ),),
+    )
+
+    adjusted, _ = ac.candidate_refinement.apply_scoped_adjustments(
+        [merged], evidence, patch_hash="abc"
+    )
+
+    assert adjusted[0]["p_event"] == 0.40
+
+
 class FakeEvidence:
     def __init__(self, *, policy_violations=None):
         self.policy_violations = list(policy_violations or [])
@@ -107,13 +146,70 @@ class FakeSnapshotRead:
 
 
 class FakeCandidateBinding:
+    def __init__(self):
+        self.calls = 0
+
     def bind_candidate(self, action, repo_root):
+        self.calls += 1
         assert action.id == "a1"
         assert repo_root == "/abs/path/to/example-repo"
         return {
             "algorithm": "sha256-normalized-content-v1",
             "files": {"src/auth.py": "a" * 64},
         }
+
+
+class FakeGraphRefinement:
+    def __init__(self, status: str = "available") -> None:
+        self.status = status
+        self.calls = []
+
+    def analyze(self, action, repo_root, scope):
+        self.calls.append((action.id, repo_root, scope))
+        return m.CandidateGraphRiskEvidence(
+            status=self.status,
+            provider="fake_graph",
+            facts=(m.ScopedGraphRiskFact(
+                fact_kind="exported_binding_continuity",
+                event=scope.event,
+                risk_source=scope.risk_source,
+                owner_node_ids=scope.owner_node_ids,
+            ),) if self.status == "available" else (),
+        )
+
+
+class FakeGraphFanin:
+    def fanin(self, action, repo_root):
+        return m.FanInEvidence(
+            symbol_fan_in_percentile=0.95,
+            symbol_caller_count=12,
+            resolution_method="location",
+            graph_freshness="fresh",
+            node_ids_resolved=("owner-1",),
+            resolved_symbol_count=1,
+            resolved_language="typescript",
+            resolved_languages=("typescript",),
+            resolved_file_paths=("src/auth.py",),
+            resolved_qualified_names=("public_fn",),
+            owner_risk=(m.OwnerRiskEvidence(
+                node_id="owner-1",
+                file_path="src/auth.py",
+                language="typescript",
+                qualified_name="public_fn",
+                fan_in_percentile=0.95,
+                is_public_contract=True,
+            ),),
+            is_exported_contract=True,
+        )
+
+
+class FakeFullCapability:
+    def capability_for(self, language, repo_root):
+        assert language == "typescript"
+        return LanguageCapability(
+            language="typescript", probe_status="measured", node_count=10,
+            signature_coverage_ratio=1.0, visibility_coverage_ratio=1.0,
+        )
 
 
 def _request():
@@ -206,6 +302,153 @@ def test_trusted_candidate_verification_sidecar_selected_by_action_id() -> None:
     assert verification.verified_patch_hash == "a" * 64
 
 
+def test_revision_uses_ranked_graph_refinement_and_controller_binds_patch_hash() -> None:
+    provider = FakeGraphRefinement()
+    store = FakeRevisionAttemptStore(count=1)
+    binding = FakeCandidateBinding()
+
+    outcome = ac.assess(
+        _request_with_patch(),
+        thresholds={**_THRESHOLDS, "revise_safer_attempt": 1},
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeRevisionEvidence(),
+        symbol_diff_provider=FakeRevisionSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        graph_risk_refinement_provider=provider,
+        fanin_provider=FakeGraphFanin(),
+        language_capability_provider=FakeFullCapability(),
+        candidate_binding_provider=binding,
+    )
+
+    evidence = outcome.scored_actions[0].candidate_graph_risk_evidence
+    assert len(provider.calls) == 1
+    assert provider.calls[0][0:2] == ("a1", "/abs/path/to/example-repo")
+    assert evidence.status == "available"
+    assert evidence.verified_patch_hash == ac.decision_engine.candidate_patch_hash(
+        _request_with_patch().candidate_actions[0].proposed_patch
+    )
+    assert store.persisted[0][1]["graph_refinement"]["status"] == "available"
+    assert binding.calls == 1
+    prediction = next(
+        item for item in store.persisted[0][2]
+        if item["target_name"] == "p_event.public_api_break"
+    )
+    assert prediction["predicted_value"] < 0.45
+
+
+def test_internal_graph_refinement_is_revision_only() -> None:
+    provider = FakeGraphRefinement()
+
+    outcome = ac.assess(
+        _request_with_patch(),
+        thresholds=_THRESHOLDS,
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=FakeStore(),
+        graph_risk_refinement_provider=provider,
+        fanin_provider=FakeGraphFanin(),
+        language_capability_provider=FakeFullCapability(),
+    )
+
+    assert provider.calls == []
+    assert outcome.scored_actions[0].candidate_graph_risk_evidence.status == "not_applicable"
+
+
+def test_external_candidate_verification_remains_separate_from_graph_refinement() -> None:
+    provider = FakeGraphRefinement()
+    external_hash = ac.decision_engine.candidate_patch_hash(
+        _request_with_patch().candidate_actions[0].proposed_patch
+    )
+
+    outcome = ac.assess(
+        _request_with_patch(),
+        thresholds={**_THRESHOLDS, "revise_safer_attempt": 1},
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeRevisionEvidence(),
+        symbol_diff_provider=FakeRevisionSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=FakeRevisionAttemptStore(count=1),
+        graph_risk_refinement_provider=provider,
+        fanin_provider=FakeGraphFanin(),
+        language_capability_provider=FakeFullCapability(),
+        trusted_candidate_verification={
+            "status": "failed",
+            "checks": {"covering_tests": "failed"},
+            "required_checks": ["covering_tests"],
+            "verified_patch_hash": external_hash,
+        },
+    )
+
+    assert len(provider.calls) == 1
+    assert outcome.scored_actions[0].candidate_verification is not None
+    assert outcome.scored_actions[0].candidate_verification.status == "failed"
+
+
+def _ranked_revision_request(reverse: bool = False) -> m.AssessmentRequest:
+    actions = [
+        m.CandidateAction(
+            id="a1", label="one", action_type="edit", expected_files=["src/auth.py"],
+            proposed_patch=(
+                "diff --git a/src/auth.py b/src/auth.py\n--- a/src/auth.py\n+++ b/src/auth.py\n"
+                "@@ -1 +1 @@\n-old\n+new-one\n"
+            ),
+        ),
+        m.CandidateAction(
+            id="a2", label="two", action_type="edit", expected_files=["src/auth.py"],
+            proposed_patch=(
+                "diff --git a/src/auth.py b/src/auth.py\n--- a/src/auth.py\n+++ b/src/auth.py\n"
+                "@@ -1 +1 @@\n-old\n+new-two\n"
+            ),
+        ),
+    ]
+    return m.AssessmentRequest(task="rank alternatives", candidate_actions=list(reversed(actions)) if reverse else actions)
+
+
+def _run_ranked_revision(reverse: bool = False):
+    provider = FakeGraphRefinement()
+    outcome = ac.assess(
+        _ranked_revision_request(reverse),
+        thresholds={
+            **_THRESHOLDS,
+            "revise_safer_attempt": 1,
+            "max_materialized_candidates_per_assess": 1,
+        },
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeRevisionEvidence(),
+        symbol_diff_provider=FakeRevisionSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=FakeRevisionAttemptStore(count=1),
+        graph_risk_refinement_provider=provider,
+        fanin_provider=FakeGraphFanin(),
+        language_capability_provider=FakeFullCapability(),
+    )
+    return outcome, provider
+
+
+def test_multi_action_refinement_budget_is_one_and_order_independent() -> None:
+    forward, forward_provider = _run_ranked_revision(False)
+    reverse, reverse_provider = _run_ranked_revision(True)
+
+    assert len(forward_provider.calls) == len(reverse_provider.calls) == 1
+    assert forward_provider.calls[0][0] == reverse_provider.calls[0][0]
+    forward_by_id = {item.action.id: item for item in forward.scored_actions}
+    selected = forward_provider.calls[0][0]
+    unselected = "a2" if selected == "a1" else "a1"
+    assert forward_by_id[selected].refinement_selected is True
+    assert forward_by_id[unselected].refinement_status == "budget_exhausted"
+
+
 def test_controller_reproduces_worked_example_numbers() -> None:
     outcome, _ = _run()
     s = outcome.recommended_result.scores
@@ -295,7 +538,14 @@ def test_structural_features_captured_without_changing_scores() -> None:
     assert outcome.recommended_result.recommended_decision is baseline.recommended_result.recommended_decision
     _, _, predictions = store.persisted[0]
     assert predictions and all(
-        p["features"] == {"schema_version": 1, "symbol": {"is_public_api": True}} for p in predictions
+        p["features"] == {
+            "schema_version": 1,
+            "symbol": {"is_public_api": True},
+            "graph_refinement": {
+                "status": "not_applicable", "provider": None, "fact_kinds": [],
+            },
+        }
+        for p in predictions
     )
 
 

@@ -16,6 +16,7 @@ from typing import Any
 from pebra.core import (
     assessment_builder,
     candidate_aggregation,
+    candidate_refinement,
     change_classifier,
     decision_engine,
     destructive_op_model,
@@ -36,13 +37,16 @@ from pebra.core.models import (
     AssessmentRequest,
     AssessmentResult,
     CandidateAction,
+    CandidateGraphRiskEvidence,
     CandidateVerificationEvidence,
     FileFanInRollup,
+    GraphRiskScope,
     RevisionCompletenessEvidence,
     TaskObligationsEvidence,
 )
 from pebra.ports.blast_radius_port import BlastRadiusProvider
 from pebra.ports.candidate_binding_port import CandidateBindingProvider
+from pebra.ports.graph_risk_refinement_port import GraphRiskRefinementProvider
 from pebra.ports.fanin_port import FanInProvider
 from pebra.ports.file_fanin_port import FileFanInProvider
 from pebra.ports.evidence_port import EvidenceProvider
@@ -65,6 +69,22 @@ class ScoredAction:
     # atomically with the assessment. Shadow-only measurement — it never changes this decision.
     predictions: list[dict[str, Any]] = field(default_factory=list)
     thresholds: dict[str, Any] = field(default_factory=dict)
+    candidate_verification: CandidateVerificationEvidence | None = None
+    candidate_graph_risk_evidence: CandidateGraphRiskEvidence = field(
+        default_factory=CandidateGraphRiskEvidence
+    )
+    refinement_eligible: bool = False
+    refinement_rank: int | None = None
+    refinement_selected: bool = False
+    refinement_status: str = "not_applicable"
+    refinement_rank_basis: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _PreparedAction:
+    action: CandidateAction
+    inp: AssessmentInput
+    score_ports: dict[str, Any]
 
 
 @dataclass
@@ -114,14 +134,23 @@ def _codegraph_structural_tier_allowed(
 
 def _merge_event_max(existing: dict[str, Any], injected: dict[str, Any]) -> dict[str, Any]:
     """Merge same-name event evidence conservatively: stronger probability/disutility wins."""
-    merged = dict(existing)
-    merged["p_event"] = max(existing.get("p_event", 0.0), injected.get("p_event", 0.0))
-    merged["elicited_disutility"] = max(
-        existing.get("elicited_disutility", 0.0), injected.get("elicited_disutility", 0.0)
+    existing_p = float(existing.get("p_event", 0.0))
+    existing_d = float(existing.get("elicited_disutility", 0.0))
+    injected_p = float(injected.get("p_event", 0.0))
+    injected_d = float(injected.get("elicited_disutility", 0.0))
+    graph_owns_merge = (
+        injected_p >= existing_p
+        and injected_d >= existing_d
+        and (injected_p > existing_p or injected_d > existing_d)
     )
-    for key, value in injected.items():
-        if key not in merged:
-            merged[key] = value
+    merged = dict(injected if graph_owns_merge else existing)
+    merged["p_event"] = max(existing_p, injected_p)
+    merged["elicited_disutility"] = max(existing_d, injected_d)
+    if not graph_owns_merge:
+        merged.pop("risk_source", None)
+        merged.pop("owner_node_ids", None)
+    else:
+        merged["independent_probability_floor"] = existing_p
     return merged
 
 
@@ -210,6 +239,7 @@ def _build_input(
     materialized_diff_provider: MaterializedGraphDiffProvider | None = None,
     semantic_diff_enabled: bool = False,
     trusted_candidate_verification: CandidateVerificationEvidence | None = None,
+    candidate_graph_risk_evidence: CandidateGraphRiskEvidence | None = None,
     trusted_task_obligations: TaskObligationsEvidence | None = None,
     revision_origin: dict[str, Any] | None = None,
     is_revision: bool = False,
@@ -439,6 +469,9 @@ def _build_input(
         variance_breakdown=evidence.variance_breakdown,
         benefit_delta_evidence=evidence.benefit_delta_evidence,
         candidate_verification=trusted_candidate_verification or evidence.candidate_verification,
+        candidate_graph_risk_evidence=(
+            candidate_graph_risk_evidence or CandidateGraphRiskEvidence()
+        ),
         task_obligations=trusted_task_obligations or TaskObligationsEvidence(),
         revision_completeness_evidence=_build_revision_completeness(
             action,
@@ -458,14 +491,14 @@ def _build_input(
     )
 
 
-def _score_action(
+def _prepare_action_input(
     request: AssessmentRequest,
     action: CandidateAction,
     repo_id: str,
     repo_root: str,
     thresholds: dict[str, float],
     **ports: Any,
-) -> ScoredAction:
+) -> AssessmentInput:
     inp = _build_input(
         request, action, repo_id, repo_root, thresholds,
         evidence_provider=ports["evidence_provider"],
@@ -478,6 +511,7 @@ def _score_action(
         materialized_diff_provider=ports.get("materialized_diff_provider"),
         semantic_diff_enabled=bool(ports.get("semantic_diff_enabled", False)),
         trusted_candidate_verification=ports.get("trusted_candidate_verification"),
+        candidate_graph_risk_evidence=ports.get("candidate_graph_risk_evidence"),
         trusted_task_obligations=ports.get("trusted_task_obligations"),
         revision_origin=ports.get("revision_origin"),
         is_revision=bool(ports.get("is_revision", False)),
@@ -496,6 +530,15 @@ def _score_action(
     bundle = ports.get("active_snapshot_bundle")
     inp = apply_snapshot(inp, bundle)
     inp.active_snapshot = bundle
+    return inp
+
+
+def _score_prepared_input(
+    inp: AssessmentInput,
+    action: CandidateAction,
+    repo_root: str,
+    **ports: Any,
+) -> ScoredAction:
     assessment = assessment_builder.build_assessment(inp)
     policy_violations = inp.policy_violations
     result = decision_engine.decide(assessment, policy_violations=policy_violations)
@@ -514,21 +557,38 @@ def _score_action(
     packet = model_guidance.render(result, action, explanation)
     candidate_binding_provider = ports.get("candidate_binding_provider")
     if candidate_binding_provider is not None:
-        candidate_binding = candidate_binding_provider.bind_candidate(action, repo_root)
+        candidate_binding = ports.get("prepared_candidate_binding")
         if candidate_binding is not None:
             packet["binding"]["candidate"] = candidate_binding
     result.model_guidance_packet = packet
     # Milestone 4a: capture the prediction manifest from the in-flight evidence (p_success and the
     # projected deltas are dropped from result.scores, so this is the only faithful record). Pure;
     # read-only; does not feed back into the decision (Hard Rule).
+    patch_hash = (
+        decision_engine.candidate_patch_hash(action.proposed_patch)
+        if action.proposed_patch is not None
+        else None
+    )
+    adjusted_events, _ = candidate_refinement.apply_scoped_adjustments(
+        inp.events, inp.candidate_graph_risk_evidence, patch_hash=patch_hash
+    )
     manifest = prediction_capture.build_prediction_manifest(
         p_success=inp.p_success,
-        events=inp.events,
+        events=adjusted_events,
         immediate_benefit=inp.immediate_benefit,
         projected_deltas=inp.benefit_delta_evidence.deltas,
         projected_benefit=result.scores["benefit"],
         action_id=action.id,
-        features=inp.structural_features,
+        features={
+            **(inp.structural_features or {}),
+            "graph_refinement": {
+                "status": inp.candidate_graph_risk_evidence.status,
+                "provider": inp.candidate_graph_risk_evidence.provider,
+                "fact_kinds": sorted({
+                    fact.fact_kind for fact in inp.candidate_graph_risk_evidence.facts
+                }),
+            },
+        },
         applied_snapshot_provenance=inp.applied_snapshot_provenance,
     )
     return ScoredAction(
@@ -537,7 +597,24 @@ def _score_action(
         explanation=explanation,
         predictions=[asdict(t) for t in manifest],
         thresholds=dict(inp.thresholds),
+        candidate_verification=inp.candidate_verification,
+        candidate_graph_risk_evidence=inp.candidate_graph_risk_evidence,
+        refinement_status=inp.candidate_graph_risk_evidence.status,
     )
+
+
+def _score_action(
+    request: AssessmentRequest,
+    action: CandidateAction,
+    repo_id: str,
+    repo_root: str,
+    thresholds: dict[str, float],
+    **ports: Any,
+) -> ScoredAction:
+    inp = _prepare_action_input(
+        request, action, repo_id, repo_root, thresholds, **ports
+    )
+    return _score_prepared_input(inp, action, repo_root, **ports)
 
 
 def _graph_provenance(inp: AssessmentInput) -> dict[str, Any]:
@@ -607,12 +684,96 @@ def _thresholds_with_revise_attempt(
 
 
 def _recommended(scored: list[ScoredAction]) -> ScoredAction:
-    """Pick the recommended action: best RAU among non-rejected, else the first."""
+    """Pick the best RAU non-reject with deterministic, request-order-independent ties."""
     from pebra.core.constants import Decision
 
+    autonomous = [s for s in scored if s.result.recommended_decision is Decision.PROCEED]
     proceedable = [s for s in scored if s.result.recommended_decision is not Decision.REJECT]
-    pool = proceedable or scored
-    return max(pool, key=lambda s: s.result.scores["rau"])
+    pool = autonomous or proceedable or scored
+    return min(
+        pool,
+        key=lambda scored_action: (
+            -float(scored_action.result.scores["rau"]),
+            float(scored_action.result.scores["expected_loss"]),
+            -float(scored_action.result.scores["benefit"]),
+            decision_engine.candidate_patch_hash(
+                scored_action.action.proposed_patch or ""
+            ),
+            scored_action.action.id,
+        ),
+    )
+
+
+def _graph_risk_scope(inp: AssessmentInput) -> GraphRiskScope | None:
+    event = next(
+        (
+            item
+            for item in inp.events
+            if item.get("event") in {"public_api_break", "api_contract_break"}
+            and item.get("risk_source") == "graph_modify_risk"
+            and item.get("owner_node_ids")
+        ),
+        None,
+    )
+    fanin = inp.fanin_evidence
+    if event is None or not is_trusted_fanin(fanin):
+        return None
+    if (
+        classify_tier(inp.language_capability) != "full"
+        or inp.language_capability.language
+        not in candidate_refinement.MEASURED_CONTINUITY_LANGUAGES
+    ):
+        return None
+    owner_by_id = {owner.node_id: owner for owner in fanin.owner_risk}
+    owner_ids = tuple(sorted(set(str(value) for value in event["owner_node_ids"] if value)))
+    if not owner_ids or any(owner_id not in owner_by_id for owner_id in owner_ids):
+        return None
+    return GraphRiskScope(
+        event=str(event["event"]),
+        risk_source="graph_modify_risk",
+        owner_node_ids=owner_ids,
+        owner_file_paths=tuple(owner_by_id[owner_id].file_path for owner_id in owner_ids),
+        owner_qualified_names=tuple(
+            owner_by_id[owner_id].qualified_name for owner_id in owner_ids
+        ),
+        expected_consumer_count=int(fanin.symbol_caller_count),
+    )
+
+
+def _rank_input(
+    scored: ScoredAction, inp: AssessmentInput
+) -> candidate_refinement.CandidateRankInput:
+    aggregate = scored.result.scores.get("candidate_aggregate") or {}
+    hard_events = {
+        "security_sensitive_change",
+        "external_state_damage",
+        "migration_failure",
+    }
+    event_names = {str(event.get("event")) for event in inp.events}
+    scope = _graph_risk_scope(inp)
+    is_revision = inp.revision_completeness_evidence.is_revision
+    already_proceeds = scored.result.recommended_decision.value == "proceed"
+    return candidate_refinement.CandidateRankInput(
+        action_id=scored.action.id,
+        eligible=(
+            is_revision
+            and scope is not None
+            and bool(scored.action.proposed_patch)
+            and scored.result.scores["benefit"] > 0
+            and not (event_names & hard_events)
+            and not inp.policy_violations
+        ),
+        needs_refinement=not already_proceeds,
+        benefit=float(scored.result.scores["benefit"]),
+        expected_loss=float(scored.result.scores["expected_loss"]),
+        rau=float(scored.result.scores["rau"]),
+        cumulative_exposure=float(aggregate.get("cumulative_exposure", 0.0)),
+        file_count=int(aggregate.get("file_count", 0)),
+        owner_count=int(aggregate.get("owner_count", 0)),
+        domain_count=int(aggregate.get("domain_count", 0)),
+        resolution_coverage=float(aggregate.get("resolution_coverage", 0.0)),
+        patch_hash=decision_engine.candidate_patch_hash(scored.action.proposed_patch or ""),
+    )
 
 
 def _candidate_verification_from_raw(raw: dict[str, Any]) -> CandidateVerificationEvidence:
@@ -748,6 +909,7 @@ def assess(
     trusted_candidate_verification: dict[str, Any] | None = None,
     trusted_task_obligations: dict[str, Any] | None = None,
     candidate_binding_provider: CandidateBindingProvider | None = None,
+    graph_risk_refinement_provider: GraphRiskRefinementProvider | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     _validate_trusted_task_obligations(
@@ -759,6 +921,7 @@ def assess(
     )
 
     scored: list[ScoredAction] = []
+    prepared: dict[str, _PreparedAction] = {}
     for action in request.candidate_actions:
         action_thresholds = _thresholds_with_revise_attempt(
             thresholds,
@@ -799,38 +962,123 @@ def assess(
                         "available": False,
                         "fallback_reason": "revision origin assessment not found",
                     }
-        scored.append(
-            _score_action(
-                request, action, repo.repo_id, repo.repo_root, action_thresholds,
-                evidence_provider=evidence_provider,
-                symbol_diff_provider=symbol_diff_provider,
-                blast_provider=blast_provider,
-                sanction_port=sanction_port,
-                assessed_commit=assessed_commit,
-                worktree_dirty=worktree_dirty,
-                structural_feature_provider=structural_feature_provider,
-                active_snapshot_bundle=active_snapshot_bundle,
-                fanin_provider=fanin_provider,
-                file_fanin_provider=file_fanin_provider,
-                language_capability_provider=language_capability_provider,
-                materialized_diff_provider=materialized_diff_provider,
-                semantic_diff_enabled=semantic_diff_enabled,
-                candidate_binding_provider=candidate_binding_provider,
-                trusted_candidate_verification=_trusted_verification_for_action(
-                    trusted_candidate_verification, action
-                ),
-                trusted_task_obligations=_trusted_task_obligations_for_action(
-                    trusted_task_obligations, action
-                ),
-                revision_origin=revision_origin,
-                is_revision=revise_attempt > 0,
-            )
+        selected_verification = _trusted_verification_for_action(
+            trusted_candidate_verification, action
         )
+        score_ports = {
+            "evidence_provider": evidence_provider,
+            "symbol_diff_provider": symbol_diff_provider,
+            "blast_provider": blast_provider,
+            "sanction_port": sanction_port,
+            "assessed_commit": assessed_commit,
+            "worktree_dirty": worktree_dirty,
+            "structural_feature_provider": structural_feature_provider,
+            "active_snapshot_bundle": active_snapshot_bundle,
+            "fanin_provider": fanin_provider,
+            "file_fanin_provider": file_fanin_provider,
+            "language_capability_provider": language_capability_provider,
+            "materialized_diff_provider": materialized_diff_provider,
+            "semantic_diff_enabled": semantic_diff_enabled,
+            "candidate_binding_provider": candidate_binding_provider,
+            "trusted_candidate_verification": selected_verification,
+            "trusted_task_obligations": _trusted_task_obligations_for_action(
+                trusted_task_obligations, action
+            ),
+            "revision_origin": revision_origin,
+            "is_revision": revise_attempt > 0,
+        }
+        if candidate_binding_provider is not None:
+            score_ports["prepared_candidate_binding"] = (
+                candidate_binding_provider.bind_candidate(action, repo.repo_root)
+            )
+        inp = _prepare_action_input(
+            request,
+            action,
+            repo.repo_id,
+            repo.repo_root,
+            action_thresholds,
+            **score_ports,
+        )
+        prepared[action.id] = _PreparedAction(action=action, inp=inp, score_ports=score_ports)
+        scored.append(_score_prepared_input(inp, action, repo.repo_root, **score_ports))
+
+    if graph_risk_refinement_provider is not None:
+        rank_inputs = [
+            _rank_input(item, prepared[item.action.id].inp) for item in scored
+        ]
+        for rank_input in rank_inputs:
+            by_scored = next(item for item in scored if item.action.id == rank_input.action_id)
+            by_scored.refinement_rank_basis = asdict(rank_input)
+        ranked = candidate_refinement.rank_candidates(rank_inputs)
+        by_id = {item.action.id: item for item in scored}
+        rank_by_id = {item.action_id: index + 1 for index, item in enumerate(ranked)}
+        for action_id, rank in rank_by_id.items():
+            by_id[action_id].refinement_eligible = True
+            by_id[action_id].refinement_rank = rank
+            by_id[action_id].refinement_status = "pending"
+        try:
+            budget = int(thresholds.get("max_materialized_candidates_per_assess", 1))
+        except (TypeError, ValueError):
+            budget = 1
+        budget = max(0, min(2, budget))
+        selected_count = 0
+        stopped_after_proceed = False
+        for rank_item in ranked:
+            if selected_count >= budget:
+                break
+            prepared_action = prepared[rank_item.action_id]
+            scope = _graph_risk_scope(prepared_action.inp)
+            if scope is None:
+                continue
+            selected_count += 1
+            try:
+                evidence = graph_risk_refinement_provider.analyze(
+                    prepared_action.action, repo.repo_root, scope
+                )
+            except Exception:  # noqa: BLE001 - refinement failure cannot reduce risk
+                evidence = CandidateGraphRiskEvidence(
+                    status="unavailable", reason="materialized graph refinement failed"
+                )
+            if evidence.status == "available" and prepared_action.action.proposed_patch:
+                evidence = replace(
+                    evidence,
+                    verified_patch_hash=decision_engine.candidate_patch_hash(
+                        prepared_action.action.proposed_patch
+                    ),
+                )
+            refined_input = replace(
+                prepared_action.inp, candidate_graph_risk_evidence=evidence
+            )
+            refined = _score_prepared_input(
+                refined_input,
+                prepared_action.action,
+                repo.repo_root,
+                **prepared_action.score_ports,
+            )
+            refined.refinement_eligible = True
+            refined.refinement_rank = rank_by_id[rank_item.action_id]
+            refined.refinement_selected = True
+            refined.refinement_status = evidence.status
+            refined.refinement_rank_basis = dict(
+                by_id[rank_item.action_id].refinement_rank_basis
+            )
+            prepared_action.inp = refined_input
+            by_id[rank_item.action_id] = refined
+            if refined.result.recommended_decision.value == "proceed":
+                stopped_after_proceed = True
+                break
+        for rank_item in ranked:
+            remaining = by_id[rank_item.action_id]
+            if remaining.refinement_status == "pending":
+                remaining.refinement_status = (
+                    "not_evaluated_after_proceed"
+                    if stopped_after_proceed
+                    else "budget_exhausted"
+                )
+        scored = [by_id[action.id] for action in request.candidate_actions]
 
     recommended = _recommended(scored)
-    recommended_verification = _trusted_verification_for_action(
-        trusted_candidate_verification, recommended.action
-    )
+    recommended_verification = recommended.candidate_verification
     recommended_obligations = _trusted_task_obligations_for_action(
         trusted_task_obligations, recommended.action
     )
@@ -845,6 +1093,27 @@ def assess(
              if recommended_verification is not None
              else "not_applicable"
          ),
+         "graph_refinement": {
+             "eligible": recommended.refinement_eligible,
+             "rank": recommended.refinement_rank,
+             "selected": recommended.refinement_selected,
+             "status": recommended.refinement_status,
+             "evidence": asdict(recommended.candidate_graph_risk_evidence),
+         },
+         "candidate_refinements": [
+             {
+                 "action_id": item.action.id,
+                 "eligible": item.refinement_eligible,
+                 "rank": item.refinement_rank,
+                 "selected": item.refinement_selected,
+                 "status": item.refinement_status,
+                 "evidence": asdict(item.candidate_graph_risk_evidence),
+                 "rank_basis": dict(item.refinement_rank_basis),
+                 "decision": item.result.recommended_decision.value,
+                 "scores": dict(item.result.scores),
+             }
+             for item in scored
+         ],
          "task_obligations": {
              "required_files": list(recommended_obligations.required_files),
              "required_symbols": list(recommended_obligations.required_symbols),

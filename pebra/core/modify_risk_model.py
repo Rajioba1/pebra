@@ -48,7 +48,9 @@ _BASE_DISUTILITY_PUBLIC_API_BREAK = 0.70
 _BASE_DISUTILITY_API_CONTRACT_BREAK = 0.70
 
 
-def _event(name: str, p_event: float, disutility: float) -> dict[str, Any]:
+def _event(
+    name: str, p_event: float, disutility: float, owner_node_ids: tuple[str, ...]
+) -> dict[str, Any]:
     return {
         "event": name,
         "p_event": p_event,
@@ -56,11 +58,13 @@ def _event(name: str, p_event: float, disutility: float) -> dict[str, Any]:
         "probability_source_type": "prior_uncalibrated",
         "disutility_source_type": "prior_uncalibrated",
         "risk_source": "graph_modify_risk",
+        "owner_node_ids": list(owner_node_ids),
     }
 
 
 def _dominant_event(
-    *, p_event: float, public_or_exported: bool, schema_or_migration: bool
+    *, p_event: float, public_or_exported: bool, schema_or_migration: bool,
+    owner_node_ids: tuple[str, ...]
 ) -> dict[str, Any]:
     """Return one event for one graph-derived fault.
 
@@ -70,10 +74,14 @@ def _dominant_event(
     the event that carries the risk.
     """
     if schema_or_migration:
-        return _event("api_contract_break", p_event, _BASE_DISUTILITY_API_CONTRACT_BREAK)
+        return _event(
+            "api_contract_break", p_event, _BASE_DISUTILITY_API_CONTRACT_BREAK, owner_node_ids
+        )
     if public_or_exported:
-        return _event("public_api_break", p_event, _BASE_DISUTILITY_PUBLIC_API_BREAK)
-    return _event("dependency_break", p_event, _BASE_DISUTILITY_DEPENDENCY_BREAK)
+        return _event(
+            "public_api_break", p_event, _BASE_DISUTILITY_PUBLIC_API_BREAK, owner_node_ids
+        )
+    return _event("dependency_break", p_event, _BASE_DISUTILITY_DEPENDENCY_BREAK, owner_node_ids)
 
 
 def _kind(sde: SymbolDiffEvidence) -> ChangeKind:
@@ -193,5 +201,6 @@ def events_for_modify_risk(
             p_event=p_event,
             public_or_exported=_is_public(symbol_diff) or graph_public_contract,
             schema_or_migration=is_schema_change or is_migration,
+            owner_node_ids=tuple(sorted(set(fanin.node_ids_resolved))),
         )
     ]

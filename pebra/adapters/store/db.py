@@ -695,10 +695,13 @@ class SqliteStore:
                 verification_status = (content.get("request") or {}).get(
                     "candidate_verification_status"
                 )
+                graph_refinement_status = (
+                    ((content.get("request") or {}).get("graph_refinement") or {}).get("status")
+                )
                 # Infrastructure/parsing unavailability is not a completed verification attempt.
                 # It remains persisted for audit, but must not exhaust the bounded semantic repair
                 # budget before a later well-formed candidate can actually be checked.
-                if verification_status == "unavailable":
+                if verification_status == "unavailable" or graph_refinement_status == "unavailable":
                     continue
                 same_action = (
                     bool(action_id)

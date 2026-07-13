@@ -125,6 +125,11 @@ def _collect_facts(
     calibration_method differ. Returns (fact_dicts, veto_reasons, considered)."""
     by_target: dict[str, list[dict[str, Any]]] = {}
     for r in all_rows:
+        refinement = (r.get("features") or {}).get("graph_refinement") or {}
+        if refinement.get("status") == "available":
+            # Candidate-conditioned updates cannot become global learned priors. Keep them in the
+            # calibration ledger, but skip promotion until scopes can require the same graph fact.
+            continue
         by_target.setdefault(r["target_name"], []).append(r)
 
     fact_dicts: list[dict[str, Any]] = []

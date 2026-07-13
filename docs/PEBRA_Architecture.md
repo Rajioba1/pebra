@@ -437,6 +437,30 @@ Ordered; the first matching risk gate sets a provisional decision. Sanction reso
 2. `criticality_stage == C4` and `c4_always_ask_human` and the symbol diff is consequential or unknown → **ask_human** (`requires_confirmation=true`) with a C4/consequence trigger. Verified `COSMETIC` / safe `TEST_ONLY` edits in C4 paths remain sensitive-context edits, not controlled-high-risk edits.
 3. `expected_loss > effective_threshold` → **revise_safer** only when the edit is risky but plausibly beneficial and narrowing headroom exists; otherwise **ask_human**, or **reject** when `expected_utility < 0`
 4. **`RAU < 0`** follows the same `revise_safer` eligibility; otherwise ask_human (default) / reject if `ask_on_negative_rau=false` configured  *(AD-2 — now a formal numbered gate in spec §8.2)*
+
+### Revised-candidate graph refinement
+
+`revise_safer` alternatives are first scored from the current trusted graph. PEBRA retains every
+eligible alternative (cheap-score dominance cannot predict candidate-specific after-graph evidence)
+and ranks them deterministically by RAU, expected loss, benefit, cumulative graph
+exposure, breadth, resolution coverage, and canonical patch hash, then materializes at most one
+candidate per assess call by default (hard maximum two). This prevents an N-alternative request from
+spawning N CodeGraph rebuilds. The ordinary revision-attempt cap still bounds work across rounds.
+
+The materialized provider indexes bounded before/after scratch trees and emits only owner-addressed
+structural facts. An exported same-name binding with a high-confidence graph reference to a live
+callable can reduce the matching graph event probability by a named multiplier with a non-zero floor;
+it does not delete the event and does not claim behavioral or type equivalence. Facts are bound to the
+exact candidate patch and exact event/risk-source/owner set. Missing, partial, ambiguous, stale, or
+over-budget evidence is identity and therefore cannot create a false `proceed`.
+
+Candidate verification remains a separate host-produced behavioral proof and never rewrites graph
+risk. After refinement, the normal revision gate recomputes expected loss, expected utility, and RAU;
+those scores remain authoritative. Only conservative unavailable/ambiguous results are cached on
+disk; positive risk-reducing facts are recomputed and never trusted from agent-writable cache data.
+Cache identity includes current working-tree bytes for every bounded context file, the exact patch,
+scope, provider schema, graph-engine identity, and limits.
+Cross-file context that exceeds the bounds escalates rather than triggering a whole-repository rebuild.
 5. not MC and `utility_sd > max_utility_sd_without_human` and `expected_utility > 0` → **ask_human**  *(AD-3: EU<0 already handled by gate 3/4)*
 6. MC available and `P(utility<0) > max_p_negative_utility` → ask_human/reject *(v1.5)*
 7. `decision_instability > threshold` → **inspect_first** / **test_first**

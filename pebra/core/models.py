@@ -324,6 +324,51 @@ class CandidateVerificationEvidence:
 
 
 @dataclass(frozen=True)
+class ScopedGraphRiskFact:
+    """Patch-bound structural fact for one graph-owned risk event and its complete owner set."""
+
+    fact_kind: str
+    event: str
+    risk_source: str
+    owner_node_ids: tuple[str, ...]
+    confidence: float = 1.0
+    provenance: str = "materialized_codegraph"
+
+
+@dataclass(frozen=True)
+class GraphRiskScope:
+    """Owner-addressable graph event selected by the cheap assessment for refinement."""
+
+    event: str
+    risk_source: str
+    owner_node_ids: tuple[str, ...]
+    owner_file_paths: tuple[str, ...]
+    owner_qualified_names: tuple[str, ...]
+    expected_consumer_count: int = 0
+
+
+@dataclass(frozen=True)
+class CandidateGraphRiskEvidence:
+    """Materialized-candidate graph facts; never behavioral verification or authorization."""
+
+    status: str = "not_applicable"  # not_applicable | available | unavailable | ambiguous
+    facts: tuple[ScopedGraphRiskFact, ...] = ()
+    verified_patch_hash: str | None = None
+    provider: str | None = None
+    reason: str | None = None
+    manifest_hash: str | None = None
+    cache_hit: bool = False
+    context_file_count: int = 0
+    context_bytes: int = 0
+    context_truncated: bool = False
+    prefilter_latency_ms: float = 0.0
+    materialize_latency_ms: float = 0.0
+    index_latency_ms: float = 0.0
+    query_latency_ms: float = 0.0
+    total_latency_ms: float = 0.0
+
+
+@dataclass(frozen=True)
 class TaskObligationsEvidence:
     """Host-declared acceptance envelope; never accepted from request evidence."""
 
@@ -446,6 +491,9 @@ class AssessmentInput:
     architecture_evidence: ArchitectureEvidence = field(default_factory=ArchitectureEvidence)
     candidate_verification: CandidateVerificationEvidence = field(
         default_factory=CandidateVerificationEvidence
+    )
+    candidate_graph_risk_evidence: CandidateGraphRiskEvidence = field(
+        default_factory=CandidateGraphRiskEvidence
     )
     task_obligations: TaskObligationsEvidence = field(default_factory=TaskObligationsEvidence)
     revision_completeness_evidence: RevisionCompletenessEvidence = field(

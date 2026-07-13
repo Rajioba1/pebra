@@ -21,7 +21,10 @@ uses measured calibration data to promote learned facts for future assessments.
   - MODIFY graph-wide blast over callers/references/implementers/subclasses;
   - contract-surface metadata for interface/base-class edits;
   - containing class/namespace/module hierarchy roll-up;
-  - file metadata / parse-error confidence penalties.
+  - file metadata / parse-error confidence penalties;
+  - bounded revised-candidate refinement: cheap deterministic ranking first, then one materialized
+    before/after graph by default. Structural continuity adjusts only the exact owner-scoped risk
+    event; RAU remains authoritative. Set `PEBRA_GRAPH_REFINEMENT=0` to disable this path.
 - Benchmark harnesses for math-oracle validation and deterministic learning-loop wiring proof.
 - True CLI-boundary e2e lanes, including a gated external C# repo lane.
 

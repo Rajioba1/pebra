@@ -105,9 +105,14 @@ def test_codegraph_semantic_tier_counts_as_unknown_change_like_coarse():
 
 
 def test_public_contract_modify_also_injects_public_api_break():
-    events = _events(_sde(visibility="public_api"))
+    events = _events(
+        _sde(visibility="public_api"),
+        _fanin(node_ids_resolved=("owner-b", "owner-a")),
+    )
 
-    assert _by(events, "public_api_break") is not None
+    public = _by(events, "public_api_break")
+    assert public is not None
+    assert public["owner_node_ids"] == ["owner-a", "owner-b"]
     assert _by(events, "dependency_break") is None
 
 

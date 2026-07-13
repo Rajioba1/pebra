@@ -90,11 +90,15 @@ def test_patch_bytes_are_written_without_newline_translation(monkeypatch, tmp_pa
     # must be exactly patch.encode("utf-8").
     captured: dict[str, bytes] = {}
 
-    def fake_git_init(cwd: Path) -> bool:
+    def fake_git_init(cwd: Path, timeout_seconds: float = 30.0) -> bool:
+        assert timeout_seconds == 30.0
         return True
 
-    def fake_git_apply(cwd: Path, patch_file: Path, *, apply_dir: str = ".") -> bool:
+    def fake_git_apply(
+        cwd: Path, patch_file: Path, *, apply_dir: str = ".", timeout_seconds: float = 30.0
+    ) -> bool:
         assert apply_dir == "."
+        assert timeout_seconds == 30.0
         captured["patch"] = patch_file.read_bytes()
         (cwd / "src" / "a.txt").write_bytes(b"new\r\n")
         return True
