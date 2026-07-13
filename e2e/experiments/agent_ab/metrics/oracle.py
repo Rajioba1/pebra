@@ -114,6 +114,8 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         post_edit_verify_passed=result.post_edit_verify_passed,
         post_edit_verify_assessment_id=result.post_edit_verify_assessment_id,
         applied_assessment_id=result.applied_assessment_id,
+        measured_benefit=result.measured_benefit,
+        measured_benefit_deltas=dict(result.measured_benefit_deltas),
         decision_cycle_completed=governance_outcome is not None,
         terminal_governance_outcome=governance_outcome,
         no_attempt=no_attempt,
@@ -139,8 +141,21 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         graph_refinement_risk_probability_update_count=(
             result.graph_refinement_risk_probability_update_count
         ),
+        graph_refinement_risk_probability_updates=tuple(
+            dict(update) for update in result.graph_refinement_risk_probability_updates
+        ),
         graph_refinement_origin_expected_loss=result.graph_refinement_origin_expected_loss,
         graph_refinement_revised_expected_loss=result.graph_refinement_revised_expected_loss,
+        graph_refinement_origin_benefit=result.graph_refinement_origin_benefit,
+        graph_refinement_revised_benefit=result.graph_refinement_revised_benefit,
+        graph_refinement_origin_expected_utility=(
+            result.graph_refinement_origin_expected_utility
+        ),
+        graph_refinement_revised_expected_utility=(
+            result.graph_refinement_revised_expected_utility
+        ),
+        graph_refinement_origin_utility_sd=result.graph_refinement_origin_utility_sd,
+        graph_refinement_revised_utility_sd=result.graph_refinement_revised_utility_sd,
         graph_refinement_origin_rau=result.graph_refinement_origin_rau,
         graph_refinement_revised_rau=result.graph_refinement_revised_rau,
         graph_refinement_candidate_verification_passed=(
@@ -177,6 +192,8 @@ def _error_outcome(
         post_edit_verify_passed=result.post_edit_verify_passed,
         post_edit_verify_assessment_id=result.post_edit_verify_assessment_id,
         applied_assessment_id=result.applied_assessment_id,
+        measured_benefit=result.measured_benefit,
+        measured_benefit_deltas=dict(result.measured_benefit_deltas),
         advisory_effective=False,
         served_models=result.served_models,
         over_caution_cause=None,
@@ -198,8 +215,21 @@ def _error_outcome(
         graph_refinement_risk_probability_update_count=(
             result.graph_refinement_risk_probability_update_count
         ),
+        graph_refinement_risk_probability_updates=tuple(
+            dict(update) for update in result.graph_refinement_risk_probability_updates
+        ),
         graph_refinement_origin_expected_loss=result.graph_refinement_origin_expected_loss,
         graph_refinement_revised_expected_loss=result.graph_refinement_revised_expected_loss,
+        graph_refinement_origin_benefit=result.graph_refinement_origin_benefit,
+        graph_refinement_revised_benefit=result.graph_refinement_revised_benefit,
+        graph_refinement_origin_expected_utility=(
+            result.graph_refinement_origin_expected_utility
+        ),
+        graph_refinement_revised_expected_utility=(
+            result.graph_refinement_revised_expected_utility
+        ),
+        graph_refinement_origin_utility_sd=result.graph_refinement_origin_utility_sd,
+        graph_refinement_revised_utility_sd=result.graph_refinement_revised_utility_sd,
         graph_refinement_origin_rau=result.graph_refinement_origin_rau,
         graph_refinement_revised_rau=result.graph_refinement_revised_rau,
         graph_refinement_candidate_verification_passed=(

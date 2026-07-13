@@ -521,6 +521,9 @@ def test_revised_candidate_with_lower_loss_and_nonnegative_rau_proceeds() -> Non
             is_revision=True,
             origin_available=True,
             origin_expected_loss=0.36,
+            origin_benefit=0.50,
+            origin_expected_utility=-0.10,
+            origin_utility_sd=0.078125,
             origin_rau=-0.20,
         ),
     )
@@ -531,7 +534,23 @@ def test_revised_candidate_with_lower_loss_and_nonnegative_rau_proceeds() -> Non
     assert result.scores["expected_loss"] > result.scores["effective_threshold"]
     assert result.scores["rau"] >= 0
     assert result.recommended_decision is Decision.PROCEED
-    assert any(g["name"] == "revision_risk_benefit_improved" for g in result.gates_fired)
+    gate = next(g for g in result.gates_fired if g["name"] == "revision_risk_benefit_improved")
+    assert gate["origin_benefit"] == 0.50
+    assert gate["revised_benefit"] == result.scores["benefit"]
+    assert gate["origin_expected_utility"] == -0.10
+    assert gate["revised_expected_utility"] == result.scores["expected_utility"]
+    assert gate["origin_utility_sd"] == 0.078125
+    assert gate["revised_utility_sd"] == result.scores["utility_sd"]
+    lanes = result.scores["calibration_lanes"]
+    assert lanes["schema_version"] == 1
+    assert lanes["risk"]["structural_continuity_multiplier"] == 0.35
+    assert lanes["risk"]["structural_continuity_probability_floor"] == 0.05
+    assert lanes["benefit"]["predicted_value"] == result.scores["benefit"]
+    assert lanes["benefit"]["variance"] == result.scores["benefit_breakdown"][
+        "benefit_variance"
+    ]
+    assert lanes["uncertainty"]["rau_z_alpha"] == 1.28
+    assert lanes["decision_policy"]["decision"] == "proceed"
 
 
 def test_revised_candidate_with_negative_rau_asks_human_even_when_verified() -> None:

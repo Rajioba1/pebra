@@ -17,6 +17,7 @@ from dataclasses import asdict
 from collections.abc import Sequence
 from typing import Any
 
+from pebra.core import benefit_model, candidate_refinement
 from pebra.core.assessment_builder import Assessment
 from pebra.core.constants import (
     ActionStatus,
@@ -24,6 +25,7 @@ from pebra.core.constants import (
     GraphFreshness,
     RiskMode,
     UNCERTAIN_STRUCTURE_TIERS,
+    Z_ALPHA_90,
 )
 from pebra.core.graph_trust import is_trusted_fanin
 from pebra.core.models import AssessmentResult
@@ -80,6 +82,7 @@ def _flatten_scores(a: Assessment) -> dict[str, Any]:
         "graph_risk_events_updated": s["graph_risk_events_updated"],
         "symbol_scope_evidence": s["symbol_scope_evidence"],
         "variance_breakdown": s["variance_breakdown"],
+        "variance_source": s["variance_source"],
     }
     return flat
 
@@ -274,31 +277,38 @@ def _revision_risk_benefit_outcome(
         return False, Decision.ASK_HUMAN
 
     scores = assessment.scores
+    score_comparison = {
+        "origin_expected_loss": evidence.origin_expected_loss,
+        "revised_expected_loss": scores["expected_loss"],
+        "origin_benefit": evidence.origin_benefit,
+        "revised_benefit": scores["benefit"],
+        "origin_expected_utility": evidence.origin_expected_utility,
+        "revised_expected_utility": scores["expected_utility"],
+        "origin_utility_sd": evidence.origin_utility_sd,
+        "revised_utility_sd": scores["utility_sd"],
+        "origin_rau": evidence.origin_rau,
+        "revised_rau": scores["rau"],
+    }
     if scores["benefit"] <= 0:
         gates_fired.append({
             "gate": 9,
             "name": "revision_has_no_credible_benefit",
             "benefit": scores["benefit"],
+            **score_comparison,
         })
         return False, Decision.REJECT
     if scores["expected_loss"] >= evidence.origin_expected_loss:
         gates_fired.append({
             "gate": 9,
             "name": "revision_risk_not_reduced",
-            "origin_expected_loss": evidence.origin_expected_loss,
-            "revised_expected_loss": scores["expected_loss"],
-            "origin_rau": evidence.origin_rau,
-            "revised_rau": scores["rau"],
+            **score_comparison,
         })
         return False, Decision.ASK_HUMAN
     if scores["rau"] < 0:
         gates_fired.append({
             "gate": 9,
             "name": "revision_risk_still_outweighs_benefit",
-            "origin_expected_loss": evidence.origin_expected_loss,
-            "revised_expected_loss": scores["expected_loss"],
-            "origin_rau": evidence.origin_rau,
-            "revised_rau": scores["rau"],
+            **score_comparison,
         })
         return False, Decision.ASK_HUMAN
     verification = assessment.input.candidate_verification
@@ -316,10 +326,7 @@ def _revision_risk_benefit_outcome(
     gates_fired.append({
         "gate": 9,
         "name": "revision_risk_benefit_improved",
-        "origin_expected_loss": evidence.origin_expected_loss,
-        "revised_expected_loss": scores["expected_loss"],
-        "origin_rau": evidence.origin_rau,
-        "revised_rau": scores["rau"],
+        **score_comparison,
     })
     return True, None
 
@@ -475,12 +482,50 @@ def decide(
         high_risk_triggers: list[dict[str, Any]] | None = None,
         decision_reason: str = "",
     ) -> AssessmentResult:
+        benefit_breakdown = flat["benefit_breakdown"]
+        calibration_lanes = {
+            "schema_version": 1,
+            "state": "collecting_multi_target_outcomes",
+            "risk": {
+                "targets": ["p_success", "p_event", "observed_harm"],
+                "structural_continuity_multiplier": (
+                    candidate_refinement.STRUCTURAL_CONTINUITY_MULTIPLIER
+                ),
+                "structural_continuity_probability_floor": (
+                    candidate_refinement.STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR
+                ),
+                "probability_update_count": len(flat["risk_probability_updates"]),
+                "active": bool(flat["risk_probability_updates"]),
+            },
+            "benefit": {
+                "targets": [
+                    "immediate_benefit_realized",
+                    "maintainability_delta",
+                    "measured_benefit",
+                ],
+                "predicted_value": flat["benefit"],
+                "source_type": benefit_breakdown["source_type"],
+                "variance": benefit_breakdown["benefit_variance"],
+                "normalization_ceiling": benefit_model.BENEFIT_OVERRIDE_MAX,
+            },
+            "uncertainty": {
+                "targets": ["utility_variance", "rau_coverage"],
+                "utility_sd": flat["utility_sd"],
+                "variance_source": flat["variance_source"],
+                "rau_z_alpha": Z_ALPHA_90,
+            },
+            "decision_policy": {
+                "targets": ["observed_harm", "task_completion", "human_escalation"],
+                "decision": decision.value,
+                "effective_threshold": flat["effective_threshold"],
+            },
+        }
         return AssessmentResult(
             recommended_decision=decision,
             requires_confirmation=requires_confirmation,
             action_status=ActionStatus.PENDING,
             risk_mode=risk_mode,
-            scores=flat,
+            scores={**flat, "calibration_lanes": calibration_lanes},
             repo_id=assessment.input.repo_id,
             repo_root=assessment.input.repo_root,
             gates_fired=gates_fired,

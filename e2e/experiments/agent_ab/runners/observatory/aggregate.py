@@ -134,10 +134,25 @@ def _summary(o: models.RunOutcome) -> dict:
             "graph_refinement_risk_probability_update_count": (
                 o.graph_refinement_risk_probability_update_count
             ),
+            "graph_refinement_risk_probability_updates": [
+                dict(update) for update in o.graph_refinement_risk_probability_updates
+            ],
             "graph_refinement_origin_expected_loss": o.graph_refinement_origin_expected_loss,
             "graph_refinement_revised_expected_loss": o.graph_refinement_revised_expected_loss,
+            "graph_refinement_origin_benefit": o.graph_refinement_origin_benefit,
+            "graph_refinement_revised_benefit": o.graph_refinement_revised_benefit,
+            "graph_refinement_origin_expected_utility": (
+                o.graph_refinement_origin_expected_utility
+            ),
+            "graph_refinement_revised_expected_utility": (
+                o.graph_refinement_revised_expected_utility
+            ),
+            "graph_refinement_origin_utility_sd": o.graph_refinement_origin_utility_sd,
+            "graph_refinement_revised_utility_sd": o.graph_refinement_revised_utility_sd,
             "graph_refinement_origin_rau": o.graph_refinement_origin_rau,
             "graph_refinement_revised_rau": o.graph_refinement_revised_rau,
+            "measured_benefit": o.measured_benefit,
+            "measured_benefit_deltas": dict(o.measured_benefit_deltas),
             "graph_refinement_candidate_verification_passed": (
                 o.graph_refinement_candidate_verification_passed
             ),

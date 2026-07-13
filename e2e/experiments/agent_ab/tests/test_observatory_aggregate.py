@@ -113,8 +113,17 @@ def test_observatory_payload_preserves_credited_graph_route_and_lineage(tmp_path
                 graph_refinement_fact_kinds=("exported_binding_continuity",),
                 graph_refinement_risk_probability_update_count=1,
                 graph_refinement_origin_expected_loss=0.36,
-                graph_refinement_revised_expected_loss=0.12,
-                graph_refinement_revised_rau=0.08,
+                graph_refinement_revised_expected_loss=0.08,
+                graph_refinement_origin_benefit=0.55,
+                graph_refinement_revised_benefit=0.65,
+                graph_refinement_origin_expected_utility=0.0575,
+                graph_refinement_revised_expected_utility=0.4225,
+                graph_refinement_origin_utility_sd=0.091796875,
+                graph_refinement_revised_utility_sd=0.158203125,
+                graph_refinement_origin_rau=-0.06,
+                graph_refinement_revised_rau=0.22,
+                measured_benefit=0.14,
+                measured_benefit_deltas={"maintainability_index_delta": 3.0},
                 graph_refinement_candidate_verification_passed=True,
                 graph_refinement_revision_risk_benefit_improved=True,
                 graph_refinement_proof_path="graph_plus_host_verification",
@@ -141,6 +150,10 @@ def test_observatory_payload_preserves_credited_graph_route_and_lineage(tmp_path
     assert cell["assessment_lineage_verified"] is True
     assert cell["graph_refined_completion_credited"] is True
     assert cell["graph_refinement_proof_path"] == "graph_plus_host_verification"
+    assert cell["graph_refinement_origin_benefit"] == 0.55
+    assert cell["graph_refinement_revised_benefit"] == 0.65
+    assert cell["measured_benefit"] == 0.14
+    assert cell["measured_benefit_deltas"] == {"maintainability_index_delta": 3.0}
     assert cell["candidate_lineage_invalidated"] is False
     assert cell["post_edit_verify_passed"] is True
     pair = next(

@@ -70,3 +70,8 @@ def test_graph_refined_completion_is_visible_in_scoreboard_and_matrix():
     assert "graph_plus_host_verified_completion_gain" in app_js
     assert "graph_refinement_proof_path" in app_js
     assert "post_edit_verify_assessment_id" in app_js
+    assert "graph_refinement_origin_benefit" in app_js
+    assert "graph_refinement_revised_benefit" in app_js
+    assert "graph_refinement_origin_expected_utility" in app_js
+    assert "graph_refinement_revised_expected_utility" in app_js
+    assert "measured_benefit" in app_js

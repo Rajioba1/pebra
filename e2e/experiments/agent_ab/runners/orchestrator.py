@@ -454,6 +454,14 @@ def _outcome_from_dict(d: dict[str, Any]) -> RunOutcome:
         d["served_models"] = tuple(d["served_models"])
     if d.get("graph_refinement_fact_kinds") is not None:
         d["graph_refinement_fact_kinds"] = tuple(d["graph_refinement_fact_kinds"])
+    if d.get("graph_refinement_risk_probability_updates") is not None:
+        d["graph_refinement_risk_probability_updates"] = tuple(
+            {
+                **update,
+                "owner_node_ids": tuple(update.get("owner_node_ids") or ()),
+            }
+            for update in d["graph_refinement_risk_probability_updates"]
+        )
     return RunOutcome(**d)
 
 

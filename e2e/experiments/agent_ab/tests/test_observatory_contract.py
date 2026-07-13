@@ -8,6 +8,7 @@ used for the boundary lookup helpers.
 from __future__ import annotations
 
 import dataclasses
+import json
 import sys
 
 from e2e.experiments.agent_ab import models
@@ -28,9 +29,20 @@ def _oc(arm, *, harm=False, harm_label="risky"):
 
 
 def test_outcome_from_dict_roundtrips():
-    oc = _oc(models.ARM_PEBRA)
-    back = orchestrator._outcome_from_dict(dataclasses.asdict(oc))
-    assert back.arm == models.ARM_PEBRA and back.task_id == "T1"
+    oc = dataclasses.replace(
+        _oc(models.ARM_PEBRA),
+        graph_refinement_risk_probability_updates=({
+            "event": "public_api_break",
+            "owner_node_ids": ("owner-a",),
+        },),
+        graph_refinement_origin_benefit=0.55,
+        graph_refinement_revised_benefit=0.65,
+        measured_benefit=0.14,
+        measured_benefit_deltas={"maintainability_index_delta": 3.0},
+    )
+    serialized = json.loads(json.dumps(dataclasses.asdict(oc)))
+    back = orchestrator._outcome_from_dict(serialized)
+    assert back == oc
 
 
 def test_plan_expands_task_by_seed():

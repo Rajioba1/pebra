@@ -458,8 +458,36 @@ def _graph_refinement_summary(result: Any, assessment_id: str) -> dict[str, Any]
     revised_loss = _finite_number(
         improved_gate.get("revised_expected_loss", scores.get("expected_loss"))
     )
+    origin_benefit = _finite_number(improved_gate.get("origin_benefit"))
+    revised_benefit = _finite_number(
+        improved_gate.get("revised_benefit", scores.get("benefit"))
+    )
+    origin_expected_utility = _finite_number(improved_gate.get("origin_expected_utility"))
+    revised_expected_utility = _finite_number(
+        improved_gate.get("revised_expected_utility", scores.get("expected_utility"))
+    )
+    origin_utility_sd = _finite_number(improved_gate.get("origin_utility_sd"))
+    revised_utility_sd = _finite_number(
+        improved_gate.get("revised_utility_sd", scores.get("utility_sd"))
+    )
     origin_rau = _finite_number(improved_gate.get("origin_rau"))
     revised_rau = _finite_number(improved_gate.get("revised_rau", scores.get("rau")))
+    calibration_updates = tuple({
+        "event": str(update.get("event")),
+        "risk_source": str(update.get("risk_source")),
+        "fact_kind": str(update.get("fact_kind")),
+        "fact_confidence": _finite_number(update.get("fact_confidence")),
+        "original_probability": _finite_number(update.get("original_probability")),
+        "revised_probability": _finite_number(update.get("revised_probability")),
+        "probability_multiplier": _finite_number(update.get("probability_multiplier")),
+        "probability_floor": _finite_number(update.get("probability_floor")),
+        "owner_node_ids": tuple(sorted(set(update.get("owner_node_ids") or ()))),
+        "calibration": (
+            str(update["calibration"])
+            if isinstance(update.get("calibration"), str)
+            else None
+        ),
+    } for update in continuity_updates)
     valid_graph_route = (
         refinement.get("status") == "available"
         and selected
@@ -488,8 +516,15 @@ def _graph_refinement_summary(result: Any, assessment_id: str) -> dict[str, Any]
         "selected": selected,
         "fact_kinds": fact_kinds,
         "risk_probability_update_count": len(continuity_updates),
+        "risk_probability_updates": calibration_updates,
         "origin_expected_loss": origin_loss,
         "revised_expected_loss": revised_loss,
+        "origin_benefit": origin_benefit,
+        "revised_benefit": revised_benefit,
+        "origin_expected_utility": origin_expected_utility,
+        "revised_expected_utility": revised_expected_utility,
+        "origin_utility_sd": origin_utility_sd,
+        "revised_utility_sd": revised_utility_sd,
         "origin_rau": origin_rau,
         "revised_rau": revised_rau,
         "candidate_verification_passed": verification_passed,
@@ -512,8 +547,17 @@ def _graph_refinement_result_fields(telemetry: ArmTelemetry) -> dict[str, Any]:
         "graph_refinement_risk_probability_update_count": int(
             refinement.get("risk_probability_update_count") or 0
         ),
+        "graph_refinement_risk_probability_updates": tuple(
+            dict(update) for update in refinement.get("risk_probability_updates") or ()
+        ),
         "graph_refinement_origin_expected_loss": refinement.get("origin_expected_loss"),
         "graph_refinement_revised_expected_loss": refinement.get("revised_expected_loss"),
+        "graph_refinement_origin_benefit": refinement.get("origin_benefit"),
+        "graph_refinement_revised_benefit": refinement.get("revised_benefit"),
+        "graph_refinement_origin_expected_utility": refinement.get("origin_expected_utility"),
+        "graph_refinement_revised_expected_utility": refinement.get("revised_expected_utility"),
+        "graph_refinement_origin_utility_sd": refinement.get("origin_utility_sd"),
+        "graph_refinement_revised_utility_sd": refinement.get("revised_utility_sd"),
         "graph_refinement_origin_rau": refinement.get("origin_rau"),
         "graph_refinement_revised_rau": refinement.get("revised_rau"),
         "graph_refinement_candidate_verification_passed": (

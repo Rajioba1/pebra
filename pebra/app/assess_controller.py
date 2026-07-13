@@ -203,6 +203,9 @@ def _build_revision_completeness(
         missing_files=tuple(sorted(origin_files - current_files)),
         missing_public_symbols=tuple(sorted(origin_symbols - current_symbols)),
         origin_expected_loss=origin.get("expected_loss"),
+        origin_benefit=origin.get("benefit"),
+        origin_expected_utility=origin.get("expected_utility"),
+        origin_utility_sd=origin.get("utility_sd"),
         origin_rau=origin.get("rau"),
     )
 
@@ -227,6 +230,9 @@ def _revision_envelope_payload(
         "expected_files": files,
         "public_symbols": symbols,
         "expected_loss": result.scores.get("expected_loss"),
+        "benefit": result.scores.get("benefit"),
+        "expected_utility": result.scores.get("expected_utility"),
+        "utility_sd": result.scores.get("utility_sd"),
         "rau": result.scores.get("rau"),
     }
     if baseline_binding is not None:

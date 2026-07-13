@@ -163,8 +163,15 @@ class SubjectResult:
     graph_refinement_selected: bool = False
     graph_refinement_fact_kinds: tuple[str, ...] = ()
     graph_refinement_risk_probability_update_count: int = 0
+    graph_refinement_risk_probability_updates: tuple[dict[str, Any], ...] = ()
     graph_refinement_origin_expected_loss: float | None = None
     graph_refinement_revised_expected_loss: float | None = None
+    graph_refinement_origin_benefit: float | None = None
+    graph_refinement_revised_benefit: float | None = None
+    graph_refinement_origin_expected_utility: float | None = None
+    graph_refinement_revised_expected_utility: float | None = None
+    graph_refinement_origin_utility_sd: float | None = None
+    graph_refinement_revised_utility_sd: float | None = None
     graph_refinement_origin_rau: float | None = None
     graph_refinement_revised_rau: float | None = None
     graph_refinement_candidate_verification_passed: bool = False
@@ -219,6 +226,8 @@ class RunOutcome:
     post_edit_verify_passed: bool | None = None
     post_edit_verify_assessment_id: str | None = None
     applied_assessment_id: str | None = None
+    measured_benefit: float = 0.0
+    measured_benefit_deltas: dict[str, float] = field(default_factory=dict)
     decision_cycle_completed: bool = False
     terminal_governance_outcome: str | None = None
     no_attempt: bool = False             # stopped without an edit attempt or restrictive gate
@@ -243,8 +252,15 @@ class RunOutcome:
     graph_refinement_selected: bool = False
     graph_refinement_fact_kinds: tuple[str, ...] = ()
     graph_refinement_risk_probability_update_count: int = 0
+    graph_refinement_risk_probability_updates: tuple[dict[str, Any], ...] = ()
     graph_refinement_origin_expected_loss: float | None = None
     graph_refinement_revised_expected_loss: float | None = None
+    graph_refinement_origin_benefit: float | None = None
+    graph_refinement_revised_benefit: float | None = None
+    graph_refinement_origin_expected_utility: float | None = None
+    graph_refinement_revised_expected_utility: float | None = None
+    graph_refinement_origin_utility_sd: float | None = None
+    graph_refinement_revised_utility_sd: float | None = None
     graph_refinement_origin_rau: float | None = None
     graph_refinement_revised_rau: float | None = None
     graph_refinement_candidate_verification_passed: bool = False

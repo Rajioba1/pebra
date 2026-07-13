@@ -208,7 +208,12 @@ function renderMatrix(matrix) {
         if (s.candidate_lineage_invalidated) title += " · candidate lineage invalidated";
         if (s.graph_refinement_revision_risk_benefit_improved) {
           title += " · loss " + num(s.graph_refinement_origin_expected_loss) + "→" + num(s.graph_refinement_revised_expected_loss);
+          title += " · benefit " + num(s.graph_refinement_origin_benefit) + "→" + num(s.graph_refinement_revised_benefit);
+          title += " · EU " + num(s.graph_refinement_origin_expected_utility) + "→" + num(s.graph_refinement_revised_expected_utility);
           title += " · RAU " + num(s.graph_refinement_origin_rau) + "→" + num(s.graph_refinement_revised_rau);
+          if (s.measured_benefit_deltas && Object.keys(s.measured_benefit_deltas).length) {
+            title += " · measured benefit " + num(s.measured_benefit);
+          }
         }
         if (s.human_approval_requested) title += " · approval requested";
         if (s.human_approval_granted) title += " · approval granted";

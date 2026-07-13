@@ -1304,7 +1304,13 @@ def test_revision_envelope_payload_retains_graph_derived_public_symbols() -> Non
         requires_confirmation=False,
         action_status=m.ActionStatus.PENDING,
         risk_mode=RiskMode.SENSITIVE_CONTEXT,
-        scores={"expected_loss": 0.36, "rau": -0.12},
+        scores={
+            "expected_loss": 0.36,
+            "benefit": 0.52,
+            "expected_utility": 0.03,
+            "utility_sd": 0.1171875,
+            "rau": -0.12,
+        },
         repo_id="r",
         repo_root="/repo",
         symbol_scope_evidence={
@@ -1317,6 +1323,9 @@ def test_revision_envelope_payload_retains_graph_derived_public_symbols() -> Non
         "expected_files": ["src/api.ts", "src/compat.ts"],
         "public_symbols": ["pkg.oldName"],
         "expected_loss": 0.36,
+        "benefit": 0.52,
+        "expected_utility": 0.03,
+        "utility_sd": 0.1171875,
         "rau": -0.12,
     }
 

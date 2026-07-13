@@ -37,8 +37,16 @@ def test_graph_refinement_route_attribution_survives_scoring():
         graph_refinement_risk_probability_update_count=1,
         graph_refinement_origin_expected_loss=0.36,
         graph_refinement_revised_expected_loss=0.08,
+        graph_refinement_origin_benefit=0.55,
+        graph_refinement_revised_benefit=0.65,
+        graph_refinement_origin_expected_utility=0.0575,
+        graph_refinement_revised_expected_utility=0.4225,
+        graph_refinement_origin_utility_sd=0.091796875,
+        graph_refinement_revised_utility_sd=0.158203125,
         graph_refinement_origin_rau=-0.06,
         graph_refinement_revised_rau=0.22,
+        measured_benefit=0.18,
+        measured_benefit_deltas={"complexity_delta": -2.0},
         graph_refinement_candidate_verification_passed=True,
         graph_refinement_revision_risk_benefit_improved=True,
         graph_refinement_proof_path="graph_plus_host_verification",
@@ -49,6 +57,10 @@ def test_graph_refinement_route_attribution_survives_scoring():
     assert out.graph_refinement_fact_kinds == ("exported_binding_continuity",)
     assert out.graph_refinement_proof_path == "graph_plus_host_verification"
     assert out.graph_refinement_revision_risk_benefit_improved is True
+    assert out.graph_refinement_origin_benefit == 0.55
+    assert out.graph_refinement_revised_benefit == 0.65
+    assert out.measured_benefit == 0.18
+    assert out.measured_benefit_deltas == {"complexity_delta": -2.0}
 
 
 def test_risky_scope_drift_is_quality_failure_not_harm():
