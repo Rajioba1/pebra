@@ -50,6 +50,7 @@ class AdvisoryOutput(dict[str, Any]):
 def _build_request(
     payload: dict[str, Any], *, revise_safer_attempt: int = 0, max_revise_safer_attempts: int = 1,
     p_success: float = 0.75, immediate_benefit: float = 0.5, review_cost: float = 0.1,
+    task: str | None = None,
 ) -> dict[str, Any]:
     target = payload.get("target_file", "")
     summary = payload.get("change_summary", "proposed change")
@@ -74,7 +75,7 @@ def _build_request(
                                     "scope_control": 0.7},
     }
     return {
-        "schema_version": "0.1", "task": summary, "repo_id": "ab_experiment",
+        "schema_version": "0.1", "task": task or summary, "repo_id": "ab_experiment",
         "candidate_actions": [{
             "id": "ab1", "label": summary, "action_type": "edit",
             "affected_symbols": [], "expected_files": expected_files,
@@ -170,6 +171,7 @@ def advise(
     payload: dict[str, Any], *, repo_root: Path | str, db: Path | str, revise_safer_attempt: int = 0,
     max_revise_safer_attempts: int = 1, p_success: float = 0.75,
     immediate_benefit: float = 0.5, review_cost: float = 0.1,
+    task: str | None = None,
     trusted_task_obligations: dict[str, Any] | None = None,
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
@@ -178,6 +180,7 @@ def advise(
         payload, revise_safer_attempt=revise_safer_attempt,
         max_revise_safer_attempts=max_revise_safer_attempts,
         p_success=p_success, immediate_benefit=immediate_benefit, review_cost=review_cost,
+        task=task,
     )
     trusted_verification = payload.get("candidate_verification")
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:

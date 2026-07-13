@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -18,6 +19,7 @@ from pebra.adapters.patch_materializer import materialize_patch
 from pebra.core.models import CandidateAction
 
 _ALGORITHM = "sha256-normalized-content-v1"
+_BASELINE_ALGORITHM = "sha256-git-worktree-v1"
 _CODEX_FILE = re.compile(r"^\*\*\* (Add|Update|Delete) File:\s*(.+?)\s*$")
 _UNSUPPORTED_MODE = re.compile(
     r"^(?:old mode|new mode)\s+|^new file mode\s+(?!100644\s*$)", re.MULTILINE
@@ -269,8 +271,61 @@ def binding_for_event(event: dict[str, Any], repo_root: str | Path) -> dict[str,
         return None
 
 
+def baseline_binding_for_action(
+    action: CandidateAction, repo_root: str | Path
+) -> dict[str, Any] | None:
+    """Bind the complete non-ignored Git working-tree state before the candidate is applied."""
+    root = Path(repo_root).resolve()
+    for value in action.expected_files:
+        if _safe_rel(root, value) is None:
+            return None
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "--no-ext-diff", "--full-index", "HEAD", "--"],
+            cwd=root,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=root,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if diff.returncode != 0 or untracked.returncode != 0:
+        return None
+    digest = hashlib.sha256()
+    digest.update(b"tracked-diff\x00")
+    digest.update(diff.stdout)
+    digest.update(b"\x00untracked\x00")
+    for raw in sorted(value for value in untracked.stdout.split(b"\x00") if value):
+        try:
+            rel_value = os.fsdecode(raw)
+        except UnicodeError:
+            return None
+        rel = _safe_rel(root, rel_value)
+        if rel is None:
+            return None
+        path = root / rel
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return None
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(hashlib.sha256(content).digest())
+    return {"algorithm": _BASELINE_ALGORITHM, "digest": digest.hexdigest()}
+
+
 class CandidateBindingAdapter:
     """Production adapter used by assess composition."""
 
     def bind_candidate(self, action: CandidateAction, repo_root: str) -> dict[str, Any] | None:
         return binding_for_patch(repo_root, action.proposed_patch)
+
+    def bind_baseline(self, action: CandidateAction, repo_root: str) -> dict[str, Any] | None:
+        return baseline_binding_for_action(action, repo_root)

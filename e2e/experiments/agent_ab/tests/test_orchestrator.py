@@ -982,3 +982,31 @@ def test_skipped_preflight_status_is_reported(monkeypatch, tmp_path):
 
     assert seen["preflight_status"]["oracle"] == "skipped"
     assert seen["preflight_status"]["graph"] == "passed"
+
+
+def test_failed_preflight_is_persisted_as_failed_not_passed(monkeypatch, tmp_path):
+    _wire(
+        monkeypatch,
+        tmp_path,
+        [_T1],
+        lambda *_args, **_kwargs: (_outcome("T1", "control"), _outcome("T1", "treatment")),
+    )
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        orchestrator.preflight,
+        "run_graph_preflight",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("graph failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="graph failed"):
+        orchestrator.main(["--run-id", "failed-preflight"])
+
+    status = json.loads(
+        (tmp_path / "failed-preflight" / "run_status.json").read_text(encoding="utf-8")
+    )
+    assert status["phase"] == "failed"
+    assert status["preflight_status"] == {
+        "oracle": "passed",
+        "graph": "failed",
+        "revise_safer": "skipped",
+    }

@@ -93,6 +93,109 @@ def test_matrix_summary_keeps_completion_oracle_evidence(tmp_path):
     assert summary["terminal_governance_outcome"] == "ask_human"
 
 
+def test_observatory_payload_preserves_credited_graph_route_and_lineage(tmp_path):
+    outcomes = []
+    for arm in run_pair.arms_for("risky"):
+        outcome = _oc(
+            "JS4",
+            arm,
+            0,
+            harm=(arm == models.ARM_SHAM),
+            completed=(arm == models.ARM_PEBRA_GRAPH_REPAIR),
+        )
+        if arm == models.ARM_PEBRA_GRAPH_REPAIR:
+            outcome = dataclasses.replace(
+                outcome,
+                applied_assessment_id="asm_graph",
+                graph_refinement_status="available",
+                graph_refinement_assessment_id="asm_graph",
+                graph_refinement_selected=True,
+                graph_refinement_fact_kinds=("exported_binding_continuity",),
+                graph_refinement_risk_probability_update_count=1,
+                graph_refinement_origin_expected_loss=0.36,
+                graph_refinement_revised_expected_loss=0.12,
+                graph_refinement_revised_rau=0.08,
+                graph_refinement_candidate_verification_passed=True,
+                graph_refinement_revision_risk_benefit_improved=True,
+                graph_refinement_proof_path="graph_plus_host_verification",
+                post_edit_verify_ran=True,
+                post_edit_verify_passed=True,
+                post_edit_verify_assessment_id="asm_graph",
+            )
+        outcomes.append(outcome)
+    _write_run(tmp_path, "r1", outcomes)
+    corpus = [TaskSpec(
+        "JS4", "d", ("a.ts",), "risky", ("a.ts",), "test_failure", True,
+        language="typescript", harness_id="node", specimen="javascript",
+    )]
+    config = {"assay_js": {"tasks": ["JS4"], "seeds_per_arm": 1}, "bootstrap_seed": 0}
+
+    view = aggregate.build_run_view(
+        "r1", ab_out=tmp_path, mode="assay_js", corpus=corpus, config=config
+    )
+
+    cell = next(
+        item for item in view["matrix"]
+        if item["arm"] == models.ARM_PEBRA_GRAPH_REPAIR
+    )["outcome_summary"]
+    assert cell["assessment_lineage_verified"] is True
+    assert cell["graph_refined_completion_credited"] is True
+    assert cell["graph_refinement_proof_path"] == "graph_plus_host_verification"
+    assert cell["candidate_lineage_invalidated"] is False
+    assert cell["post_edit_verify_passed"] is True
+    pair = next(
+        item for item in view["scoreboard"]["pairwise"]
+        if item["intervention"] == models.ARM_PEBRA_GRAPH_REPAIR
+        and item["baseline"] == models.ARM_PEBRA
+    )
+    assert pair["graph_refined_post_edit_verified_completion_gain"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {"task_completed": False},
+        {"human_assisted_write_applied": True},
+        {"graph_refinement_revision_risk_benefit_improved": False},
+        {"blinding_leak": True},
+        {"error": "provider failed"},
+        {"no_attempt": True},
+    ],
+)
+def test_observatory_does_not_credit_incomplete_graph_route(tmp_path, replacement):
+    fields = {
+        "applied_assessment_id": "asm_graph",
+        "graph_refinement_status": "available",
+        "graph_refinement_assessment_id": "asm_graph",
+        "graph_refinement_selected": True,
+        "graph_refinement_fact_kinds": ("exported_binding_continuity",),
+        "graph_refinement_risk_probability_update_count": 1,
+        "graph_refinement_origin_expected_loss": 0.36,
+        "graph_refinement_revised_expected_loss": 0.12,
+        "graph_refinement_revised_rau": 0.08,
+        "graph_refinement_candidate_verification_passed": True,
+        "graph_refinement_revision_risk_benefit_improved": True,
+        "graph_refinement_proof_path": "graph_plus_host_verification",
+        "post_edit_verify_ran": True,
+        "post_edit_verify_passed": True,
+        "post_edit_verify_assessment_id": "asm_graph",
+        **replacement,
+    }
+    outcome = dataclasses.replace(
+        _oc("JS4", models.ARM_PEBRA_GRAPH_REPAIR, 0),
+        **fields,
+    )
+    _write_run(tmp_path, "r1", [outcome])
+
+    view = aggregate.build_run_view(
+        "r1", ab_out=tmp_path, mode=None, corpus=[], config={"bootstrap_seed": 0}
+    )
+
+    summary = view["matrix"][0]["outcome_summary"]
+    assert summary["assessment_lineage_verified"] is True
+    assert summary["graph_refined_completion_credited"] is False
+
+
 def test_mode_absent_gives_observed_only_matrix(tmp_path):
     outcomes = [_oc("T1", models.ARM_CONTROL, 0), _oc("T1", models.ARM_TREATMENT, 0)]
     _write_run(tmp_path, "r1", outcomes)

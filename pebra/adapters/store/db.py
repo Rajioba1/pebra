@@ -305,6 +305,61 @@ def _path_scope_entries(files: Any) -> set[str]:
     }
 
 
+def _revision_record(row_id: int, content_json: str) -> dict[str, Any] | None:
+    try:
+        content = json.loads(content_json)
+        request = content.get("request") or {}
+        envelope = request.get("revision_envelope")
+        if not isinstance(envelope, dict):
+            return None
+        files = envelope.get("expected_files")
+        symbols = envelope.get("public_symbols")
+        if not isinstance(files, list) or not isinstance(symbols, list):
+            return None
+        return {
+            "row_id": row_id,
+            "assessed_commit": content.get("assessed_commit"),
+            "files": {_norm_scope_path(str(value)) for value in files if value},
+            "symbols": [str(value) for value in symbols],
+            "expected_loss": envelope.get("expected_loss"),
+            "rau": envelope.get("rau"),
+            "baseline_binding": envelope.get("baseline_binding"),
+            "lineage_key": envelope.get("lineage_key"),
+            "verification_status": request.get("candidate_verification_status"),
+            "verification_retryable": bool(
+                request.get("candidate_verification_retryable_infrastructure")
+            ),
+            "graph_refinement": request.get("graph_refinement") or {},
+        }
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _retryable_revision(record: dict[str, Any]) -> bool:
+    graph = record.get("graph_refinement") or {}
+    return (
+        record.get("verification_status") == "unavailable"
+        and record.get("verification_retryable") is True
+    ) or (
+        record.get("verification_status") in {None, "not_applicable"}
+        and graph.get("status") == "unavailable"
+        and graph.get("retryable_infrastructure") is True
+    )
+
+
+def _legacy_revision_files(content_json: str, assessed_commit: str) -> set[str]:
+    try:
+        content = json.loads(content_json)
+        if content.get("assessed_commit") != assessed_commit:
+            return set()
+        return _path_scope_entries(
+            (((content.get("model_guidance_packet") or {}).get("binding") or {})
+             .get("safe_scope") or {}).get("files")
+        )
+    except (TypeError, ValueError, AttributeError):
+        return set()
+
+
 class SqliteStore:
     def __init__(self, db_path: str, *, read_only: bool = False) -> None:
         self._db_path = db_path
@@ -671,71 +726,66 @@ class SqliteStore:
         target_files: list[str],
         action_id: str | None = None,
         task: str | None = None,
+        baseline_binding: dict[str, Any] | None = None,
     ) -> int:
-        if assessed_commit is None or (not target_files and not action_id):
+        del action_id, task  # caller labels are audit metadata, never lineage authority
+        if assessed_commit is None or not target_files:
             return 0
         required = {_norm_scope_path(f) for f in target_files if isinstance(f, str) and f}
-        if not required and not action_id:
+        if not required:
             return 0
         rows = self._con.execute(
-            "SELECT content_json FROM assessments "
-            "WHERE repo_id = ? AND decision = 'revise_safer' ORDER BY id DESC",
+            "SELECT id, content_json FROM assessments "
+            "WHERE repo_id = ? AND decision = 'revise_safer' ORDER BY id ASC",
             (repo_id,),
         ).fetchall()
-        exact_matches = 0
-        task_matches = 0
-        scope_matches = 0
-        for (content_json,) in rows:
-            try:
-                content = json.loads(content_json)
-                if content.get("assessed_commit") != assessed_commit:
-                    continue
-                stored_action_id = (content.get("request") or {}).get("action_id")
-                stored_task = (content.get("request") or {}).get("task")
-                verification_status = (content.get("request") or {}).get(
-                    "candidate_verification_status"
+        records = [record for row in rows if (record := _revision_record(int(row[0]), row[1]))]
+        candidates = [
+            record for record in records
+            if record["assessed_commit"] == assessed_commit
+            and (
+                record["files"] <= required
+                or (
+                    baseline_binding is not None
+                    and bool(record["files"] & required)
                 )
-                graph_refinement_status = (
-                    ((content.get("request") or {}).get("graph_refinement") or {}).get("status")
+            )
+        ]
+        if not candidates:
+            if any(
+                _legacy_revision_files(content_json, assessed_commit) <= required
+                and bool(_legacy_revision_files(content_json, assessed_commit))
+                for _, content_json in rows
+            ):
+                return 1
+            return 0
+        matching = [
+            record for record in candidates
+            if (
+                (baseline_binding is None and record["files"] <= required)
+                or (
+                    baseline_binding is not None
+                    and record.get("baseline_binding") == baseline_binding
                 )
-                # Infrastructure/parsing unavailability is not a completed verification attempt.
-                # It remains persisted for audit, but must not exhaust the bounded semantic repair
-                # budget before a later well-formed candidate can actually be checked.
-                if verification_status == "unavailable" or graph_refinement_status == "unavailable":
-                    continue
-                same_action = (
-                    bool(action_id)
-                    and stored_action_id == action_id
-                    and (task is None or stored_task == task)
-                )
-                files = (
-                    ((content.get("model_guidance_packet") or {}).get("binding") or {})
-                    .get("safe_scope") or {}
-                ).get("files")
-                # Scope matching is a compatibility fallback for rows written before action lineage
-                # was persisted. Once a row has an action id, unrelated actions sharing a file must
-                # not exhaust each other's revision budget.
-                same_task = bool(task) and bool(stored_task) and stored_task == task
-                same_scope = (
-                    bool(required)
-                    and required <= _path_scope_entries(files)
-                    and (
-                        stored_action_id is not None
-                        or not task
-                        or not stored_task
-                        or stored_task == task
-                    )
-                )
-                exact_matches += int(same_action)
-                task_matches += int(same_task)
-                scope_matches += int(same_scope)
-            except (TypeError, ValueError, AttributeError):
-                continue
-        if exact_matches:
-            return exact_matches
-        if task_matches:
-            return task_matches
-        return scope_matches
+            )
+            and isinstance(record.get("lineage_key"), str)
+            and record.get("lineage_key")
+        ]
+        if not matching:
+            return 1
+        lineage_counts: list[int] = []
+        for lineage_key in {str(record["lineage_key"]) for record in matching}:
+            lineage = [
+                record for record in records
+                if record["assessed_commit"] == assessed_commit
+                and record.get("lineage_key") == lineage_key
+            ]
+            exact_matches = sum(not _retryable_revision(record) for record in lineage)
+            retryable_matches = sum(_retryable_revision(record) for record in lineage)
+            lineage_counts.append(exact_matches + max(0, retryable_matches - 1))
+        # One infrastructure retry is free. Persistent failures then consume the same bounded
+        # revision meter, preventing an unavailable provider from creating an unbounded loop.
+        return max(lineage_counts)
 
     def revision_origin_envelope(
         self,
@@ -744,11 +794,13 @@ class SqliteStore:
         action_id: str,
         task: str | None = None,
         target_files: list[str] | None = None,
+        baseline_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        if assessed_commit is None or not action_id:
+        del action_id, task  # caller labels are audit metadata, never lineage authority
+        if assessed_commit is None:
             return None
         rows = self._con.execute(
-            "SELECT content_json FROM assessments "
+            "SELECT id, content_json FROM assessments "
             "WHERE repo_id = ? AND decision = 'revise_safer' ORDER BY id ASC",
             (repo_id,),
         ).fetchall()
@@ -757,67 +809,70 @@ class SqliteStore:
             for value in (target_files or ())
             if isinstance(value, str) and value
         }
-        exact: list[dict[str, Any]] = []
-        same_task: list[dict[str, Any]] = []
-        same_scope: list[dict[str, Any]] = []
-        for (content_json,) in rows:
-            try:
-                content = json.loads(content_json)
-                request = content.get("request") or {}
-                if content.get("assessed_commit") != assessed_commit:
-                    continue
-                envelope = request.get("revision_envelope")
-                if not isinstance(envelope, dict):
-                    candidate = {
-                        "available": False,
-                        "fallback_reason": (
-                            "origin assessment predates revision-envelope persistence"
-                        ),
-                    }
-                    candidate_files: set[str] = set()
-                else:
-                    files = envelope.get("expected_files")
-                    symbols = envelope.get("public_symbols")
-                    if not isinstance(files, list) or not isinstance(symbols, list):
-                        candidate = {
-                            "available": False,
-                            "fallback_reason": "origin revision envelope is malformed",
-                        }
-                        candidate_files = set()
-                    else:
-                        candidate = {
-                            "available": True,
-                            "expected_files": [str(value) for value in files],
-                            "public_symbols": [str(value) for value in symbols],
-                            "expected_loss": envelope.get("expected_loss"),
-                            "rau": envelope.get("rau"),
-                        }
-                        candidate_files = {
-                            _norm_scope_path(str(value)) for value in files if value
-                        }
-                stored_action_id = request.get("action_id")
-                stored_task = request.get("task")
-                if stored_action_id == action_id and (task is None or stored_task == task):
-                    exact.append(candidate)
-                if task is not None and stored_task == task:
-                    same_task.append(candidate)
-                if (
-                    required
-                    and required <= candidate_files
-                    and (
-                        stored_action_id is not None
-                        or not task
-                        or not stored_task
-                        or stored_task == task
-                    )
-                ):
-                    same_scope.append(candidate)
-            except (TypeError, ValueError, AttributeError):
+        matching: list[dict[str, Any]] = []
+        legacy_match = False
+        for row_id, content_json in rows:
+            record = _revision_record(int(row_id), content_json)
+            if record is None:
+                legacy_files = _legacy_revision_files(content_json, assessed_commit)
+                if legacy_files and legacy_files <= required:
+                    legacy_match = True
                 continue
-        candidates = exact or same_task or same_scope
-        if candidates:
-            return candidates[0]
-        return None
+            if (
+                record["assessed_commit"] != assessed_commit
+                or not (
+                    record["files"] <= required
+                    or (
+                        baseline_binding is not None
+                        and bool(record["files"] & required)
+                    )
+                )
+            ):
+                continue
+            matching.append(record)
+        if not matching:
+            if legacy_match:
+                return {
+                    "available": False,
+                    "fallback_reason": "origin assessment predates structural lineage binding",
+                }
+            return None
+        if baseline_binding is None:
+            return {
+                "available": False,
+                "fallback_reason": "current working-tree baseline could not be bound",
+            }
+        baseline_matches = [
+            record for record in matching
+            if record.get("baseline_binding") == baseline_binding
+        ]
+        if not baseline_matches:
+            return None
+        if any(
+            not isinstance(record.get("lineage_key"), str) or not record["lineage_key"]
+            for record in baseline_matches
+        ):
+            return {
+                "available": False,
+                "fallback_reason": "origin assessment predates structural lineage binding",
+            }
+        lineage_keys = {str(record["lineage_key"]) for record in baseline_matches}
+        if len(lineage_keys) != 1:
+            return {
+                "available": False,
+                "fallback_reason": "multiple overlapping revision origins match this candidate",
+            }
+        origin = min(baseline_matches, key=lambda record: int(record["row_id"]))
+        return {
+            "available": True,
+            "assessment_id": f"asm_{origin['row_id']}",
+            "expected_files": sorted(origin["files"]),
+            "public_symbols": origin["symbols"],
+            "expected_loss": origin["expected_loss"],
+            "rau": origin["rau"],
+            "baseline_binding": origin["baseline_binding"],
+            "lineage_key": origin["lineage_key"],
+        }
 
     def guidance_packet_id_for_assessment(self, assessment_id: str) -> str | None:
         row_id = self._row_id(assessment_id)

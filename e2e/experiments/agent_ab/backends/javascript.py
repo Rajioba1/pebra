@@ -33,6 +33,8 @@ class JavaScriptBackend:
     def run_tests(
         self, repo_root: Any, spec: Any, *, project: Any = None, test_filter: str | None = None
     ) -> Any:
+        if project is None:
+            project = getattr(spec, "test_selector", None)
         kwargs = {"test_path": project, "test_filter": test_filter}
         if hasattr(spec, "command_timeout"):
             kwargs.update(timeout=spec.command_timeout, install_timeout=min(spec.command_timeout, 120))

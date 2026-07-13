@@ -448,9 +448,13 @@ candidate per assess call by default (hard maximum two). This prevents an N-alte
 spawning N CodeGraph rebuilds. The ordinary revision-attempt cap still bounds work across rounds.
 
 The materialized provider indexes bounded before/after scratch trees and emits only owner-addressed
-structural facts. An exported same-name binding with a high-confidence graph reference to a live
-callable can reduce the matching graph event probability by a named multiplier with a non-zero floor;
-it does not delete the event and does not claim behavioral or type equivalence. Facts are bound to the
+structural facts. An exported same-name alias with a high-confidence graph reference can reduce the
+matching graph event probability only when the referenced callable is a named function declaration,
+has the same measured signature, and its exact source range differs from the removed implementation
+solely at the declaration identifier. Arrow functions, wrappers, formatting/body changes, and node
+ranges that omit the declaration token fail closed. This is a narrow mechanical-rename identity proof,
+not general behavioral equivalence. It does not delete the
+event. Facts are bound to the
 exact candidate patch and exact event/risk-source/owner set. Missing, partial, ambiguous, stale, or
 over-budget evidence is identity and therefore cannot create a false `proceed`.
 
@@ -461,6 +465,12 @@ disk; positive risk-reducing facts are recomputed and never trusted from agent-w
 Cache identity includes current working-tree bytes for every bounded context file, the exact patch,
 scope, provider schema, graph-engine identity, and limits.
 Cross-file context that exceeds the bounds escalates rather than triggering a whole-repository rebuild.
+Deterministic candidate-invalid failures consume the revision budget. Explicitly classified
+CodeGraph/indexing infrastructure failures on either snapshot are retry-exempt; patch parse,
+target-binding, materialization, and verification failures remain chargeable. Wall-clock latency remains response diagnostics
+and is excluded from deterministic hash-chained assessment content. `PEBRA_GRAPH_REFINEMENT=0`
+removes the provider and refinement-specific payload/audit fields while retaining the established
+canonical score schema.
 5. not MC and `utility_sd > max_utility_sd_without_human` and `expected_utility > 0` → **ask_human**  *(AD-3: EU<0 already handled by gate 3/4)*
 6. MC available and `P(utility<0) > max_p_negative_utility` → ask_human/reject *(v1.5)*
 7. `decision_instability > threshold` → **inspect_first** / **test_first**

@@ -116,6 +116,7 @@ def _planned_grid(mode: str | None, is_assay: bool, corpus: list, config: dict) 
 
 def _summary(o: models.RunOutcome) -> dict:
     return {"harm_materialized": o.harm_materialized, "task_completed": o.task_completed,
+            "applied_assessment_id": o.applied_assessment_id,
             "completion_test_ran": o.completion_test_ran,
             "completion_test_passed": o.completion_test_passed,
             "decision_cycle_completed": o.decision_cycle_completed,
@@ -127,6 +128,39 @@ def _summary(o: models.RunOutcome) -> dict:
             "human_approval_source": o.human_approval_source,
             "post_approval_reassessment": o.post_approval_reassessment,
             "human_assisted_write_applied": o.human_assisted_write_applied,
+            "graph_refinement_status": o.graph_refinement_status,
+            "graph_refinement_selected": o.graph_refinement_selected,
+            "graph_refinement_fact_kinds": list(o.graph_refinement_fact_kinds),
+            "graph_refinement_risk_probability_update_count": (
+                o.graph_refinement_risk_probability_update_count
+            ),
+            "graph_refinement_origin_expected_loss": o.graph_refinement_origin_expected_loss,
+            "graph_refinement_revised_expected_loss": o.graph_refinement_revised_expected_loss,
+            "graph_refinement_origin_rau": o.graph_refinement_origin_rau,
+            "graph_refinement_revised_rau": o.graph_refinement_revised_rau,
+            "graph_refinement_candidate_verification_passed": (
+                o.graph_refinement_candidate_verification_passed
+            ),
+            "graph_refinement_revision_risk_benefit_improved": (
+                o.graph_refinement_revision_risk_benefit_improved
+            ),
+            "graph_refinement_proof_path": o.graph_refinement_proof_path,
+            "graph_refinement_assessment_id": o.graph_refinement_assessment_id,
+            "post_edit_verify_ran": o.post_edit_verify_ran,
+            "post_edit_verify_passed": o.post_edit_verify_passed,
+            "post_edit_verify_assessment_id": o.post_edit_verify_assessment_id,
+            "assessment_lineage_verified": (
+                o.applied_assessment_id is not None
+                and o.applied_assessment_id == o.graph_refinement_assessment_id
+                and o.applied_assessment_id == o.post_edit_verify_assessment_id
+                and o.post_edit_verify_ran
+                and o.post_edit_verify_passed is True
+                and not o.candidate_lineage_invalidated
+            ),
+            "graph_refined_completion_credited": (
+                scorecard.graph_refined_completion_credited(o)
+            ),
+            "candidate_lineage_invalidated": o.candidate_lineage_invalidated,
             "write_before_approval": o.write_before_approval,
             "write_before_reassessment": o.write_before_reassessment,
             "over_cautious": o.over_cautious, "blinding_leak": o.blinding_leak,

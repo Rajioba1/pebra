@@ -81,6 +81,17 @@ def test_javascript_backend_uses_node_and_maps_project_to_test_path():
     assert nh.calls == [("build", "default", None), ("test", "src/a.test.ts", "handles x")]
 
 
+def test_javascript_backend_uses_public_spec_test_selector_by_default():
+    nh = _FakeNh()
+    b = backends.get_backend("node", harness=nh)
+    spec = _spec(language="typescript")
+    object.__setattr__(spec, "test_selector", "src/public.test.ts")
+
+    b.run_tests("/r", spec)
+
+    assert nh.calls == [("test", "src/public.test.ts", None)]
+
+
 def test_javascript_backend_forwards_build_profile_and_selector():
     nh = _FakeNh()
     b = backends.get_backend("javascript", harness=nh)

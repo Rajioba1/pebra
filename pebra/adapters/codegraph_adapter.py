@@ -236,11 +236,17 @@ class CodeGraphAdapter:
         self._impact_dist_cache: dict[tuple[str, float], list[int]] = {}
         self._transitive_impact_dist_cache: dict[tuple[str, float], list[int]] = {}
         self._file_rollup_dist_cache: dict[tuple[str, float], list[int]] = {}
+        self._status_cache: dict[str, dict[str, Any] | None] = {}
         # Memoize the capability probe per repo_root for this adapter's lifetime (one assess()/CLI call):
         # fanin() already spawned a `codegraph status` subprocess for the same repo, so re-probing per
         # action would double the subprocess count. Same-lifetime staleness is a non-issue (the adapter
         # is rebuilt per assess() in composition), mirroring _dist_cache's per-instance scope.
         self._probe_cache: dict[str, tuple[dict[str, LanguageCapability], bool, str | None]] = {}
+
+    def _status(self, repo_root: str) -> dict[str, Any] | None:
+        if repo_root not in self._status_cache:
+            self._status_cache[repo_root] = self._status_fn(repo_root)
+        return self._status_cache[repo_root]
 
     def node_counts(self, repo_root: str) -> dict[str, int]:
         """Repo-wide CodeGraph node counts for an INDEPENDENT graph-validity check (used by the A/B
@@ -248,7 +254,7 @@ class CodeGraphAdapter:
         ``{"total","callable","csharp_callable"}`` — all 0 when the graph is absent / uninitialized /
         unreadable / below the min schema. Honest zeros, never fabricated. Read-only; never mutates."""
         zero = {"total": 0, "callable": 0, "csharp_callable": 0}
-        status = self._status_fn(repo_root)
+        status = self._status(repo_root)
         if status is None or status.get("initialized") is False:
             return zero
         db_path = _db_path_from_status(repo_root, status)
@@ -310,7 +316,7 @@ class CodeGraphAdapter:
     def _probe_uncached(
         self, repo_root: str
     ) -> tuple[dict[str, LanguageCapability], bool, str | None]:
-        status = self._status_fn(repo_root)
+        status = self._status(repo_root)
         if status is None:
             return {}, False, "codegraph CLI not found"
         # Capability is a TRUST claim ("this language is measured as supported"), so — unlike the plain
@@ -387,7 +393,7 @@ class CodeGraphAdapter:
         ``available=False`` means the graph could not be trusted/read, which is distinct from
         ``available=True`` with an empty ``dependent_files`` list (a real zero-dependent result).
         """
-        status = self._status_fn(repo_root)
+        status = self._status(repo_root)
         if status is None:
             return _dependents_unavailable("unknown", "codegraph CLI not found")
         runtime_ver = status.get("version")
@@ -435,6 +441,76 @@ class CodeGraphAdapter:
         finally:
             con.close()
 
+    def direct_caller_files_result(
+        self, node_ids: tuple[str, ...], repo_root: str
+    ) -> dict[str, Any]:
+        """Return the exact direct-caller file envelope for a measured owner set.
+
+        Unlike the file-level dependents query, this does not pull callers of unrelated
+        symbols that happen to share an owner file. The candidate-refinement adapter uses
+        the result as a completeness boundary, so every unavailable or stale state is
+        explicit and cannot earn risk-reducing evidence.
+        """
+        if not node_ids:
+            return _dependents_unavailable("unknown", "owner node scope is empty")
+        status = self._status(repo_root)
+        if status is None:
+            return _dependents_unavailable("unknown", "codegraph CLI not found")
+        runtime_ver = status.get("version")
+        if runtime_ver and not in_accepted_range(runtime_ver):
+            return _dependents_unavailable(
+                "unknown", f"codegraph version {runtime_ver} out of range"
+            )
+        if status.get("initialized") is False:
+            return _dependents_unavailable("unknown", "codegraph index not initialized")
+        if not _is_fresh(status):
+            return _dependents_unavailable("stale", "codegraph index stale or worktree-mismatched")
+        db_path = _db_path_from_status(repo_root, status)
+        if not db_path.is_file():
+            return _dependents_unavailable("unknown", "codegraph DB not found")
+        try:
+            con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        except (sqlite3.Error, OSError, ValueError):
+            return _dependents_unavailable("unknown", "codegraph DB could not be opened")
+        con.row_factory = sqlite3.Row
+        try:
+            if self._schema_version(con) < _MIN_SCHEMA_VERSION:
+                return _dependents_unavailable(
+                    "fresh", f"codegraph schema below v{_MIN_SCHEMA_VERSION}"
+                )
+            node_ph = ",".join("?" * len(node_ids))
+            edge_ph = ",".join("?" * len(_FANIN_EDGE_KINDS))
+            rows = con.execute(
+                f"SELECT DISTINCT e.source AS source, src.file_path AS node_file "
+                f"FROM edges e LEFT JOIN nodes src ON src.id = e.source "
+                f"WHERE e.target IN ({node_ph}) AND e.kind IN ({edge_ph}) "
+                f"AND e.source NOT IN ({node_ph}) ORDER BY e.source",
+                (*node_ids, *_FANIN_EDGE_KINDS, *node_ids),
+            ).fetchall()
+            files: set[str] = set()
+            for row in rows:
+                node_file = row["node_file"]
+                source = str(row["source"] or "")
+                if node_file:
+                    files.add(str(node_file).replace("\\", "/"))
+                elif source.startswith("file:") and source[5:]:
+                    files.add(source[5:].replace("\\", "/"))
+                else:
+                    return _dependents_unavailable(
+                        "fresh", "direct caller has no resolvable source file"
+                    )
+            return {
+                "available": True,
+                "graph_freshness": "fresh",
+                "dependent_files": sorted(files),
+                "count": len(rows),
+                "fallback_reason": None,
+            }
+        except sqlite3.Error:
+            return _dependents_unavailable("unknown", "codegraph DB query failed")
+        finally:
+            con.close()
+
     def dependent_files(self, file_path: str, repo_root: str) -> list[str]:
         """Compatibility wrapper returning only dependent paths.
 
@@ -446,7 +522,7 @@ class CodeGraphAdapter:
         return list(files) if isinstance(files, list) else []
 
     def fanin(self, action: CandidateAction, repo_root: str) -> FanInEvidence:
-        status = self._status_fn(repo_root)
+        status = self._status(repo_root)
         if status is None:
             return _unresolved("unknown", f"codegraph CLI not found; {_INSTALL_HINT}")
         runtime_ver = status.get("version")
@@ -564,7 +640,7 @@ class CodeGraphAdapter:
         ``change_classifier.rows_from_fanin`` — the reason non-Python files no longer fall through the
         verifier's ``.py``-only reclassification. Mirrors ``fanin()``'s freshness/version/schema/DB
         fail-soft gates exactly; never raises."""
-        status = self._status_fn(repo_root)
+        status = self._status(repo_root)
         if status is None:
             return _unresolved("unknown", f"codegraph CLI not found; {_INSTALL_HINT}")
         runtime_ver = status.get("version")
@@ -770,7 +846,7 @@ class CodeGraphAdapter:
         Runs the freshness gate + opens the DB once for the whole batch."""
         if not symbol_ids:
             return {}
-        status = self._status_fn(repo_root)
+        status = self._status(repo_root)
         if (
             status is None
             or status.get("initialized") is False
@@ -806,7 +882,7 @@ class CodeGraphAdapter:
         """Aggregate call-graph fan-in across ALL callable symbols in a file (whole-file destructive
         ops). Mirrors ``fanin()``'s freshness/version/DB gates; any gate failure or query error returns
         an ``unresolved`` rollup (fail-soft — never crashes the assessment)."""
-        status = self._status_fn(repo_root)
+        status = self._status(repo_root)
         if status is None:
             return FileFanInRollup(fallback_reason="codegraph CLI not found")
         runtime_ver = status.get("version")
@@ -872,7 +948,7 @@ class CodeGraphAdapter:
         "is the hottest symbol in this file high fan-in?" Returns None when the graph is
         absent/stale/uninitialized/below-schema (the caller treats None as 'no evidence' -> fail open).
         """
-        status = self._status_fn(repo_root)
+        status = self._status(repo_root)
         if status is None:
             return None
         runtime_ver = status.get("version")

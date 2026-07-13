@@ -50,6 +50,20 @@ def test_passing_covering_tests_yield_bound_passed_evidence(tmp_path, monkeypatc
     assert ev["domain"] == "covering_tests"
 
 
+def test_zero_selected_tests_cannot_yield_passed_evidence(tmp_path, monkeypatch):
+    _stub_tests(monkeypatch, passed=True, selected=0)
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_PATCH,
+        language="typescript",
+        test_project="src/public.test.ts",
+    )
+
+    assert ev["status"] == "unavailable"
+    assert ev["provenance"]["tests_selected"] == 0
+
+
 def test_failing_covering_tests_yield_failed_evidence_still_bound(tmp_path, monkeypatch):
     _stub_tests(monkeypatch, passed=False)
     ev = cv.verify_candidate(repo_path=tmp_path, patch_text=_PATCH, language="csharp",
@@ -122,6 +136,146 @@ def test_explicit_build_fallback_can_verify_javascript_candidate(tmp_path, monke
         "harness_id": "node",
         "build_profile": "zshy",
         "build_selector": "zod:tsconfig.build.json",
+    }
+
+
+def test_required_build_runs_before_covering_tests(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeBackend:
+        def run_build(self, repo_root, spec):
+            calls.append("build")
+            return SimpleNamespace(
+                available=True, ran=True, passed=True, exit_code=0, error_summary="",
+                duration_seconds=0.1,
+            )
+
+        def run_tests(self, repo_root, spec, *, project=None, test_filter=None):
+            calls.append("tests")
+            return SimpleNamespace(
+                available=True, ran=True, passed=True, exit_code=0, error_summary="",
+                duration_seconds=0.1, tests_selected=4,
+            )
+
+    monkeypatch.setattr(cv.backends, "get_backend", lambda _language: FakeBackend())
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_PATCH,
+        language="typescript",
+        test_project="src/public.test.ts",
+        required_checks=("candidate_build",),
+    )
+
+    assert calls == ["build", "tests"]
+    assert ev["status"] == "passed"
+    assert ev["checks"] == {"candidate_build": "passed", "covering_tests": "passed"}
+    assert ev["required_checks"] == ["candidate_build", "covering_tests"]
+
+
+def test_required_build_failure_stops_before_covering_tests(tmp_path, monkeypatch):
+    class FakeBackend:
+        def run_build(self, repo_root, spec):
+            return SimpleNamespace(
+                available=True, ran=True, passed=False, exit_code=1,
+                error_summary="typecheck failed", duration_seconds=0.1,
+            )
+
+        def run_tests(self, repo_root, spec, *, project=None, test_filter=None):
+            raise AssertionError("tests must not run after a failed required build")
+
+    monkeypatch.setattr(cv.backends, "get_backend", lambda _language: FakeBackend())
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_PATCH,
+        language="typescript",
+        test_project="src/public.test.ts",
+        required_checks=("candidate_build",),
+    )
+
+    assert ev["status"] == "failed"
+    assert ev["checks"] == {"candidate_build": "failed"}
+    assert ev["required_checks"] == ["candidate_build"]
+    assert ev["reason"] == "typecheck failed"
+
+
+def test_unknown_required_check_fails_closed(tmp_path, monkeypatch):
+    _stub_tests(monkeypatch, passed=True)
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_PATCH,
+        language="csharp",
+        test_project="tests/A.csproj",
+        required_checks=("semantic_equivalence",),
+    )
+
+    assert ev["status"] == "unavailable"
+    assert "semantic_equivalence" in ev["reason"]
+
+
+def test_required_public_contract_cannot_pass_when_not_applicable(tmp_path, monkeypatch):
+    _stub_tests(monkeypatch, passed=True)
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_PATCH,
+        language="typescript",
+        test_project="src/public.test.ts",
+        required_checks=("public_contract_preserved",),
+    )
+
+    assert ev["status"] == "unavailable"
+    assert ev["required_checks"] == ["public_contract_preserved"]
+
+
+def test_build_and_tests_share_one_timeout_budget(tmp_path, monkeypatch):
+    seen = []
+
+    class FakeBackend:
+        def run_build(self, repo_root, spec):
+            seen.append(("build", spec.command_timeout))
+            return SimpleNamespace(
+                available=True, ran=True, passed=True, exit_code=0, error_summary="",
+                duration_seconds=0.1,
+            )
+
+        def run_tests(self, repo_root, spec, *, project=None, test_filter=None):
+            seen.append(("tests", spec.command_timeout))
+            return SimpleNamespace(
+                available=True, ran=True, passed=True, exit_code=0, error_summary="",
+                duration_seconds=0.1, tests_selected=2,
+            )
+
+    monkeypatch.setattr(cv.backends, "get_backend", lambda _language: FakeBackend())
+    ticks = iter((100.0, 100.0, 104.0))
+    monkeypatch.setattr(cv.time, "monotonic", lambda: next(ticks))
+
+    ev = cv.verify_candidate(
+        repo_path=tmp_path,
+        patch_text=_PATCH,
+        language="csharp",
+        test_project="tests/A.csproj",
+        required_checks=("candidate_build",),
+        timeout=10,
+    )
+
+    assert ev["status"] == "passed"
+    assert seen == [("build", 10), ("tests", 6)]
+
+
+def test_completed_checks_for_verify_maps_covering_tests_to_production_guidance():
+    assert cv.completed_checks_for_verify({
+        "checks": {
+            "candidate_build": "passed",
+            "covering_tests": "passed",
+            "public_contract_preserved": "passed",
+        }
+    }) == {
+        "candidate_build": "passed",
+        "run targeted tests for the touched scope before commit": "passed",
+        "public_contract_preserved": "passed",
     }
 
 

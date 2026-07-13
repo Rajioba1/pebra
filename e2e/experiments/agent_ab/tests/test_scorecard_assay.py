@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.metrics import scorecard
 
@@ -24,6 +26,134 @@ def test_pairwise_harm_avoided_when_intervention_reduces_harm():
     pc = scorecard.pairwise_comparison(outs, models.ARM_PEBRA, models.ARM_SHAM)
     assert pc.intervention_arm == models.ARM_PEBRA and pc.baseline_arm == models.ARM_SHAM
     assert pc.harm_avoided_rate == 1.0 and pc.n_pairs_risky == 2
+    assert pc.graph_only_autonomous_completion_gain == 0.0
+    assert pc.graph_plus_host_verified_completion_gain == 0.0
+
+
+def test_arm_metrics_attributes_graph_refined_autonomous_completion():
+    outcome = dataclasses.replace(
+        _o("T1", models.ARM_PEBRA_GRAPH_REPAIR, 0, "risky", harm=False),
+        task_completed=True,
+        graph_refinement_status="available",
+        graph_refinement_selected=True,
+        graph_refinement_fact_kinds=("exported_binding_continuity",),
+        graph_refinement_risk_probability_update_count=1,
+        graph_refinement_origin_expected_loss=0.36,
+        graph_refinement_revised_expected_loss=0.12,
+        graph_refinement_revised_rau=0.08,
+        graph_refinement_candidate_verification_passed=True,
+        graph_refinement_revision_risk_benefit_improved=True,
+        graph_refinement_proof_path="graph_plus_host_verification",
+        graph_refinement_assessment_id="asm_graph",
+        applied_assessment_id="asm_graph",
+        post_edit_verify_ran=True,
+        post_edit_verify_passed=True,
+        post_edit_verify_assessment_id="asm_graph",
+    )
+
+    metrics = scorecard.arm_metrics([outcome], models.ARM_PEBRA_GRAPH_REPAIR)
+
+    assert metrics.graph_refined_autonomous_completion_count == 1
+    assert metrics.graph_refined_autonomous_completion_rate == 1.0
+    assert metrics.graph_only_autonomous_completion_count == 0
+    assert metrics.graph_plus_host_verified_completion_count == 1
+
+
+def test_graph_refined_completion_requires_matching_post_edit_verify():
+    outcome = dataclasses.replace(
+        _o("T1", models.ARM_PEBRA, 0, "risky", harm=False),
+        task_completed=True,
+        graph_refinement_status="available",
+        graph_refinement_selected=True,
+        graph_refinement_fact_kinds=("exported_binding_continuity",),
+        graph_refinement_risk_probability_update_count=1,
+        graph_refinement_origin_expected_loss=0.36,
+        graph_refinement_revised_expected_loss=0.12,
+        graph_refinement_revised_rau=0.08,
+        graph_refinement_revision_risk_benefit_improved=True,
+        graph_refinement_proof_path="graph_only",
+        graph_refinement_assessment_id="asm_graph",
+        post_edit_verify_ran=True,
+        post_edit_verify_passed=True,
+        post_edit_verify_assessment_id="asm_other",
+    )
+
+    metrics = scorecard.arm_metrics([outcome], models.ARM_PEBRA)
+
+    assert metrics.graph_refined_autonomous_completion_count == 0
+
+
+def test_proof_path_label_alone_cannot_claim_graph_refined_completion():
+    outcome = dataclasses.replace(
+        _o("T1", models.ARM_PEBRA, 0, "risky", harm=False),
+        task_completed=True,
+        graph_refinement_proof_path="graph_only",
+    )
+
+    metrics = scorecard.arm_metrics([outcome], models.ARM_PEBRA)
+
+    assert metrics.graph_refined_autonomous_completion_count == 0
+    assert metrics.graph_only_autonomous_completion_count == 0
+
+
+def test_lineage_invalidation_blocks_graph_refined_completion_attribution():
+    outcome = dataclasses.replace(
+        _o("T1", models.ARM_PEBRA, 0, "risky", harm=False),
+        graph_refinement_status="available",
+        graph_refinement_selected=True,
+        graph_refinement_fact_kinds=("exported_binding_continuity",),
+        graph_refinement_risk_probability_update_count=1,
+        graph_refinement_origin_expected_loss=0.36,
+        graph_refinement_revised_expected_loss=0.12,
+        graph_refinement_revised_rau=0.08,
+        graph_refinement_revision_risk_benefit_improved=True,
+        graph_refinement_proof_path="graph_only",
+        graph_refinement_assessment_id="asm_graph",
+        applied_assessment_id="asm_graph",
+        post_edit_verify_ran=True,
+        post_edit_verify_passed=True,
+        post_edit_verify_assessment_id="asm_graph",
+        candidate_lineage_invalidated=True,
+    )
+
+    assert scorecard.arm_metrics(
+        [outcome], models.ARM_PEBRA
+    ).graph_refined_autonomous_completion_count == 0
+
+
+def test_pairwise_graph_gain_requires_autonomous_task_completion():
+    base = _o("T1", models.ARM_SHAM, 0, "risky", harm=True)
+    route = dataclasses.replace(
+        _o("T1", models.ARM_PEBRA_GRAPH_REPAIR, 0, "risky", harm=False),
+        graph_refinement_status="available",
+        graph_refinement_selected=True,
+        graph_refinement_fact_kinds=("exported_binding_continuity",),
+        graph_refinement_risk_probability_update_count=1,
+        graph_refinement_origin_expected_loss=0.36,
+        graph_refinement_revised_expected_loss=0.12,
+        graph_refinement_revised_rau=0.08,
+        graph_refinement_revision_risk_benefit_improved=True,
+        graph_refinement_proof_path="graph_only",
+        graph_refinement_assessment_id="asm_graph",
+        applied_assessment_id="asm_graph",
+        post_edit_verify_ran=True,
+        post_edit_verify_passed=True,
+        post_edit_verify_assessment_id="asm_graph",
+    )
+
+    incomplete = scorecard.pairwise_comparison(
+        [base, dataclasses.replace(route, task_completed=False)],
+        models.ARM_PEBRA_GRAPH_REPAIR,
+        models.ARM_SHAM,
+    )
+    assisted = scorecard.pairwise_comparison(
+        [base, dataclasses.replace(route, human_assisted_write_applied=True)],
+        models.ARM_PEBRA_GRAPH_REPAIR,
+        models.ARM_SHAM,
+    )
+
+    assert incomplete.graph_refined_post_edit_verified_completion_gain == 0.0
+    assert assisted.graph_refined_post_edit_verified_completion_gain == 0.0
 
 
 def test_pairwise_zero_when_arms_identical():

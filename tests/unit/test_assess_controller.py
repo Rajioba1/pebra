@@ -63,6 +63,19 @@ def test_graph_refinement_never_drops_below_independent_event_probability() -> N
     assert adjusted[0]["p_event"] == 0.40
 
 
+def test_hashed_graph_evidence_excludes_wall_clock_latency() -> None:
+    first = m.CandidateGraphRiskEvidence(
+        status="ambiguous", reason="same", total_latency_ms=1.25, cache_hit=False,
+        index_latency_ms=1.0,
+    )
+    second = m.CandidateGraphRiskEvidence(
+        status="ambiguous", reason="same", total_latency_ms=999.0, cache_hit=True,
+        index_latency_ms=500.0,
+    )
+
+    assert ac._audited_graph_evidence(first) == ac._audited_graph_evidence(second)
+
+
 class FakeEvidence:
     def __init__(self, *, policy_violations=None):
         self.policy_violations = list(policy_violations or [])
@@ -169,6 +182,7 @@ class FakeGraphRefinement:
         return m.CandidateGraphRiskEvidence(
             status=self.status,
             provider="fake_graph",
+            total_latency_ms=12.345,
             facts=(m.ScopedGraphRiskFact(
                 fact_kind="exported_binding_continuity",
                 event=scope.event,
@@ -282,6 +296,15 @@ def test_controller_reproduces_worked_example_decision() -> None:
     assert r.risk_mode is RiskMode.SENSITIVE_CONTEXT
 
 
+def test_refinement_disabled_keeps_persisted_request_surface_unchanged() -> None:
+    outcome, store = _run()
+    request_payload = store.persisted[0][1]
+    assert "graph_refinement" not in request_payload
+    assert "candidate_refinements" not in request_payload
+    assert outcome.recommended_result.scores["risk_probability_updates"] == []
+    assert outcome.recommended_result.scores["graph_risk_events_updated"] == []
+
+
 def test_trusted_candidate_verification_sidecar_selected_by_action_id() -> None:
     request = _request_with_patch()
     raw = {
@@ -291,6 +314,7 @@ def test_trusted_candidate_verification_sidecar_selected_by_action_id() -> None:
             "required_checks": ["targeted_tests"],
             "domain": "covering_tests",
             "verified_patch_hash": "a" * 64,
+            "retryable_infrastructure": True,
         }
     }
 
@@ -300,6 +324,7 @@ def test_trusted_candidate_verification_sidecar_selected_by_action_id() -> None:
     assert verification.status == "passed"
     assert verification.required_checks == ["targeted_tests"]
     assert verification.verified_patch_hash == "a" * 64
+    assert verification.retryable_infrastructure is True
 
 
 def test_revision_uses_ranked_graph_refinement_and_controller_binds_patch_hash() -> None:
@@ -331,6 +356,7 @@ def test_revision_uses_ranked_graph_refinement_and_controller_binds_patch_hash()
         _request_with_patch().candidate_actions[0].proposed_patch
     )
     assert store.persisted[0][1]["graph_refinement"]["status"] == "available"
+    assert "total_latency_ms" not in store.persisted[0][1]["graph_refinement"]["evidence"]
     assert binding.calls == 1
     prediction = next(
         item for item in store.persisted[0][2]
@@ -361,7 +387,7 @@ def test_internal_graph_refinement_is_revision_only() -> None:
     assert outcome.scored_actions[0].candidate_graph_risk_evidence.status == "not_applicable"
 
 
-def test_external_candidate_verification_remains_separate_from_graph_refinement() -> None:
+def test_failed_external_candidate_verification_skips_expensive_graph_refinement() -> None:
     provider = FakeGraphRefinement()
     external_hash = ac.decision_engine.candidate_patch_hash(
         _request_with_patch().candidate_actions[0].proposed_patch
@@ -388,7 +414,7 @@ def test_external_candidate_verification_remains_separate_from_graph_refinement(
         },
     )
 
-    assert len(provider.calls) == 1
+    assert provider.calls == []
     assert outcome.scored_actions[0].candidate_verification is not None
     assert outcome.scored_actions[0].candidate_verification.status == "failed"
 
@@ -447,6 +473,24 @@ def test_multi_action_refinement_budget_is_one_and_order_independent() -> None:
     unselected = "a2" if selected == "a1" else "a1"
     assert forward_by_id[selected].refinement_selected is True
     assert forward_by_id[unselected].refinement_status == "budget_exhausted"
+
+
+def test_api_contract_event_is_not_eligible_for_export_continuity_refinement() -> None:
+    action = _ranked_revision_request().candidate_actions[0]
+    inp = m.AssessmentInput(
+        request=_ranked_revision_request(), action=action,
+        events=[{
+            "event": "api_contract_break", "risk_source": "graph_modify_risk",
+            "owner_node_ids": ["owner-1"], "p_event": 0.5,
+        }],
+        p_success=0.7, immediate_benefit=1.0, review_cost=0.1,
+        criticality_stage="C3", criticality_value=0.8,
+        edit_confidence_factors={}, thresholds=_THRESHOLDS,
+        repo_id="repo", repo_root="/repo", fanin_evidence=FakeGraphFanin().fanin(action, "/repo"),
+        language_capability=FakeFullCapability().capability_for("typescript", "/repo"),
+    )
+
+    assert ac._graph_risk_scope(inp) is None
 
 
 def test_controller_reproduces_worked_example_numbers() -> None:
@@ -538,13 +582,7 @@ def test_structural_features_captured_without_changing_scores() -> None:
     assert outcome.recommended_result.recommended_decision is baseline.recommended_result.recommended_decision
     _, _, predictions = store.persisted[0]
     assert predictions and all(
-        p["features"] == {
-            "schema_version": 1,
-            "symbol": {"is_public_api": True},
-            "graph_refinement": {
-                "status": "not_applicable", "provider": None, "fact_kinds": [],
-            },
-        }
+        p["features"] == {"schema_version": 1, "symbol": {"is_public_api": True}}
         for p in predictions
     )
 
@@ -883,13 +921,19 @@ class FakeRevisionAttemptStore(FakeStore):
         self.count = count
         self.count_calls = []
 
-    def revise_safer_attempt_count(self, repo_id, assessed_commit, target_files, action_id=None, task=None):
+    def revise_safer_attempt_count(
+        self, repo_id, assessed_commit, target_files, action_id=None, task=None,
+        baseline_binding=None,
+    ):
         self.count_calls.append((repo_id, assessed_commit, tuple(target_files), action_id, task))
         return self.count
 
 
 class FakeFailingRevisionAttemptStore(FakeStore):
-    def revise_safer_attempt_count(self, repo_id, assessed_commit, target_files, action_id=None, task=None):
+    def revise_safer_attempt_count(
+        self, repo_id, assessed_commit, target_files, action_id=None, task=None,
+        baseline_binding=None,
+    ):
         raise RuntimeError("store unavailable")
 
 
@@ -1236,6 +1280,32 @@ def test_revision_envelope_payload_retains_graph_derived_public_symbols() -> Non
         "public_symbols": ["pkg.oldName"],
         "expected_loss": 0.36,
         "rau": -0.12,
+    }
+
+
+def test_revision_origin_fails_closed_when_worktree_baseline_changed() -> None:
+    origin = {
+        "available": True,
+        "baseline_binding": {"algorithm": "v1", "files": {"src/api.ts": "old"}},
+    }
+    current = {"algorithm": "v1", "files": {"src/api.ts": "changed"}}
+
+    checked = ac._origin_for_current_baseline(origin, current)
+
+    assert checked == {
+        "available": False,
+        "fallback_reason": "working-tree baseline changed since the origin assessment",
+    }
+
+
+def test_revision_origin_fails_closed_when_current_baseline_is_unavailable() -> None:
+    checked = ac._origin_for_current_baseline(
+        {"available": True, "baseline_binding": {"algorithm": "v1"}}, None
+    )
+
+    assert checked == {
+        "available": False,
+        "fallback_reason": "current working-tree baseline could not be bound",
     }
 
 def test_trusted_task_obligations_are_selected_per_action() -> None:

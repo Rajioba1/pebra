@@ -76,6 +76,7 @@ def interpret(pairwise: Sequence[PairwiseComparison]) -> AssayInterpretation:
             p.n_pairs_risky > 0
             and p.n_pairs_safe > 0
             and p.risky_completion_gain > 0.0
+            and p.graph_refined_post_edit_verified_completion_gain > 0.0
             and p.harm_avoided_rate >= 0.0
             and p.over_caution_delta <= 0.0
             for p in (repair_vs_pebra, repair_vs_enforced)

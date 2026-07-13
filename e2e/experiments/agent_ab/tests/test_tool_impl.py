@@ -292,13 +292,18 @@ def test_build_and_test_summaries_are_safe_for_model_when_paths_contain_repo_nam
             return _result()
 
         def run_tests(self, repo_root, spec):
-            return _result()
+            result = _result()
+            result.tests_selected = 3
+            result.targeted = True
+            return result
 
     build = tool_impl.run_build(tmp_path, backend=FakeBackend())
     tests = tool_impl.run_tests(tmp_path, backend=FakeBackend())
 
     assert blinding.scan_text(build["error_summary"]) == (False, ())
     assert blinding.scan_text(tests["error_summary"]) == (False, ())
+    assert tests["tests_selected"] == 3
+    assert tests["targeted"] is True
 
 
 def test_build_and_test_receive_remaining_command_timeout(tmp_path):

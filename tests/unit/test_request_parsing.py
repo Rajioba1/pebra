@@ -71,3 +71,74 @@ def test_parse_missing_schema_version_defaults() -> None:
     raw = {k: v for k, v in _RAW.items() if k != "schema_version"}
     req = cp.parse(raw)
     assert req.schema_version  # defaulted, not blank
+
+
+def test_validate_requires_expected_files_to_match_multifile_patch() -> None:
+    patch = (
+        "diff --git a/src/auth.py b/src/auth.py\n"
+        "--- a/src/auth.py\n+++ b/src/auth.py\n@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/src/session.py b/src/session.py\n"
+        "--- a/src/session.py\n+++ b/src/session.py\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    bad = {
+        **_RAW,
+        "candidate_actions": [{
+            **_RAW["candidate_actions"][0],
+            "expected_files": ["src/auth.py"],
+            "proposed_patch": patch,
+        }],
+    }
+
+    with pytest.raises(rv.RequestValidationError, match="exactly match"):
+        rv.validate(cp.parse(bad))
+
+
+def test_validate_accepts_exact_multifile_patch_envelope() -> None:
+    patch = (
+        "diff --git a/src/auth.py b/src/auth.py\n"
+        "--- a/src/auth.py\n+++ b/src/auth.py\n@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/src/session.py b/src/session.py\n"
+        "--- a/src/session.py\n+++ b/src/session.py\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    raw = {
+        **_RAW,
+        "candidate_actions": [{
+            **_RAW["candidate_actions"][0],
+            "expected_files": ["./src/session.py", "src/auth.py"],
+            "proposed_patch": patch,
+        }],
+    }
+
+    rv.validate(cp.parse(raw))
+
+
+def test_validate_rejects_nonempty_malformed_proposed_patch() -> None:
+    raw = {
+        **_RAW,
+        "candidate_actions": [{
+            **_RAW["candidate_actions"][0],
+            "expected_files": ["src/auth.py"],
+            "proposed_patch": "not a unified diff",
+        }],
+    }
+
+    with pytest.raises(rv.RequestValidationError, match="well-formed unified diff"):
+        rv.validate(cp.parse(raw))
+
+
+def test_validate_rejects_patch_path_escape() -> None:
+    patch = (
+        "diff --git a/../outside.ts b/../outside.ts\n"
+        "--- a/../outside.ts\n+++ b/../outside.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    raw = {
+        **_RAW,
+        "candidate_actions": [{
+            **_RAW["candidate_actions"][0],
+            "expected_files": ["../outside.ts"],
+            "proposed_patch": patch,
+        }],
+    }
+
+    with pytest.raises(rv.RequestValidationError, match="inside the repository"):
+        rv.validate(cp.parse(raw))

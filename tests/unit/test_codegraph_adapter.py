@@ -128,6 +128,41 @@ def test_node_counts_counts_callable_and_csharp(tmp_path):
     assert counts == {"total": 4, "callable": 3, "csharp_callable": 2}
 
 
+def test_direct_caller_files_are_scoped_to_exact_owner_nodes(tmp_path):
+    _seed_repo(tmp_path)
+
+    result = _adapter().direct_caller_files_result(("method:vl",), str(tmp_path))
+
+    assert result["available"] is True
+    assert result["count"] == 3
+    assert result["dependent_files"] == ["src/auth.py", "src/m0.py", "src/m1.py"]
+
+
+def test_fanin_and_refinement_context_share_one_freshness_probe(tmp_path):
+    _seed_repo(tmp_path)
+    calls = 0
+
+    def status(_repo_root):
+        nonlocal calls
+        calls += 1
+        return FRESH
+
+    adapter = cga.CodeGraphAdapter(status_fn=status)
+    action = CandidateAction(
+        id="a", label="edit", action_type="edit",
+        proposed_patch=(
+            "diff --git a/src/auth.py b/src/auth.py\n"
+            "--- a/src/auth.py\n+++ b/src/auth.py\n"
+            "@@ -10 +10 @@\n-old\n+new\n"
+        ),
+    )
+
+    adapter.fanin(action, str(tmp_path))
+    adapter.direct_caller_files_result(("method:vl",), str(tmp_path))
+
+    assert calls == 1
+
+
 def test_probe_capabilities_measures_per_language_coverage(tmp_path):
     from pebra.core.language_capability import classify_tier
 

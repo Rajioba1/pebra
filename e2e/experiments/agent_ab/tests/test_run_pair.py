@@ -229,6 +229,7 @@ def test_exact_allowed_candidate_is_bound_for_post_edit_verify(monkeypatch, tmp_
         "gate_check",
         lambda event, *, db, consult_only: {
             "permission": "allow", "tier": "consulted", "reason": None,
+            "matched_assessment_id": "asm_7",
         },
     )
     advisory = run_pair._advisory_backend(
@@ -239,10 +240,329 @@ def test_exact_allowed_candidate_is_bound_for_post_edit_verify(monkeypatch, tmp_
     )
 
     advisory({"target_file": "a.cs", "proposed_patch": "diff", "change_summary": "x"})
-    gate({"tool_name": "Write", "tool_input": {"file_path": "a.cs"}})
+    decision = gate({"tool_name": "Write", "tool_input": {"file_path": "a.cs"}})
+    assert telemetry.applied_assessment_id is None
+    run_pair._write_applied_backend(telemetry)(decision)
 
     assert telemetry.last_assessment_id == "asm_7"
     assert telemetry.applied_assessment_id == "asm_7"
+
+
+def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
+    monkeypatch, tmp_path
+):
+    telemetry = run_pair.ArmTelemetry()
+    raw_payload = {
+        "recommended_decision": "proceed",
+        "scores": {
+            "expected_loss": 0.08,
+            "rau": 0.22,
+            "risk_probability_updates": [{
+                "fact_kind": "exported_binding_continuity",
+                "provider": "materialized_codegraph",
+                "event": "public_api_break",
+                "risk_source": "graph_modify_risk",
+                "owner_node_ids": ["owner-a"],
+                "original_probability": 0.45,
+                "revised_probability": 0.1575,
+                "probability_floor": 0.05,
+            }],
+        },
+        "gates_fired": [
+            {"name": "candidate_verification_passed"},
+            {
+                "name": "revision_risk_benefit_improved",
+                "origin_expected_loss": 0.36,
+                "revised_expected_loss": 0.08,
+                "origin_rau": -0.06,
+                "revised_rau": 0.22,
+            },
+        ],
+        "graph_refinement": {
+            "status": "available",
+            "selected": True,
+            "evidence": {
+                "facts": [{
+                    "fact_kind": "exported_binding_continuity",
+                    "event": "public_api_break",
+                    "risk_source": "graph_modify_risk",
+                    "owner_node_ids": ["owner-a"],
+                }],
+            },
+        },
+        "model_guidance_packet": {
+            "binding": {
+                "required_checks_before_commit": [
+                    "run targeted tests for the touched scope before commit"
+                ]
+            }
+        },
+    }
+    monkeypatch.setattr(
+        run_pair.advisory_check_real,
+        "advise",
+        lambda *args, **kwargs: run_pair.advisory_check_real.AdvisoryOutput(
+            {
+                "recommended_decision": "proceed",
+                "risk_level": "low",
+                "advisory": "ok",
+                "detail": {},
+            },
+            assessment_id="asm_graph",
+            raw_payload=raw_payload,
+        ),
+    )
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "gate_check",
+        lambda event, *, db, consult_only: {
+            "permission": "allow", "tier": "consulted", "reason": None,
+            "matched_assessment_id": "asm_graph",
+        },
+    )
+    advisory = run_pair._advisory_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR,
+        tmp_path,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+    gate = run_pair._gate_check_backend(
+        models.ARM_PEBRA_GRAPH_REPAIR,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+
+    advisory({"target_file": "a.ts", "proposed_patch": "diff", "change_summary": "x"})
+    decision = gate({"tool_name": "Write", "tool_input": {"file_path": "a.ts"}})
+    assert telemetry.applied_graph_refinement is None
+    run_pair._write_applied_backend(telemetry)(decision)
+
+    assert telemetry.applied_graph_refinement == {
+        "assessment_id": "asm_graph",
+        "status": "available",
+        "selected": True,
+        "fact_kinds": ("exported_binding_continuity",),
+        "risk_probability_update_count": 1,
+        "origin_expected_loss": 0.36,
+        "revised_expected_loss": 0.08,
+        "origin_rau": -0.06,
+        "revised_rau": 0.22,
+        "candidate_verification_passed": True,
+        "revision_risk_benefit_improved": True,
+        "proof_path": "graph_plus_host_verification",
+        "required_checks_before_commit": (
+            "run targeted tests for the touched scope before commit",
+        ),
+    }
+
+
+def test_graph_refinement_summary_rejects_incoherent_fact_and_probability_update():
+    result = SimpleNamespace(raw_payload={
+        "scores": {
+            "expected_loss": 0.08,
+            "rau": 0.22,
+            "risk_probability_updates": [{
+                "fact_kind": "exported_binding_continuity",
+                "provider": "materialized_codegraph",
+                "event": "public_api_break",
+                "risk_source": "graph_modify_risk",
+                "owner_node_ids": ["owner-b"],
+                "original_probability": 0.45,
+                "revised_probability": 0.1575,
+                "probability_floor": 0.05,
+            }],
+        },
+        "gates_fired": [{
+            "name": "revision_risk_benefit_improved",
+            "origin_expected_loss": 0.36,
+            "revised_expected_loss": 0.08,
+            "origin_rau": -0.06,
+            "revised_rau": 0.22,
+        }],
+        "graph_refinement": {
+            "status": "available",
+            "selected": True,
+            "evidence": {"facts": [{
+                "fact_kind": "exported_binding_continuity",
+                "event": "public_api_break",
+                "risk_source": "graph_modify_risk",
+                "owner_node_ids": ["owner-a"],
+            }]},
+        },
+    })
+
+    summary = run_pair._graph_refinement_summary(result, "asm_graph")
+
+    assert summary is not None
+    assert summary["risk_probability_update_count"] == 0
+    assert summary["proof_path"] is None
+
+
+def test_graph_refinement_summary_rejects_duplicate_progress_gates():
+    raw = {
+        "scores": {
+            "expected_loss": 0.08, "rau": 0.22,
+            "risk_probability_updates": [{
+                "fact_kind": "exported_binding_continuity",
+                "provider": "materialized_codegraph", "event": "public_api_break",
+                "risk_source": "graph_modify_risk", "owner_node_ids": ["owner-a"],
+                "original_probability": 0.45, "revised_probability": 0.16,
+                "probability_floor": 0.05,
+            }],
+        },
+        "gates_fired": [
+            {"name": "revision_risk_benefit_improved", "origin_expected_loss": 0.36,
+             "revised_expected_loss": 0.08, "origin_rau": -0.1, "revised_rau": 0.22},
+            {"name": "revision_risk_benefit_improved", "origin_expected_loss": 0.36,
+             "revised_expected_loss": 0.30, "origin_rau": -0.1, "revised_rau": -0.2},
+        ],
+        "graph_refinement": {"status": "available", "selected": True, "evidence": {
+            "facts": [{"fact_kind": "exported_binding_continuity",
+                       "event": "public_api_break", "risk_source": "graph_modify_risk",
+                       "owner_node_ids": ["owner-a"]}],
+        }},
+    }
+
+    summary = run_pair._graph_refinement_summary(SimpleNamespace(raw_payload=raw), "asm_graph")
+
+    assert summary is not None
+    assert summary["revision_risk_benefit_improved"] is False
+    assert summary["proof_path"] is None
+
+
+def test_graph_refinement_summary_rejects_duplicate_verification_gates():
+    raw = {
+        "scores": {
+            "expected_loss": 0.08,
+            "rau": 0.22,
+            "risk_probability_updates": [{
+                "fact_kind": "exported_binding_continuity",
+                "provider": "materialized_codegraph",
+                "event": "public_api_break",
+                "risk_source": "graph_modify_risk",
+                "owner_node_ids": ["owner-a"],
+                "original_probability": 0.45,
+                "revised_probability": 0.16,
+                "probability_floor": 0.05,
+            }],
+        },
+        "gates_fired": [
+            {
+                "name": "revision_risk_benefit_improved",
+                "origin_expected_loss": 0.36,
+                "revised_expected_loss": 0.08,
+                "origin_rau": -0.1,
+                "revised_rau": 0.22,
+            },
+            {"name": "candidate_verification_passed"},
+            {"name": "candidate_verification_passed"},
+        ],
+        "graph_refinement": {
+            "status": "available",
+            "selected": True,
+            "evidence": {"facts": [{
+                "fact_kind": "exported_binding_continuity",
+                "event": "public_api_break",
+                "risk_source": "graph_modify_risk",
+                "owner_node_ids": ["owner-a"],
+            }]},
+        },
+    }
+
+    summary = run_pair._graph_refinement_summary(
+        SimpleNamespace(raw_payload=raw), "asm_graph"
+    )
+
+    assert summary is not None
+    assert summary["proof_path"] is None
+
+
+def test_gate_binds_older_exact_assessment_not_latest_assessment(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry(
+        last_assessment_id="asm_9",
+        graph_refinement_by_assessment={
+            "asm_7": {"assessment_id": "asm_7", "status": "available"},
+            "asm_9": {"assessment_id": "asm_9", "status": "ambiguous"},
+        },
+    )
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "gate_check",
+        lambda event, *, db, consult_only: {
+            "permission": "allow",
+            "tier": "consulted",
+            "matched_assessment_id": "asm_7",
+        },
+    )
+
+    result = run_pair._gate_check_backend(
+        models.ARM_PEBRA, tmp_path / "pebra.db", telemetry=telemetry
+    )({"tool_name": "Write"})
+
+    assert telemetry.applied_assessment_id is None
+    run_pair._write_applied_backend(telemetry)(result)
+    assert telemetry.applied_assessment_id == "asm_7"
+    assert telemetry.applied_graph_refinement == {
+        "assessment_id": "asm_7", "status": "available"
+    }
+    assert "matched_assessment_id" not in result
+
+
+def test_later_unbound_write_invalidates_graph_refinement_attribution() -> None:
+    telemetry = run_pair.ArmTelemetry(
+        applied_assessment_id="asm_graph",
+        applied_graph_refinement={"assessment_id": "asm_graph", "status": "available"},
+    )
+
+    run_pair._write_applied_backend(telemetry)({"permission": "allow", "tier": "pass"})
+
+    assert telemetry.applied_assessment_id is None
+    assert telemetry.applied_graph_refinement is None
+    assert telemetry.candidate_lineage_invalidated is True
+
+
+def test_later_matched_write_does_not_erase_lineage_invalidation() -> None:
+    telemetry = run_pair.ArmTelemetry(
+        required_checks_by_assessment={"asm_new": ("targeted_tests",)},
+        graph_refinement_by_assessment={
+            "asm_new": {"assessment_id": "asm_new", "status": "available"}
+        },
+    )
+    record = run_pair._write_applied_backend(telemetry)
+
+    record({"permission": "allow", "tier": "pass"})
+    record({"_matched_assessment_id": "asm_new"})
+
+    assert telemetry.applied_assessment_id == "asm_new"
+    assert telemetry.applied_required_checks == ("targeted_tests",)
+    assert telemetry.candidate_lineage_invalidated is True
+
+
+def test_later_differently_assessed_write_invalidates_candidate_lineage() -> None:
+    telemetry = run_pair.ArmTelemetry(
+        graph_refinement_by_assessment={
+            "asm_a": {"assessment_id": "asm_a", "status": "available"},
+            "asm_b": {"assessment_id": "asm_b", "status": "available"},
+        },
+    )
+    record = run_pair._write_applied_backend(telemetry)
+
+    record({"_matched_assessment_id": "asm_a"})
+    record({"_matched_assessment_id": "asm_b"})
+
+    assert telemetry.applied_assessment_id == "asm_b"
+    assert telemetry.candidate_lineage_invalidated is True
+
+
+def test_required_checks_bind_without_graph_refinement() -> None:
+    telemetry = run_pair.ArmTelemetry(
+        required_checks_by_assessment={"asm_plain": ("candidate_build",)},
+    )
+
+    run_pair._write_applied_backend(telemetry)({"_matched_assessment_id": "asm_plain"})
+
+    assert telemetry.applied_graph_refinement is None
+    assert telemetry.applied_required_checks == ("candidate_build",)
 
 
 def test_denied_candidate_is_not_bound_for_post_edit_verify(monkeypatch, tmp_path):
@@ -288,16 +608,30 @@ def test_post_edit_verify_persists_measured_benefit_for_applied_candidate(monkey
         advisory_backend=lambda payload: {},
         baseline_build=None,
         subject_prompt="x",
-        telemetry=run_pair.ArmTelemetry(applied_assessment_id="asm_7"),
+        telemetry=run_pair.ArmTelemetry(
+            applied_assessment_id="asm_7",
+            applied_required_checks=("run targeted tests for the touched scope before commit",),
+        ),
     )
     result = SubjectResult(
         task_id="T1", arm=models.ARM_PEBRA, seed=0, modified_files=("a.cs",),
+        tool_calls=(models.ToolCallRecord(
+            sequence=1,
+            name="run_tests",
+            result={
+                "available": True,
+                "passed": True,
+                "targeted": True,
+                "tests_selected": 1,
+            },
+        ),),
     )
     seen = {}
 
-    def _verify(assessment_id, *, repo_root, db, scope):
+    def _verify(assessment_id, *, repo_root, db, scope, completed_checks):
         seen.update({
             "assessment_id": assessment_id, "repo_root": repo_root, "db": db, "scope": scope,
+            "completed_checks": completed_checks,
         })
         return True, {
             "measured_benefit": 0.42,
@@ -315,6 +649,9 @@ def test_post_edit_verify_persists_measured_benefit_for_applied_candidate(monkey
         "repo_root": tmp_path,
         "db": tmp_path.parent / "pebra.db",
         "scope": "all",
+        "completed_checks": {
+            "run targeted tests for the touched scope before commit": "passed"
+        },
     }
     assert verified.post_edit_verify_ran is True
     assert verified.post_edit_verify_passed is True
@@ -323,6 +660,136 @@ def test_post_edit_verify_persists_measured_benefit_for_applied_candidate(monkey
     assert verified.measured_benefit_deltas == {
         "complexity_delta": -2.0, "maintainability_index_delta": 4.0,
     }
+
+
+@pytest.mark.parametrize(
+    ("calls", "expected"),
+    [
+        (
+            (
+                models.ToolCallRecord(0, "edit_file", result={"ok": True}),
+                models.ToolCallRecord(
+                    1, "run_build", result={"available": True, "passed": True}
+                ),
+            ),
+            {},
+        ),
+        (
+            (
+                models.ToolCallRecord(0, "edit_file", result={"ok": True}),
+                models.ToolCallRecord(
+                    1, "run_tests", result={
+                        "available": True, "passed": False,
+                        "targeted": True, "tests_selected": 1,
+                    }
+                ),
+            ),
+            {"run targeted tests for the touched scope before commit": "failed"},
+        ),
+        (
+            (
+                models.ToolCallRecord(0, "edit_file", result={"ok": True}),
+                models.ToolCallRecord(
+                    1, "run_tests", result={
+                        "available": True, "passed": True,
+                        "targeted": True, "tests_selected": 1,
+                    }
+                ),
+                models.ToolCallRecord(
+                    2, "run_tests", result={
+                        "available": True, "passed": False,
+                        "targeted": True, "tests_selected": 1,
+                    }
+                ),
+            ),
+            {"run targeted tests for the touched scope before commit": "failed"},
+        ),
+        (
+            (
+                models.ToolCallRecord(0, "edit_file", result={"ok": True}),
+                models.ToolCallRecord(
+                    1, "run_tests", result={
+                        "available": True, "passed": True,
+                        "targeted": True, "tests_selected": 1,
+                    }
+                ),
+                models.ToolCallRecord(2, "edit_file", result={"ok": False}),
+            ),
+            {"run targeted tests for the touched scope before commit": "passed"},
+        ),
+        (
+            (
+                models.ToolCallRecord(0, "edit_file", result={"ok": True}),
+                models.ToolCallRecord(
+                    1, "run_tests", result={
+                        "available": True, "passed": True,
+                        "targeted": True, "tests_selected": 1,
+                    }
+                ),
+                models.ToolCallRecord(2, "edit_file", result={"ok": True}),
+            ),
+            {},
+        ),
+        (
+            (
+                models.ToolCallRecord(0, "edit_file", result={"ok": True}),
+                models.ToolCallRecord(
+                    1, "run_tests", result={
+                        "available": True, "passed": True,
+                        "targeted": False, "tests_selected": 10,
+                    },
+                ),
+            ),
+            {},
+        ),
+        (
+            (
+                models.ToolCallRecord(0, "edit_file", result={"ok": True}),
+                models.ToolCallRecord(
+                    1, "run_tests", result={
+                        "available": True, "passed": True,
+                        "targeted": True, "tests_selected": 0,
+                    },
+                ),
+            ),
+            {},
+        ),
+    ],
+)
+def test_post_edit_verify_uses_exact_checks_from_final_mutation_epoch(
+    monkeypatch, tmp_path, calls, expected,
+):
+    setup = run_pair.ArmSetup(
+        arm=models.ARM_PEBRA,
+        repo_path=tmp_path,
+        advisory_backend=lambda payload: {},
+        baseline_build=None,
+        subject_prompt="x",
+        telemetry=run_pair.ArmTelemetry(
+            applied_assessment_id="asm_7",
+            applied_required_checks=(
+                "run targeted tests for the touched scope before commit",
+            ),
+        ),
+    )
+    seen = {}
+
+    def _verify(*args, completed_checks, **kwargs):
+        seen.update(completed_checks)
+        return False, {}
+
+    monkeypatch.setattr(run_pair.cli_harness, "verify", _verify)
+    result = SubjectResult(
+        task_id="T1",
+        arm=models.ARM_PEBRA,
+        seed=0,
+        modified_files=("a.cs",),
+        tool_calls=calls,
+    )
+
+    run_pair._post_edit_verify(setup, result)
+
+    assert seen == expected
 
 
 def test_post_edit_verify_skips_when_no_exact_candidate_was_applied(monkeypatch, tmp_path):
@@ -745,7 +1212,10 @@ def test_human_assisted_write_attribution_is_sticky_across_later_candidate(
     monkeypatch.setattr(
         run_pair.cli_harness,
         "gate_check",
-        lambda event, **_kwargs: {"permission": "allow", "tier": "consulted"},
+        lambda event, **_kwargs: {
+            "permission": "allow", "tier": "consulted",
+            "matched_assessment_id": "asm_2",
+        },
     )
     gate = run_pair._gate_check_backend(
         models.ARM_PEBRA_HUMAN_REVIEW,
@@ -753,11 +1223,23 @@ def test_human_assisted_write_attribution_is_sticky_across_later_candidate(
         telemetry=telemetry,
     )
 
-    gate({"tool_name": "Write", "tool_input": {"file_path": "src/a.ts"}})
+    decision = gate({"tool_name": "Write", "tool_input": {"file_path": "src/a.ts"}})
+    run_pair._write_applied_backend(telemetry)(decision)
     telemetry.human_approval_granted = False
     telemetry.last_assessment_id = "asm_3"
 
     assert telemetry.applied_assessment_id == "asm_2"
+    assert telemetry.human_assisted_write_applied is True
+
+
+def test_human_assisted_write_matches_any_approved_reassessment() -> None:
+    telemetry = run_pair.ArmTelemetry(
+        approved_reassessment_ids={"asm_a", "asm_b"},
+    )
+
+    run_pair._write_applied_backend(telemetry)({"_matched_assessment_id": "asm_a"})
+
+    assert telemetry.applied_assessment_id == "asm_a"
     assert telemetry.human_assisted_write_applied is True
 
 
@@ -891,7 +1373,8 @@ def test_repair_arm_does_not_verify_after_revision_budget_is_exhausted(monkeypat
 def test_repair_unavailable_verification_preserves_verified_candidate_budget(monkeypatch, tmp_path):
     seen: list[dict] = []
     verifications = iter((
-        {"status": "unavailable", "reason": "candidate patch did not declare files"},
+        {"status": "unavailable", "reason": "codegraph timed out",
+         "retryable_infrastructure": True},
         {"status": "passed", "required_checks": ["covering_tests"],
          "checks": {"covering_tests": "passed"}, "verified_patch_hash": "bound"},
     ))
@@ -930,7 +1413,7 @@ def test_repair_unavailable_verification_preserves_verified_candidate_budget(mon
     ]
 
 
-def test_repair_prevalidation_is_bounded_by_run_budget_not_submission_count(monkeypatch, tmp_path):
+def test_nonretryable_prevalidation_failures_consume_semantic_attempt_budget(monkeypatch, tmp_path):
     attempts: list[int] = []
     verifications = iter([
         {"status": "unavailable", "failure_category": "patch_not_applicable"}
@@ -960,11 +1443,12 @@ def test_repair_prevalidation_is_bounded_by_run_budget_not_submission_count(monk
     backend({"target_file": "a.ts", "proposed_patch": "initial"})
     for index in range(4):
         result = backend({"target_file": "a.ts", "proposed_patch": f"bad-{index}"})
-        assert "could not be applied" in result["advisory"]
+        if index == 0:
+            assert "could not be applied" in result["advisory"]
     final = backend({"target_file": "a.ts", "proposed_patch": "valid"})
 
-    assert attempts == [0, 1, 1, 1, 1, 1]
-    assert final["recommended_decision"] == "proceed"
+    assert attempts == [0, 1, 2, 2, 2, 2]
+    assert final["recommended_decision"] != "proceed"
 
 
 def test_real_backend_materializes_structured_edits_before_assess_and_verify(monkeypatch, tmp_path):
@@ -1136,6 +1620,49 @@ def test_repair_candidate_verification_accepts_atomic_multifile_candidate(monkey
     assert seen["repo_path"] == scratch
     assert seen["test_project"] is None  # conflicting per-file selectors use the full-build fallback
     assert seen["allow_build_fallback"] is True
+
+
+def test_repair_candidate_verification_prefers_declared_public_test_selector(
+    monkeypatch, tmp_path
+):
+    patch = (
+        "diff --git a/src/A.ts b/src/A.ts\n"
+        "--- a/src/A.ts\n+++ b/src/A.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    scratch = tmp_path / "scratch"
+    monkeypatch.setattr(
+        run_pair.candidate_materializer, "materialize_candidate", lambda *_args: scratch
+    )
+    monkeypatch.setattr(run_pair.candidate_materializer, "cleanup", lambda _scratch: None)
+    monkeypatch.setattr(
+        run_pair.covering_tests_resolver,
+        "find_covering_tests",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("declared public test must not fall back to graph resolution")
+        ),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        run_pair.candidate_verifier,
+        "verify_candidate",
+        lambda **kwargs: seen.update(kwargs) or {"status": "passed"},
+    )
+    spec = replace(
+        _SPEC,
+        language="typescript",
+        harness_id="node",
+        test_selector="packages/zod/src/v3/tests/error.test.ts",
+        required_task_checks=("candidate_build", "public_contract_preserved"),
+    )
+
+    result = run_pair._verify_candidate_for_repair(
+        {"target_file": "src/A.ts", "proposed_patch": patch}, tmp_path, spec
+    )
+
+    assert result["status"] == "passed"
+    assert seen["test_project"] == "packages/zod/src/v3/tests/error.test.ts"
+    assert seen["allow_build_fallback"] is True
+    assert seen["required_checks"] == ("candidate_build", "public_contract_preserved")
 
 
 def test_repair_candidate_verification_records_stage_timings(monkeypatch, tmp_path):

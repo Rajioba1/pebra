@@ -315,8 +315,13 @@ def run_tests(
     if timeout_seconds is not None:
         spec = _TimeoutSpec(spec, timeout_seconds)
     r = backend.run_tests(repo_root, spec)
-    return {"available": r.available, "passed": r.passed,
-            "error_summary": model_safe_text(r.error_summary)}
+    return {
+        "available": r.available,
+        "passed": r.passed,
+        "error_summary": model_safe_text(r.error_summary),
+        "tests_selected": getattr(r, "tests_selected", None),
+        "targeted": bool(getattr(r, "targeted", False)),
+    }
 
 
 class _TimeoutSpec:

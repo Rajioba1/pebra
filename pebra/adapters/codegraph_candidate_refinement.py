@@ -6,11 +6,13 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -30,21 +32,34 @@ from pebra.core.models import (
 
 
 _SCHEMA_VERSION = 1
-_PROVIDER_VERSION = "materialized-continuity-v1"
+_CACHE_VERSION = 7
+_PROVIDER_VERSION = f"materialized-continuity-v{_CACHE_VERSION}"
 _CALLABLE_KINDS = {"function", "method", "class", "struct", "interface", "trait", "protocol"}
 _ALIAS_BINDING_KINDS = {"constant", "variable"}
-_SUPPORTED_EVENTS = {"public_api_break", "api_contract_break"}
+_SUPPORTED_EVENTS = {"public_api_break"}
+_CONTINUITY_EDGE_KINDS = ("calls", "instantiates", "references")
 _CONFIG_NAMES = (
     "package.json", "tsconfig.json", "jsconfig.json", "pyproject.toml",
     "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts",
 )
 
 Indexer = Callable[[Path], Path]
-ContextFiles = Callable[[str, tuple[str, ...]], tuple[str, ...]]
+ContextFiles = Callable[[str, GraphRiskScope], tuple[str, ...]]
 
 
 def _elapsed(start: float) -> float:
     return max(0.0, (time.monotonic() - start) * 1000.0)
+
+
+def _default_cache_root() -> Path:
+    explicit = os.environ.get("PEBRA_CACHE_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "pebra" / "cache"
+    if os.environ.get("XDG_CACHE_HOME"):
+        return Path(os.environ["XDG_CACHE_HOME"]) / "pebra"
+    return Path.home() / ".cache" / "pebra"
 
 
 def _write_files(root: Path, files: Mapping[str, str | None]) -> None:
@@ -64,7 +79,7 @@ def _clear(root: Path) -> None:
             child.unlink()
 
 
-def _default_context_files(_repo_root: str, _owner_files: tuple[str, ...]) -> tuple[str, ...]:
+def _default_context_files(_repo_root: str, _scope: GraphRiskScope) -> tuple[str, ...]:
     return ()
 
 
@@ -132,7 +147,9 @@ class CodeGraphCandidateRefinementAdapter:
         self._max_context_bytes = max(1, max_context_bytes)
         self._max_cache_entries = max(1, max_cache_entries)
         self._max_cache_bytes = max(1, max_cache_bytes)
-        self._cache_root = cache_root or Path.home() / ".pebra" / "cache"
+        # ``.pebra`` is a repository-root marker. A user-level cache there would make every
+        # descendant of the home directory resolve as one giant repository.
+        self._cache_root = cache_root or _default_cache_root()
 
     @staticmethod
     def _config_files(repo_root: str, owner_files: tuple[str, ...]) -> set[str]:
@@ -159,12 +176,12 @@ class CodeGraphCandidateRefinementAdapter:
         if len(candidates) > self._max_context_files:
             return {}, "context file cap exceeded"
         try:
-            expanded = tuple(self._context_files_fn(repo_root, scope.owner_file_paths))
+            expanded = tuple(self._context_files_fn(repo_root, scope))
+            if len(candidates | set(expanded)) > self._max_context_files:
+                return {}, "context file cap exceeded"
             candidates.update(expanded)
-        except Exception:  # noqa: BLE001 - optional context expansion fails closed to touched scope
-            expanded = ()
-        if scope.expected_consumer_count > 0 and not expanded:
-            return {}, "dependent context unavailable"
+        except Exception:  # noqa: BLE001 - graph incompleteness cannot earn risk-reducing evidence
+            return {}, "dependent graph context unavailable"
         paths = tuple(sorted(candidates))
         if len(paths) > self._max_context_files:
             return {}, "context file cap exceeded"
@@ -176,9 +193,12 @@ class CodeGraphCandidateRefinementAdapter:
         try:
             for rel in paths:
                 target = root / rel
+                if target.is_file():
+                    total += target.stat().st_size
+                    if total > self._max_context_bytes:
+                        return files, "context byte cap exceeded"
                 content = target.read_bytes().decode("utf-8") if target.is_file() else None
                 files[rel] = content
-                total += len(content.encode("utf-8")) if content is not None else 0
         except (OSError, UnicodeError):
             return {}, "context file could not be read"
         if total > self._max_context_bytes:
@@ -225,7 +245,12 @@ class CodeGraphCandidateRefinementAdapter:
         return self._manifest_hash(action, scope, files, reason)
 
     def _cache_path(self, _repo_root: str, manifest_hash: str) -> Path:
-        return self._cache_root / "graph_continuity" / "v1" / f"{manifest_hash}.json"
+        return (
+            self._cache_root
+            / "graph_continuity"
+            / f"v{_CACHE_VERSION}"
+            / f"{manifest_hash}.json"
+        )
 
     def _load_cache(self, path: Path) -> CandidateGraphRiskEvidence | None:
         try:
@@ -285,8 +310,60 @@ class CodeGraphCandidateRefinementAdapter:
     def _read_nodes(con: sqlite3.Connection) -> list[sqlite3.Row]:
         return con.execute(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line, "
-            "visibility, is_exported, signature FROM nodes"
+            "start_column, end_column, visibility, is_exported, signature FROM nodes"
         ).fetchall()
+
+    @staticmethod
+    def _node_source(files: Mapping[str, str | None], row: sqlite3.Row) -> str | None:
+        content = files.get(str(row["file_path"]))
+        if content is None:
+            return None
+        lines = content.splitlines(keepends=True)
+        start_line = int(row["start_line"]) - 1
+        end_line = int(row["end_line"]) - 1
+        if start_line < 0 or end_line < start_line or end_line >= len(lines):
+            return None
+        start_column = max(0, int(row["start_column"] or 0))
+        end_column = max(0, int(row["end_column"] or 0))
+        if start_line == end_line:
+            return lines[start_line][start_column:end_column]
+        selected = [lines[start_line][start_column:], *lines[start_line + 1:end_line]]
+        selected.append(lines[end_line][:end_column])
+        return "".join(selected)
+
+    @classmethod
+    def _same_implementation(
+        cls,
+        before_files: Mapping[str, str | None],
+        after_files: Mapping[str, str | None],
+        old: sqlite3.Row,
+        target: sqlite3.Row,
+    ) -> bool:
+        old_source = cls._node_source(before_files, old)
+        target_source = cls._node_source(after_files, target)
+        old_name = str(old["name"] or "")
+        target_name = str(target["name"] or "")
+        if not old_source or not target_source or not old_name or not target_name:
+            return False
+        def canonical(source: str, name: str) -> str | None:
+            normalized = source.replace("\r\n", "\n")
+            pattern = re.compile(rf"\bfunction\s+{re.escape(name)}\b")
+            matches = list(pattern.finditer(normalized))
+            if len(matches) != 1:
+                return None
+            match = matches[0]
+            name_start = match.end() - len(name)
+            return (
+                normalized[:name_start]
+                + "__PEBRA_RENAMED__"
+                + normalized[match.end():]
+            )
+
+        canonical_old = canonical(old_source, old_name)
+        canonical_target = canonical(target_source, target_name)
+        if canonical_old is None or canonical_target is None:
+            return False
+        return canonical_old == canonical_target
 
     @staticmethod
     def _is_exported(row: sqlite3.Row) -> bool:
@@ -294,8 +371,288 @@ class CodeGraphCandidateRefinementAdapter:
             "public", "public_api", "exported"
         }
 
+    @staticmethod
+    def _trusted_edge_confidence(row: sqlite3.Row) -> float | None:
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+            confidence = float(metadata.get("confidence", 0.0))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if (
+            not math.isfinite(confidence)
+            or confidence < 0.90
+            or metadata.get("resolvedBy") in {None, "heuristic"}
+        ):
+            return None
+        return min(1.0, confidence)
+
+    @classmethod
+    def _continuity_edge_metadata(
+        cls, row: sqlite3.Row
+    ) -> tuple[str, float, bool] | None:
+        """Return stable envelope metadata and whether it may raise proof confidence."""
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+            confidence = float(metadata.get("confidence", 0.0))
+            resolver = str(metadata.get("resolvedBy") or "")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if not math.isfinite(confidence) or resolver in {"", "heuristic"}:
+            return None
+        trusted = cls._trusted_edge_confidence(row)
+        if trusted is not None:
+            return resolver, trusted, True
+        if resolver == "exact-match" and confidence >= 0.70:
+            return resolver, min(1.0, confidence), False
+        return None
+
+    @classmethod
+    def _binding_target(
+        cls,
+        con: sqlite3.Connection,
+        nodes: list[sqlite3.Row],
+        binding: sqlite3.Row,
+    ) -> tuple[sqlite3.Row, float] | None:
+        refs = con.execute(
+            "SELECT e.target, e.metadata, n.kind, n.signature FROM edges e "
+            "JOIN nodes n ON n.id = e.target "
+            "WHERE e.kind IN ('references','calls') "
+            "AND e.line BETWEEN ? AND ? "
+            "AND e.source IN (?, ?)",
+            (
+                binding["start_line"], binding["end_line"], binding["id"],
+                f"file:{binding['file_path']}",
+            ),
+        ).fetchall()
+        strong = []
+        for ref in refs:
+            confidence = cls._trusted_edge_confidence(ref)
+            if (
+                ref["kind"] in _CALLABLE_KINDS
+                and confidence is not None
+            ):
+                strong.append((ref, confidence))
+        if len(strong) != 1:
+            return None
+        ref, confidence = strong[0]
+        target = next((row for row in nodes if row["id"] == ref["target"]), None)
+        return (target, confidence) if target is not None else None
+
+    @classmethod
+    def _canonical_identifier_source(
+        cls, source: str, name: str
+    ) -> tuple[str, int] | None:
+        """Replace code identifiers only; literals, comments, and property names fail closed."""
+        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name) is None:
+            return None
+        out: list[str] = []
+        count = 0
+        index = 0
+        length = len(source)
+        while index < length:
+            char = source[index]
+            if char in {"'", '"', "`"}:
+                quote = char
+                end = index + 1
+                escaped = False
+                while end < length:
+                    current = source[end]
+                    if escaped:
+                        escaped = False
+                    elif current == "\\":
+                        escaped = True
+                    elif current == quote:
+                        end += 1
+                        break
+                    end += 1
+                segment = source[index:end]
+                if re.search(rf"\b{re.escape(name)}\b", segment):
+                    return None
+                out.append(segment)
+                index = end
+                continue
+            if source.startswith("//", index):
+                end = source.find("\n", index)
+                end = length if end < 0 else end
+                segment = source[index:end]
+                if re.search(rf"\b{re.escape(name)}\b", segment):
+                    return None
+                out.append(segment)
+                index = end
+                continue
+            if source.startswith("/*", index):
+                end = source.find("*/", index + 2)
+                end = length if end < 0 else end + 2
+                segment = source[index:end]
+                if re.search(rf"\b{re.escape(name)}\b", segment):
+                    return None
+                out.append(segment)
+                index = end
+                continue
+            if char == "/":
+                # Distinguishing division from a JavaScript/TypeScript regex literal requires a real
+                # parser. This proof must under-fire rather than rewrite identifiers inside regexes.
+                return None
+            if char.isalpha() or char in {"_", "$"}:
+                end = index + 1
+                while end < length and (source[end].isalnum() or source[end] in {"_", "$"}):
+                    end += 1
+                token = source[index:end]
+                if token == name:
+                    previous = next(
+                        (source[pos] for pos in range(index - 1, -1, -1) if not source[pos].isspace()),
+                        "",
+                    )
+                    following = next(
+                        (source[pos] for pos in range(end, length) if not source[pos].isspace()),
+                        "",
+                    )
+                    if previous == "." or following == ":":
+                        return None
+                    out.append("__PEBRA_BINDING__")
+                    count += 1
+                else:
+                    out.append(token)
+                index = end
+                continue
+            out.append(char)
+            index += 1
+        return "".join(out).replace("\r\n", "\n"), count
+
+    @classmethod
+    def _identifier_only_migration(
+        cls, before_source: str, after_source: str, old_name: str, target_name: str
+    ) -> bool:
+        before = cls._canonical_identifier_source(before_source, old_name)
+        after = cls._canonical_identifier_source(after_source, target_name)
+        return (
+            before is not None
+            and after is not None
+            and before[1] > 0
+            and before[1] == after[1]
+            and before[0] == after[0]
+        )
+
+    @classmethod
+    def _patch_is_exhaustive_direct_alias(
+        cls, patch: str, old_name: str, target_name: str
+    ) -> bool:
+        """Prove every changed line is the identifier migration or one exact direct alias."""
+        alias = re.compile(
+            rf"\s*export\s+const\s+{re.escape(old_name)}\s*=\s*"
+            rf"{re.escape(target_name)}\s*;\s*"
+        )
+        removed: list[str] = []
+        added: list[str] = []
+        alias_count = 0
+        saw_block = False
+        block_has_hunk = False
+        in_hunk = False
+        for line in patch.splitlines():
+            if line.startswith("diff --git "):
+                if saw_block and not block_has_hunk:
+                    return False
+                saw_block = True
+                block_has_hunk = False
+                in_hunk = False
+                continue
+            if line.startswith("@@ "):
+                if not saw_block:
+                    return False
+                block_has_hunk = True
+                in_hunk = True
+                continue
+            if not in_hunk:
+                if line.startswith(("index ", "--- ", "+++ ")) or not line.strip():
+                    continue
+                return False
+            if line.startswith("\\ No newline at end of file") or line.startswith(" "):
+                continue
+            if line.startswith(("--- ", "+++ ")):
+                continue
+            if line.startswith("-"):
+                candidate = line[1:]
+                if candidate.strip():
+                    removed.append(candidate)
+            elif line.startswith("+"):
+                candidate = line[1:]
+                if alias.fullmatch(candidate):
+                    alias_count += 1
+                elif candidate.strip():
+                    added.append(candidate)
+            elif line:
+                return False
+        before = cls._canonical_identifier_source("\n".join(removed), old_name)
+        after = cls._canonical_identifier_source("\n".join(added), target_name)
+        return (
+            saw_block
+            and block_has_hunk
+            and alias_count == 1
+            and before is not None
+            and after is not None
+            and before[1] > 0
+            and before[1] == after[1]
+            and before[0] == after[0]
+        )
+
+    @classmethod
+    def _same_external_source(
+        cls,
+        before_files: Mapping[str, str | None],
+        after_files: Mapping[str, str | None],
+        before_node: sqlite3.Row | None,
+        after_node: sqlite3.Row | None,
+        source_id: str,
+        old_name: str,
+        target_name: str,
+    ) -> bool:
+        if source_id.startswith("file:"):
+            path = source_id.removeprefix("file:")
+            before_source = before_files.get(path)
+            after_source = after_files.get(path)
+        else:
+            if before_node is None or after_node is None:
+                return False
+            before_source = cls._node_source(before_files, before_node)
+            after_source = cls._node_source(after_files, after_node)
+        if before_source is None or after_source is None:
+            return False
+        before_normalized = before_source.replace("\r\n", "\n")
+        after_normalized = after_source.replace("\r\n", "\n")
+        if before_normalized == after_normalized:
+            return True
+        return cls._identifier_only_migration(
+            before_normalized, after_normalized, old_name, target_name
+        )
+
+    @classmethod
+    def _same_reference_migration(
+        cls,
+        before_files: Mapping[str, str | None],
+        after_files: Mapping[str, str | None],
+        old: sqlite3.Row,
+        surviving: sqlite3.Row,
+        old_name: str,
+        target_name: str,
+    ) -> bool:
+        if old["kind"] != surviving["kind"] or old["signature"] != surviving["signature"]:
+            return False
+        before_source = cls._node_source(before_files, old)
+        after_source = cls._node_source(after_files, surviving)
+        if not before_source or not after_source:
+            return False
+        return cls._identifier_only_migration(
+            before_source, after_source, old_name, target_name
+        )
+
     def _facts(
-        self, before_db: Path, after_db: Path, scope: GraphRiskScope
+        self,
+        before_db: Path,
+        after_db: Path,
+        scope: GraphRiskScope,
+        before_files: Mapping[str, str | None],
+        after_files: Mapping[str, str | None],
+        patch: str,
     ) -> tuple[ScopedGraphRiskFact, ...]:
         before = sqlite3.connect(before_db)
         after = sqlite3.connect(after_db)
@@ -303,7 +660,7 @@ class CodeGraphCandidateRefinementAdapter:
         try:
             before_nodes = self._read_nodes(before)
             after_nodes = self._read_nodes(after)
-            covered: list[str] = []
+            owners: list[tuple[str, sqlite3.Row, list[sqlite3.Row]]] = []
             for real_id, file_path, qualified_name in zip(
                 scope.owner_node_ids,
                 scope.owner_file_paths,
@@ -314,66 +671,179 @@ class CodeGraphCandidateRefinementAdapter:
                     row for row in before_nodes
                     if row["file_path"] == file_path
                     and row["qualified_name"] == qualified_name
-                    and self._is_exported(row)
                 ]
                 surviving = [
                     row for row in after_nodes
                     if row["file_path"] == file_path
                     and row["qualified_name"] == qualified_name
-                    and self._is_exported(row)
                 ]
                 if len(old) != 1 or len(surviving) != 1:
                     return ()
-                binding = surviving[0]
-                if str(binding["kind"]) not in _ALIAS_BINDING_KINDS:
-                    return ()
-                refs = after.execute(
-                    "SELECT e.target, e.metadata, n.kind, n.signature FROM edges e "
-                    "JOIN nodes n ON n.id = e.target "
-                    "WHERE e.kind IN ('references','calls') "
-                    "AND e.line BETWEEN ? AND ? "
-                    "AND e.source IN (?, ?)",
-                    (binding["start_line"], binding["end_line"], binding["id"], f"file:{file_path}"),
-                ).fetchall()
-                strong = []
-                for ref in refs:
-                    try:
-                        metadata = json.loads(ref["metadata"] or "{}")
-                    except json.JSONDecodeError:
-                        continue
-                    if (
-                        ref["kind"] in _CALLABLE_KINDS
-                        and old[0]["kind"] in _CALLABLE_KINDS
-                        and bool(old[0]["signature"])
-                        and ref["signature"] == old[0]["signature"]
-                        and float(metadata.get("confidence", 0.0)) >= 0.90
-                        and metadata.get("resolvedBy") not in {None, "heuristic"}
-                    ):
-                        strong.append(ref)
-                if len(strong) != 1:
-                    return ()
-                before_consumers = before.execute(
-                    "SELECT COUNT(DISTINCT source) FROM edges "
-                    "WHERE target = ? AND kind IN ('references','calls')",
-                    (old[0]["id"],),
-                ).fetchone()[0]
-                after_consumers = after.execute(
-                    "SELECT COUNT(DISTINCT source) FROM edges "
-                    "WHERE target = ? AND kind IN ('references','calls')",
-                    (binding["id"],),
-                ).fetchone()[0]
-                if int(after_consumers or 0) < int(before_consumers or 0):
-                    return ()
-                covered.append(real_id)
-            if set(covered) != set(scope.owner_node_ids):
+                owners.append((real_id, old[0], surviving))
+
+            alias_owners = [
+                (real_id, old, surviving[0])
+                for real_id, old, surviving in owners
+                if str(surviving[0]["kind"]) in _ALIAS_BINDING_KINDS
+                and self._is_exported(old)
+                and self._is_exported(surviving[0])
+            ]
+            if len(alias_owners) != 1:
                 return ()
+            alias_real_id, renamed_old, binding = alias_owners[0]
+            binding_target = self._binding_target(after, after_nodes, binding)
+            if (
+                binding_target is None
+                or renamed_old["kind"] not in _CALLABLE_KINDS
+                or not bool(renamed_old["signature"])
+            ):
+                return ()
+            target, binding_confidence = binding_target
+            if (
+                target["signature"] != renamed_old["signature"]
+                or not self._same_implementation(before_files, after_files, renamed_old, target)
+            ):
+                return ()
+
+            covered = [alias_real_id]
+            edge_confidences = [binding_confidence]
+            after_targets_by_old_id: dict[str, tuple[str, ...]] = {
+                str(renamed_old["id"]): (str(binding["id"]), str(target["id"]))
+            }
+            old_name = str(renamed_old["name"] or "")
+            target_name = str(target["name"] or "")
+            if not self._patch_is_exhaustive_direct_alias(
+                patch, old_name, target_name
+            ):
+                return ()
+            for real_id, old, surviving in owners:
+                if real_id == alias_real_id:
+                    continue
+                current = surviving[0]
+                if not self._same_reference_migration(
+                    before_files, after_files, old, current, old_name, target_name
+                ):
+                    return ()
+                before_edges = before.execute(
+                    "SELECT kind, metadata FROM edges WHERE source = ? AND target = ? "
+                    "AND kind IN (?,?,?)",
+                    (old["id"], renamed_old["id"], *_CONTINUITY_EDGE_KINDS),
+                ).fetchall()
+                after_edges = after.execute(
+                    "SELECT kind, metadata FROM edges WHERE source = ? AND target = ? "
+                    "AND kind IN (?,?,?)",
+                    (current["id"], target["id"], *_CONTINUITY_EDGE_KINDS),
+                ).fetchall()
+                before_confidences = [self._trusted_edge_confidence(edge) for edge in before_edges]
+                after_confidences = [self._trusted_edge_confidence(edge) for edge in after_edges]
+                if (
+                    not before_edges
+                    or Counter(str(edge["kind"]) for edge in before_edges)
+                    != Counter(str(edge["kind"]) for edge in after_edges)
+                    or any(value is None for value in (*before_confidences, *after_confidences))
+                ):
+                    return ()
+                edge_confidences.extend(
+                    value for value in (*before_confidences, *after_confidences) if value is not None
+                )
+                covered.append(real_id)
+                after_targets_by_old_id[str(old["id"])] = (str(current["id"]),)
+
+            old_owner_ids = {str(old["id"]) for _, old, _ in owners}
+            edge_kinds = _CONTINUITY_EDGE_KINDS
+            callers = before.execute(
+                "SELECT source, target, kind, metadata FROM edges WHERE target IN ("
+                + ",".join("?" for _ in old_owner_ids)
+                + ") "
+                "AND kind IN (?, ?, ?) AND source NOT IN ("
+                + ",".join("?" for _ in old_owner_ids)
+                + ")",
+                (*sorted(old_owner_ids), *edge_kinds, *sorted(old_owner_ids)),
+            ).fetchall()
+            if len({str(caller["source"]) for caller in callers}) != scope.expected_consumer_count:
+                return ()
+
+            before_by_id = {str(row["id"]): row for row in before_nodes}
+            caller_groups = Counter(
+                (str(caller["source"]), str(caller["target"]), str(caller["kind"]))
+                for caller in callers
+            )
+            for (source, old_target, edge_kind), expected_count in caller_groups.items():
+                before_group = [
+                    caller
+                    for caller in callers
+                    if (
+                        str(caller["source"]),
+                        str(caller["target"]),
+                        str(caller["kind"]),
+                    )
+                    == (source, old_target, edge_kind)
+                ]
+                before_metadata = [
+                    self._continuity_edge_metadata(edge) for edge in before_group
+                ]
+                if any(item is None for item in before_metadata):
+                    return ()
+                old_source = None
+                current_source = None
+                if source.startswith("file:"):
+                    after_source = source
+                else:
+                    old_source = before_by_id.get(source)
+                    if old_source is None:
+                        return ()
+                    matches = [
+                        row for row in after_nodes
+                        if row["file_path"] == old_source["file_path"]
+                        and row["qualified_name"] == old_source["qualified_name"]
+                        and row["kind"] == old_source["kind"]
+                    ]
+                    if len(matches) != 1:
+                        return ()
+                    current_source = matches[0]
+                    after_source = str(current_source["id"])
+                if not self._same_external_source(
+                    before_files,
+                    after_files,
+                    old_source,
+                    current_source,
+                    source,
+                    old_name,
+                    target_name,
+                ):
+                    return ()
+                after_targets = after_targets_by_old_id.get(old_target)
+                if not after_targets:
+                    return ()
+                continuity = after.execute(
+                    "SELECT metadata FROM edges WHERE source = ? AND target IN ("
+                    + ",".join("?" for _ in after_targets)
+                    + ") AND kind = ?",
+                    (after_source, *after_targets, edge_kind),
+                ).fetchall()
+                continuity_metadata = [
+                    self._continuity_edge_metadata(edge) for edge in continuity
+                ]
+                if (
+                    len(continuity) != expected_count
+                    or any(item is None for item in continuity_metadata)
+                    or Counter(before_metadata) != Counter(continuity_metadata)
+                ):
+                    return ()
+                edge_confidences.extend(
+                    confidence
+                    for item in continuity_metadata
+                    if item is not None
+                    for _resolver, confidence, proof_bearing in (item,)
+                    if proof_bearing
+                )
             return (
                 ScopedGraphRiskFact(
                     fact_kind="exported_binding_continuity",
                     event=scope.event,
                     risk_source=scope.risk_source,
                     owner_node_ids=tuple(sorted(covered)),
-                    confidence=0.95,
+                    confidence=min(edge_confidences),
                 ),
             )
         finally:
@@ -404,6 +874,10 @@ class CodeGraphCandidateRefinementAdapter:
             return CandidateGraphRiskEvidence(
                 status="unavailable",
                 reason=context_error,
+                retryable_infrastructure=context_error in {
+                    "dependent graph context unavailable",
+                    "context file could not be read",
+                },
                 context_file_count=len(before),
                 context_bytes=context_bytes,
                 context_truncated="cap exceeded" in context_error,
@@ -413,6 +887,7 @@ class CodeGraphCandidateRefinementAdapter:
         if time.monotonic() >= deadline:
             return CandidateGraphRiskEvidence(
                 status="unavailable", reason="materialized graph deadline exhausted",
+                retryable_infrastructure=True,
                 total_latency_ms=_elapsed(started),
             )
         materialize_started = time.monotonic()
@@ -453,17 +928,33 @@ class CodeGraphCandidateRefinementAdapter:
 
         index_started = time.monotonic()
         query_ms = 0.0
-        try:
-            with tempfile.TemporaryDirectory(prefix="pebra-continuity-") as temp_dir:
-                workspace = Path(temp_dir)
-                root = workspace / "repo"
-                root.mkdir()
-                _write_files(root, before)
+        with tempfile.TemporaryDirectory(prefix="pebra-continuity-") as temp_dir:
+            workspace = Path(temp_dir)
+            root = workspace / "repo"
+            root.mkdir()
+            _write_files(root, before)
+            try:
                 before_db = self._indexer(root)
                 if time.monotonic() >= deadline:
                     raise TimeoutError("materialized graph deadline exhausted")
                 before_copy = workspace / "before.db"
                 shutil.copy2(before_db, before_copy)
+            except (
+                OSError, sqlite3.Error, subprocess.SubprocessError,
+                TimeoutError, ValueError, TypeError,
+            ) as exc:
+                return CandidateGraphRiskEvidence(
+                    status="unavailable",
+                    reason="before-snapshot CodeGraph unavailable",
+                    retryable_infrastructure=isinstance(
+                        exc, (OSError, sqlite3.Error, subprocess.SubprocessError, TimeoutError)
+                    ),
+                    context_file_count=len(before), context_bytes=context_bytes,
+                    prefilter_latency_ms=prefilter_ms, materialize_latency_ms=materialize_ms,
+                    index_latency_ms=_elapsed(index_started), total_latency_ms=_elapsed(started),
+                    manifest_hash=manifest_hash,
+                )
+            try:
                 _clear(root)
                 _write_files(root, after_files)
                 after_db = self._indexer(root)
@@ -471,16 +962,30 @@ class CodeGraphCandidateRefinementAdapter:
                     raise TimeoutError("materialized graph deadline exhausted")
                 index_ms = _elapsed(index_started)
                 query_started = time.monotonic()
-                facts = self._facts(before_copy, after_db, scope)
+                facts = self._facts(
+                    before_copy,
+                    after_db,
+                    scope,
+                    before,
+                    after_files,
+                    action.proposed_patch,
+                )
                 query_ms = _elapsed(query_started)
-        except (OSError, sqlite3.Error, subprocess.SubprocessError, TimeoutError, ValueError, TypeError):
-            return CandidateGraphRiskEvidence(
-                status="unavailable", reason="materialized CodeGraph continuity unavailable",
-                context_file_count=len(before), context_bytes=context_bytes,
-                prefilter_latency_ms=prefilter_ms, materialize_latency_ms=materialize_ms,
-                index_latency_ms=_elapsed(index_started), query_latency_ms=query_ms,
-                total_latency_ms=_elapsed(started), manifest_hash=manifest_hash,
-            )
+            except (
+                OSError, sqlite3.Error, subprocess.SubprocessError,
+                TimeoutError, ValueError, TypeError,
+            ) as exc:
+                return CandidateGraphRiskEvidence(
+                    status="unavailable",
+                    reason="candidate after-graph unavailable",
+                    retryable_infrastructure=isinstance(
+                        exc, (OSError, sqlite3.Error, subprocess.TimeoutExpired, TimeoutError)
+                    ),
+                    context_file_count=len(before), context_bytes=context_bytes,
+                    prefilter_latency_ms=prefilter_ms, materialize_latency_ms=materialize_ms,
+                    index_latency_ms=_elapsed(index_started), query_latency_ms=query_ms,
+                    total_latency_ms=_elapsed(started), manifest_hash=manifest_hash,
+                )
         evidence = CandidateGraphRiskEvidence(
             status="available" if facts else "ambiguous",
             facts=facts,

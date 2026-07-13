@@ -261,6 +261,50 @@ def test_protocol_file_read_is_recorded(tmp_path, monkeypatch):
     assert r.protocol_file_read is True
 
 
+def test_allowed_assessment_is_attributed_only_after_write_succeeds(tmp_path):
+    applied: list[dict] = []
+    setup = SimpleNamespace(
+        repo_path=tmp_path,
+        gate_check_backend=lambda _event: {
+            "permission": "allow",
+            "tier": "consulted",
+            "_matched_assessment_id": "asm_7",
+        },
+        write_applied_backend=applied.append,
+    )
+
+    result = agent_loop._gated_file_change(
+        {"tool_name": "Write"}, setup, lambda: {"path": "a.ts"}
+    )
+
+    assert result == {"ok": True, "blocked": False, "reason": None}
+    assert applied == [{
+        "permission": "allow",
+        "tier": "consulted",
+        "_matched_assessment_id": "asm_7",
+    }]
+
+
+def test_failed_write_never_credits_allowed_assessment(tmp_path):
+    applied: list[dict] = []
+    setup = SimpleNamespace(
+        repo_path=tmp_path,
+        gate_check_backend=lambda _event: {
+            "permission": "allow",
+            "tier": "consulted",
+            "_matched_assessment_id": "asm_7",
+        },
+        write_applied_backend=applied.append,
+    )
+
+    result = agent_loop._gated_file_change(
+        {"tool_name": "Write"}, setup, lambda: {"error": "write failed"}
+    )
+
+    assert result == {"ok": False, "blocked": False, "reason": "write failed"}
+    assert applied == []
+
+
 def test_protocol_file_read_defaults_false(tmp_path, monkeypatch):
     _no_git(monkeypatch)
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0,

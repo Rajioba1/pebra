@@ -251,6 +251,9 @@ def load_corpus(
             required_language_tier=required_language_tier,
             requires_measured_benefit=bool(oracle.get("requires_measured_benefit", False)),
             requires_natural_safe_route=bool(oracle.get("requires_natural_safe_route", False)),
+            requires_graph_refinement_route=bool(
+                oracle.get("requires_graph_refinement_route", False)
+            ),
             assay_p_success=float(p_success),
             assay_immediate_benefit=float(immediate_benefit),
             assay_review_cost=float(review_cost),

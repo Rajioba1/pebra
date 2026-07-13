@@ -436,12 +436,13 @@ def test_patch_bound_graph_fact_reduces_only_owned_graph_event_with_nonzero_floo
 
     result = ab.build_assessment(inp)
 
-    assert result.scores["expected_loss"] == pytest.approx(0.234)
+    assert result.scores["expected_loss"] == pytest.approx(0.126)
     assert result.scores["verified_risk_events_removed"] == []
     assert result.scores["risk_probability_updates"][0]["original_probability"] == 0.45
     assert result.scores["risk_probability_updates"][0]["revised_probability"] == pytest.approx(
-        0.2925
+        0.1575
     )
+    assert result.scores["risk_probability_updates"][0]["probability_multiplier"] == 0.35
 
 
 def test_unbound_graph_fact_cannot_reduce_revision_risk() -> None:

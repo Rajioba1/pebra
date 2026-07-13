@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from e2e.utils import cli_harness as ch
@@ -68,3 +70,32 @@ def test_assess_forwards_extra_env(monkeypatch, tmp_path):
 
     assert captured["extra_env"] == {"CODEGRAPH_DIR": str(tmp_path / "no-index")}
     assert captured["timeout"] == ch.DEFAULT_TIMEOUT_SECONDS
+
+
+def test_source_neutral_graph_setup_restores_gitignore_and_ignores_runtime_dirs(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text("dist/\n", encoding="utf-8")
+    (tmp_path / "src.ts").write_text("export const value = 1;\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
+
+    def fake_setup(repo_root):
+        with (repo_root / ".gitignore").open("a", encoding="utf-8") as handle:
+            handle.write(".codegraph/\n")
+        (repo_root / ".codegraph").mkdir()
+        (repo_root / ".codegraph" / "codegraph.db").write_bytes(b"graph")
+        (repo_root / ".pebra").mkdir()
+
+    ch.run_source_neutral_graph_setup(tmp_path, fake_setup)
+
+    assert gitignore.read_text(encoding="utf-8") == "dist/\n"
+    assert subprocess.run(
+        ["git", "status", "--porcelain"], cwd=tmp_path, check=True,
+        capture_output=True, text=True,
+    ).stdout == ""
+    exclude = (tmp_path / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert ".pebra/" in exclude
+    assert ".codegraph/" in exclude

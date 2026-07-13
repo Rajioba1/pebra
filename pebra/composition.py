@@ -35,7 +35,7 @@ from pebra.adapters.store.db import SqliteStore
 from pebra.adapters.structural_feature_adapter import StructuralFeatureAdapter
 from pebra.app.assess_controller import AssessmentOutcome, ScoredAction
 from pebra.app.verify_controller import VerifyOutcome
-from pebra.core.models import AssessmentRequest
+from pebra.core.models import AssessmentRequest, GraphRiskScope
 from pebra.ports.sanction_port import SanctionPort
 
 
@@ -105,14 +105,15 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
     # both ports structurally) — sharing the instance shares its distribution cache (one DB scan).
     codegraph = CodeGraphAdapter()
 
-    def dependent_context(repo_root: str, owner_files: tuple[str, ...]) -> tuple[str, ...]:
-        files: set[str] = set()
-        for owner_file in owner_files:
-            result = codegraph.dependent_files_result(owner_file, repo_root)
-            if not result.get("available") or result.get("graph_freshness") != "fresh":
-                raise RuntimeError("dependent graph context unavailable")
-            files.update(str(path) for path in result.get("dependent_files", ()) if path)
-        return tuple(sorted(files))
+    def dependent_context(repo_root: str, scope: GraphRiskScope) -> tuple[str, ...]:
+        result = codegraph.direct_caller_files_result(scope.owner_node_ids, repo_root)
+        if (
+            not result.get("available")
+            or result.get("graph_freshness") != "fresh"
+            or int(result.get("count", -1)) != scope.expected_consumer_count
+        ):
+            raise RuntimeError("dependent graph context unavailable")
+        return tuple(str(path) for path in result.get("dependent_files", ()) if path)
 
     return {
         "evidence_provider": CompositeEvidenceProvider(graph_provider=graph_provider),
@@ -151,9 +152,10 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         "candidate_binding_provider": CandidateBindingAdapter(),
         # Revision-only bounded after-graph refinement. Ordinary candidates stay on the existing graph;
         # the controller cheap-ranks all alternatives before spending this provider's assess budget.
-        "graph_risk_refinement_provider": CodeGraphCandidateRefinementAdapter(
-            enabled=os.environ.get("PEBRA_GRAPH_REFINEMENT", "1") != "0",
-            context_files_fn=dependent_context,
+        "graph_risk_refinement_provider": (
+            CodeGraphCandidateRefinementAdapter(context_files_fn=dependent_context)
+            if os.environ.get("PEBRA_GRAPH_REFINEMENT", "1") != "0"
+            else None
         ),
     }
 
@@ -256,10 +258,10 @@ def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
             "rank_basis": dict(recommended_scored.refinement_rank_basis),
             "evidence": asdict(recommended_scored.candidate_graph_risk_evidence),
         }
-        if recommended_scored is not None
+        if recommended_scored is not None and recommended_scored.refinement_enabled
         else None
     )
-    return {
+    payload = {
         "recommended_decision": r.recommended_decision.value,
         "requires_confirmation": r.requires_confirmation,
         "risk_mode": r.risk_mode.value,
@@ -276,8 +278,10 @@ def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
         "applied_snapshot_provenance": r.provenance.get("applied_snapshot_provenance"),
         "repo_state": repo_state,
         "graph_provenance": _graph_provenance(r),
-        "graph_refinement": refinement,
     }
+    if refinement is not None:
+        payload["graph_refinement"] = refinement
+    return payload
 
 
 def _graph_provenance(r: Any) -> dict[str, Any]:
@@ -313,7 +317,7 @@ def _graph_provenance(r: Any) -> dict[str, Any]:
 
 def _scored_action_payload(scored: ScoredAction) -> dict[str, Any]:
     r = scored.result
-    return {
+    payload = {
         "action_id": scored.action.id,
         "decision": r.recommended_decision.value,
         "requires_confirmation": r.requires_confirmation,
@@ -323,15 +327,17 @@ def _scored_action_payload(scored: ScoredAction) -> dict[str, Any]:
         "why": scored.explanation.why,
         "gates_fired": r.gates_fired,
         "high_risk_triggers": r.high_risk_triggers,
-        "refinement": {
+    }
+    if scored.refinement_enabled:
+        payload["refinement"] = {
             "eligible": scored.refinement_eligible,
             "rank": scored.refinement_rank,
             "selected": scored.refinement_selected,
             "status": scored.refinement_status,
             "rank_basis": dict(scored.refinement_rank_basis),
             "evidence": asdict(scored.candidate_graph_risk_evidence),
-        },
-    }
+        }
+    return payload
 
 
 def compare_payload(outcome: AssessmentOutcome) -> dict[str, Any]:

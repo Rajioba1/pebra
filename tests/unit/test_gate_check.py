@@ -16,6 +16,8 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from pebra.adapters import candidate_binding
 from pebra.adapters import gate_check_adapter as gca
 from pebra.cli import gate_check as gc_cmd
@@ -402,6 +404,9 @@ def test_decide_allow_consulted_when_decision_is_proceed(tmp_path, monkeypatch):
     _consulted(tmp_path, monkeypatch, "proceed")
     d = gca.decide(_edit_event(tmp_path))
     assert d.permission == "allow" and d.tier == "consulted"
+    assert d.matched_assessment_id == "asm_1"
+    assert "matched_assessment_id" not in d.as_dict()
+    assert d.as_dict(include_host_metadata=True)["matched_assessment_id"] == "asm_1"
 
 
 def test_decide_denies_different_candidate_for_same_head_and_path(tmp_path, monkeypatch):
@@ -414,6 +419,7 @@ def test_decide_denies_different_candidate_for_same_head_and_path(tmp_path, monk
     assert decision.permission == "deny"
     assert decision.tier == "candidate_mismatch"
     assert "assess" in decision.reason.lower()
+    assert decision.matched_assessment_id is None
 
 
 def test_decide_denies_legacy_assessment_without_candidate_binding(tmp_path, monkeypatch):
@@ -430,6 +436,7 @@ def test_decide_denies_legacy_assessment_without_candidate_binding(tmp_path, mon
 
     assert decision.permission == "deny"
     assert decision.tier == "candidate_unbound"
+    assert decision.matched_assessment_id is None
 
 
 def test_decide_denies_unmaterializable_host_edit(tmp_path, monkeypatch):
@@ -543,10 +550,74 @@ def test_decide_revise_safer_blocks_even_in_consult_only(tmp_path, monkeypatch):
     assert "narrower" in d.reason.lower()
 
 
+@pytest.mark.parametrize("decision", ["inspect_first", "test_first"])
+def test_decide_prerequisite_decision_blocks_write(tmp_path, monkeypatch, decision):
+    _consulted(tmp_path, monkeypatch, decision)
+
+    result = gca.decide(_edit_event(tmp_path), consult_only=True)
+
+    assert result.permission == "deny"
+    assert result.tier == "consulted_prerequisite"
+    assert "reassess" in result.reason.lower()
+
+
+@pytest.mark.parametrize("decision", ["inspect_first", "test_first"])
+def test_low_impact_prerequisite_decision_still_blocks_write(
+    tmp_path, monkeypatch, decision,
+):
+    _consulted(tmp_path, monkeypatch, decision)
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: False)
+
+    result = gca.decide(_edit_event(tmp_path), consult_only=True)
+
+    assert result.permission == "deny"
+    assert result.tier == "consulted_prerequisite"
+
+
 def test_decide_consult_only_blocks_ask_human(tmp_path, monkeypatch):
     _consulted(tmp_path, monkeypatch, "ask_human")
     d = gca.decide(_edit_event(tmp_path), consult_only=True)
     assert d.permission == "deny" and d.tier == "consulted_review_unavailable"
+
+
+def test_older_exact_candidate_is_not_shadowed_by_newer_different_candidate(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: True)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
+    target = tmp_path / "src" / "a.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    event = _edit_event(tmp_path)
+    exact = candidate_binding.binding_for_event(event, tmp_path)
+    different_event = _edit_event(tmp_path)
+    different_event["tool_input"]["new_string"] = "different"
+    different = candidate_binding.binding_for_event(different_event, tmp_path)
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    repo_id = gca._repo_id(str(tmp_path))
+    _seed(db, repo_id, "HEAD1", ["src/a.py"], decision="proceed", candidate=exact)
+    con = sqlite3.connect(db)
+    content = {
+        "assessed_commit": "HEAD1",
+        "model_guidance_packet": {
+            "binding": {
+                "safe_scope": {"files": ["src/a.py"]},
+                "candidate": different,
+            }
+        },
+    }
+    con.execute(
+        "INSERT INTO assessments (repo_id, decision, content_json) VALUES (?,?,?)",
+        (repo_id, "ask_human", json.dumps(content)),
+    )
+    con.commit()
+    con.close()
+
+    result = gca.decide(event)
+
+    assert result.permission == "allow"
+    assert result.matched_assessment_id == "asm_1"
 
 
 def test_review_reason_offers_host_approval_no_false_accept_risk(tmp_path, monkeypatch):

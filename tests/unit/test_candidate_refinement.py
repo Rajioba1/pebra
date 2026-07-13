@@ -1,3 +1,5 @@
+import pytest
+
 from pebra.core.candidate_refinement import (
     CandidateRankInput,
     apply_scoped_adjustments,
@@ -10,7 +12,7 @@ def test_scoped_adjustment_is_patch_bound_and_event_specific() -> None:
     events = [
         {
             "event": "public_api_break",
-            "risk_source": "modify_graph",
+                "risk_source": "graph_modify_risk",
             "owner_node_ids": ["owner-1"],
             "p_event": 0.60,
             "elicited_disutility": 0.8,
@@ -25,7 +27,7 @@ def test_scoped_adjustment_is_patch_bound_and_event_specific() -> None:
             ScopedGraphRiskFact(
                 fact_kind="exported_binding_continuity",
                 event="public_api_break",
-                risk_source="modify_graph",
+                    risk_source="graph_modify_risk",
                 owner_node_ids=("owner-1",),
             ),
         ),
@@ -33,7 +35,8 @@ def test_scoped_adjustment_is_patch_bound_and_event_specific() -> None:
 
     adjusted, applied = apply_scoped_adjustments(events, evidence, patch_hash="abc")
 
-    assert adjusted[0]["p_event"] == 0.39
+    assert adjusted[0]["p_event"] == 0.21
+    assert adjusted[0]["graph_risk_update"]["probability_multiplier"] == 0.35
     assert adjusted[1] == events[1]
     assert applied == ["public_api_break"]
 
@@ -41,7 +44,7 @@ def test_scoped_adjustment_is_patch_bound_and_event_specific() -> None:
 def test_unbound_refinement_cannot_reduce_risk() -> None:
     events = [{
         "event": "public_api_break",
-        "risk_source": "modify_graph",
+        "risk_source": "graph_modify_risk",
         "owner_node_ids": ["owner-1"],
         "p_event": 0.60,
         "elicited_disutility": 0.8,
@@ -86,10 +89,35 @@ def test_non_finite_fact_confidence_cannot_reduce_risk() -> None:
     assert applied == []
 
 
+def test_fact_confidence_above_one_cannot_reduce_risk() -> None:
+    event = {
+        "event": "public_api_break",
+        "risk_source": "graph_modify_risk",
+        "owner_node_ids": ["owner-1"],
+        "p_event": 0.60,
+    }
+    evidence = CandidateGraphRiskEvidence(
+        status="available",
+        verified_patch_hash="abc",
+        facts=(ScopedGraphRiskFact(
+            fact_kind="exported_binding_continuity",
+            event="public_api_break",
+            risk_source="graph_modify_risk",
+            owner_node_ids=("owner-1",),
+            confidence=1.5,
+        ),),
+    )
+
+    adjusted, applied = apply_scoped_adjustments([event], evidence, patch_hash="abc")
+
+    assert adjusted == [event]
+    assert applied == []
+
+
 def test_probability_floor_is_never_crossed() -> None:
     events = [{
         "event": "public_api_break",
-        "risk_source": "modify_graph",
+        "risk_source": "graph_modify_risk",
         "owner_node_ids": ["owner"],
         "p_event": 0.06,
         "elicited_disutility": 0.8,
@@ -101,7 +129,7 @@ def test_probability_floor_is_never_crossed() -> None:
             ScopedGraphRiskFact(
                 fact_kind="exported_binding_continuity",
                 event="public_api_break",
-                risk_source="modify_graph",
+                risk_source="graph_modify_risk",
                 owner_node_ids=("owner",),
             ),
         ),
@@ -154,6 +182,66 @@ def test_request_event_without_graph_owner_identity_is_never_adjusted() -> None:
 
     assert adjusted == events
     assert applied == []
+
+
+def test_one_fact_cannot_reduce_duplicate_events() -> None:
+    event = {
+        "event": "public_api_break", "risk_source": "graph_modify_risk",
+        "owner_node_ids": ["owner-1"], "p_event": 0.60,
+        "elicited_disutility": 0.8,
+    }
+    evidence = CandidateGraphRiskEvidence(
+        status="available", verified_patch_hash="abc", provider="materialized_codegraph",
+        facts=(ScopedGraphRiskFact(
+            fact_kind="exported_binding_continuity", event="public_api_break",
+            risk_source="graph_modify_risk", owner_node_ids=("owner-1",),
+        ),),
+    )
+
+    adjusted, applied = apply_scoped_adjustments([event, dict(event)], evidence, patch_hash="abc")
+
+    assert adjusted == [event, event]
+    assert applied == []
+
+
+def test_continuity_fact_cannot_reduce_a_different_event_or_source() -> None:
+    event = {
+        "event": "api_contract_break", "risk_source": "graph_modify_risk",
+        "owner_node_ids": ["owner-1"], "p_event": 0.60,
+        "elicited_disutility": 0.8,
+    }
+    evidence = CandidateGraphRiskEvidence(
+        status="available", verified_patch_hash="abc", provider="materialized_codegraph",
+        facts=(ScopedGraphRiskFact(
+            fact_kind="exported_binding_continuity", event="api_contract_break",
+            risk_source="graph_modify_risk", owner_node_ids=("owner-1",),
+        ),),
+    )
+
+    adjusted, applied = apply_scoped_adjustments([event], evidence, patch_hash="abc")
+
+    assert adjusted == [event]
+    assert applied == []
+
+
+def test_structural_credit_is_scaled_by_fact_confidence() -> None:
+    event = {
+        "event": "public_api_break", "risk_source": "graph_modify_risk",
+        "owner_node_ids": ["owner-1"], "p_event": 0.60,
+        "elicited_disutility": 0.8,
+    }
+    evidence = CandidateGraphRiskEvidence(
+        status="available", verified_patch_hash="abc", provider="materialized_codegraph",
+        facts=(ScopedGraphRiskFact(
+            fact_kind="exported_binding_continuity", event="public_api_break",
+            risk_source="graph_modify_risk", owner_node_ids=("owner-1",), confidence=0.90,
+        ),),
+    )
+
+    adjusted, _ = apply_scoped_adjustments([event], evidence, patch_hash="abc")
+
+    assert adjusted[0]["p_event"] == pytest.approx(0.60 * 0.415)
+    assert adjusted[0]["graph_risk_update"]["probability_multiplier"] == pytest.approx(0.415)
 
 
 def _candidate(

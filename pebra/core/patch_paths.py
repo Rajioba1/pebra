@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath, PureWindowsPath
 
 _PATH_TOKEN = r'("(?:\\.|[^"\\])*"|\S+)'
 _DIFF_GIT = re.compile(rf"^diff --git {_PATH_TOKEN} {_PATH_TOKEN}$")
@@ -13,6 +14,14 @@ _RENAME_TO = re.compile(r"^rename to (.*)$")
 _COPY_FROM = re.compile(r"^copy from (.*)$")
 _COPY_TO = re.compile(r"^copy to (.*)$")
 _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+
+
+def is_safe_repo_path(value: str) -> bool:
+    """Return whether a parsed patch path is lexically repository-relative."""
+    if not value or ":" in value or PureWindowsPath(value).drive:
+        return False
+    posix = PurePosixPath(value.replace("\\", "/"))
+    return not posix.is_absolute() and ".." not in posix.parts
 
 
 def decode_git_path(raw: str) -> str:

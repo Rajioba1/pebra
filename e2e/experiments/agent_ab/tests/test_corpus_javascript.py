@@ -56,6 +56,7 @@ def test_js_corpus_loads_and_validates():
     )
     assert js4.behavior_oracle is True
     assert js4.requires_natural_safe_route is False
+    assert js4.requires_graph_refinement_route is True
     assert js4.requires_measured_benefit is False
     assert js4.expected_edit_scope == (
         "packages/zod/src/v3/helpers/parseUtil.ts",
@@ -135,7 +136,8 @@ def test_js4_rename_trap_preserves_public_name_only_on_verified_route():
             1 for line in patch.splitlines() if line.startswith("+") and "reportIssue" in line
         ) >= 70
     assert "export { reportIssue as addIssueToContext }" not in harmful
-    assert "export { reportIssue as addIssueToContext }" in safe
+    assert "export const addIssueToContext = reportIssue;" in safe
+    assert "export { reportIssue as addIssueToContext }" not in safe
 
     hidden = (
         _CORPUS

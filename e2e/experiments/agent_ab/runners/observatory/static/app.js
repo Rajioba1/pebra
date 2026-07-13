@@ -115,13 +115,15 @@ function num(x) { return x == null ? "—" : Number(x).toFixed(3); }
 
 function renderArmTable(arms) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "n" }), el("th", { class: "num", text: "harm" }), el("th", { class: "num", text: "over-caution" }), el("th", { class: "num", text: "completion" }), el("th", { class: "num", text: "autonomous" }), el("th", { class: "num", text: "human-assisted" }), el("th", { class: "num", text: "safe escalation" }), el("th", { class: "num", text: "approval request" }), el("th", { class: "num", text: "approval grant" }), el("th", { class: "num", text: "post-approval reassess" }), el("th", { class: "num", text: "write before approval" }), el("th", { class: "num", text: "write before reassess" }), el("th", { class: "num", text: "adherence" }), el("th", { class: "num", text: "no-attempt" }), el("th", { class: "num", text: "errors" }), el("th", { class: "num", text: "leaks" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "n" }), el("th", { class: "num", text: "harm" }), el("th", { class: "num", text: "over-caution" }), el("th", { class: "num", text: "completion" }), el("th", { class: "num", text: "autonomous" }), el("th", { class: "num", text: "graph-authorized + post-verify" }), el("th", { class: "num", text: "graph + pre-edit host verification + post-verify" }), el("th", { class: "num", text: "human-assisted" }), el("th", { class: "num", text: "safe escalation" }), el("th", { class: "num", text: "approval request" }), el("th", { class: "num", text: "approval grant" }), el("th", { class: "num", text: "post-approval reassess" }), el("th", { class: "num", text: "write before approval" }), el("th", { class: "num", text: "write before reassess" }), el("th", { class: "num", text: "adherence" }), el("th", { class: "num", text: "no-attempt" }), el("th", { class: "num", text: "errors" }), el("th", { class: "num", text: "leaks" })]));
   for (const [arm, a] of Object.entries(arms || {})) {
     t.appendChild(el("tr", {}, [
       el("td", { text: arm }), el("td", { class: "num", text: a.n_runs }),
       el("td", { class: "num", text: pct(a.harm_rate) }), el("td", { class: "num", text: pct(a.over_caution_rate) }),
       el("td", { class: "num", text: pct(a.task_completion_rate) }),
       el("td", { class: "num", text: pct(a.autonomous_completion_rate) }),
+      el("td", { class: "num", text: pct(a.graph_only_autonomous_completion_rate) }),
+      el("td", { class: "num", text: pct(a.graph_plus_host_verified_completion_rate) }),
       el("td", { class: "num", text: pct(a.human_assisted_completion_rate) }),
       el("td", { class: "num", text: pct(a.safe_escalation_rate) }),
       el("td", { class: "num", text: pct(a.approval_request_adherence_rate) }),
@@ -138,12 +140,14 @@ function renderArmTable(arms) {
 }
 function renderPairwiseTable(pairwise) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "harm avoided" }), el("th", { class: "num", text: "completion Δ" }), el("th", { class: "num", text: "autonomous Δ" }), el("th", { class: "num", text: "assisted Δ" }), el("th", { class: "num", text: "over-caution Δ" }), el("th", { class: "num", text: "net benefit" }), el("th", { class: "num", text: "risky pairs" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "harm avoided" }), el("th", { class: "num", text: "completion Δ" }), el("th", { class: "num", text: "autonomous Δ" }), el("th", { class: "num", text: "graph-authorized + post-verify Δ" }), el("th", { class: "num", text: "graph + pre-edit host verification + post-verify Δ" }), el("th", { class: "num", text: "assisted Δ" }), el("th", { class: "num", text: "over-caution Δ" }), el("th", { class: "num", text: "net benefit" }), el("th", { class: "num", text: "risky pairs" })]));
   for (const p of pairwise || []) {
     t.appendChild(el("tr", {}, [
       el("td", { text: p.intervention }), el("td", { text: p.baseline }),
       el("td", { class: "num", text: num(p.harm_avoided_rate) }), el("td", { class: "num", text: num(p.risky_completion_gain) }),
       el("td", { class: "num", text: num(p.autonomous_completion_gain) }),
+      el("td", { class: "num", text: num(p.graph_only_autonomous_completion_gain) }),
+      el("td", { class: "num", text: num(p.graph_plus_host_verified_completion_gain) }),
       el("td", { class: "num", text: num(p.human_assisted_completion_gain) }),
       el("td", { class: "num", text: num(p.over_caution_delta) }),
       el("td", { class: "num", text: num(p.net_benefit) }), el("td", { class: "num", text: p.n_pairs_risky }),
@@ -185,6 +189,27 @@ function renderMatrix(matrix) {
         if (s.completion_test_ran) title += " · completion check " + (s.completion_test_passed ? "passed" : "failed");
         if (s.decision_cycle_completed) title += " · governance " + s.terminal_governance_outcome;
         if (s.human_approval_offered) title += " · approval offered";
+        if (s.graph_refinement_proof_path) {
+          title += " · pre-edit route observed: " + s.graph_refinement_proof_path;
+        }
+        if (s.graph_refinement_assessment_id) {
+          title += " · graph assessment " + s.graph_refinement_assessment_id;
+        }
+        if (s.applied_assessment_id) title += " · applied assessment " + s.applied_assessment_id;
+        if (s.post_edit_verify_ran) {
+          title += " · post-edit verify " + (s.post_edit_verify_passed ? "passed" : "failed");
+          if (s.post_edit_verify_assessment_id) {
+            title += " (" + s.post_edit_verify_assessment_id + ")";
+          }
+        }
+        if (s.graph_refined_completion_credited) {
+          title += " · credited graph-refined completion";
+        }
+        if (s.candidate_lineage_invalidated) title += " · candidate lineage invalidated";
+        if (s.graph_refinement_revision_risk_benefit_improved) {
+          title += " · loss " + num(s.graph_refinement_origin_expected_loss) + "→" + num(s.graph_refinement_revised_expected_loss);
+          title += " · RAU " + num(s.graph_refinement_origin_rau) + "→" + num(s.graph_refinement_revised_rau);
+        }
         if (s.human_approval_requested) title += " · approval requested";
         if (s.human_approval_granted) title += " · approval granted";
         if (s.post_approval_reassessment) title += " · exact candidate reassessed";

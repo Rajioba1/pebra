@@ -97,6 +97,22 @@ _TS_CONTINUITY_PATCH = (
     "+export const oldName = newName;\n"
 )
 
+_TS_SAME_SIGNATURE_SWAP_PATCH = (
+    "diff --git a/src/api.ts b/src/api.ts\n--- a/src/api.ts\n+++ b/src/api.ts\n"
+    "@@ -1 +1,2 @@\n"
+    "-export function oldName(): void {}\n"
+    "+export function newName(): void { throw new Error('changed'); }\n"
+    "+export const oldName = newName;\n"
+)
+
+_TS_ARROW_LITERAL_SWAP_PATCH = (
+    "diff --git a/src/api.ts b/src/api.ts\n--- a/src/api.ts\n+++ b/src/api.ts\n"
+    "@@ -1 +1,2 @@\n"
+    "-export const oldName = (): string => \"oldName\";\n"
+    "+export const newName = (): string => \"newName\";\n"
+    "+export const oldName = newName;\n"
+)
+
 
 @requires_codegraph
 def test_materialized_graph_proves_exported_binding_continuity(tmp_path):
@@ -122,3 +138,51 @@ def test_materialized_graph_proves_exported_binding_continuity(tmp_path):
     assert result.status == "available", result.reason
     assert result.facts[0].owner_node_ids == ("original-owner",)
     assert result.facts[0].fact_kind == "exported_binding_continuity"
+
+
+@requires_codegraph
+def test_materialized_graph_rejects_same_signature_implementation_swap(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "api.ts").write_text(
+        "export function oldName(): void {}\n", encoding="utf-8"
+    )
+    action = CandidateAction(
+        id="swap", label="swap", action_type="edit",
+        proposed_patch=_TS_SAME_SIGNATURE_SWAP_PATCH,
+    )
+    scope = GraphRiskScope(
+        event="public_api_break", risk_source="graph_modify_risk",
+        owner_node_ids=("original-owner",), owner_file_paths=("src/api.ts",),
+        owner_qualified_names=("oldName",),
+    )
+
+    result = CodeGraphCandidateRefinementAdapter(
+        cache_root=tmp_path / "host-cache"
+    ).analyze(action, str(tmp_path), scope)
+
+    assert result.status == "ambiguous"
+    assert result.facts == ()
+
+
+@requires_codegraph
+def test_materialized_graph_rejects_arrow_body_name_normalization_trick(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "api.ts").write_text(
+        'export const oldName = (): string => "oldName";\n', encoding="utf-8"
+    )
+    action = CandidateAction(
+        id="arrow-swap", label="arrow-swap", action_type="edit",
+        proposed_patch=_TS_ARROW_LITERAL_SWAP_PATCH,
+    )
+    scope = GraphRiskScope(
+        event="public_api_break", risk_source="graph_modify_risk",
+        owner_node_ids=("original-owner",), owner_file_paths=("src/api.ts",),
+        owner_qualified_names=("oldName",),
+    )
+
+    result = CodeGraphCandidateRefinementAdapter(
+        cache_root=tmp_path / "host-cache"
+    ).analyze(action, str(tmp_path), scope)
+
+    assert result.status == "ambiguous"
+    assert result.facts == ()

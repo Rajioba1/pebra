@@ -937,6 +937,13 @@ def test_gate3_revision_cap_exhaustion_escalates_to_ask_human() -> None:
     assert not any(g["name"] == "revise_safer" for g in result.gates_fired)
 
 
+def test_revision_cap_cannot_exceed_engine_hard_limit() -> None:
+    assert de._revision_exhausted({
+        "revise_safer_attempt": 3,
+        "max_revise_safer_attempts": 999,
+    }) is True
+
+
 def test_hard_terminal_event_does_not_revise_even_with_structural_event() -> None:
     from pebra.core import models as m
 

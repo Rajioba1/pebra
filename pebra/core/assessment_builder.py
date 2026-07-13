@@ -287,6 +287,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
             # Record which patch the verification was bound to, so the manifest audit shows the
             # gate-7 patch-binding input (see decision_engine.candidate_patch_hash).
             "verified_patch_hash": inp.candidate_verification.verified_patch_hash,
+            "retryable_infrastructure": inp.candidate_verification.retryable_infrastructure,
         },
     }
     return Assessment(

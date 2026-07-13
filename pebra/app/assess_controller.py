@@ -10,6 +10,8 @@ promotion are not on this path; everything the engine needs arrives inside Asses
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
@@ -78,6 +80,7 @@ class ScoredAction:
     refinement_selected: bool = False
     refinement_status: str = "not_applicable"
     refinement_rank_basis: dict[str, Any] = field(default_factory=dict)
+    refinement_enabled: bool = False
 
 
 @dataclass
@@ -205,7 +208,13 @@ def _build_revision_completeness(
 
 
 def _revision_envelope_payload(
-    action: CandidateAction, result: AssessmentResult
+    action: CandidateAction,
+    result: AssessmentResult,
+    baseline_binding: dict[str, Any] | None = None,
+    *,
+    repo_id: str = "",
+    assessed_commit: str | None = None,
+    revision_origin: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     files = sorted({_norm_envelope_value(value) for value in action.expected_files if value})
     scope = result.symbol_scope_evidence or {}
@@ -214,12 +223,58 @@ def _revision_envelope_payload(
         symbols = sorted({
             str(value) for value in (scope.get("changed_symbols") or ()) if value
         })
-    return {
+    payload = {
         "expected_files": files,
         "public_symbols": symbols,
         "expected_loss": result.scores.get("expected_loss"),
         "rau": result.scores.get("rau"),
     }
+    if baseline_binding is not None:
+        payload["baseline_binding"] = baseline_binding
+    lineage_key = (
+        revision_origin.get("lineage_key")
+        if revision_origin and revision_origin.get("available")
+        else None
+    )
+    if not lineage_key and assessed_commit and baseline_binding is not None:
+        lineage_material = {
+            "repo_id": repo_id,
+            "assessed_commit": assessed_commit,
+            "baseline_binding": baseline_binding,
+            "expected_files": files,
+            "public_symbols": symbols,
+        }
+        lineage_key = hashlib.sha256(
+            json.dumps(lineage_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    if lineage_key:
+        payload["lineage_key"] = lineage_key
+    return payload
+
+
+def _origin_for_current_baseline(
+    origin: dict[str, Any] | None,
+    current_baseline: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not origin or not origin.get("available"):
+        return origin
+    if current_baseline is None:
+        return {
+            "available": False,
+            "fallback_reason": "current working-tree baseline could not be bound",
+        }
+    stored = origin.get("baseline_binding")
+    if not isinstance(stored, dict):
+        return {
+            "available": False,
+            "fallback_reason": "origin revision envelope lacks a working-tree baseline binding",
+        }
+    if stored != current_baseline:
+        return {
+            "available": False,
+            "fallback_reason": "working-tree baseline changed since the origin assessment",
+        }
+    return origin
 
 
 def _build_input(
@@ -572,6 +627,15 @@ def _score_prepared_input(
     adjusted_events, _ = candidate_refinement.apply_scoped_adjustments(
         inp.events, inp.candidate_graph_risk_evidence, patch_hash=patch_hash
     )
+    prediction_features = dict(inp.structural_features or {})
+    if inp.candidate_graph_risk_evidence.status != "not_applicable":
+        prediction_features["graph_refinement"] = {
+            "status": inp.candidate_graph_risk_evidence.status,
+            "provider": inp.candidate_graph_risk_evidence.provider,
+            "fact_kinds": sorted({
+                fact.fact_kind for fact in inp.candidate_graph_risk_evidence.facts
+            }),
+        }
     manifest = prediction_capture.build_prediction_manifest(
         p_success=inp.p_success,
         events=adjusted_events,
@@ -579,16 +643,7 @@ def _score_prepared_input(
         projected_deltas=inp.benefit_delta_evidence.deltas,
         projected_benefit=result.scores["benefit"],
         action_id=action.id,
-        features={
-            **(inp.structural_features or {}),
-            "graph_refinement": {
-                "status": inp.candidate_graph_risk_evidence.status,
-                "provider": inp.candidate_graph_risk_evidence.provider,
-                "fact_kinds": sorted({
-                    fact.fact_kind for fact in inp.candidate_graph_risk_evidence.facts
-                }),
-            },
-        },
+        features=prediction_features,
         applied_snapshot_provenance=inp.applied_snapshot_provenance,
     )
     return ScoredAction(
@@ -652,6 +707,7 @@ def _thresholds_with_revise_attempt(
     assessed_commit: str | None,
     action: CandidateAction,
     task: str | None = None,
+    baseline_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     caller_attempt = 0
     caller_supplied = "revise_safer_attempt" in thresholds
@@ -672,6 +728,7 @@ def _thresholds_with_revise_attempt(
                 list(action.expected_files or []),
                 action.id,
                 task,
+                baseline_binding,
             )
     except Exception:  # noqa: BLE001 - attempt tracking must not make assess unavailable
         store_attempt = 0
@@ -709,7 +766,7 @@ def _graph_risk_scope(inp: AssessmentInput) -> GraphRiskScope | None:
         (
             item
             for item in inp.events
-            if item.get("event") in {"public_api_break", "api_contract_break"}
+            if item.get("event") == "public_api_break"
             and item.get("risk_source") == "graph_modify_risk"
             and item.get("owner_node_ids")
         ),
@@ -760,6 +817,7 @@ def _rank_input(
             and scope is not None
             and bool(scored.action.proposed_patch)
             and scored.result.scores["benefit"] > 0
+            and inp.candidate_verification.status != "failed"
             and not (event_names & hard_events)
             and not inp.policy_violations
         ),
@@ -788,6 +846,7 @@ def _candidate_verification_from_raw(raw: dict[str, Any]) -> CandidateVerificati
             if isinstance(raw.get("verified_patch_hash"), str)
             else None
         ),
+        retryable_infrastructure=raw.get("retryable_infrastructure") is True,
     )
 
 
@@ -808,6 +867,16 @@ def _trusted_verification_for_action(
     if isinstance(action_raw, dict):
         return _candidate_verification_from_raw(action_raw)
     return None
+
+
+def _audited_graph_evidence(evidence: CandidateGraphRiskEvidence) -> dict[str, Any]:
+    """Deterministic evidence for the hash-chained ledger; wall-clock diagnostics stay in payloads."""
+    payload = asdict(evidence)
+    for key in tuple(payload):
+        if key.endswith("_latency_ms"):
+            payload.pop(key)
+    payload.pop("cache_hit", None)
+    return payload
 
 
 def _trusted_task_obligations_for_action(
@@ -923,6 +992,14 @@ def assess(
     scored: list[ScoredAction] = []
     prepared: dict[str, _PreparedAction] = {}
     for action in request.candidate_actions:
+        baseline_binding = None
+        baseline_binder = (
+            getattr(candidate_binding_provider, "bind_baseline", None)
+            if candidate_binding_provider is not None
+            else None
+        )
+        if baseline_binder is not None:
+            baseline_binding = baseline_binder(action, repo.repo_root)
         action_thresholds = _thresholds_with_revise_attempt(
             thresholds,
             store=store,
@@ -930,6 +1007,7 @@ def assess(
             assessed_commit=assessed_commit,
             action=action,
             task=request.task,
+            baseline_binding=baseline_binding,
         )
         try:
             revise_attempt = int(action_thresholds.get("revise_safer_attempt", 0))
@@ -951,6 +1029,7 @@ def assess(
                         action.id,
                         request.task,
                         list(action.expected_files or []),
+                        baseline_binding,
                     )
                 except Exception:  # noqa: BLE001 - known revisions fail closed in the pure gate
                     revision_origin = {
@@ -962,6 +1041,10 @@ def assess(
                         "available": False,
                         "fallback_reason": "revision origin assessment not found",
                     }
+        if baseline_binder is not None:
+            revision_origin = _origin_for_current_baseline(
+                revision_origin, baseline_binding
+            )
         selected_verification = _trusted_verification_for_action(
             trusted_candidate_verification, action
         )
@@ -985,12 +1068,14 @@ def assess(
                 trusted_task_obligations, action
             ),
             "revision_origin": revision_origin,
+            "prepared_revision_origin": revision_origin,
             "is_revision": revise_attempt > 0,
         }
         if candidate_binding_provider is not None:
             score_ports["prepared_candidate_binding"] = (
                 candidate_binding_provider.bind_candidate(action, repo.repo_root)
             )
+            score_ports["prepared_baseline_binding"] = baseline_binding
         inp = _prepare_action_input(
             request,
             action,
@@ -1003,6 +1088,8 @@ def assess(
         scored.append(_score_prepared_input(inp, action, repo.repo_root, **score_ports))
 
     if graph_risk_refinement_provider is not None:
+        for item in scored:
+            item.refinement_enabled = True
         rank_inputs = [
             _rank_input(item, prepared[item.action.id].inp) for item in scored
         ]
@@ -1062,6 +1149,7 @@ def assess(
             refined.refinement_rank_basis = dict(
                 by_id[rank_item.action_id].refinement_rank_basis
             )
+            refined.refinement_enabled = True
             prepared_action.inp = refined_input
             by_id[rank_item.action_id] = refined
             if refined.result.recommended_decision.value == "proceed":
@@ -1082,46 +1170,67 @@ def assess(
     recommended_obligations = _trusted_task_obligations_for_action(
         trusted_task_obligations, recommended.action
     )
-    assessment_id = store.persist_assessment(
-        recommended.result,
-        # persist the thresholds used so the post-edit verify path can reproduce the SAME consequential
-        # fan-in threshold (otherwise verify silently falls back to the 0.90 default — assess/verify drift).
-        {"task": request.task, "action_id": recommended.action.id,
-         "thresholds": dict(recommended.thresholds),
-         "candidate_verification_status": (
-             recommended_verification.status
-             if recommended_verification is not None
-             else "not_applicable"
-         ),
-         "graph_refinement": {
+    request_payload: dict[str, Any] = {
+        "task": request.task,
+        "action_id": recommended.action.id,
+        # Persist the thresholds used so verify reproduces the same consequential fan-in threshold.
+        "thresholds": dict(recommended.thresholds),
+        "candidate_verification_status": (
+            recommended_verification.status
+            if recommended_verification is not None
+            else "not_applicable"
+        ),
+        "candidate_verification_retryable_infrastructure": (
+            bool(recommended_verification.retryable_infrastructure)
+            if recommended_verification is not None
+            else False
+        ),
+        "task_obligations": {
+            "required_files": list(recommended_obligations.required_files),
+            "required_symbols": list(recommended_obligations.required_symbols),
+            "required_checks": list(recommended_obligations.required_checks),
+        },
+        "revision_envelope": _revision_envelope_payload(
+            recommended.action,
+            recommended.result,
+            prepared[recommended.action.id].score_ports.get("prepared_baseline_binding"),
+            repo_id=repo.repo_id,
+            assessed_commit=assessed_commit,
+            revision_origin=prepared[recommended.action.id].score_ports.get(
+                "prepared_revision_origin"
+            ),
+        ),
+    }
+    if recommended.refinement_enabled:
+        request_payload["graph_refinement"] = {
              "eligible": recommended.refinement_eligible,
              "rank": recommended.refinement_rank,
              "selected": recommended.refinement_selected,
              "status": recommended.refinement_status,
-             "evidence": asdict(recommended.candidate_graph_risk_evidence),
-         },
-         "candidate_refinements": [
+             "retryable_infrastructure": (
+                 recommended.candidate_graph_risk_evidence.retryable_infrastructure
+             ),
+             "evidence": _audited_graph_evidence(
+                 recommended.candidate_graph_risk_evidence
+             ),
+        }
+        request_payload["candidate_refinements"] = [
              {
                  "action_id": item.action.id,
                  "eligible": item.refinement_eligible,
                  "rank": item.refinement_rank,
                  "selected": item.refinement_selected,
                  "status": item.refinement_status,
-                 "evidence": asdict(item.candidate_graph_risk_evidence),
+                 "evidence": _audited_graph_evidence(item.candidate_graph_risk_evidence),
                  "rank_basis": dict(item.refinement_rank_basis),
                  "decision": item.result.recommended_decision.value,
                  "scores": dict(item.result.scores),
              }
              for item in scored
-         ],
-         "task_obligations": {
-             "required_files": list(recommended_obligations.required_files),
-             "required_symbols": list(recommended_obligations.required_symbols),
-             "required_checks": list(recommended_obligations.required_checks),
-         },
-         "revision_envelope": _revision_envelope_payload(
-             recommended.action, recommended.result
-         )},
+        ]
+    assessment_id = store.persist_assessment(
+        recommended.result,
+        request_payload,
         predictions=recommended.predictions,
     )
     return AssessmentOutcome(

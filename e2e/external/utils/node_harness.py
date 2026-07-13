@@ -49,6 +49,7 @@ class NodeTestResult:
     error_summary: str
     duration_seconds: float
     tests_selected: int | None = None
+    targeted: bool = False
 
 
 def node_available() -> bool:
@@ -339,14 +340,11 @@ def run_tests(
     proc = _run_fixed(runner, argv, root=root, timeout=timeout)
     total, failed = _parse_vitest(proc.stdout or "")
     targeted = test_path is not None or test_filter is not None
-    if targeted:
-        passed = proc.returncode == 0 and isinstance(total, int) and total > 0 and failed == 0
-    else:
-        passed = proc.returncode == 0 and (failed in (0, None))
+    passed = proc.returncode == 0 and isinstance(total, int) and total > 0 and failed == 0
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
     errors = [ln.strip() for ln in output.splitlines() if "fail" in ln.lower() or "error" in ln.lower()]
     return NodeTestResult(
         available=True, ran=True, passed=passed, exit_code=proc.returncode,
         error_summary="\n".join(errors[:15]), duration_seconds=round(time.time() - start, 2),
-        tests_selected=total,
+        tests_selected=total, targeted=targeted,
     )

@@ -15,7 +15,7 @@ index 1076ad9d..61f4c2eb 100644
    ctx.common.issues.push(issue);
  }
  
-+export { reportIssue as addIssueToContext };
++export const addIssueToContext = reportIssue;
 +
  export type ObjectPair = {
    key: SyncParseReturnType<any>;

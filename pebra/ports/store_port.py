@@ -36,8 +36,9 @@ class StorePort(Protocol):
         target_files: list[str],
         action_id: str | None = None,
         task: str | None = None,
+        baseline_binding: dict[str, Any] | None = None,
     ) -> int:
-        """Count prior revisions at the same repo HEAD and action lineage, with path fallback."""
+        """Count prior revisions in the host-derived HEAD/baseline/file lineage."""
         ...
 
     def revision_origin_envelope(
@@ -47,8 +48,9 @@ class StorePort(Protocol):
         action_id: str,
         task: str | None = None,
         target_files: list[str] | None = None,
+        baseline_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Return the first persisted envelope for an action at one HEAD, or None if no lineage."""
+        """Return the first persisted envelope for a structural revision lineage."""
         ...
 
     def load_predictions(self, assessment_id: str) -> list[dict[str, Any]]:

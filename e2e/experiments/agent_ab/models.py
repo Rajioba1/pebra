@@ -89,6 +89,7 @@ class TaskSpec:
     required_language_tier: str | None = None  # hidden: "risk_only" | "partial" | "full" preflight floor
     requires_measured_benefit: bool = False  # hidden: fail preflight unless RCA measured this patch
     requires_natural_safe_route: bool = False  # hidden: reference must re-assess to proceed without proof
+    requires_graph_refinement_route: bool = False  # hidden: reference must prove Gate-9 graph evidence
     assay_p_success: float = 0.75  # hidden: task-specific benefit evidence used by the real advisory
     assay_immediate_benefit: float = 0.5
     assay_review_cost: float = 0.1
@@ -145,6 +146,7 @@ class SubjectResult:
     post_edit_verify_passed: bool | None = None
     post_edit_verify_assessment_id: str | None = None
     post_edit_verify_error: str | None = None
+    applied_assessment_id: str | None = None
     measured_benefit: float = 0.0
     measured_benefit_deltas: dict[str, float] = field(default_factory=dict)
     human_approval_offered: bool = False
@@ -156,6 +158,19 @@ class SubjectResult:
     human_assisted_write_applied: bool = False
     write_before_approval: bool = False
     write_before_reassessment: bool = False
+    graph_refinement_status: str | None = None
+    graph_refinement_assessment_id: str | None = None
+    graph_refinement_selected: bool = False
+    graph_refinement_fact_kinds: tuple[str, ...] = ()
+    graph_refinement_risk_probability_update_count: int = 0
+    graph_refinement_origin_expected_loss: float | None = None
+    graph_refinement_revised_expected_loss: float | None = None
+    graph_refinement_origin_rau: float | None = None
+    graph_refinement_revised_rau: float | None = None
+    graph_refinement_candidate_verification_passed: bool = False
+    graph_refinement_revision_risk_benefit_improved: bool = False
+    graph_refinement_proof_path: str | None = None
+    candidate_lineage_invalidated: bool = False
 
 
 # ---- scored outcome ---------------------------------------------------------------------------
@@ -200,6 +215,10 @@ class RunOutcome:
     timed_out: bool
     completion_test_ran: bool = False
     completion_test_passed: bool | None = None
+    post_edit_verify_ran: bool = False
+    post_edit_verify_passed: bool | None = None
+    post_edit_verify_assessment_id: str | None = None
+    applied_assessment_id: str | None = None
     decision_cycle_completed: bool = False
     terminal_governance_outcome: str | None = None
     no_attempt: bool = False             # stopped without an edit attempt or restrictive gate
@@ -219,6 +238,19 @@ class RunOutcome:
     human_assisted_write_applied: bool = False
     write_before_approval: bool = False
     write_before_reassessment: bool = False
+    graph_refinement_status: str | None = None
+    graph_refinement_assessment_id: str | None = None
+    graph_refinement_selected: bool = False
+    graph_refinement_fact_kinds: tuple[str, ...] = ()
+    graph_refinement_risk_probability_update_count: int = 0
+    graph_refinement_origin_expected_loss: float | None = None
+    graph_refinement_revised_expected_loss: float | None = None
+    graph_refinement_origin_rau: float | None = None
+    graph_refinement_revised_rau: float | None = None
+    graph_refinement_candidate_verification_passed: bool = False
+    graph_refinement_revision_risk_benefit_improved: bool = False
+    graph_refinement_proof_path: str | None = None
+    candidate_lineage_invalidated: bool = False
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------
@@ -264,6 +296,12 @@ class ArmMetrics:
     write_before_approval_rate: float | None = None
     write_before_reassessment_count: int = 0
     write_before_reassessment_rate: float | None = None
+    graph_refined_autonomous_completion_count: int = 0
+    graph_refined_autonomous_completion_rate: float | None = None
+    graph_only_autonomous_completion_count: int = 0
+    graph_only_autonomous_completion_rate: float | None = None
+    graph_plus_host_verified_completion_count: int = 0
+    graph_plus_host_verified_completion_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -303,6 +341,15 @@ class PairwiseComparison:
     harm_diff_ci95: tuple[float, float] | None
     autonomous_completion_gain: float = 0.0
     human_assisted_completion_gain: float = 0.0
+    graph_only_autonomous_completion_gain: float = 0.0
+    graph_plus_host_verified_completion_gain: float = 0.0
+
+    @property
+    def graph_refined_post_edit_verified_completion_gain(self) -> float:
+        return (
+            self.graph_only_autonomous_completion_gain
+            + self.graph_plus_host_verified_completion_gain
+        )
 
 
 @dataclass(frozen=True)

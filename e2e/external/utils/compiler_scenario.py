@@ -49,8 +49,13 @@ class CompilerOutcomeState:
     seeded_cycles: int
 
 
-def _checks(payload: dict) -> list[str]:
-    return list(payload["model_guidance_packet"]["binding"].get("required_checks_before_commit", []))
+def _checks(payload: dict) -> dict[str, str]:
+    return {
+        str(check): "passed"
+        for check in payload["model_guidance_packet"]["binding"].get(
+            "required_checks_before_commit", []
+        )
+    }
 
 
 def _staged_files(copy: Path) -> list[str]:

@@ -34,6 +34,7 @@ from e2e.experiments.agent_ab.models import TaskSpec
 from e2e.experiments.agent_ab.patch_files import touched_files
 from e2e.experiments.agent_ab.path_scope import is_in_scope
 from e2e.experiments.agent_ab.runners import evaluator, run_artifacts, run_pair
+from e2e.experiments.agent_ab.tools import candidate_verifier
 from e2e.external.utils import repo_source as rs
 
 _CORPUS_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus"
@@ -109,6 +110,16 @@ def _clone_fresh(external: rs.ExternalRepo, dest: Path, *, out_dir: Path) -> Pat
     if target.exists():
         shutil.rmtree(target, onerror=_rmtree_onerror)
     return rs.clone_at_recorded_head(external, dest)
+
+
+def _run_clean_graph_setup(repo_path: Path, setup_graph_fn: Callable[[Path], None]) -> None:
+    """Run graph setup in a disposable clone without polluting the candidate diff envelope."""
+    from e2e.utils import cli_harness  # noqa: PLC0415
+
+    try:
+        cli_harness.run_source_neutral_graph_setup(repo_path, setup_graph_fn)
+    except (cli_harness.CLIError, OSError, subprocess.SubprocessError) as exc:
+        raise PreflightError(str(exc)) from exc
 
 
 def _oracle_failure(spec: TaskSpec, build) -> str | None:
@@ -534,7 +545,7 @@ def run_graph_preflight(
             dest = out_dir / "graph_preflight" / spec.task_id / "repo"
             repo_path = _clone_fresh(external, dest, out_dir=out_dir)
             if setup_graph_fn is not None:
-                setup_graph_fn(repo_path)
+                _run_clean_graph_setup(repo_path, setup_graph_fn)
             payload = assess_fn(repo_path, spec) if spec.required_language_tier else None
             repo_capability = _capability_for_spec(repo_path, spec)
             _record_capability(repo_capability)
@@ -578,9 +589,16 @@ def run_graph_preflight(
 _NATURAL_ROUTE_BENEFIT_TOLERANCE = 1e-12
 
 
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
 def _expected_loss(payload: dict[str, Any]) -> float | None:
     value = (payload.get("scores") or {}).get("expected_loss")
-    return float(value) if isinstance(value, (int, float)) else None
+    return _finite_number(value)
 
 
 def _benefit_discrimination_failure(
@@ -718,6 +736,19 @@ def _live_candidate_verification(repo_path: Path, spec: TaskSpec, patch_text: st
     )
 
 
+def _apply_reference_patch(repo_path: Path, patch_text: str) -> None:
+    proc = subprocess.run(
+        ["git", "-c", "core.autocrlf=false", "apply", "--whitespace=nowarn", "-"],
+        cwd=repo_path,
+        input=patch_text,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        raise PreflightError(f"reference patch did not apply: {proc.stderr.strip()}")
+
+
 def run_revise_safer_calibration(
     corpus: list[TaskSpec],
     external: rs.ExternalRepo,
@@ -726,6 +757,8 @@ def run_revise_safer_calibration(
     assess_fn: Callable[..., dict[str, Any]] | None = None,
     candidate_verification_fn: Callable[[Path, TaskSpec, str], dict[str, Any]] | None = None,
     gate_check_fn: Callable[..., dict[str, Any]] | None = None,
+    apply_patch_fn: Callable[[Path, str], None] | None = None,
+    post_edit_verify_fn: Callable[..., tuple[bool, dict[str, Any]]] | None = None,
     setup_graph_fn: Callable[[Path], None] | None = None,
     patch_dir: Path | None = None,
     correct_patch_dir: Path | None = None,
@@ -744,6 +777,12 @@ def run_revise_safer_calibration(
         from e2e.utils import cli_harness  # noqa: PLC0415
 
         gate_check_fn = cli_harness.gate_check
+    if live_boundaries and apply_patch_fn is None:
+        apply_patch_fn = _apply_reference_patch
+    if live_boundaries and post_edit_verify_fn is None:
+        from e2e.utils import cli_harness  # noqa: PLC0415
+
+        post_edit_verify_fn = cli_harness.verify
     failures: list[str] = []
     risky_seen = 0
     checked = 0
@@ -764,7 +803,7 @@ def run_revise_safer_calibration(
             dest = out_dir / "revise_calibration" / spec.task_id / "repo"
             repo_path = _clone_fresh(external, dest, out_dir=out_dir)
             if setup_graph_fn is not None:
-                setup_graph_fn(repo_path)
+                _run_clean_graph_setup(repo_path, setup_graph_fn)
             bad_db = dest.parent / "bad_revise_calibration.db"
             reference_db = dest.parent / "reference_revise_calibration.db"
             bad_db.unlink(missing_ok=True)
@@ -816,6 +855,18 @@ def run_revise_safer_calibration(
                         f"({verification.get('status')!r}: {verification.get('reason', '')})"
                     )
                     continue
+                if spec.test_selector:
+                    provenance = verification.get("provenance") or {}
+                    if (
+                        provenance.get("test_project") != spec.test_selector
+                        or not isinstance(provenance.get("tests_selected"), int)
+                        or provenance["tests_selected"] <= 0
+                    ):
+                        failures.append(
+                            f"{spec.task_id}: reference route did not run the declared public "
+                            "targeted tests with a nonzero selection"
+                        )
+                        continue
                 # A revision is meaningful only inside the same persisted assessment lineage. Keep
                 # the bad/reference stores independent, but seed the reference store with its own
                 # origin assessment before submitting the known-safe candidate at attempt 1.
@@ -877,6 +928,63 @@ def run_revise_safer_calibration(
                 continue
             if spec.language in {"javascript", "typescript"}:
                 gates = fixed.get("gates_fired") or []
+                if spec.requires_graph_refinement_route:
+                    refinement = fixed.get("graph_refinement") or {}
+                    evidence = refinement.get("evidence") or {}
+                    facts = [
+                        fact for fact in evidence.get("facts") or []
+                        if isinstance(fact, dict)
+                    ]
+                    gate_names = {
+                        gate.get("name") for gate in gates if isinstance(gate, dict)
+                    }
+                    updates = (fixed.get("scores") or {}).get("risk_probability_updates") or []
+                    continuity_facts = [
+                        fact for fact in facts
+                        if fact.get("fact_kind") == "exported_binding_continuity"
+                        and fact.get("event") == "public_api_break"
+                        and fact.get("risk_source") == "graph_modify_risk"
+                        and fact.get("owner_node_ids")
+                    ]
+                    continuity_updates = [
+                        update for update in updates
+                        if isinstance(update, dict)
+                        and update.get("fact_kind") == "exported_binding_continuity"
+                        and update.get("provider") == "materialized_codegraph"
+                        and update.get("event") == "public_api_break"
+                        and update.get("risk_source") == "graph_modify_risk"
+                        and update.get("owner_node_ids")
+                        and _finite_number(update.get("revised_probability")) is not None
+                        and _finite_number(update.get("original_probability")) is not None
+                        and _finite_number(update.get("probability_floor")) is not None
+                        and float(update["revised_probability"])
+                        < float(update["original_probability"])
+                        and float(update["revised_probability"])
+                        >= float(update["probability_floor"])
+                        >= 0.05
+                    ]
+                    bad_loss = _expected_loss(bad)
+                    fixed_loss = _expected_loss(fixed)
+                    fixed_rau = (fixed.get("scores") or {}).get("rau")
+                    if not (
+                        refinement.get("status") == "available"
+                        and refinement.get("selected") is True
+                        and len(continuity_facts) == 1
+                        and len(continuity_updates) == 1
+                        and set(continuity_facts[0]["owner_node_ids"])
+                        == set(continuity_updates[0]["owner_node_ids"])
+                        and "revision_risk_benefit_improved" in gate_names
+                        and bad_loss is not None
+                        and fixed_loss is not None
+                        and fixed_loss < bad_loss
+                        and isinstance(fixed_rau, (int, float))
+                        and not isinstance(fixed_rau, bool)
+                        and float(fixed_rau) >= 0.0
+                    ):
+                        failures.append(
+                            f"{spec.task_id}: reference did not prove the graph refinement route"
+                        )
+                        continue
                 if not any(g.get("name") == "candidate_verification_passed" for g in gates):
                     failures.append(
                         f"{spec.task_id}: verified reference route did not prove candidate "
@@ -927,6 +1035,28 @@ def run_revise_safer_calibration(
                     if sticky_gate.get("permission") == "allow":
                         failures.append(
                             f"{spec.task_id}: pending restriction allowed an out-of-envelope write"
+                        )
+                        continue
+                if apply_patch_fn is not None and post_edit_verify_fn is not None:
+                    assessment_id = fixed.get("assessment_id")
+                    if not isinstance(assessment_id, str) or not assessment_id:
+                        failures.append(
+                            f"{spec.task_id}: reference assessment omitted assessment_id"
+                        )
+                        continue
+                    apply_patch_fn(repo_path, correct_patch_text)
+                    completed_checks = candidate_verifier.completed_checks_for_verify(verification)
+                    verified, verify_payload = post_edit_verify_fn(
+                        assessment_id,
+                        repo_root=repo_path,
+                        db=reference_db,
+                        completed_checks=completed_checks,
+                        scope="all",
+                    )
+                    if not verified:
+                        failures.append(
+                            f"{spec.task_id}: applied reference failed real post-edit verify "
+                            f"({verify_payload.get('pre_commit_decision')!r})"
                         )
                 continue
             bad_loss = _expected_loss(bad)

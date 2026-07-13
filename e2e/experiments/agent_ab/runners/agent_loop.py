@@ -256,6 +256,9 @@ def _gated_file_change(
     result = apply_change()
     if "error" in result:
         return {"ok": False, "blocked": False, "reason": result["error"]}
+    write_applied = getattr(setup, "write_applied_backend", None)
+    if callable(write_applied) and isinstance(decision, dict):
+        write_applied(decision)
     return {"ok": True, "blocked": False, "reason": None}
 
 

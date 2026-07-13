@@ -63,12 +63,6 @@ def _repo(dest: Path, filename: str, content: str) -> Path:
     return dest
 
 
-def _patch(filename: str, before: str, after: str) -> str:
-    return "".join(difflib.unified_diff(
-        before.splitlines(keepends=True), after.splitlines(keepends=True),
-        fromfile=filename, tofile=filename))
-
-
 def _git_patch(filename: str, before: str, after: str) -> str:
     return "".join(difflib.unified_diff(
         before.splitlines(keepends=True), after.splitlines(keepends=True),
@@ -150,7 +144,7 @@ def _api_get(port: int, token: str, path: str) -> dict:
 def test_dashboard_exposes_measured_rca_benefit(tmp_path, require_accepted_rca):
     repo = _repo(tmp_path / "repo", "calc.py", _BEFORE)
     db = tmp_path / "p.db"
-    req = _request(tmp_path / "r.json", "calc.py", _patch("calc.py", _BEFORE, _SIMPLER))
+    req = _request(tmp_path / "r.json", "calc.py", _git_patch("calc.py", _BEFORE, _SIMPLER))
     asm = ch.assess(req, repo_root=repo, db=db)["assessment_id"]
 
     (repo / "calc.py").write_text(_SIMPLER, encoding="utf-8")  # apply the simplification for real
@@ -172,7 +166,7 @@ def test_dashboard_exposes_measured_rca_benefit(tmp_path, require_accepted_rca):
 def test_assay_post_edit_verify_populates_arm_dashboard(tmp_path, require_accepted_rca):
     repo = _repo(tmp_path / "repo", "calc.py", _BEFORE)
     db = tmp_path / "pebra.db"
-    req = _request(tmp_path / "r.json", "calc.py", _patch("calc.py", _BEFORE, _SIMPLER))
+    req = _request(tmp_path / "r.json", "calc.py", _git_patch("calc.py", _BEFORE, _SIMPLER))
     asm = ch.assess(req, repo_root=repo, db=db)["assessment_id"]
     (repo / "calc.py").write_text(_SIMPLER, encoding="utf-8")
     setup = run_pair.ArmSetup(
@@ -204,7 +198,7 @@ def test_dashboard_history_renders_measured_benefit_detail(tmp_path, require_acc
 
     repo = _repo(tmp_path / "repo", "calc.py", _BEFORE)
     db = tmp_path / "p.db"
-    req = _request(tmp_path / "r.json", "calc.py", _patch("calc.py", _BEFORE, _SIMPLER))
+    req = _request(tmp_path / "r.json", "calc.py", _git_patch("calc.py", _BEFORE, _SIMPLER))
     asm = ch.assess(req, repo_root=repo, db=db)["assessment_id"]
 
     (repo / "calc.py").write_text(_SIMPLER, encoding="utf-8")

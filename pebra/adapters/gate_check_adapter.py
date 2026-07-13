@@ -14,8 +14,8 @@ and asks the agent to resubmit a narrower candidate, so it remains active in bot
 
 Hard invariants:
 - **Read-only**: computes repo_id via ``paths.find_repo_root`` + sha1 directly; it must NEVER call
-  ``RepositoryRegistry.resolve`` (which runs ``ensure_pebra_dir`` and would create ``.pebra/`` + edit
-  ``.gitignore``). Store access is a raw read-only sqlite connection (``?mode=ro``) — importing
+  ``RepositoryRegistry.resolve`` (which runs ``ensure_pebra_dir`` and would create ``.pebra/``).
+  Store access is a raw read-only sqlite connection (``?mode=ro``) — importing
   ``SqliteStore`` would create the db file on connect and break fail-open.
 - **Fail-open**: graph absent / git error / unreadable store / infrastructure parse error -> allow (+ a
   warning). A missing store means "not assessed" and denies an impactful edit; candidate mismatch or
@@ -51,6 +51,7 @@ _IMPORT_GRAPH_REL = Path(".pebra") / "import_graph.json"
 # Engine verdicts that, once consulted, escalate to a host-approval ASK (Phase 6 verdict tier).
 _REVIEW_DECISIONS = frozenset({"ask_human", "reject"})
 _REVISE_DECISIONS = frozenset({"revise_safer"})
+_PREREQUISITE_DECISIONS = frozenset({"inspect_first", "test_first"})
 _EDIT_TOOLS = ("Edit", "Write")
 _APPLY_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$", re.MULTILINE)
 
@@ -61,10 +62,14 @@ class GateDecision:
     tier: str                  # "pass" | "must_consult" | "consulted" | "fail_open"
     reason: str | None = None  # actionable text for a deny/ask
     warn: str | None = None    # diagnostic for a fail-open path
+    matched_assessment_id: str | None = None  # host attribution; omitted from model-facing output
 
-    def as_dict(self) -> dict[str, Any]:
-        return {"permission": self.permission, "tier": self.tier,
-                "reason": self.reason, "warn": self.warn}
+    def as_dict(self, *, include_host_metadata: bool = False) -> dict[str, Any]:
+        payload = {"permission": self.permission, "tier": self.tier,
+                   "reason": self.reason, "warn": self.warn}
+        if include_host_metadata:
+            payload["matched_assessment_id"] = self.matched_assessment_id
+        return payload
 
 
 @dataclass(frozen=True)
@@ -187,42 +192,65 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
     rows = rows if rows is not None else _query_assessments(db, _repo_id(repo_root))
     if rows is None:
         return GateDecision("allow", "fail_open", warn="gate: assessment store unavailable")
+    attempted_candidate = candidate_binding.binding_for_event(event, repo_root)
     matched = _matched_row(
         rows,
         targets,
         head,
         repo_root,
         newer_than_id=int(pending or 0) if impactful is not True else 0,
+        attempted_candidate=attempted_candidate,
     )
     if matched is None:
         return GateDecision("deny", "must_consult", reason=_deny_reason(targets, head))
+    matched_id = f"asm_{int(matched['id'])}"
     expected_candidate = _candidate_binding(matched)
     if expected_candidate is None:
-        return GateDecision("deny", "candidate_unbound", reason=_candidate_reason(targets, head))
-    attempted_candidate = candidate_binding.binding_for_event(event, repo_root)
+        return GateDecision(
+            "deny", "candidate_unbound", reason=_candidate_reason(targets, head),
+        )
     if attempted_candidate is None:
         return GateDecision(
-            "deny", "candidate_unverifiable", reason=_candidate_reason(targets, head)
+            "deny", "candidate_unverifiable", reason=_candidate_reason(targets, head),
         )
     attempted_files = attempted_candidate.get("files") or {}
     expected_files = expected_candidate.get("files") or {}
     if attempted_candidate.get("algorithm") != expected_candidate.get("algorithm") or not attempted_files:
-        return GateDecision("deny", "candidate_mismatch", reason=_candidate_reason(targets, head))
+        return GateDecision(
+            "deny", "candidate_mismatch", reason=_candidate_reason(targets, head),
+        )
     if set(attempted_files) != set(expected_files):
-        return GateDecision("deny", "candidate_incomplete", reason=_candidate_incomplete_reason(targets, head))
+        return GateDecision(
+            "deny", "candidate_incomplete", reason=_candidate_incomplete_reason(targets, head),
+        )
     if any(expected_files.get(path) != digest for path, digest in attempted_files.items()):
-        return GateDecision("deny", "candidate_mismatch", reason=_candidate_reason(targets, head))
+        return GateDecision(
+            "deny", "candidate_mismatch", reason=_candidate_reason(targets, head),
+        )
     if str(matched.get("decision")) in _REVISE_DECISIONS:
-        return GateDecision("deny", "consulted_revise", reason=_revise_reason(targets, head))
+        return GateDecision(
+            "deny", "consulted_revise", reason=_revise_reason(targets, head),
+            matched_assessment_id=matched_id,
+        )
+    if str(matched.get("decision")) in _PREREQUISITE_DECISIONS:
+        return GateDecision(
+            "deny", "consulted_prerequisite",
+            reason=_prerequisite_reason(str(matched.get("decision")), targets, head),
+            matched_assessment_id=matched_id,
+        )
     # Phase 6 verdict tier: interactive hosts can ask for approval; consult-only hosts have no
     # approver, so they must stay conservative instead of silently allowing exhausted review verdicts.
     if str(matched.get("decision")) in _REVIEW_DECISIONS:
         if consult_only:
             return GateDecision(
                 "deny", "consulted_review_unavailable", reason=_review_unavailable_reason(targets, head)
+                , matched_assessment_id=matched_id
             )
-        return GateDecision("ask", "consulted_review", reason=_review_reason(targets, head))
-    return GateDecision("allow", "consulted")
+        return GateDecision(
+            "ask", "consulted_review", reason=_review_reason(targets, head),
+            matched_assessment_id=matched_id,
+        )
+    return GateDecision("allow", "consulted", matched_assessment_id=matched_id)
 
 
 def _deny_reason(targets: list[str], head: str) -> str:
@@ -245,6 +273,15 @@ def _candidate_incomplete_reason(targets: list[str], head: str) -> str:
         f"The assessed candidate for {names} at commit {head[:8]} changes multiple files and must "
         "be applied atomically. Assess a single-file candidate or use an atomic patch event containing "
         "the complete assessed candidate."
+    )
+
+
+def _prerequisite_reason(decision: str, targets: list[str], head: str) -> str:
+    names = ", ".join(os.path.basename(t) for t in targets[:3])
+    prerequisite = "inspection" if decision == "inspect_first" else "targeted tests"
+    return (
+        f"Complete the required {prerequisite} for {names} at commit {head[:8]}, then reassess "
+        "the exact candidate before editing."
     )
 
 
@@ -369,7 +406,9 @@ def _query_pending_restriction(db_path: str, repo_id: str, head_sha: str) -> int
     except (sqlite3.Error, OSError, ValueError):
         return None
     try:
-        decisions = tuple(sorted(_REVISE_DECISIONS | _REVIEW_DECISIONS))
+        decisions = tuple(sorted(
+            _REVISE_DECISIONS | _REVIEW_DECISIONS | _PREREQUISITE_DECISIONS
+        ))
         placeholders = ",".join("?" for _ in decisions)
         cur = con.execute(
             f"SELECT id, content_json FROM assessments WHERE repo_id = ? "
@@ -397,9 +436,10 @@ def _matched_row(
     repo_root: str,
     *,
     newer_than_id: int = 0,
+    attempted_candidate: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """The first assessment row covering ALL targets (same assessed_commit AND every target path inside
-    its path-filtered safe_scope.files), or None. The row carries ``decision`` for the verdict tier."""
+    """Best assessment covering all targets, preferring an exact candidate binding."""
+    path_matches: list[dict[str, Any]] = []
     for row in rows:
         if int(row.get("id") or 0) < newer_than_id:
             continue
@@ -412,10 +452,14 @@ def _matched_row(
                      .get("safe_scope") or {}).get("files") or []
             candidates = _filter_path_entries(files)
             if all(_paths_match(t, candidates, repo_root) for t in targets):
-                return row
+                path_matches.append(row)
         except (ValueError, TypeError, AttributeError):
             continue
-    return None
+    if attempted_candidate is not None:
+        for row in path_matches:
+            if _candidate_binding(row) == attempted_candidate:
+                return row
+    return path_matches[0] if path_matches else None
 
 
 def _candidate_binding(row: dict[str, Any]) -> dict[str, Any] | None:

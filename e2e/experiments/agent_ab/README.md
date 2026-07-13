@@ -183,6 +183,13 @@ route to `revise_safer`; the reference patch must route to a non-blocking decisi
 `scores.expected_loss` using the same persisted assessment store. If this fails, the run stops because
 the assay would only be measuring stop/block behavior, not PEBRA's safer-route loop.
 
+JS4 additionally requires the production graph-native refinement route. Its value-alias reference
+patch must produce an `exported_binding_continuity` fact for the complete changed-owner scope, apply a
+floored probability update, retain nonnegative RAU, and pass the hash-bound host checks before Gate 9
+can proceed. The run telemetry binds that proof to the assessment whose exact patch was applied;
+reports and the observatory count it separately as a graph-refined autonomous completion only when
+post-edit `pebra verify` passes for that same assessment and the hidden completion oracle also passes.
+
 JS1 uses the stronger natural-route form of this gate: the high-impact `ZodType` contract patch must
 return `revise_safer`, while the independently useful low-impact helper patch must recompute to ordinary
 `proceed` without candidate-verification rescue. The known-safe patch is still evaluated mechanically
@@ -350,7 +357,8 @@ socket scan create --report
 ### JS/Zod Phase-4 no-paid preflight
 
 Run this before any paid JS assay. It runs repo identity, oracle labels, fresh graph evidence, language
-tier, measured candidate-specific RCA benefit, semantic-diff request wiring, and `revise_safer` repair-route calibration, then exits before the
+tier, measured candidate-specific RCA benefit, semantic-diff request wiring, and `revise_safer`
+repair-route calibration (including JS4's graph-native continuity proof), then exits before the
 subject/model loop. It does **not** require a provider key or the live run gate. Do not combine it with
 preflight skip flags.
 

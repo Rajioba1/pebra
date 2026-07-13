@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import subprocess
 import os
 import stat
 from types import SimpleNamespace
@@ -897,6 +898,7 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
 
     calls: list[dict[str, object]] = []
     gate_calls: list[tuple[str, str]] = []
+    post_edit_calls: list[tuple[str, object]] = []
 
     def _assess(
         _repo_path,
@@ -918,6 +920,7 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
             return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
         assert trusted_candidate_verification["status"] == "passed"
         return {
+            "assessment_id": "asm_reference",
             "recommended_decision": "proceed",
             "scores": {"expected_loss": 0.8},
             "gates_fired": [{"name": "candidate_verification_passed"}],
@@ -940,11 +943,19 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
         assess_fn=_assess,
         candidate_verification_fn=lambda _repo, _spec, patch: {
             "status": "failed" if patch == "bad route" else "passed",
-            "checks": {"candidate_build": "failed" if patch == "bad route" else "passed"},
+            "checks": {
+                "candidate_build": "failed" if patch == "bad route" else "passed",
+                "covering_tests": "failed" if patch == "bad route" else "passed",
+            },
             "required_checks": ["candidate_build"],
             "verified_patch_hash": "abc",
         },
         gate_check_fn=_gate,
+        apply_patch_fn=lambda repo, patch: post_edit_calls.append(("apply", (repo, patch))),
+        post_edit_verify_fn=lambda assessment_id, **kwargs: (
+            post_edit_calls.append((assessment_id, kwargs))
+            or (True, {"pre_commit_decision": "proceed"})
+        ),
         setup_graph_fn=lambda _repo: None,
         patch_dir=patch_dir,
         correct_patch_dir=correct_dir,
@@ -962,6 +973,13 @@ def test_revise_safer_calibration_accepts_verified_js_reference_route(tmp_path, 
         ("reference_revise_calibration.db", "apply_patch"),
         ("bad_revise_calibration.db", "Write"),
     ]
+    assert post_edit_calls[0][0] == "apply"
+    assert post_edit_calls[1][0] == "asm_reference"
+    assert post_edit_calls[1][1]["completed_checks"] == {
+        "candidate_build": "passed",
+        "run targeted tests for the touched scope before commit": "passed",
+    }
+    assert post_edit_calls[1][1]["scope"] == "all"
 
 
 def test_revise_safer_calibration_rejects_js_trap_that_passes_candidate_verification(
@@ -1092,6 +1110,151 @@ def test_revise_safer_calibration_requires_js_reference_to_hit_gate_7(tmp_path, 
         )
 
 
+def test_revise_safer_calibration_requires_graph_refinement_route_proof(
+    tmp_path, monkeypatch
+):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "JS4.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "JS4.patch").write_text("reference route", encoding="utf-8")
+    spec = dataclasses.replace(
+        _JS_TRAP,
+        task_id="JS4",
+        requires_graph_refinement_route=True,
+    )
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    def _assess(_repo, _spec, patch, _db, **_kwargs):
+        if patch == "bad route":
+            return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
+        return {
+            "recommended_decision": "proceed",
+            "scores": {"expected_loss": 0.1, "rau": 0.2},
+            "gates_fired": [{"name": "candidate_verification_passed"}],
+        }
+
+    with pytest.raises(preflight.PreflightError, match="graph refinement route"):
+        preflight.run_revise_safer_calibration(
+            [spec], None, out_dir=tmp_path,
+            assess_fn=_assess,
+            candidate_verification_fn=lambda _repo, _spec, patch: {
+                "status": "failed" if patch == "bad route" else "passed",
+            },
+            setup_graph_fn=lambda _repo: None,
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )
+
+
+def test_revise_safer_calibration_accepts_graph_plus_host_verified_route(
+    tmp_path, monkeypatch
+):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "JS4.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "JS4.patch").write_text("reference route", encoding="utf-8")
+    spec = dataclasses.replace(
+        _JS_TRAP,
+        task_id="JS4",
+        requires_graph_refinement_route=True,
+    )
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    def _assess(_repo, _spec, patch, _db, **_kwargs):
+        if patch == "bad route":
+            return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
+        return {
+            "recommended_decision": "proceed",
+            "scores": {
+                "expected_loss": 0.1,
+                "rau": 0.2,
+                    "risk_probability_updates": [{
+                        "fact_kind": "exported_binding_continuity",
+                        "provider": "materialized_codegraph",
+                        "event": "public_api_break",
+                        "risk_source": "graph_modify_risk",
+                        "owner_node_ids": ["owner-1"],
+                    "original_probability": 0.45,
+                    "revised_probability": 0.1575,
+                    "probability_floor": 0.05,
+                }],
+            },
+            "graph_refinement": {
+                "status": "available",
+                "selected": True,
+                "evidence": {
+                    "facts": [{
+                        "fact_kind": "exported_binding_continuity",
+                        "event": "public_api_break",
+                        "risk_source": "graph_modify_risk",
+                        "owner_node_ids": ["owner-1"],
+                    }],
+                },
+            },
+            "gates_fired": [
+                {"name": "candidate_verification_passed"},
+                {
+                    "name": "revision_risk_benefit_improved",
+                    "origin_expected_loss": 0.8,
+                    "revised_expected_loss": 0.1,
+                    "origin_rau": -0.4,
+                    "revised_rau": 0.2,
+                },
+            ],
+        }
+
+    preflight.run_revise_safer_calibration(
+        [spec], None, out_dir=tmp_path,
+        assess_fn=_assess,
+        candidate_verification_fn=lambda _repo, _spec, patch: {
+            "status": "failed" if patch == "bad route" else "passed",
+        },
+        setup_graph_fn=lambda _repo: None,
+        patch_dir=patch_dir,
+        correct_patch_dir=correct_dir,
+    )
+
+
+def test_revise_safer_calibration_requires_nonzero_declared_public_tests(
+    tmp_path, monkeypatch
+):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "JS4.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "JS4.patch").write_text("reference route", encoding="utf-8")
+    spec = dataclasses.replace(
+        _JS_TRAP,
+        task_id="JS4",
+        requires_graph_refinement_route=True,
+        test_selector="src/public.test.ts",
+    )
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    with pytest.raises(preflight.PreflightError, match="nonzero selection"):
+        preflight.run_revise_safer_calibration(
+            [spec], None, out_dir=tmp_path,
+            assess_fn=lambda _repo, _spec, patch, _db, **_kwargs: {
+                "recommended_decision": (
+                    "revise_safer" if patch == "bad route" else "proceed"
+                ),
+                "scores": {"expected_loss": 0.8 if patch == "bad route" else 0.1},
+            },
+            candidate_verification_fn=lambda _repo, _spec, patch: {
+                "status": "failed" if patch == "bad route" else "passed",
+                "provenance": {"test_project": "src/public.test.ts", "tests_selected": 0},
+            },
+            setup_graph_fn=lambda _repo: None,
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )
+
+
 def test_revise_safer_calibration_fails_when_no_risky_patch_pair_checked(tmp_path, monkeypatch):
     patch_dir = tmp_path / "patches"
     correct_dir = tmp_path / "correct"
@@ -1185,3 +1348,32 @@ def test_revise_safer_calibration_flags_reference_that_does_not_lower_loss(tmp_p
             patch_dir=patch_dir,
             correct_patch_dir=correct_dir,
         )
+def test_graph_setup_metadata_does_not_dirty_candidate_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / ".gitignore").write_text("dist/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git", "-c", "user.name=PEBRA", "-c", "user.email=pebra@example.invalid",
+            "commit", "-qm", "baseline",
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    def setup(path):
+        with (path / ".gitignore").open("a", encoding="utf-8") as handle:
+            handle.write(".pebra/\n.codegraph/\n")
+        (path / ".pebra").mkdir()
+        (path / ".codegraph").mkdir()
+        (path / ".codegraph" / "codegraph.db").write_text("index", encoding="utf-8")
+
+    preflight._run_clean_graph_setup(repo, setup)
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    )
+    assert status.stdout == ""
+    assert (repo / ".gitignore").read_text(encoding="utf-8") == "dist/\n"

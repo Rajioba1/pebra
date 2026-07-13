@@ -58,9 +58,11 @@ def reset_risky_edit(repo_path: Path | str) -> None:
     )
 
 
-def _binding_checks(payload: dict) -> tuple[list[str], bool]:
+def _binding_checks(payload: dict) -> tuple[dict[str, str], bool]:
     binding = payload["model_guidance_packet"]["binding"]
-    return list(binding.get("required_checks_before_commit", [])), bool(binding.get("requires_dry_run"))
+    return {
+        str(check): "passed" for check in binding.get("required_checks_before_commit", [])
+    }, bool(binding.get("requires_dry_run"))
 
 
 def run_pre_edit_cycle(

@@ -41,6 +41,7 @@ def test_assess_payload_exposes_applied_snapshot_provenance_when_present() -> No
     payload = composition.assess_payload(outcome)
 
     assert payload["applied_snapshot_provenance"] == {"snapshot_id": "snap_1"}
+    assert "graph_refinement" not in payload
 
 
 def test_assess_payload_exposes_repo_state_and_graph_provenance() -> None:

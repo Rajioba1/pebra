@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _VENV_PY = _REPO_ROOT / ".venv" / "Scripts" / "python.exe"
@@ -135,7 +136,7 @@ def learn(assessment_id: str, *, repo_root: Path | str, db: Path | str) -> dict:
 
 def verify(
     assessment_id: str, *, repo_root: Path | str, db: Path | str,
-    completed_checks: list[str] | None = None, scope: str = "staged",
+    completed_checks: dict[str, str] | None = None, scope: str = "staged",
     dry_run_preview: bool = False,
 ) -> tuple[bool, dict]:
     """Post-edit envelope check. Returns ``(passed, payload)`` — ``passed`` is True iff the CLI exits 0
@@ -145,8 +146,10 @@ def verify(
         "verify", "--assessment-id", assessment_id, "--scope", scope, "--json",
         "--repo-root", str(repo_root), "--db", str(db),
     ]
-    for check in completed_checks or []:
-        args += ["--completed-check", f"{check}=passed"]
+    for check, status in (completed_checks or {}).items():
+        if status not in {"passed", "failed"}:
+            raise ValueError(f"invalid completed-check status for {check!r}: {status!r}")
+        args += ["--completed-check", f"{check}={status}"]
     if dry_run_preview:
         args.append("--dry-run-preview")
     cmd = [_python(), "-m", "pebra", *args]
@@ -178,7 +181,10 @@ def gate_check(
 
     ``consult_only`` skips the ask verdict tier — the A/B runner has NO human approver, so an ``ask``
     would be an un-resolvable block that conflates "PEBRA escalated" with "no approver present"."""
-    cmd = [_python(), "-m", "pebra", "gate-check", "--db", str(db)]
+    cmd = [
+        _python(), "-m", "pebra", "gate-check", "--db", str(db),
+        "--include-host-metadata",
+    ]
     if consult_only:
         cmd.append("--consult-only")
     env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
@@ -188,8 +194,73 @@ def gate_check(
     return _parse_json_stdout(proc.stdout, cmd)
 
 
+def _git_output(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=repo_root, capture_output=True, text=True,
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+    )
+
+
+def _ensure_local_graph_excludes(repo_root: Path) -> None:
+    proc = _git_output(repo_root, "rev-parse", "--git-path", "info/exclude")
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise CLIError(f"could not resolve git info/exclude: {proc.stderr.strip()}")
+    exclude = Path(proc.stdout.strip())
+    if not exclude.is_absolute():
+        exclude = repo_root / exclude
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    lines = {line.strip() for line in existing.splitlines()}
+    additions = [entry for entry in (".pebra/", ".codegraph/") if entry not in lines]
+    if not additions:
+        return
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    exclude.write_text(
+        existing + separator + "".join(f"{entry}\n" for entry in additions),
+        encoding="utf-8",
+    )
+
+
+def run_source_neutral_graph_setup(
+    repo_root: Path | str, setup_fn: Callable[[Path], None]
+) -> None:
+    """Run CodeGraph setup without adding repository-visible setup artifacts."""
+    root = Path(repo_root)
+    if not root.exists():
+        setup_fn(root)
+        return
+    inside = _git_output(root, "rev-parse", "--is-inside-work-tree")
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        setup_fn(root)
+        return
+    before_status = _git_output(root, "status", "--porcelain").stdout
+    gitignore = root / ".gitignore"
+    gitignore_existed = gitignore.exists()
+    gitignore_bytes = gitignore.read_bytes() if gitignore_existed else b""
+    _ensure_local_graph_excludes(root)
+    error: Exception | None = None
+    try:
+        setup_fn(root)
+    except Exception as exc:  # restore metadata before preserving the original setup failure
+        error = exc
+    finally:
+        if gitignore_existed:
+            gitignore.write_bytes(gitignore_bytes)
+        else:
+            gitignore.unlink(missing_ok=True)
+    after = _git_output(root, "status", "--porcelain")
+    if after.returncode != 0 or after.stdout != before_status:
+        detail = after.stderr.strip() or after.stdout.strip()
+        raise CLIError(f"graph setup contaminated the candidate worktree: {detail}") from error
+    if error is not None:
+        raise error
+
+
 def setup_graph(*, repo_root: Path | str) -> None:
-    _run(["setup-graph", "--fix", "--repo-root", str(repo_root)])
+    run_source_neutral_graph_setup(
+        repo_root,
+        lambda root: _run(["setup-graph", "--fix", "--repo-root", str(root)]),
+    )
 
 
 def graph_node_counts(*, repo_root: Path | str) -> dict:

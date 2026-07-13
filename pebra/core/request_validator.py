@@ -7,6 +7,7 @@ additionally jsonschema-validate the raw payload; this guards the parsed object)
 from __future__ import annotations
 
 from pebra.core.models import AssessmentRequest
+from pebra.core.patch_paths import is_safe_repo_path, touched_files
 
 
 class RequestValidationError(ValueError):
@@ -28,3 +29,29 @@ def validate(request: AssessmentRequest) -> None:
         seen.add(action.id)
         if not action.action_type:
             raise RequestValidationError(f"action {action.id!r} missing action_type")
+        if action.proposed_patch:
+            touched = {
+                value.replace("\\", "/").removeprefix("./")
+                for value in touched_files(action.proposed_patch)
+            }
+            if not touched:
+                raise RequestValidationError(
+                    f"action {action.id!r} proposed_patch must be a well-formed unified diff"
+                )
+            if any(not is_safe_repo_path(value) for value in touched):
+                raise RequestValidationError(
+                    f"action {action.id!r} proposed_patch paths must stay inside the repository"
+                )
+            expected = {
+                value.replace("\\", "/").removeprefix("./")
+                for value in action.expected_files
+                if value
+            }
+            if any(not is_safe_repo_path(value) for value in expected):
+                raise RequestValidationError(
+                    f"action {action.id!r} expected_files must stay inside the repository"
+                )
+            if touched != expected:
+                raise RequestValidationError(
+                    f"action {action.id!r} expected_files must exactly match proposed_patch paths"
+                )

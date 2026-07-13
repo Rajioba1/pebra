@@ -24,6 +24,10 @@ def register(subparsers: Any) -> None:
     p.add_argument("--db", default=None, help="Override the assessment store path (default: <repo>/.pebra/pebra.db).")
     p.add_argument("--consult-only", action="store_true",
                    help="Stop at must-consult; skip the ask verdict tier (for hosts with no human approver, e.g. the A/B runner).")
+    p.add_argument(
+        "--include-host-metadata", action="store_true",
+        help="Include the exact matched assessment id for trusted host attribution.",
+    )
     p.set_defaults(func=run_gate_check)
 
 
@@ -39,5 +43,7 @@ def run_gate_check(args: Any) -> int:
         return 0
     decision = gca.decide(event, db_path=getattr(args, "db", None),
                           consult_only=getattr(args, "consult_only", False))
-    print(json.dumps(decision.as_dict()))
+    print(json.dumps(decision.as_dict(
+        include_host_metadata=getattr(args, "include_host_metadata", False)
+    )))
     return 0

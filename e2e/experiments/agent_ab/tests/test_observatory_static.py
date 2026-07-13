@@ -57,3 +57,16 @@ def test_run_failure_kinds_are_visible_in_the_observatory():
     assert "v.phase_detail.error" in app_js
     assert ".pill.insufficient_data" in css
     assert ".pill.no_headroom" in css
+
+
+def test_graph_refined_completion_is_visible_in_scoreboard_and_matrix():
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "graph-authorized + post-verify" in app_js
+    assert "graph + pre-edit host verification + post-verify" in app_js
+    assert "graph_only_autonomous_completion_rate" in app_js
+    assert "graph_plus_host_verified_completion_rate" in app_js
+    assert "graph_only_autonomous_completion_gain" in app_js
+    assert "graph_plus_host_verified_completion_gain" in app_js
+    assert "graph_refinement_proof_path" in app_js
+    assert "post_edit_verify_assessment_id" in app_js

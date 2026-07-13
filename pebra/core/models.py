@@ -321,6 +321,7 @@ class CandidateVerificationEvidence:
     # honors "passed" only when this equals the hash of the action's proposed_patch, so a stale or
     # replayed proof of a different patch cannot wave a swapped patch through. None => unbound.
     verified_patch_hash: str | None = None
+    retryable_infrastructure: bool = False
 
 
 @dataclass(frozen=True)
@@ -356,6 +357,7 @@ class CandidateGraphRiskEvidence:
     verified_patch_hash: str | None = None
     provider: str | None = None
     reason: str | None = None
+    retryable_infrastructure: bool = False
     manifest_hash: str | None = None
     cache_hit: bool = False
     context_file_count: int = 0

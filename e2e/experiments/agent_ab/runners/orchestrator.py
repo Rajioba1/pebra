@@ -452,6 +452,8 @@ def _outcome_from_dict(d: dict[str, Any]) -> RunOutcome:
         d["blinding_terms"] = tuple(d["blinding_terms"])
     if d.get("served_models") is not None:
         d["served_models"] = tuple(d["served_models"])
+    if d.get("graph_refinement_fact_kinds") is not None:
+        d["graph_refinement_fact_kinds"] = tuple(d["graph_refinement_fact_kinds"])
     return RunOutcome(**d)
 
 
@@ -555,9 +557,9 @@ def main(argv: list[str] | None = None) -> int:
     plan = _plan(corpus, mode["tasks"], mode["seeds_per_arm"])
     planned_specs = list({spec.task_id: spec for spec, _seed in plan}.values())
     preflight_status = {
-        "oracle": "skipped" if args.skip_oracle_preflight else "passed",
-        "graph": "skipped" if args.skip_graph_preflight else "passed",
-        "revise_safer": "skipped" if (args.skip_graph_preflight or not is_assay) else "passed",
+        "oracle": "skipped" if args.skip_oracle_preflight else "pending",
+        "graph": "skipped" if args.skip_graph_preflight else "pending",
+        "revise_safer": "skipped" if (args.skip_graph_preflight or not is_assay) else "pending",
     }
     scoring_mode = _scoring_mode(planned_specs)
     source_root = rs.source_repo_path()
@@ -577,22 +579,32 @@ def main(argv: list[str] | None = None) -> int:
                       preflight_status=preflight_status, scoring_mode=scoring_mode,
                       run_metadata=run_metadata)
 
+    active_preflight: str | None = None
     try:
         if not args.skip_oracle_preflight:
+            active_preflight = "oracle"
             preflight.run_oracle_preflight(planned_specs, external, out_dir=out_dir)
+            preflight_status["oracle"] = "passed"
         if not args.skip_graph_preflight:
+            active_preflight = "graph"
             preflight.run_graph_preflight(planned_specs, external, out_dir=out_dir,
                                           assess_fn=_live_assess_fn,
                                           setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
                                           node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p))
+            preflight_status["graph"] = "passed"
             if is_assay:
+                active_preflight = "revise_safer"
                 preflight.run_revise_safer_calibration(
                     planned_specs,
                     external,
                     out_dir=out_dir,
                     setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
                 )
+                preflight_status["revise_safer"] = "passed"
+        active_preflight = None
     except Exception as exc:
+        if active_preflight is not None:
+            preflight_status[active_preflight] = "failed"
         _write_run_status(out_dir, args.mode, "failed",
                           preflight_status=preflight_status, scoring_mode=scoring_mode,
                           run_metadata=run_metadata,

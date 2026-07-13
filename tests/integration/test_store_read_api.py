@@ -41,7 +41,12 @@ def _persist_scoped(
     action_id: str | None = "action-1",
     task: str = "t",
     candidate_verification_status: str | None = None,
+    candidate_verification_retryable: bool = False,
     graph_refinement_status: str | None = None,
+    graph_retryable: bool = False,
+    with_revision_envelope: bool = True,
+    baseline_binding: dict | None = None,
+    lineage_key: str | None = None,
 ) -> str:
     res = AssessmentResult(
         recommended_decision=decision,
@@ -63,8 +68,32 @@ def _persist_scoped(
         request["action_id"] = action_id
     if candidate_verification_status is not None:
         request["candidate_verification_status"] = candidate_verification_status
+        request["candidate_verification_retryable_infrastructure"] = (
+            candidate_verification_retryable
+        )
     if graph_refinement_status is not None:
-        request["graph_refinement"] = {"status": graph_refinement_status}
+        request["graph_refinement"] = {
+            "status": graph_refinement_status,
+            "retryable_infrastructure": graph_retryable,
+        }
+    if with_revision_envelope:
+        request["revision_envelope"] = {
+            "expected_files": [
+                value for value in (files or ["src/Gamma.cs"]) if "::" not in value
+            ],
+            "public_symbols": [],
+            "expected_loss": 0.36,
+            "rau": -0.12,
+            "baseline_binding": baseline_binding or {
+                "algorithm": "sha256-git-worktree-v1",
+                "digest": "base",
+            },
+            "lineage_key": lineage_key or "lineage:" + ",".join(sorted(
+                value.replace("\\", "/").removeprefix("./")
+                for value in (files or ["src/Gamma.cs"])
+                if "::" not in value
+            )),
+        }
     return store.persist_assessment(res, request)
 
 
@@ -79,34 +108,29 @@ def test_revise_safer_attempt_count_matches_repo_head_and_safe_scope(tmp_path) -
     assert store.revise_safer_attempt_count("r", "abc123", ["src/Gamma.cs"]) == 2
 
 
-def test_revise_safer_attempt_count_follows_action_across_files(tmp_path) -> None:
+def test_revise_safer_attempt_count_ignores_caller_action_and_task_labels(tmp_path) -> None:
     store = _store(tmp_path)
     _persist_scoped(
         store,
         decision=Decision.REVISE_SAFER,
-        files=["src/HighImpact.cs"],
-        action_id="stable-revision-lineage",
+        files=["src/LowImpact.cs"],
+        action_id="first-label",
     )
     _persist_scoped(
         store,
         decision=Decision.REVISE_SAFER,
         files=["src/LowImpact.cs"],
-        action_id="other-action",
-    )
-    _persist_scoped(
-        store,
-        decision=Decision.REVISE_SAFER,
-        files=["src/LowImpact.cs"],
-        action_id="stable-revision-lineage",
+        action_id="changed-label",
         task="different task",
     )
 
     assert store.revise_safer_attempt_count(
-        "r", "abc123", ["src/LowImpact.cs"], "stable-revision-lineage", "t"
-    ) == 1
+        "r", "abc123", ["src/LowImpact.cs"], "new-label", "new task",
+        {"algorithm": "sha256-git-worktree-v1", "digest": "base"},
+    ) == 2
 
 
-def test_revise_safer_attempt_count_does_not_charge_unavailable_verification(tmp_path) -> None:
+def test_unclassified_unavailable_verification_charges_revision_attempt(tmp_path) -> None:
     store = _store(tmp_path)
     _persist_scoped(store, decision=Decision.REVISE_SAFER)
     _persist_scoped(
@@ -122,10 +146,43 @@ def test_revise_safer_attempt_count_does_not_charge_unavailable_verification(tmp
 
     assert store.revise_safer_attempt_count(
         "r", "abc123", ["src/Gamma.cs"], "action-1", "t"
-    ) == 2
+    ) == 3
 
 
-def test_revise_safer_attempt_count_does_not_charge_unavailable_graph_refinement(tmp_path) -> None:
+def test_retryable_candidate_verification_infrastructure_does_not_charge_attempt(
+    tmp_path,
+) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        candidate_verification_status="unavailable",
+        candidate_verification_retryable=True,
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/Gamma.cs"], "action-1", "t"
+    ) == 0
+
+
+def test_repeated_retryable_infrastructure_failure_eventually_charges_attempt(
+    tmp_path,
+) -> None:
+    store = _store(tmp_path)
+    for _ in range(2):
+        _persist_scoped(
+            store,
+            decision=Decision.REVISE_SAFER,
+            candidate_verification_status="unavailable",
+            candidate_verification_retryable=True,
+        )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/Gamma.cs"], "action-1", "t"
+    ) == 1
+
+
+def test_candidate_invalid_graph_unavailability_charges_revision_attempt(tmp_path) -> None:
     store = _store(tmp_path)
     _persist_scoped(
         store,
@@ -135,7 +192,36 @@ def test_revise_safer_attempt_count_does_not_charge_unavailable_graph_refinement
 
     assert store.revise_safer_attempt_count(
         "r", "abc123", ["src/Gamma.cs"], "action-1", "t"
+    ) == 1
+
+
+def test_retryable_graph_infrastructure_failure_does_not_charge_attempt(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        graph_refinement_status="unavailable",
+        graph_retryable=True,
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/Gamma.cs"], "action-1", "t"
     ) == 0
+
+
+def test_retryable_graph_failure_cannot_mask_completed_verification_failure(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        candidate_verification_status="failed",
+        graph_refinement_status="unavailable",
+        graph_retryable=True,
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/Gamma.cs"], "action-1", "t"
+    ) == 1
 
 
 def test_revision_origin_envelope_returns_first_matching_action_at_head(tmp_path) -> None:
@@ -145,12 +231,16 @@ def test_revision_origin_envelope_returns_first_matching_action_at_head(tmp_path
         "public_symbols": ["pkg.oldName"],
         "expected_loss": 0.36,
         "rau": -0.12,
+        "baseline_binding": {"algorithm": "sha256-git-worktree-v1", "digest": "base"},
+        "lineage_key": "lineage-first",
     }
     second = {
         "expected_files": ["src/api.ts"],
         "public_symbols": [],
         "expected_loss": 0.18,
         "rau": 0.20,
+        "baseline_binding": {"algorithm": "sha256-git-worktree-v1", "digest": "base"},
+        "lineage_key": "lineage-first",
     }
     for envelope in (first, second):
         res = AssessmentResult(
@@ -168,8 +258,14 @@ def test_revision_origin_envelope_returns_first_matching_action_at_head(tmp_path
             {"task": "rename", "action_id": "a1", "revision_envelope": envelope},
         )
 
-    assert store.revision_origin_envelope("r", "abc123", "a1", "rename") == {
+    origin = store.revision_origin_envelope(
+        "r", "abc123", "changed-id", "changed task",
+        ["src/api.ts", "src/compat.ts"],
+        {"algorithm": "sha256-git-worktree-v1", "digest": "base"},
+    )
+    assert origin == {
         "available": True,
+        "assessment_id": "asm_1",
         **first,
     }
 
@@ -181,15 +277,18 @@ def test_revision_origin_envelope_marks_matching_legacy_row_unavailable(tmp_path
         decision=Decision.REVISE_SAFER,
         action_id="legacy",
         task="rename",
+        with_revision_envelope=False,
     )
 
-    assert store.revision_origin_envelope("r", "abc123", "legacy", "rename") == {
+    assert store.revision_origin_envelope(
+        "r", "abc123", "legacy", "rename", ["src/Gamma.cs"]
+    ) == {
         "available": False,
-        "fallback_reason": "origin assessment predates revision-envelope persistence",
+        "fallback_reason": "origin assessment predates structural lineage binding",
     }
 
 
-def test_changed_action_id_cannot_reset_revision_lineage(tmp_path) -> None:
+def test_changed_action_id_does_not_inherit_revision_lineage(tmp_path) -> None:
     store = _store(tmp_path)
     _persist_scoped(
         store,
@@ -201,10 +300,122 @@ def test_changed_action_id_cannot_reset_revision_lineage(tmp_path) -> None:
 
     assert store.revise_safer_attempt_count(
         "r", "abc123", ["src/api.ts"], "new-action", "rename safely"
+    ) == 0
+
+
+def test_expanded_candidate_envelope_keeps_structural_origin(tmp_path) -> None:
+    store = _store(tmp_path)
+    baseline = {"algorithm": "sha256-git-worktree-v1", "digest": "base"}
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/api.ts"],
+        action_id="origin-label",
+        task="old wording",
+        baseline_binding=baseline,
+        lineage_key="lineage-expand",
+    )
+
+    origin = store.revision_origin_envelope(
+        "r", "abc123", "changed-label", "new wording",
+        ["src/api.ts", "src/compat.ts"], baseline,
+    )
+
+    assert origin is not None
+    assert origin["available"] is True
+    assert origin["expected_files"] == ["src/api.ts"]
+    assert origin["lineage_key"] == "lineage-expand"
+
+
+def test_dropped_file_candidate_keeps_overlapping_structural_origin(tmp_path) -> None:
+    store = _store(tmp_path)
+    baseline = {"algorithm": "sha256-git-worktree-v1", "digest": "base"}
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/api.ts", "src/compat.ts"],
+        baseline_binding=baseline,
+        lineage_key="lineage-contract",
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/api.ts"], baseline_binding=baseline
     ) == 1
+    origin = store.revision_origin_envelope(
+        "r", "abc123", "changed-label", "changed wording", ["src/api.ts"], baseline
+    )
+    assert origin is not None
+    assert origin["available"] is True
+    assert origin["expected_files"] == ["src/api.ts", "src/compat.ts"]
 
 
-def test_origin_envelope_falls_back_to_scope_when_request_lineage_changes(tmp_path) -> None:
+def test_disjoint_candidate_does_not_inherit_structural_origin(tmp_path) -> None:
+    store = _store(tmp_path)
+    baseline = {"algorithm": "sha256-git-worktree-v1", "digest": "base"}
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/api.ts", "src/compat.ts"],
+        baseline_binding=baseline,
+        lineage_key="lineage-contract",
+    )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/unrelated.ts"], baseline_binding=baseline
+    ) == 0
+    assert store.revision_origin_envelope(
+        "r", "abc123", "changed-label", "changed wording", ["src/unrelated.ts"], baseline
+    ) is None
+
+
+def test_ambiguous_overlapping_origins_fail_closed(tmp_path) -> None:
+    store = _store(tmp_path)
+    baseline = {"algorithm": "sha256-git-worktree-v1", "digest": "base"}
+    for files, lineage in (
+        (["src/api.ts"], "lineage-api"),
+        (["src/api.ts", "src/compat.ts"], "lineage-contract"),
+    ):
+        _persist_scoped(
+            store,
+            decision=Decision.REVISE_SAFER,
+            files=files,
+            baseline_binding=baseline,
+            lineage_key=lineage,
+        )
+
+    assert store.revision_origin_envelope(
+        "r", "abc123", "candidate", "changed wording", ["src/api.ts"], baseline
+    ) == {
+        "available": False,
+        "fallback_reason": "multiple overlapping revision origins match this candidate",
+    }
+
+
+def test_attempt_count_uses_most_advanced_overlapping_lineage(tmp_path) -> None:
+    store = _store(tmp_path)
+    baseline = {"algorithm": "sha256-git-worktree-v1", "digest": "base"}
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/api.ts"],
+        baseline_binding=baseline,
+        lineage_key="lineage-one",
+    )
+    for _ in range(2):
+        _persist_scoped(
+            store,
+            decision=Decision.REVISE_SAFER,
+            files=["src/api.ts", "src/compat.ts"],
+            baseline_binding=baseline,
+            lineage_key="lineage-two",
+        )
+
+    assert store.revise_safer_attempt_count(
+        "r", "abc123", ["src/api.ts"], baseline_binding=baseline
+    ) == 2
+
+
+def test_origin_envelope_does_not_cross_modern_request_lineage(tmp_path) -> None:
     store = _store(tmp_path)
     envelope = {
         "expected_files": ["src/api.ts", "src/compat.ts"],
@@ -229,10 +440,29 @@ def test_origin_envelope_falls_back_to_scope_when_request_lineage_changes(tmp_pa
 
     assert store.revision_origin_envelope(
         "r", "abc123", "new-action", "new wording", ["src/api.ts"]
-    ) == {"available": True, **envelope}
+    ) is None
 
 
-def test_legacy_scope_fallback_does_not_cross_known_task_boundary(tmp_path) -> None:
+def test_origin_envelope_legacy_scope_match_is_unavailable(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_scoped(
+        store,
+        decision=Decision.REVISE_SAFER,
+        files=["src/api.ts"],
+        action_id=None,
+        task="rename safely",
+        with_revision_envelope=False,
+    )
+
+    assert store.revision_origin_envelope(
+        "r", "abc123", "new-action", "rename safely", ["src/api.ts"]
+    ) == {
+        "available": False,
+        "fallback_reason": "origin assessment predates structural lineage binding",
+    }
+
+
+def test_legacy_scope_fallback_cannot_be_reset_by_changing_task_text(tmp_path) -> None:
     store = _store(tmp_path)
     _persist_scoped(
         store,
@@ -240,11 +470,12 @@ def test_legacy_scope_fallback_does_not_cross_known_task_boundary(tmp_path) -> N
         files=["src/Same.cs"],
         action_id=None,
         task="different task",
+        with_revision_envelope=False,
     )
 
     assert store.revise_safer_attempt_count(
         "r", "abc123", ["src/Same.cs"], "new-action", "current task"
-    ) == 0
+    ) == 1
 
 
 def test_list_assessments_newest_first_scoped_to_repo(tmp_path) -> None:

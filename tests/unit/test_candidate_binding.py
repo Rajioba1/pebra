@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from pebra.adapters import candidate_binding
+from pebra.core.models import CandidateAction
 
 
 _PATCH = (
@@ -21,6 +23,11 @@ def _repo(tmp_path: Path) -> Path:
     path = tmp_path / "src" / "a.py"
     path.parent.mkdir(parents=True)
     path.write_text("old\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@pebra.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "PEBRA Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
     return tmp_path
 
 
@@ -70,6 +77,39 @@ def test_different_edit_does_not_reuse_assessed_candidate(tmp_path: Path) -> Non
     }, repo)
 
     assert assessed != attempted
+
+
+def test_baseline_binding_changes_when_expected_file_changes(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    action = CandidateAction(
+        id="a1", label="edit", action_type="edit", expected_files=["src/a.py", "src/new.py"]
+    )
+
+    before = candidate_binding.baseline_binding_for_action(action, repo)
+    (repo / "src" / "a.py").write_text("manual change\n", encoding="utf-8")
+    after = candidate_binding.baseline_binding_for_action(action, repo)
+
+    assert before is not None
+    assert before != after
+    assert before["algorithm"] == "sha256-git-worktree-v1"
+
+
+def test_baseline_binding_covers_changes_outside_candidate_envelope(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    other = repo / "src" / "context.py"
+    other.write_text("context\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "context"], cwd=repo, check=True)
+    action = CandidateAction(
+        id="a1", label="edit", action_type="edit", expected_files=["src/a.py"]
+    )
+
+    before = candidate_binding.baseline_binding_for_action(action, repo)
+    other.write_text("changed context\n", encoding="utf-8")
+    after = candidate_binding.baseline_binding_for_action(action, repo)
+
+    assert before is not None
+    assert before != after
 
 
 def test_ambiguous_single_edit_fails_closed(tmp_path: Path) -> None:

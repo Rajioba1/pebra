@@ -186,7 +186,7 @@ def test_multifile_candidate_runs_graph_assess_gate_and_verify_end_to_end(
         multi["assessment_id"],
         repo_root=repo,
         db=db,
-        completed_checks=list(checks),
+        completed_checks={str(check): "passed" for check in checks},
         scope="staged",
     )
     assert passed is True

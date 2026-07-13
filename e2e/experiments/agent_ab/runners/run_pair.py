@@ -146,9 +146,19 @@ class ArmTelemetry:
     pending_human_approval: dict[str, Any] | None = None
     post_approval_reassessment: bool = False
     approved_reassessment_id: str | None = None
+    approved_reassessment_ids: set[str] = dataclasses.field(default_factory=set)
     human_assisted_write_applied: bool = False
     write_before_approval: bool = False
     write_before_reassessment: bool = False
+    graph_refinement_by_assessment: dict[str, dict[str, Any]] = dataclasses.field(
+        default_factory=dict
+    )
+    required_checks_by_assessment: dict[str, tuple[str, ...]] = dataclasses.field(
+        default_factory=dict
+    )
+    applied_graph_refinement: dict[str, Any] | None = None
+    applied_required_checks: tuple[str, ...] = ()
+    candidate_lineage_invalidated: bool = False
 
 
 @dataclass
@@ -170,6 +180,7 @@ class ArmSetup:
     # SAME write-gate in both arms; only treatment is backed by real PEBRA. Default = sham-allow so any
     # ArmSetup built without an explicit backend never blocks a write.
     gate_check_backend: Callable[..., dict[str, Any]] = lambda event: {"permission": "allow", "tier": "pass"}
+    write_applied_backend: Callable[[dict[str, Any]], None] = lambda _decision: None
 
 
 def _covering_tests_hint(spec: TaskSpec) -> str:
@@ -219,6 +230,7 @@ def _verify_candidate_for_repair(
     unavailable = {
         "status": "unavailable", "required_checks": ["covering_tests"], "domain": "covering_tests",
         "verified_patch_hash": candidate_verifier.candidate_patch_hash(patch),
+        "retryable_infrastructure": False,
     }
     if not patch:
         return {
@@ -256,12 +268,15 @@ def _verify_candidate_for_repair(
             "reason": "candidate patch did not apply cleanly",
         }
     try:
-        checks = {
-            covering_tests_resolver.find_covering_tests(
-                repo_path, target, patch, language=spec.language
-            )
-            for target in touched
-        }
+        if spec.language in {"javascript", "typescript"} and spec.test_selector:
+            checks = {(spec.test_selector, None)}
+        else:
+            checks = {
+                covering_tests_resolver.find_covering_tests(
+                    repo_path, target, patch, language=spec.language
+                )
+                for target in touched
+            }
         resolved_at = time.monotonic()
         remaining_timeout = (
             _CANDIDATE_VERIFICATION_TIMEOUT_SECONDS
@@ -276,6 +291,7 @@ def _verify_candidate_for_repair(
                 **unavailable,
                 "failure_category": "verification_unavailable",
                 "reason": "candidate verification exceeded the remaining run budget",
+                "retryable_infrastructure": True,
             }
         checks.discard((None, None))
         if len(checks) > 1 and spec.language not in {"javascript", "typescript"}:
@@ -283,6 +299,7 @@ def _verify_candidate_for_repair(
                 **unavailable,
                 "failure_category": "verification_unavailable",
                 "reason": "candidate requires multiple covering-test targets",
+                "retryable_infrastructure": True,
             }
         # A JS/TS multi-file candidate with different selectors falls back to the fixed full build;
         # single-project candidates keep the narrower covering-test check.
@@ -293,10 +310,20 @@ def _verify_candidate_for_repair(
             harness_id=spec.harness_id, build_profile=spec.build_profile,
             build_selector=spec.build_selector,
             allow_build_fallback=spec.language in {"javascript", "typescript"},
+            required_checks=spec.required_task_checks,
             timeout=max(1, int(remaining_timeout)),
         )
         if result.get("status") == "unavailable" and not result.get("failure_category"):
-            result = {**result, "failure_category": "verification_unavailable"}
+            result = {
+                **result,
+                "failure_category": "verification_unavailable",
+                "retryable_infrastructure": True,
+            }
+        elif (
+            result.get("status") == "unavailable"
+            and result.get("failure_category") == "verification_unavailable"
+        ):
+            result = {**result, "retryable_infrastructure": True}
         verified_at = time.monotonic()
         provenance = dict(result.get("provenance") or {})
         provenance.update({
@@ -347,6 +374,165 @@ def _human_approval_spec(result: dict[str, Any]) -> dict[str, Any] | None:
         "pre_commit_required_controls": [],
         "high_risk_triggers": list(raw.get("high_risk_triggers") or []),
     }
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _graph_refinement_summary(result: Any, assessment_id: str) -> dict[str, Any] | None:
+    """Extract host-only route attribution from one raw production assessment payload."""
+    raw = getattr(result, "raw_payload", None)
+    if not isinstance(raw, dict):
+        return None
+    refinement = raw.get("graph_refinement")
+    if not isinstance(refinement, dict):
+        return None
+    evidence = refinement.get("evidence")
+    facts = evidence.get("facts") if isinstance(evidence, dict) else []
+    continuity_facts = [
+        fact for fact in facts or []
+        if isinstance(fact, dict)
+        and fact.get("fact_kind") == "exported_binding_continuity"
+        and fact.get("event") == "public_api_break"
+        and fact.get("risk_source") == "graph_modify_risk"
+        and isinstance(fact.get("owner_node_ids"), list)
+        and bool(fact["owner_node_ids"])
+        and all(isinstance(owner, str) and owner for owner in fact["owner_node_ids"])
+    ]
+    fact_kinds = tuple(sorted({str(fact["fact_kind"]) for fact in continuity_facts}))
+    scores = raw.get("scores") if isinstance(raw.get("scores"), dict) else {}
+    updates = scores.get("risk_probability_updates")
+    updates = updates if isinstance(updates, list) else []
+    continuity_updates: list[dict[str, Any]] = []
+    if len(continuity_facts) == 1:
+        fact = continuity_facts[0]
+        fact_owners = tuple(sorted(set(fact["owner_node_ids"])))
+        candidates = []
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            original = _finite_number(update.get("original_probability"))
+            revised = _finite_number(update.get("revised_probability"))
+            floor = _finite_number(update.get("probability_floor"))
+            owners = update.get("owner_node_ids")
+            update_owners = (
+                tuple(sorted(set(owners)))
+                if isinstance(owners, list)
+                and all(isinstance(owner, str) and owner for owner in owners)
+                else ()
+            )
+            if (
+                update.get("fact_kind") == fact["fact_kind"]
+                and update.get("provider") == "materialized_codegraph"
+                and update.get("event") == fact["event"]
+                and update.get("risk_source") == fact["risk_source"]
+                and update_owners == fact_owners
+                and original is not None
+                and revised is not None
+                and floor is not None
+                and revised < original
+                and revised >= floor >= 0.05
+            ):
+                candidates.append(update)
+        if len(candidates) == 1:
+            continuity_updates = candidates
+    gates = raw.get("gates_fired") if isinstance(raw.get("gates_fired"), list) else []
+    improved_gates = [
+        gate for gate in gates
+        if isinstance(gate, dict) and gate.get("name") == "revision_risk_benefit_improved"
+    ]
+    verification_gates = [
+        gate for gate in gates
+        if isinstance(gate, dict) and gate.get("name") == "candidate_verification_passed"
+    ]
+    improved_gate = improved_gates[0] if len(improved_gates) == 1 else {}
+    selected = refinement.get("selected") is True
+    improved = len(improved_gates) == 1
+    verification_passed = len(verification_gates) == 1
+    verification_shape_valid = len(verification_gates) <= 1
+    origin_loss = _finite_number(improved_gate.get("origin_expected_loss"))
+    revised_loss = _finite_number(
+        improved_gate.get("revised_expected_loss", scores.get("expected_loss"))
+    )
+    origin_rau = _finite_number(improved_gate.get("origin_rau"))
+    revised_rau = _finite_number(improved_gate.get("revised_rau", scores.get("rau")))
+    valid_graph_route = (
+        refinement.get("status") == "available"
+        and selected
+        and "exported_binding_continuity" in fact_kinds
+        and bool(continuity_updates)
+        and improved
+        and origin_loss is not None
+        and revised_loss is not None
+        and revised_loss < origin_loss
+        and revised_rau is not None
+        and revised_rau >= 0.0
+    )
+    proof_path = None
+    if valid_graph_route and verification_shape_valid:
+        proof_path = (
+            "graph_plus_host_verification" if verification_passed else "graph_only"
+        )
+    guidance = raw.get("model_guidance_packet")
+    binding = guidance.get("binding") if isinstance(guidance, dict) else None
+    required_checks = (
+        binding.get("required_checks_before_commit") if isinstance(binding, dict) else []
+    )
+    return {
+        "assessment_id": assessment_id,
+        "status": refinement.get("status"),
+        "selected": selected,
+        "fact_kinds": fact_kinds,
+        "risk_probability_update_count": len(continuity_updates),
+        "origin_expected_loss": origin_loss,
+        "revised_expected_loss": revised_loss,
+        "origin_rau": origin_rau,
+        "revised_rau": revised_rau,
+        "candidate_verification_passed": verification_passed,
+        "revision_risk_benefit_improved": improved,
+        "proof_path": proof_path,
+        "required_checks_before_commit": tuple(
+            str(check) for check in required_checks or [] if isinstance(check, str)
+        ),
+    }
+
+
+def _graph_refinement_result_fields(telemetry: ArmTelemetry) -> dict[str, Any]:
+    refinement = telemetry.applied_graph_refinement or {}
+    return {
+        "applied_assessment_id": telemetry.applied_assessment_id,
+        "graph_refinement_assessment_id": refinement.get("assessment_id"),
+        "graph_refinement_status": refinement.get("status"),
+        "graph_refinement_selected": refinement.get("selected") is True,
+        "graph_refinement_fact_kinds": tuple(refinement.get("fact_kinds") or ()),
+        "graph_refinement_risk_probability_update_count": int(
+            refinement.get("risk_probability_update_count") or 0
+        ),
+        "graph_refinement_origin_expected_loss": refinement.get("origin_expected_loss"),
+        "graph_refinement_revised_expected_loss": refinement.get("revised_expected_loss"),
+        "graph_refinement_origin_rau": refinement.get("origin_rau"),
+        "graph_refinement_revised_rau": refinement.get("revised_rau"),
+        "graph_refinement_candidate_verification_passed": (
+            refinement.get("candidate_verification_passed") is True
+        ),
+        "graph_refinement_revision_risk_benefit_improved": (
+            refinement.get("revision_risk_benefit_improved") is True
+        ),
+        "graph_refinement_proof_path": refinement.get("proof_path"),
+        "candidate_lineage_invalidated": telemetry.candidate_lineage_invalidated,
+    }
+
+
+def _required_checks_from_result(result: Any) -> tuple[str, ...]:
+    raw = getattr(result, "raw_payload", None)
+    guidance = raw.get("model_guidance_packet") if isinstance(raw, dict) else None
+    binding = guidance.get("binding") if isinstance(guidance, dict) else None
+    checks = binding.get("required_checks_before_commit") if isinstance(binding, dict) else None
+    return tuple(str(check) for check in checks or () if isinstance(check, str))
 
 
 def _advisory_backend(
@@ -433,6 +619,7 @@ def _advisory_backend(
                     "p_success": spec.assay_p_success,
                     "immediate_benefit": spec.assay_immediate_benefit,
                     "review_cost": spec.assay_review_cost,
+                    "task": spec.description,
                 }
                 if (
                     spec.required_task_files
@@ -468,6 +655,12 @@ def _advisory_backend(
             assessment_id = getattr(result, "assessment_id", None)
             if telemetry is not None and isinstance(assessment_id, str):
                 telemetry.last_assessment_id = assessment_id
+                telemetry.required_checks_by_assessment[assessment_id] = (
+                    _required_checks_from_result(result)
+                )
+                refinement = _graph_refinement_summary(result, assessment_id)
+                if refinement is not None:
+                    telemetry.graph_refinement_by_assessment[assessment_id] = refinement
             if is_human_review and telemetry is not None:
                 if result.get("recommended_decision") == "ask_human":
                     telemetry.human_approval_offered = True
@@ -489,15 +682,21 @@ def _advisory_backend(
                     if isinstance(raw, dict) and raw.get("risk_mode") == "controlled_high_risk":
                         telemetry.post_approval_reassessment = True
                         telemetry.approved_reassessment_id = assessment_id
+                        telemetry.approved_reassessment_ids.add(assessment_id)
                         telemetry.pending_human_approval = None
             verification_status = (
                 payload.get("candidate_verification", {}).get("status")
                 if isinstance(payload.get("candidate_verification"), dict)
                 else None
             )
+            retryable_unavailable = (
+                verification_status == "unavailable"
+                and isinstance(host_verification, dict)
+                and host_verification.get("retryable_infrastructure") is True
+            )
             if (
                 result.get("recommended_decision") == "revise_safer"
-                and verification_status != "unavailable"
+                and not retryable_unavailable
             ):
                 revise_attempt = min(max_attempts, attempt + 1)
                 if covering_hint:
@@ -616,19 +815,50 @@ def _gate_check_backend(
             if timeout_seconds is not None:
                 kwargs["timeout"] = max(1, int(timeout_seconds))
             decision = cli_harness.gate_check(event, **kwargs)
+            matched_assessment_id = decision.pop("matched_assessment_id", None)
             if (
-                telemetry is not None
-                and decision.get("permission") == "allow"
+                decision.get("permission") == "allow"
                 and decision.get("tier") == "consulted"
-                and telemetry.last_assessment_id is not None
+                and isinstance(matched_assessment_id, str)
             ):
-                telemetry.applied_assessment_id = telemetry.last_assessment_id
-                if telemetry.last_assessment_id == telemetry.approved_reassessment_id:
-                    telemetry.human_assisted_write_applied = True
+                decision["_matched_assessment_id"] = matched_assessment_id
             return decision
 
         return _real_gate
     return lambda event: {"permission": "allow", "tier": "pass"}
+
+
+def _write_applied_backend(telemetry: ArmTelemetry) -> Callable[[dict[str, Any]], None]:
+    """Commit host-only assessment attribution after the mutation succeeds."""
+
+    def _record(decision: dict[str, Any]) -> None:
+        assessment_id = decision.get("_matched_assessment_id")
+        if not isinstance(assessment_id, str):
+            telemetry.candidate_lineage_invalidated = True
+            telemetry.applied_assessment_id = None
+            telemetry.applied_graph_refinement = None
+            telemetry.applied_required_checks = ()
+            return
+        previous_assessment_id = telemetry.applied_assessment_id
+        if (
+            previous_assessment_id is not None
+            and previous_assessment_id != assessment_id
+        ):
+            telemetry.candidate_lineage_invalidated = True
+        telemetry.applied_assessment_id = assessment_id
+        telemetry.applied_graph_refinement = telemetry.graph_refinement_by_assessment.get(
+            assessment_id
+        )
+        telemetry.applied_required_checks = telemetry.required_checks_by_assessment.get(
+            assessment_id, ()
+        )
+        if (
+            assessment_id == telemetry.approved_reassessment_id
+            or assessment_id in telemetry.approved_reassessment_ids
+        ):
+            telemetry.human_assisted_write_applied = True
+
+    return _record
 
 
 def _positive_control_reason(event: dict[str, Any]) -> str:
@@ -760,6 +990,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         telemetry=telemetry,
         approval_backend=_approval_backend(arm, repo_path, db_path, telemetry),
         gate_check_backend=_gate_check_backend(arm, db_path, telemetry=telemetry),
+        write_applied_backend=_write_applied_backend(telemetry),
     )
 
 
@@ -808,12 +1039,55 @@ def _post_edit_verify(setup: ArmSetup, result: SubjectResult) -> SubjectResult:
     assessment_id = setup.telemetry.applied_assessment_id
     if setup.arm not in _REAL_ADVISORY_ARMS or not result.modified_files or assessment_id is None:
         return result
+    last_mutation = max(
+        (
+            call.sequence
+            for call in result.tool_calls
+            if call.name in models.MUTATING_TOOLS
+            and isinstance(call.result, dict)
+            and call.result.get("ok") is True
+        ),
+        default=-1,
+    )
+    fresh_calls = tuple(call for call in result.tool_calls if call.sequence > last_mutation)
+    check_tools = {
+        "run targeted tests for the touched scope before commit": "run_tests",
+        "targeted_tests": "run_tests",
+        "covering_tests": "run_tests",
+        "candidate_build": "run_build",
+    }
+    completed_checks: dict[str, str] = {}
+    for check in setup.telemetry.applied_required_checks:
+        tool_name = check_tools.get(check)
+        if tool_name is None:
+            continue
+        outcomes = [
+            call.result.get("passed")
+            for call in fresh_calls
+            if call.name == tool_name
+            and isinstance(call.result, dict)
+            and call.result.get("available") is True
+            and (
+                tool_name != "run_tests"
+                or (
+                    call.result.get("targeted") is True
+                    and isinstance(call.result.get("tests_selected"), int)
+                    and call.result.get("tests_selected") > 0
+                )
+            )
+            and isinstance(call.result.get("passed"), bool)
+        ]
+        if False in outcomes:
+            completed_checks[check] = "failed"
+        elif True in outcomes:
+            completed_checks[check] = "passed"
     try:
         passed, payload = cli_harness.verify(
             assessment_id,
             repo_root=setup.repo_path,
             db=setup.repo_path.parent / "pebra.db",
             scope="all",
+            completed_checks=completed_checks,
         )
     except (cli_harness.CLIError, OSError, subprocess.SubprocessError, ValueError) as exc:
         return dataclasses.replace(
@@ -908,6 +1182,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         human_assisted_write_applied=setup.telemetry.human_assisted_write_applied,
         write_before_approval=setup.telemetry.write_before_approval,
         write_before_reassessment=setup.telemetry.write_before_reassessment,
+        **_graph_refinement_result_fields(setup.telemetry),
     )
 
 

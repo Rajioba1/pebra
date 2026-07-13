@@ -71,6 +71,17 @@ def test_build_assess_ports_wires_revision_graph_refinement_provider(tmp_path) -
     assert hasattr(provider, "analyze")
 
 
+def test_graph_refinement_feature_flag_off_removes_provider(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PEBRA_GRAPH_REFINEMENT", "0")
+    req = candidate_parser.parse({"task": "t", "candidate_actions": [{"id": "a1"}]})
+    ctx = composition.resolve_repo_and_db(str(tmp_path))
+    try:
+        provider = composition.build_assess_ports(req, ctx)["graph_risk_refinement_provider"]
+    finally:
+        ctx.store.close()
+    assert provider is None
+
+
 def test_build_verify_ports_has_the_controller_keys() -> None:
     ports = composition.build_verify_ports()
     assert set(ports) == {"change_verifier", "contract_surface"}

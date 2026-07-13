@@ -51,13 +51,29 @@ class _SequencedSymbolDiff:
         )
 
 
+class _StableCandidateBinding:
+    def bind_baseline(self, action, repo_root):
+        return {"algorithm": "sha256-git-worktree-v1", "digest": "stable"}
+
+    def bind_candidate(self, action, repo_root):
+        return {
+            "algorithm": "sha256-normalized-content-v1",
+            "files": {path: "a" * 64 for path in action.expected_files},
+        }
+
+
 def _request(expected_files: list[str]) -> models.AssessmentRequest:
+    patch = "".join(
+        f"diff --git a/{path} b/{path}\n"
+        f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
+        for path in expected_files
+    )
     return models.AssessmentRequest.single_action(
         task="Rename the public function while preserving compatibility",
         action_id="stable-action",
         label="compatibility rename",
         expected_files=expected_files,
-        proposed_patch="--- a/src/api.ts\n+++ b/src/api.ts\n@@ -1 +1 @@\n-old\n+new\n",
+        proposed_patch=patch,
     )
 
 
@@ -79,6 +95,7 @@ def test_low_risk_partial_revision_cannot_proceed_after_risky_origin(tmp_path) -
         "repository_registry": FakeRegistry(),
         "store": store,
         "assessed_commit": "abc123",
+        "candidate_binding_provider": _StableCandidateBinding(),
     }
 
     first = assess_controller.assess(

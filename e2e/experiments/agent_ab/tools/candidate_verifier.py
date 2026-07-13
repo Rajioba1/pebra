@@ -26,7 +26,9 @@ guarantee before calling this module.
 from __future__ import annotations
 
 import hashlib
+import math
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,7 @@ _SUPPORTED_LANGUAGES = frozenset({"csharp", "javascript", "typescript"})
 _COVERING_CHECK = "covering_tests"
 _BUILD_CHECK = "candidate_build"
 _DOMAIN = "covering_tests"
+_VERIFY_COVERING_CHECK = "run targeted tests for the touched scope before commit"
 
 
 def candidate_patch_hash(patch: str) -> str:
@@ -44,6 +47,19 @@ def candidate_patch_hash(patch: str) -> str:
     ``pebra.core.decision_engine.candidate_patch_hash``: sha256 hexdigest of the exact UTF-8 patch
     text, no normalization."""
     return hashlib.sha256(patch.encode("utf-8")).hexdigest()
+
+
+def completed_checks_for_verify(evidence: dict[str, Any]) -> dict[str, str]:
+    """Translate host-verifier checks to the production post-edit guidance vocabulary."""
+    completed: dict[str, str] = {}
+    checks = evidence.get("checks")
+    for check, raw_status in (checks.items() if isinstance(checks, dict) else ()):
+        status = str(raw_status).lower()
+        if status not in {"passed", "failed"}:
+            continue
+        name = _VERIFY_COVERING_CHECK if check == _COVERING_CHECK else str(check)
+        completed[name] = status
+    return completed
 
 
 def _evidence(
@@ -91,6 +107,7 @@ def verify_candidate(
     build_profile: str = "default",
     build_selector: str | None = None,
     allow_build_fallback: bool = False,
+    required_checks: tuple[str, ...] = (),
     timeout: int = 600,
 ) -> dict[str, Any]:
     """Run the candidate's covering tests and return gate-7 evidence bound to ``patch_text``.
@@ -99,6 +116,14 @@ def verify_candidate(
     ``status`` in {passed, failed, unavailable}. ``verified_patch_hash`` is always populated so the
     binding holds regardless of outcome."""
     patch_hash = candidate_patch_hash(patch_text)
+    deadline = time.monotonic() + max(1, timeout)
+    supported_required = {_BUILD_CHECK, "public_contract_preserved"}
+    unknown_required = sorted(set(required_checks) - supported_required)
+    if unknown_required:
+        return _evidence(
+            "unavailable", patch_hash=patch_hash, required_checks=list(required_checks),
+            reason="unsupported required candidate check(s): " + ", ".join(unknown_required),
+        )
 
     if language not in _SUPPORTED_LANGUAGES:
         return _evidence("unavailable", patch_hash=patch_hash,
@@ -108,6 +133,7 @@ def verify_candidate(
     except ValueError:
         return _evidence("unavailable", patch_hash=patch_hash,
                          reason=f"no validated test runner for language {language!r}")
+    contract_requested = "public_contract_preserved" in required_checks
     contract_required = False
     if language in {"javascript", "typescript"}:
         contract_status, _contract_failures, contract_reason = (
@@ -123,6 +149,22 @@ def verify_candidate(
                 reason=contract_reason,
             )
         contract_required = contract_status == "passed"
+        if contract_requested and not contract_required:
+            return _evidence(
+                "unavailable",
+                patch_hash=patch_hash,
+                checks={"public_contract_preserved": "unavailable"},
+                required_checks=["public_contract_preserved"],
+                domain="public_contract",
+                reason="required public-contract preservation check was not applicable",
+            )
+    elif contract_requested:
+        return _evidence(
+            "unavailable", patch_hash=patch_hash,
+            checks={"public_contract_preserved": "unavailable"},
+            required_checks=["public_contract_preserved"], domain="public_contract",
+            reason=f"no validated public-contract verifier for language {language!r}",
+        )
 
     spec = type("_Spec", (), {
         "language": language,
@@ -132,64 +174,145 @@ def verify_candidate(
         "build_selector": build_selector,
         "command_timeout": timeout,
     })()
+
+    def _refresh_timeout() -> bool:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        spec.command_timeout = max(1, math.ceil(remaining))
+        return True
+
+    checks: dict[str, str] = {}
+    required: list[str] = []
+    if contract_required:
+        checks["public_contract_preserved"] = "passed"
+
+    def _with_contract(values: list[str]) -> list[str]:
+        return [*values, "public_contract_preserved"] if contract_required else list(values)
+    if _BUILD_CHECK in required_checks:
+        if not _refresh_timeout():
+            return _evidence(
+                "unavailable", patch_hash=patch_hash, checks=checks,
+                required_checks=_with_contract([_BUILD_CHECK]),
+                domain=_BUILD_CHECK, reason="candidate verification exhausted its timeout budget",
+            )
+        try:
+            build = backend.run_build(Path(repo_path), spec)
+        except subprocess.TimeoutExpired:
+            return _evidence(
+                "unavailable", patch_hash=patch_hash, checks=checks,
+                required_checks=_with_contract([_BUILD_CHECK]),
+                domain=_BUILD_CHECK, reason=f"candidate build timed out after {timeout} seconds",
+            )
+        if not build.available or not build.ran:
+            return _evidence(
+                "unavailable", patch_hash=patch_hash, checks=checks,
+                required_checks=_with_contract([_BUILD_CHECK]),
+                domain=_BUILD_CHECK,
+                reason=build.error_summary or "candidate build did not execute",
+            )
+        build_status = "passed" if build.passed else "failed"
+        checks[_BUILD_CHECK] = build_status
+        required.append(_BUILD_CHECK)
+        if not build.passed:
+            return _evidence(
+                "failed", patch_hash=patch_hash, checks=checks,
+                required_checks=_with_contract(required), domain=_BUILD_CHECK,
+                reason=build.error_summary or "candidate build failed",
+            )
     if not test_project:
+        if _BUILD_CHECK in checks:
+            return _evidence(
+                "passed", patch_hash=patch_hash, checks=checks,
+                required_checks=_with_contract(required), domain=_BUILD_CHECK,
+            )
         if not allow_build_fallback:
             return _evidence("unavailable", patch_hash=patch_hash,
                              reason="no covering tests declared for this candidate")
+        if not _refresh_timeout():
+            return _evidence(
+                "unavailable", patch_hash=patch_hash, checks=checks,
+                required_checks=_with_contract([_BUILD_CHECK]),
+                domain=_BUILD_CHECK, reason="candidate verification exhausted its timeout budget",
+            )
         try:
             result = backend.run_build(Path(repo_path), spec)
         except subprocess.TimeoutExpired:
             return _evidence(
-                "unavailable", patch_hash=patch_hash, required_checks=[_BUILD_CHECK],
+                "unavailable", patch_hash=patch_hash, checks=checks,
+                required_checks=_with_contract([_BUILD_CHECK]),
                 domain=_BUILD_CHECK, reason=f"candidate build timed out after {timeout} seconds",
             )
         if not result.available or not result.ran:
             return _evidence(
                 "unavailable",
                 patch_hash=patch_hash,
-                required_checks=[_BUILD_CHECK],
+                checks=checks,
+                required_checks=_with_contract([_BUILD_CHECK]),
                 domain=_BUILD_CHECK,
                 reason=result.error_summary or "candidate build did not execute",
             )
         status = "passed" if result.passed else "failed"
-        checks = {_BUILD_CHECK: status}
-        required_checks = [_BUILD_CHECK]
-        if contract_required:
-            checks["public_contract_preserved"] = "passed"
-            required_checks.append("public_contract_preserved")
+        checks[_BUILD_CHECK] = status
+        required = [_BUILD_CHECK]
         return _evidence(
             status,
             patch_hash=patch_hash,
             checks=checks,
-            required_checks=required_checks,
+            required_checks=_with_contract(required),
             domain=_BUILD_CHECK,
             reason=None if result.passed else (result.error_summary or "candidate build failed"),
         )
 
+    if not _refresh_timeout():
+        checks[_COVERING_CHECK] = "unavailable"
+        required.append(_COVERING_CHECK)
+        return _evidence(
+            "unavailable", patch_hash=patch_hash, checks=checks,
+            required_checks=_with_contract(required),
+            reason="candidate verification exhausted its timeout budget",
+            test_project=test_project, test_filter=test_filter,
+        )
     try:
         result = backend.run_tests(
             Path(repo_path), spec, project=test_project, test_filter=test_filter
         )
     except subprocess.TimeoutExpired:
+        checks[_COVERING_CHECK] = "unavailable"
+        required.append(_COVERING_CHECK)
         return _evidence(
-            "unavailable", patch_hash=patch_hash, required_checks=[_COVERING_CHECK],
+            "unavailable", patch_hash=patch_hash, checks=checks,
+            required_checks=_with_contract(required),
             reason=f"candidate tests timed out after {timeout} seconds",
             test_project=test_project, test_filter=test_filter,
         )
     if not result.available or not result.ran:
-        return _evidence("unavailable", patch_hash=patch_hash,
+        checks[_COVERING_CHECK] = "unavailable"
+        required.append(_COVERING_CHECK)
+        return _evidence("unavailable", patch_hash=patch_hash, checks=checks,
+                         required_checks=_with_contract(required),
                          reason=result.error_summary or "covering-test run did not execute",
                          test_project=test_project, test_filter=test_filter,
                          tests_selected=result.tests_selected)
+    if not isinstance(result.tests_selected, int) or result.tests_selected <= 0:
+        checks[_COVERING_CHECK] = "unavailable"
+        required.append(_COVERING_CHECK)
+        return _evidence(
+            "unavailable",
+            patch_hash=patch_hash,
+            checks=checks,
+            required_checks=_with_contract(required),
+            reason="covering-test run selected no tests",
+            test_project=test_project,
+            test_filter=test_filter,
+            tests_selected=result.tests_selected,
+        )
 
     status = "passed" if result.passed else "failed"
-    checks = {_COVERING_CHECK: status}
-    required_checks = [_COVERING_CHECK]
-    if contract_required:
-        checks["public_contract_preserved"] = "passed"
-        required_checks.append("public_contract_preserved")
+    checks[_COVERING_CHECK] = status
+    required.append(_COVERING_CHECK)
     return _evidence(status, patch_hash=patch_hash, checks=checks,
-                     required_checks=required_checks,
+                     required_checks=_with_contract(required),
                      reason=None if result.passed else (result.error_summary or "covering tests failed"),
                      test_project=test_project, test_filter=test_filter,
                      tests_selected=result.tests_selected)

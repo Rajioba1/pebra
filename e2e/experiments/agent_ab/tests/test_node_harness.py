@@ -277,6 +277,23 @@ def test_run_tests_targets_file_and_reports_pass(tmp_path, monkeypatch):
     runner = _fake_runner([_proc(0, stdout=json.dumps({"numTotalTests": 5, "numFailedTests": 0}))])
     r = nh.run_tests(tmp_path, test_path="src/a.test.ts", runner=runner)
     assert r.ran is True and r.passed is True and r.tests_selected == 5
+    assert r.targeted is True
+
+
+def test_run_tests_untargeted_zero_selected_is_not_a_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    _pin_node(tmp_path)
+    (tmp_path / "node_modules").mkdir()
+    runner = _fake_runner([
+        _proc(0, stdout=json.dumps({"numTotalTests": 0, "numFailedTests": 0}))
+    ])
+
+    r = nh.run_tests(tmp_path, runner=runner)
+
+    assert r.passed is False
+    assert r.tests_selected == 0
+    assert r.targeted is False
 
 
 def test_run_tests_zero_selected_targeted_is_not_a_pass(tmp_path, monkeypatch):
@@ -298,6 +315,18 @@ def test_run_tests_targeted_malformed_json_is_not_a_pass(tmp_path, monkeypatch):
     runner = _fake_runner([_proc(0, stdout="not json")])
     r = nh.run_tests(tmp_path, test_path="src/a.test.ts", runner=runner)
     assert r.passed is False and r.tests_selected is None
+
+
+def test_run_tests_untargeted_malformed_json_is_not_a_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    _pin_node(tmp_path)
+    (tmp_path / "node_modules").mkdir()
+
+    r = nh.run_tests(tmp_path, runner=_fake_runner([_proc(0, stdout="not json")]))
+
+    assert r.passed is False
+    assert r.tests_selected is None
 
 
 def test_run_build_fails_closed_without_node_version_pin(tmp_path, monkeypatch):

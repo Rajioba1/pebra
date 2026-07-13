@@ -58,7 +58,7 @@ _DEFAULT_REPO_BLAST_MIN_REPO_NODE_COUNT = 50
 
 def _flatten_scores(a: Assessment) -> dict[str, Any]:
     s = a.scores
-    return {
+    flat = {
         "expected_loss": s["expected_loss"],
         "expected_utility": s["expected_utility"],
         "utility_sd": s["utility_sd"],
@@ -81,6 +81,7 @@ def _flatten_scores(a: Assessment) -> dict[str, Any]:
         "symbol_scope_evidence": s["symbol_scope_evidence"],
         "variance_breakdown": s["variance_breakdown"],
     }
+    return flat
 
 
 def _risk_mode(decision: Decision, stage: str, *, controlled: bool, elevated: bool) -> RiskMode:
@@ -102,7 +103,7 @@ def _as_int(value: Any, default: int) -> int:
 
 def _revision_exhausted(thresholds: dict[str, Any]) -> bool:
     attempt = _as_int(thresholds.get("revise_safer_attempt", 0), 0)
-    cap = _as_int(thresholds.get("max_revise_safer_attempts", 1), 1)
+    cap = min(3, _as_int(thresholds.get("max_revise_safer_attempts", 1), 1))
     return cap <= 0 or attempt >= cap
 
 

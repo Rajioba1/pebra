@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 import math
 from typing import Any
@@ -9,10 +10,15 @@ from typing import Any
 from pebra.core.models import CandidateGraphRiskEvidence
 
 
-STRUCTURAL_CONTINUITY_MULTIPLIER = 0.65
+# A complete, high-confidence continuity proof retains 35% of the prior event probability.
+# It never removes the event: the independent and absolute floors below preserve uncertainty
+# for unknown external consumers and behavior that structural evidence cannot establish.
+STRUCTURAL_CONTINUITY_MULTIPLIER = 0.35
 STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR = 0.05
 STRUCTURAL_CONTINUITY_MIN_CONFIDENCE = 0.90
-_ALLOWED_FACTS = {"exported_binding_continuity"}
+_ALLOWED_FACT_SCOPES = {
+    "exported_binding_continuity": {("public_api_break", "graph_modify_risk")},
+}
 # Adapter logic is language-neutral; autonomous credit is enabled only for extractor families whose
 # real binary edge/signature semantics have been measured end-to-end.
 MEASURED_CONTINUITY_LANGUAGES = frozenset({"typescript", "tsx"})
@@ -41,6 +47,18 @@ def apply_scoped_adjustments(
             duplicate_keys.add(key)
         fact_by_key[key] = fact
 
+    event_keys = [
+        (
+            str(event.get("event", "")),
+            str(event.get("risk_source", "")),
+            tuple(sorted(set(
+                str(value) for value in event.get("owner_node_ids", ()) if value
+            ))),
+        )
+        for event in events
+    ]
+    event_key_counts = Counter(event_keys)
+
     adjusted: list[dict[str, Any]] = []
     applied: list[str] = []
     for event in events:
@@ -49,21 +67,26 @@ def apply_scoped_adjustments(
         fact = fact_by_key.get(key)
         if (
             not owners
+            or event_key_counts[key] != 1
             or key in duplicate_keys
             or fact is None
-            or fact.fact_kind not in _ALLOWED_FACTS
+            or key[:2] not in _ALLOWED_FACT_SCOPES.get(fact.fact_kind, set())
             or not math.isfinite(fact.confidence)
             or fact.confidence < STRUCTURAL_CONTINUITY_MIN_CONFIDENCE
+            or fact.confidence > 1.0
         ):
             adjusted.append(event)
             continue
         original = float(event.get("p_event", 0.0))
+        multiplier = 1.0 - (
+            (1.0 - STRUCTURAL_CONTINUITY_MULTIPLIER) * float(fact.confidence)
+        )
         revised = min(
             original,
             max(
                 STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR,
                 float(event.get("independent_probability_floor", 0.0)),
-                original * STRUCTURAL_CONTINUITY_MULTIPLIER,
+                original * multiplier,
             ),
         )
         updated = dict(event)
@@ -71,9 +94,12 @@ def apply_scoped_adjustments(
         updated["graph_risk_update"] = {
             "fact_kind": fact.fact_kind,
             "provider": evidence.provider,
+            "event": fact.event,
+            "risk_source": fact.risk_source,
+            "fact_confidence": fact.confidence,
             "original_probability": original,
             "revised_probability": revised,
-            "probability_multiplier": STRUCTURAL_CONTINUITY_MULTIPLIER,
+            "probability_multiplier": multiplier,
             "probability_floor": STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR,
             "calibration": "prior_uncalibrated_conservative",
             "owner_node_ids": list(owners),

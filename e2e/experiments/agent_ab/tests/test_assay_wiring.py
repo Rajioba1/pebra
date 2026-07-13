@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import dataclasses
 from types import SimpleNamespace
 
 from e2e.experiments.agent_ab import models
@@ -69,6 +70,9 @@ def test_assay_to_json_has_verdict_gate_trace_and_pairwise():
     assert all(
         {
             "autonomous_completion_rate",
+            "graph_refined_autonomous_completion_rate",
+            "graph_only_autonomous_completion_rate",
+            "graph_plus_host_verified_completion_rate",
             "human_assisted_completion_rate",
             "safe_escalation_rate",
             "approval_request_adherence_rate",
@@ -268,6 +272,26 @@ def test_completed_units_risky_needs_all_assay_arms():
 _SIX_ARMS = [*_ARMS, models.ARM_PEBRA_GRAPH_REPAIR]
 
 
+def _with_graph_route(outcome):
+    return dataclasses.replace(
+        outcome,
+        graph_refinement_status="available",
+        graph_refinement_assessment_id="asm_graph",
+        applied_assessment_id="asm_graph",
+        graph_refinement_selected=True,
+        graph_refinement_fact_kinds=("exported_binding_continuity",),
+        graph_refinement_risk_probability_update_count=1,
+        graph_refinement_origin_expected_loss=0.36,
+        graph_refinement_revised_expected_loss=0.12,
+        graph_refinement_revised_rau=0.08,
+        graph_refinement_revision_risk_benefit_improved=True,
+        graph_refinement_proof_path="graph_only",
+        post_edit_verify_ran=True,
+        post_edit_verify_passed=True,
+        post_edit_verify_assessment_id="asm_graph",
+    )
+
+
 def _six_arm_metrics():
     # sham/blast harm on every risky pair; oracle/enforced/repair never harm; pebra harms T2 only.
     # -> valid assay (oracle,enforced > sham), pebra beats sham+blast, repair beats pebra (avoids T2).
@@ -283,8 +307,13 @@ def _six_arm_metrics():
     for arm in _SIX_ARMS:
         for task in ("T1", "T2"):
             harm = harm_by_arm[arm][task]
-            outs.append(_o(task, arm, 0, "risky", harm,
-                           completed=not harm and arm != models.ARM_ENFORCED_CONTROL))
+            outcome = _o(
+                task, arm, 0, "risky", harm,
+                completed=not harm and arm != models.ARM_ENFORCED_CONTROL,
+            )
+            if arm == models.ARM_PEBRA_GRAPH_REPAIR and not harm:
+                outcome = _with_graph_route(outcome)
+            outs.append(outcome)
         blocked = arm == models.ARM_ENFORCED_CONTROL
         outs.append(_o("B1", arm, 0, "safe", False, completed=not blocked, over=blocked))
     return scorecard.aggregate_assay(outs, arms=_SIX_ARMS)
@@ -313,8 +342,13 @@ def test_repair_gate_can_rescue_base_pebra_vs_blast_failure():
     for arm in _SIX_ARMS:
         for task in ("T1", "T2"):
             harm = harm_by_arm[arm][task]
-            outs.append(_o(task, arm, 0, "risky", harm,
-                           completed=not harm and arm != models.ARM_ENFORCED_CONTROL))
+            outcome = _o(
+                task, arm, 0, "risky", harm,
+                completed=not harm and arm != models.ARM_ENFORCED_CONTROL,
+            )
+            if arm == models.ARM_PEBRA_GRAPH_REPAIR and not harm:
+                outcome = _with_graph_route(outcome)
+            outs.append(outcome)
         blocked = arm == models.ARM_ENFORCED_CONTROL
         outs.append(_o("B1", arm, 0, "safe", False, completed=not blocked, over=blocked))
 
@@ -337,8 +371,30 @@ def test_report_promotes_graph_repair_when_it_rescues_plain_pebra():
     outs = []
     for arm in _SIX_ARMS:
         harm = harm_by_arm[arm]["T1"]
-        outs.append(_o("T1", arm, 0, "risky", harm,
-                       completed=not harm and arm != models.ARM_ENFORCED_CONTROL))
+        risky = _o(
+            "T1", arm, 0, "risky", harm,
+            completed=not harm and arm != models.ARM_ENFORCED_CONTROL,
+        )
+        if arm == models.ARM_PEBRA_GRAPH_REPAIR:
+            risky = dataclasses.replace(
+                risky,
+                graph_refinement_status="available",
+                graph_refinement_assessment_id="asm_graph",
+                applied_assessment_id="asm_graph",
+                graph_refinement_selected=True,
+                graph_refinement_fact_kinds=("exported_binding_continuity",),
+                graph_refinement_risk_probability_update_count=1,
+                graph_refinement_origin_expected_loss=0.36,
+                graph_refinement_revised_expected_loss=0.12,
+                graph_refinement_revised_rau=0.08,
+                graph_refinement_candidate_verification_passed=True,
+                graph_refinement_revision_risk_benefit_improved=True,
+                graph_refinement_proof_path="graph_plus_host_verification",
+                post_edit_verify_ran=True,
+                post_edit_verify_passed=True,
+                post_edit_verify_assessment_id="asm_graph",
+            )
+        outs.append(risky)
         blocked = arm == models.ARM_ENFORCED_CONTROL
         outs.append(_o("B1", arm, 0, "safe", harm=False, completed=not blocked, over=blocked))
 
