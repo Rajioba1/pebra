@@ -71,6 +71,21 @@ def bench_flow_regen(session: nox.Session) -> None:
     session.run("python", "-m", "benchmarks.flow.compare")
 
 
+@nox.session(name="bench-continuity-smoke")
+def bench_continuity_smoke(session: nox.Session) -> None:
+    """Unpaid real-provider smoke over pinned Zod candidates plus isolated consumer oracles."""
+    session.install("-e", ".")
+    session.install("pytest")
+    session.run("pytest", "benchmarks/continuity", "-q")
+    repo = os.environ.get("E2E_ZOD_REPO")
+    if not repo:
+        session.error("E2E_ZOD_REPO must point to a local Zod checkout at the pinned SHA")
+    session.run(
+        "python", "-m", "benchmarks.continuity.smoke", "--repo", repo,
+        "--output", "e2e/out/continuity/smoke.jsonl",
+    )
+
+
 @nox.session(name="e2e")
 def e2e(session: nox.Session) -> None:
     """Full current agent/product e2e. Runs the fast lane plus seeded-learning/dashboard metrics.
