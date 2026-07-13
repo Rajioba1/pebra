@@ -73,6 +73,8 @@ def render_scorecard(payload: dict[str, Any]) -> str:
     lines += _block("Benefit Calibration (binary proxy)", cal["benefit_binary"], continuous=False)
     lines.append("")
     lines += _block("Benefit Calibration (continuous)", cal["benefit_continuous"], continuous=True)
+    lines.append("")
+    lines += _block("Review-cost Calibration (continuous)", cal["cost_continuous"], continuous=True)
     lines += [
         "",
         f"Labels:  {cal['observed']} observed / {cal['censored']} censored "

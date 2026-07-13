@@ -47,6 +47,7 @@ def test_extract_pulls_only_recognized_label_fields() -> None:
     detail = {
         "actual_success": False,
         "event_outcomes": {"test_regression": True},
+        outcome_labels.LABEL_SOURCE_KEY: "host",
         "note": "ignored",
     }
     labels = outcome_labels.extract_labels(detail)
@@ -59,3 +60,16 @@ def test_extract_pulls_only_recognized_label_fields() -> None:
 def test_agent_supplied_labels_are_censored() -> None:
     detail = {"actual_success": True, "_pebra_label_source": "agent"}
     assert outcome_labels.extract_labels(detail) == {}
+
+
+@pytest.mark.parametrize("source", [None, "", "operator", "HOST", "typo"])
+def test_only_explicit_host_provenance_can_train(source) -> None:
+    detail = {"actual_success": True}
+    if source is not None:
+        detail[outcome_labels.LABEL_SOURCE_KEY] = source
+    assert outcome_labels.extract_labels(detail) == {}
+
+
+def test_explicit_host_labels_are_extracted() -> None:
+    detail = {"actual_success": True, outcome_labels.LABEL_SOURCE_KEY: "host"}
+    assert outcome_labels.extract_labels(detail) == {"actual_success": True}

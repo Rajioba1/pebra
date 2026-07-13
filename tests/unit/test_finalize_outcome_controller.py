@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from pebra.app import finalize_outcome_controller as foc
+from pebra.ports.learning_port import MeasurementAlreadyRecordedError
 
 
 class _Store:
@@ -107,3 +108,23 @@ def test_finalize_accepts_matching_legacy_host_outcome_without_source(monkeypatc
         learning_port=object(),
     )
     assert outcome.outcome_recorded is False
+
+
+def test_finalize_treats_lost_measurement_race_as_idempotent_retry(monkeypatch) -> None:
+    store = _Store()
+
+    def raced(*_args, **_kwargs):
+        raise MeasurementAlreadyRecordedError("already measured")
+
+    monkeypatch.setattr(foc.learning_controller, "measure_learning", raced)
+    monkeypatch.setattr(foc.promotion_controller, "run_promotion", lambda *a, **k: _result())
+    monkeypatch.setattr(foc.promotion_controller, "run_benefit_promotion", lambda *a, **k: _result())
+    monkeypatch.setattr(foc.promotion_controller, "run_review_cost_promotion", lambda *a, **k: _result())
+
+    outcome = foc.finalize_outcome(
+        "asm_1", "completed", detail={"actual_success": True}, store=store,
+        learning_port=object(),
+    )
+
+    assert outcome.outcome_recorded is True
+    assert outcome.measurement_recorded is False

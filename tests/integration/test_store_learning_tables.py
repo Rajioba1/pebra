@@ -3,13 +3,16 @@ learning store."""
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import threading
 
 import pytest
 
 from pebra.adapters.store.db import GENESIS, SqliteStore, _row_hash
 from pebra.core.constants import ActionStatus, Decision, RiskMode
 from pebra.core.models import AssessmentResult
+from pebra.ports.learning_port import MeasurementAlreadyRecordedError
 
 
 def _seed(store) -> str:
@@ -141,6 +144,61 @@ def test_learning_measurement_success_keeps_both_chains_valid(tmp_path) -> None:
     assert counts["prediction_errors"] == 2 and counts["risk_snapshots"] == 1
     assert store.prediction_errors_exist(asm) is True
     assert store.validate_chain() is True  # both chains intact after the atomic write
+    store.close()
+
+
+def test_learning_measurement_rechecks_idempotency_inside_write_transaction(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "p.db"))
+    asm = _seed(store)
+    args = (
+        asm, [_err_row(True)], "r",
+        {"assessment_id": asm, "observed": 1, "censored": 0}, "shadow",
+    )
+    store.insert_learning_measurement(*args)
+
+    with pytest.raises(MeasurementAlreadyRecordedError):
+        store.insert_learning_measurement(*args)
+
+    counts = store.chain_status()["counts"]
+    assert counts["prediction_errors"] == 1
+    assert counts["risk_snapshots"] == 1
+    assert store.validate_chain() is True
+    store.close()
+
+
+def test_concurrent_learning_measurements_create_one_complete_batch(tmp_path) -> None:
+    db_path = str(tmp_path / "p.db")
+    seed_store = SqliteStore(db_path)
+    asm = _seed(seed_store)
+    seed_store.close()
+    barrier = threading.Barrier(2)
+
+    def write_once() -> str:
+        store = SqliteStore(db_path)
+        try:
+            barrier.wait(timeout=5)
+            store.insert_learning_measurement(
+                asm,
+                [_err_row(True)],
+                "r",
+                {"assessment_id": asm, "observed": 1, "censored": 0},
+                "shadow",
+            )
+            return "recorded"
+        except MeasurementAlreadyRecordedError:
+            return "duplicate"
+        finally:
+            store.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: write_once(), range(2)))
+
+    assert sorted(results) == ["duplicate", "recorded"]
+    store = SqliteStore(db_path)
+    counts = store.chain_status()["counts"]
+    assert counts["prediction_errors"] == 1
+    assert counts["risk_snapshots"] == 1
+    assert store.validate_chain() is True
     store.close()
 
 

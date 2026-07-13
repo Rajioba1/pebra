@@ -31,7 +31,11 @@ def _valid(cell: CalibratedPriorCell) -> bool:
     values = (
         cell.p_success, cell.p_success_variance, cell.review_cost, cell.review_cost_variance,
     )
-    if cell.sample_size <= 0 or not cell.calibration_tag:
+    if (
+        cell.sample_size <= 0
+        or not cell.calibration_tag
+        or not any((cell.action_type, cell.language_tier, cell.graph_fact_kind))
+    ):
         return False
     if any(value is not None and not math.isfinite(value) for value in values):
         return False
@@ -70,27 +74,44 @@ def _specificity(cell: CalibratedPriorCell) -> tuple[int, int, str]:
 def apply_warm_prior(
     inp: AssessmentInput, cells: tuple[CalibratedPriorCell, ...]
 ) -> AssessmentInput:
-    """Apply the most-specific valid cell without overriding request-supplied values."""
+    """Resolve each missing field from its most-specific matching reviewed cell.
+
+    Per-field resolution prevents a sparse, highly-specific cell from hiding a valid value supplied by
+    a broader matching cell. Completely unscoped cells are rejected by ``_valid``.
+    """
     matches = [cell for cell in cells if _valid(cell) and _matches(cell, inp)]
     if not matches:
         return inp
-    cell = max(matches, key=_specificity)
     explicit = inp.request.evidence
     changes: dict[str, object] = {}
+    field_sources: dict[str, dict[str, object]] = {}
+    selected_cells: dict[str, CalibratedPriorCell] = {}
     for field_name in (
         "p_success", "p_success_variance", "review_cost", "review_cost_variance",
     ):
-        value = getattr(cell, field_name)
-        if value is not None and field_name not in explicit:
-            changes[field_name] = value
+        candidates = [cell for cell in matches if getattr(cell, field_name) is not None]
+        if field_name in explicit or not candidates:
+            continue
+        cell = max(candidates, key=_specificity)
+        changes[field_name] = getattr(cell, field_name)
+        selected_cells[field_name] = cell
+        field_sources[field_name] = {
+            "calibration_tag": cell.calibration_tag,
+            "sample_size": cell.sample_size,
+            "action_type": cell.action_type,
+            "language_tier": cell.language_tier,
+            "graph_fact_kind": cell.graph_fact_kind,
+        }
     if not changes:
         return inp
+    primary = max(selected_cells.values(), key=_specificity)
     changes["warm_prior_provenance"] = {
-        "calibration_tag": cell.calibration_tag,
-        "sample_size": cell.sample_size,
-        "action_type": cell.action_type,
-        "language_tier": cell.language_tier,
-        "graph_fact_kind": cell.graph_fact_kind,
+        "calibration_tag": primary.calibration_tag,
+        "sample_size": primary.sample_size,
+        "action_type": primary.action_type,
+        "language_tier": primary.language_tier,
+        "graph_fact_kind": primary.graph_fact_kind,
         "applied_fields": sorted(changes),
+        "field_sources": field_sources,
     }
     return dataclasses.replace(inp, **changes)

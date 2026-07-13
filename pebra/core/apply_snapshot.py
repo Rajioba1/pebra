@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pebra.core import risk_fact_decay
+from pebra.core.constants import COLD_START_VARIANCES, LEARNED_VARIANCE_FLOOR_RATIO
 from pebra.core.models import AssessmentInput
 from pebra.core.prediction_capture import (
     BENEFIT_BINARY,
@@ -73,6 +74,9 @@ class SnapshotFact:
     # Epistemic variance of the learned target estimate. ``None`` means the promoted fact predates
     # variance calibration; ``0.0`` is a valid deterministic estimate and must be preserved.
     variance: float | None = None
+    # Observed outcome variability. It is kept separate from the epistemic term in storage/provenance,
+    # then recombined under a floor/cap when the fact is applied.
+    aleatoric_variance: float | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +134,10 @@ def _applicable(fact: SnapshotFact) -> bool:
         and bool(fact.calibration_method)
         and math.isfinite(fact.value)
         and (fact.variance is None or (fact.variance >= 0.0 and math.isfinite(fact.variance)))
+        and (
+            fact.aleatoric_variance is None
+            or (fact.aleatoric_variance >= 0.0 and math.isfinite(fact.aleatoric_variance))
+        )
     )
 
 
@@ -206,6 +214,7 @@ def _provenance(target: str, prior: float, new: float, fact: SnapshotFact) -> di
         "sample_size": fact.sample_size,
         "calibration_method": fact.calibration_method,
         "variance": fact.variance,
+        "aleatoric_variance": fact.aleatoric_variance,
     }
 
 
@@ -294,6 +303,9 @@ def _pool_provenance(
     target: str, prior: float, new: float, contributors: list[tuple[SnapshotFact, float]]
 ) -> dict[str, Any]:
     variances = [f.variance for f, _ in contributors if f.variance is not None]
+    aleatoric_variances = [
+        f.aleatoric_variance for f, _ in contributors if f.aleatoric_variance is not None
+    ]
     return {
         "target": target,
         "mode": "log_pool",
@@ -302,6 +314,7 @@ def _pool_provenance(
         # Conservative aggregation: pooling must not claim less epistemic uncertainty than its most
         # uncertain accepted contributor until covariance-aware pooling is calibrated.
         "variance": max(variances) if variances else None,
+        "aleatoric_variance": max(aleatoric_variances) if aleatoric_variances else None,
         "pooled_facts": [
             {
                 "fact_id": f.fact_id, "scope_kind": f.scope_kind, "scope_rank": f.specificity_rank,
@@ -338,6 +351,27 @@ def _resolve_target(
     return new, _pool_provenance(target_name, prior, new, contributors)
 
 
+def _bounded_learned_variance(prov: dict[str, Any] | None, component: str) -> float | None:
+    """Combine promoted epistemic + aleatoric terms under the component's safety bounds.
+
+    A legacy promoted fact with only the epistemic field cannot prove a residual uncertainty floor, so
+    it degrades to the conservative cold-start cap instead of narrowing RAU.
+    """
+    if prov is None or prov.get("variance") is None:
+        return None
+    cap = COLD_START_VARIANCES[component]
+    floor = cap * LEARNED_VARIANCE_FLOOR_RATIO
+    aleatoric = prov.get("aleatoric_variance")
+    if aleatoric is None:
+        applied = cap
+    else:
+        applied = max(floor, min(cap, float(prov["variance"]) + float(aleatoric)))
+    prov["applied_variance"] = applied
+    prov["variance_floor"] = floor
+    prov["variance_cap"] = cap
+    return applied
+
+
 def apply_snapshot(
     inp: AssessmentInput,
     snapshot: SnapshotBundle | None = None,
@@ -362,8 +396,9 @@ def apply_snapshot(
     )
     if val is not None:
         new_p_success = val
-        if prov is not None and prov.get("variance") is not None:
-            new_p_success_variance = float(prov["variance"])
+        learned_variance = _bounded_learned_variance(prov, "p_success")
+        if learned_variance is not None:
+            new_p_success_variance = learned_variance
         applied.append(prov)  # type: ignore[arg-type]
 
     new_events: list[dict[str, Any]] | None = None
@@ -380,8 +415,9 @@ def apply_snapshot(
             # elicited_disutility). Revisit if the event schema ever gains nested mutables.
             new_events = [dict(e) for e in inp.events]  # never mutate the original
         new_events[idx]["p_event"] = val
-        if prov is not None and prov.get("variance") is not None:
-            new_event_probability_variances[event["event"]] = float(prov["variance"])
+        learned_variance = _bounded_learned_variance(prov, "p_event")
+        if learned_variance is not None:
+            new_event_probability_variances[event["event"]] = learned_variance
         applied.append(prov)  # type: ignore[arg-type]
 
     new_immediate_benefit = inp.immediate_benefit
@@ -437,8 +473,9 @@ def apply_snapshot(
     )
     if val is not None:
         new_review_cost = max(0.0, val)
-        if prov is not None and prov.get("variance") is not None:
-            new_review_cost_variance = float(prov["variance"])
+        learned_variance = _bounded_learned_variance(prov, "review_cost")
+        if learned_variance is not None:
+            new_review_cost_variance = learned_variance
         applied.append(prov)  # type: ignore[arg-type]
 
     if not applied:

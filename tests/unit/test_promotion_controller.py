@@ -182,6 +182,7 @@ def test_run_review_cost_promotion_writes_decoupled_snapshot_with_variance():
     assert facts[0]["target_type"] == "cost_continuous"
     assert facts[0]["target_name"] == "review_cost"
     assert facts[0]["fact_json"]["variance"] == pytest.approx(0.0)
+    assert facts[0]["fact_json"]["aleatoric_variance"] == pytest.approx(0.0)
     assert facts[0]["fact_json"]["variance_method"] == "sample_mean_variance"
 
 

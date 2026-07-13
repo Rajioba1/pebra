@@ -54,6 +54,8 @@ class SnapshotReadStore(SnapshotReadPort):
             scope_change_count = int(fact.get("scope_change_count", 0))
             variance_raw = fact.get("variance")
             variance = None if variance_raw is None else float(variance_raw)
+            aleatoric_raw = fact.get("aleatoric_variance")
+            aleatoric_variance = None if aleatoric_raw is None else float(aleatoric_raw)
             if sample_size < MIN_CALIBRATION_SAMPLES or not method or not math.isfinite(value):
                 return None
             if (
@@ -63,6 +65,10 @@ class SnapshotReadStore(SnapshotReadPort):
                 or not math.isfinite(weight)
                 or not math.isfinite(calibration_quality)
                 or (variance is not None and (variance < 0.0 or not math.isfinite(variance)))
+                or (
+                    aleatoric_variance is not None
+                    and (aleatoric_variance < 0.0 or not math.isfinite(aleatoric_variance))
+                )
             ):
                 return None
             scope_json = json.loads(row["scope_json"] or "{}")
@@ -83,6 +89,7 @@ class SnapshotReadStore(SnapshotReadPort):
                 calibration_quality=calibration_quality,
                 scope_change_count=scope_change_count,
                 variance=variance,
+                aleatoric_variance=aleatoric_variance,
             )
         except (ValueError, TypeError):
             return None  # malformed JSON / non-numeric value -> skip, never raise

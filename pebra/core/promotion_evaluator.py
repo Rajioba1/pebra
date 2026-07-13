@@ -20,6 +20,7 @@ the false-proceed / C4 vetoes are skipped (applying them would invert the safety
 from __future__ import annotations
 
 import fnmatch
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -52,6 +53,21 @@ def beta_parameter_variance(rows: list[dict[str, Any]]) -> float:
     return (alpha * beta) / ((total**2) * (total + 1.0))
 
 
+def binary_aleatoric_variance(rows: list[dict[str, Any]]) -> float:
+    """Expected Bernoulli outcome variance under the Beta(1,1) posterior.
+
+    Added to ``beta_parameter_variance``, this yields the posterior-predictive variance rather than
+    letting parameter uncertainty collapse the total uncertainty toward zero.
+    """
+    if not rows:
+        raise ValueError("cannot compute variance over empty rows")
+    successes = sum(int(row["actual_outcome"]) for row in rows)
+    alpha = 1.0 + successes
+    beta = 1.0 + len(rows) - successes
+    total = alpha + beta
+    return (alpha * beta) / (total * (total + 1.0))
+
+
 def continuous_mean_variance(rows: list[dict[str, Any]]) -> float:
     """Estimated epistemic variance of a learned continuous mean."""
     if not rows:
@@ -62,6 +78,29 @@ def continuous_mean_variance(rows: list[dict[str, Any]]) -> float:
     mean = sum(values) / len(values)
     sample_variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
     return sample_variance / len(values)
+
+
+def continuous_aleatoric_variance(rows: list[dict[str, Any]]) -> float:
+    """Observed continuous-outcome variance, kept separate from mean-estimate uncertainty."""
+    if not rows:
+        raise ValueError("cannot compute variance over empty rows")
+    values = [float(row["actual_value"]) for row in rows]
+    if len(values) == 1:
+        return 0.0
+    mean = sum(values) / len(values)
+    return sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+
+
+def wilson_lower_bound(successes: int, total: int, z_value: float = 1.645) -> float:
+    """One-sided Wilson lower confidence bound for a coverage proportion."""
+    if total <= 0:
+        return 0.0
+    p = successes / total
+    z2 = z_value**2
+    denominator = 1.0 + z2 / total
+    centre = p + z2 / (2.0 * total)
+    radius = z_value * math.sqrt((p * (1.0 - p) + z2 / (4.0 * total)) / total)
+    return max(0.0, (centre - radius) / denominator)
 
 
 def _cross_fitted_binary_coverage(
@@ -96,6 +135,72 @@ def _cross_fitted_binary_coverage(
         covered += int(max(0.0, mean - radius) <= observed_rate <= min(1.0, mean + radius))
         evaluated += 1
     return covered / evaluated if evaluated else 0.0
+
+
+def _cross_fitted_binary_point_coverage(
+    rows: list[dict[str, Any]], *, folds: int, z_value: float = 1.645
+) -> tuple[int, int]:
+    """Per-outcome posterior-predictive coverage for an LCB over actual held-out observations."""
+    if len(rows) < 2:
+        return 0, 0
+    fold_count = max(2, min(int(folds), len(rows)))
+    boundaries = [round(i * len(rows) / fold_count) for i in range(fold_count + 1)]
+    covered = 0
+    evaluated = 0
+    for index in range(fold_count):
+        lo, hi = boundaries[index], boundaries[index + 1]
+        held_out = rows[lo:hi]
+        training = rows[:lo] + rows[hi:]
+        if not held_out or not training:
+            continue
+        successes = sum(int(row["actual_outcome"]) for row in training)
+        alpha = 1.0 + successes
+        beta = 1.0 + len(training) - successes
+        total = alpha + beta
+        mean = alpha / total
+        parameter_variance = (alpha * beta) / ((total**2) * (total + 1.0))
+        aleatoric_variance = (alpha * beta) / (total * (total + 1.0))
+        radius = z_value * math.sqrt(parameter_variance + aleatoric_variance)
+        lower, upper = max(0.0, mean - radius), min(1.0, mean + radius)
+        for row in held_out:
+            covered += int(lower <= int(row["actual_outcome"]) <= upper)
+            evaluated += 1
+    return covered, evaluated
+
+
+def _cross_fitted_continuous_coverage(
+    rows: list[dict[str, Any]], *, folds: int, z_value: float = 1.645
+) -> tuple[float, int, int]:
+    """Contiguous-fold mean coverage plus per-observation predictive coverage counts."""
+    if len(rows) < 2:
+        return 0.0, 0, 0
+    fold_count = max(2, min(int(folds), len(rows)))
+    boundaries = [round(i * len(rows) / fold_count) for i in range(fold_count + 1)]
+    fold_covered = 0
+    folds_evaluated = 0
+    point_covered = 0
+    points_evaluated = 0
+    for index in range(fold_count):
+        lo, hi = boundaries[index], boundaries[index + 1]
+        held_out = rows[lo:hi]
+        training = rows[:lo] + rows[hi:]
+        if not held_out or len(training) < 2:
+            continue
+        train_values = [float(row["actual_value"]) for row in training]
+        held_values = [float(row["actual_value"]) for row in held_out]
+        mean = sum(train_values) / len(train_values)
+        sample_variance = sum((value - mean) ** 2 for value in train_values) / (len(train_values) - 1)
+        parameter_variance = sample_variance / len(train_values)
+        mean_radius = z_value * math.sqrt(parameter_variance + sample_variance / len(held_values))
+        held_mean = sum(held_values) / len(held_values)
+        fold_covered += int(mean - mean_radius <= held_mean <= mean + mean_radius)
+        folds_evaluated += 1
+        point_radius = z_value * math.sqrt(parameter_variance + sample_variance)
+        for value in held_values:
+            point_covered += int(mean - point_radius <= value <= mean + point_radius)
+            points_evaluated += 1
+    fold_rate = fold_covered / folds_evaluated if folds_evaluated else 0.0
+    return fold_rate, point_covered, points_evaluated
 
 
 def scope_matches_features(
@@ -191,6 +296,7 @@ class PromotionGateResult:
     n_eval: int
     delta_mse: float | None = None  # benefit_continuous gate only (AD-29)
     interval_coverage: float | None = None
+    interval_coverage_lcb: float | None = None
 
 
 def _criticality(row: dict[str, Any]) -> str:
@@ -239,6 +345,10 @@ def evaluate_promotion_gate(
     interval_coverage = _cross_fitted_binary_coverage(
         [all_event_rows[i] for i in matched_idx], folds=config.coverage_folds
     )
+    covered_points, evaluated_points = _cross_fitted_binary_point_coverage(
+        [all_event_rows[i] for i in matched_idx], folds=config.coverage_folds
+    )
+    interval_coverage_lcb = wilson_lower_bound(covered_points, evaluated_points)
 
     is_event = candidate.target_name.startswith(_LOW)
     fpr_without: float | None = None
@@ -286,7 +396,10 @@ def evaluate_promotion_gate(
         veto = "C4_WEAKENING_DETECTED"
     elif (
         n_group >= config.min_interval_coverage_samples
-        and interval_coverage < config.min_interval_coverage
+        and (
+            interval_coverage < config.min_interval_coverage
+            or interval_coverage_lcb < config.min_interval_coverage
+        )
     ):
         veto = "INTERVAL_COVERAGE_LOW"
 
@@ -297,6 +410,7 @@ def evaluate_promotion_gate(
         false_proceed_rate_without=fpr_without, false_proceed_rate_with=fpr_with,
         c4_weakening_detected=c4_weak, n_group=n_group, n_eval=n_eval,
         interval_coverage=interval_coverage,
+        interval_coverage_lcb=interval_coverage_lcb,
     )
 
 
@@ -342,10 +456,25 @@ def evaluate_benefit_continuous_gate(
         pairs_without.append((p0, a))
         pairs_with.append((p1, a))
     delta_mse = mse(pairs_without) - mse(pairs_with)
+    matched_rows = [all_rows[i] for i in matched_idx]
+    interval_coverage, covered_points, evaluated_points = _cross_fitted_continuous_coverage(
+        matched_rows, folds=config.coverage_folds
+    )
+    interval_coverage_lcb = wilson_lower_bound(covered_points, evaluated_points)
     veto = "DELTA_MSE_NEGATIVE" if delta_mse < config.min_delta_mse else None
+    if (
+        veto is None
+        and n_group >= config.min_interval_coverage_samples
+        and (
+            interval_coverage < config.min_interval_coverage
+            or interval_coverage_lcb < config.min_interval_coverage
+        )
+    ):
+        veto = "INTERVAL_COVERAGE_LOW"
     return PromotionGateResult(
         promoted=veto is None, veto_reason=veto, n_group=n_group, n_eval=n_eval,
-        delta_mse=delta_mse, **none_result,
+        delta_mse=delta_mse, interval_coverage=interval_coverage,
+        interval_coverage_lcb=interval_coverage_lcb, **none_result,
     )
 
 

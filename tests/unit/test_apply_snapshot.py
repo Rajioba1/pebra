@@ -9,6 +9,7 @@ from dataclasses import replace
 import pytest
 
 from pebra.core.apply_snapshot import SnapshotBundle, SnapshotFact, apply_snapshot
+from pebra.core.constants import COLD_START_VARIANCES, LEARNED_VARIANCE_FLOOR_RATIO
 from pebra.core.models import AssessmentRequest, BenefitDeltaEvidence
 
 
@@ -31,14 +32,14 @@ def _fact(target_name="p_success", scope_kind="global", scope_value="", rank=0, 
           sample_size=50, created_at="2026-06-26T00:00:00Z", fact_id="lrf_1",
           target_type="risk_binary", ratify=False, scope_json=None,
           calibration_method="brier_bucket", weight=1.0, calibration_quality=1.0,
-          scope_change_count=0, variance=None):
+          scope_change_count=0, variance=None, aleatoric_variance=None):
     return SnapshotFact(
         fact_id=fact_id, target_type=target_type, target_name=target_name, scope_kind=scope_kind,
         scope_value=scope_value, specificity_rank=rank, value=value, sample_size=sample_size,
         created_at=created_at, requires_human_ratification=ratify, scope_json=scope_json or {},
         calibration_method=calibration_method, weight=weight,
         calibration_quality=calibration_quality, scope_change_count=scope_change_count,
-        variance=variance,
+        variance=variance, aleatoric_variance=aleatoric_variance,
     )
 
 
@@ -90,13 +91,30 @@ def test_global_p_success_override_and_provenance() -> None:
     assert entry["winning_fact_id"] == "lrf_1" and entry["calibration_method"] == "brier_bucket"
 
 
-def test_p_success_fact_applies_its_matching_parameter_variance() -> None:
+def test_p_success_fact_applies_bounded_total_variance() -> None:
     inp = replace(_inp(p_success=0.70), p_success_variance=None)
-    out = apply_snapshot(inp, _bundle(_fact(value=0.90, variance=0.0012)))
+    out = apply_snapshot(inp, _bundle(_fact(
+        value=0.90, variance=0.0012, aleatoric_variance=0.003,
+    )))
 
     assert out.p_success == pytest.approx(0.90)
-    assert out.p_success_variance == pytest.approx(0.0012)
+    assert out.p_success_variance == pytest.approx(0.0042)
     assert out.applied_snapshot_provenance["applied_facts"][0]["variance"] == pytest.approx(0.0012)
+
+
+def test_learned_variance_cannot_collapse_below_floor_or_exceed_prior_cap() -> None:
+    floor = COLD_START_VARIANCES["p_success"] * LEARNED_VARIANCE_FLOOR_RATIO
+    low = apply_snapshot(
+        _inp(), _bundle(_fact(variance=0.0, aleatoric_variance=0.0)),
+    )
+    high = apply_snapshot(
+        _inp(), _bundle(_fact(variance=100.0, aleatoric_variance=100.0)),
+    )
+    legacy = apply_snapshot(_inp(), _bundle(_fact(variance=0.0)))
+
+    assert low.p_success_variance == pytest.approx(floor)
+    assert high.p_success_variance == pytest.approx(COLD_START_VARIANCES["p_success"])
+    assert legacy.p_success_variance == pytest.approx(COLD_START_VARIANCES["p_success"])
 
 
 def test_clamp_to_unit_safe_bounds() -> None:
@@ -121,11 +139,12 @@ def test_p_event_fact_applies_variance_only_to_the_matching_event() -> None:
     out = apply_snapshot(
         inp,
         _bundle(_fact(
-            target_name="p_event.test_regression", value=0.40, variance=0.002,
+            target_name="p_event.test_regression", value=0.40, variance=0.0002,
+            aleatoric_variance=0.0008,
         )),
     )
 
-    assert out.event_probability_variances == {"test_regression": pytest.approx(0.002)}
+    assert out.event_probability_variances == {"test_regression": pytest.approx(0.001)}
 
 
 def test_p_event_hard_replace_uses_monotone_risk_envelope_across_matching_scopes() -> None:
@@ -373,7 +392,8 @@ def test_review_cost_fact_updates_cost_and_variance() -> None:
             target_type="cost_continuous",
             target_name="review_cost",
             value=0.15,
-            variance=0.0025,
+            variance=0.0005,
+            aleatoric_variance=0.002,
         )),
     )
     assert out.review_cost == pytest.approx(0.15)

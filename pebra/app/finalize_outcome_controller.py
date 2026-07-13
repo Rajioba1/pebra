@@ -9,6 +9,7 @@ from pebra.app import learning_controller, promotion_controller, record_outcome_
 from pebra.core import outcome_labels
 from pebra.core import promotion_evaluator as pe
 from pebra.ports.learning_port import LearningPort
+from pebra.ports.learning_port import MeasurementAlreadyRecordedError
 from pebra.ports.store_port import StorePort
 
 
@@ -39,29 +40,49 @@ def finalize_outcome(
 ) -> FinalizationOutcome:
     """Idempotently close one assessment from trusted host evidence."""
     expected_detail = _trusted_detail(detail)
-    outcomes = store.load_outcomes(assessment_id)
-    outcome_recorded = False
-    if outcomes:
+
+    def matching_recorded_outcome() -> bool:
+        outcomes = store.load_outcomes(assessment_id)
+        if not outcomes:
+            return False
         latest = outcomes[-1]
         recorded_detail = dict(latest["detail"] or {})
         recorded_detail.setdefault(outcome_labels.LABEL_SOURCE_KEY, "host")
         if latest["terminal_status"] != status or recorded_detail != expected_detail:
             raise ValueError(f"finalization retry for {assessment_id!r} conflicts with recorded outcome")
+        return True
+
+    outcomes = store.load_outcomes(assessment_id)
+    outcome_recorded = False
+    if outcomes:
+        matching_recorded_outcome()
     else:
-        record_outcome_controller.record_outcome(
-            assessment_id, status, outcome_port=store, detail=detail, label_source="host"
-        )
-        outcome_recorded = True
+        try:
+            record_outcome_controller.record_outcome(
+                assessment_id, status, outcome_port=store, detail=detail, label_source="host"
+            )
+            outcome_recorded = True
+        except ValueError:
+            # A concurrent matching retry may have closed the lifecycle after our optimistic read.
+            # Re-read and accept only the exact same trusted outcome; conflicts still fail loudly.
+            if not matching_recorded_outcome():
+                raise
 
     measurement_recorded = False
     observed: int | None = None
     censored: int | None = None
     if not store.prediction_errors_exist(assessment_id):
-        measurement = learning_controller.measure_learning(
-            assessment_id, store=store, learning_port=learning_port
-        )
-        measurement_recorded = True
-        observed, censored = measurement.observed, measurement.censored
+        try:
+            measurement = learning_controller.measure_learning(
+                assessment_id, store=store, learning_port=learning_port
+            )
+        except MeasurementAlreadyRecordedError:
+            # Another retry won after the optimistic check; the store's in-lock check guarantees that
+            # exactly one complete measurement exists.
+            pass
+        else:
+            measurement_recorded = True
+            observed, censored = measurement.observed, measurement.censored
 
     repo_id = store.assessment_detail(assessment_id)["content"].get("repo_id", "")
     config = promotion_config or pe.PromotionConfig()

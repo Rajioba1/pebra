@@ -76,6 +76,21 @@ def test_api_with_bearer_returns_chain_status(tmp_path) -> None:
     assert resp.json()["valid"] is True
 
 
+def test_calibration_route_accepts_review_cost_target(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    resp = _client(db).get(
+        "/api/repos/r/calibration?target_type=cost_continuous&scope=all", headers=_AUTH,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["target_type"] == "cost_continuous"
+
+
+def test_dashboard_calibration_control_lists_review_cost(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+    assert '["cost_continuous", "review cost (continuous)"]' in text
+
+
 def test_assessments_route_lists_seeded(tmp_path) -> None:
     db, asm = _seed(tmp_path)
     resp = _client(db).get("/api/repos/r/assessments", headers=_AUTH)

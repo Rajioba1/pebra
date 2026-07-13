@@ -36,7 +36,11 @@ def _seed(store):
 def test_completed_assessment_produces_production_calibration_rows(tmp_path):
     store = SqliteStore(str(tmp_path / "p.db"))
     asm = _seed(store)
-    store.record_outcome(asm, "completed", {"actual_success": True})
+    store.record_outcome(
+        asm,
+        "completed",
+        {"actual_success": True, "_pebra_label_source": "host"},
+    )
 
     lc.measure_learning(asm, store=store, learning_port=LearningStore(store))
 

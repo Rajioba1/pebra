@@ -133,6 +133,13 @@ COLD_START_VARIANCES: dict[str, float] = {
     "scenario_variance": 0.0003,
 }
 
+# A promoted point estimate may reduce epistemic uncertainty, but it cannot establish that a target is
+# deterministic. Retain this fraction of the existing cold-start component as an explicit residual
+# model/aleatoric floor until outcome data can calibrate target-specific floors. Applied learned
+# variance is also capped by the matching cold-start component, so malformed or regime-shifted facts
+# cannot make a decision more uncertain than the conservative prior.
+LEARNED_VARIANCE_FLOOR_RATIO: float = 0.10
+
 # --- Graph-incompleteness penalties (Slice 3c) — uncalibrated, bounded defaults. ---
 # Each unresolved/dynamic/wildcard import (and missing expected file) erodes confidence in the blast
 # estimate. Weights are per-count, summed, then capped at GRAPH_UNCERTAINTY_CAP: incompleteness can

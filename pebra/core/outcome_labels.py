@@ -50,9 +50,9 @@ def extract_labels(detail: dict[str, Any] | None) -> dict[str, Any]:
     controller reads to decide which prediction targets have a real label vs. are censored."""
     if not detail:
         return {}
-    # Agent-facing surfaces may report lifecycle outcomes, but their self-reported labels must not
-    # train the decision model. Missing provenance is retained as legacy host data.
-    if detail.get(LABEL_SOURCE_KEY) == "agent":
+    # Agent-facing surfaces may report lifecycle outcomes, but only an explicit trusted-host stamp may
+    # train the decision model. Missing, unknown, or misspelled provenance fails closed to censored.
+    if detail.get(LABEL_SOURCE_KEY) != "host":
         return {}
     labels: dict[str, Any] = {key: detail[key] for key in LABEL_KEYS if key in detail}
     return labels

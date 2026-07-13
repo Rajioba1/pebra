@@ -45,9 +45,14 @@ def test_beta_parameter_variance_shrinks_with_more_observations() -> None:
     assert large > 0.0
 
 
+def test_binary_aleatoric_variance_remains_positive_for_extreme_observations() -> None:
+    assert pe.binary_aleatoric_variance(_rows([1] * 100)) > 0.0
+
+
 def test_continuous_mean_variance_is_zero_for_deterministic_values() -> None:
     rows = [{"actual_value": 0.3} for _ in range(5)]
     assert pe.continuous_mean_variance(rows) == pytest.approx(0.0)
+    assert pe.continuous_aleatoric_variance(rows) == pytest.approx(0.0)
 
 
 # --- _scope_matches_features -----------------------------------------------------------------
@@ -164,6 +169,7 @@ def test_genuinely_predictive_fact_is_promoted():
     assert r.veto_reason is None
     assert r.delta_brier > 0
     assert r.interval_coverage == pytest.approx(1.0)
+    assert r.interval_coverage_lcb is not None
 
 
 def test_interval_coverage_vetoes_a_regime_split() -> None:
@@ -181,6 +187,12 @@ def test_interval_coverage_vetoes_a_regime_split() -> None:
     assert result.interval_coverage < 0.90
     assert result.promoted is False
     assert result.veto_reason == "INTERVAL_COVERAGE_LOW"
+
+
+def test_binary_coverage_uses_lower_confidence_bound() -> None:
+    # 91/100 point coverage exceeds the 0.90 threshold, but its one-sided lower confidence bound does
+    # not. Promotion must not treat a noisy point estimate as established calibration.
+    assert pe.wilson_lower_bound(91, 100) < 0.90
 
 
 def test_positive_delta_threshold_is_scored_on_matched_scope_not_diluted():
@@ -265,6 +277,29 @@ def test_benefit_continuous_gate_vetoes_when_loo_mse_worse():
     r = pe.evaluate_benefit_continuous_gate(_cand_cont(), rows, cfg)
     assert r.promoted is False
     assert r.veto_reason == "DELTA_MSE_NEGATIVE"
+
+
+def test_continuous_gate_vetoes_uncovered_variance() -> None:
+    rows = [
+        {"predicted_value": 0.0, "actual_value": 0.0, "features": _features(),
+         "target_type": "benefit_continuous"}
+        for _ in range(90)
+    ] + [
+        {"predicted_value": 10.0, "actual_value": 10.0, "features": _features(),
+         "target_type": "benefit_continuous"}
+        for _ in range(10)
+    ]
+    cfg = pe.PromotionConfig(
+        min_calibration_samples=100, min_delta_mse=-100.0,
+        min_interval_coverage=0.90, coverage_folds=10,
+    )
+
+    result = pe.evaluate_benefit_continuous_gate(_cand_cont(), rows, cfg)
+
+    assert result.promoted is False
+    assert result.veto_reason == "INTERVAL_COVERAGE_LOW"
+    assert result.interval_coverage is not None
+    assert result.interval_coverage_lcb is not None
 
 
 def test_benefit_continuous_gate_insufficient_n():

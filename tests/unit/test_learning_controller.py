@@ -54,7 +54,11 @@ _PREDS = [
 def test_measure_writes_errors_and_shadow_snapshot() -> None:
     store = FakeStore(
         predictions=_PREDS,
-        outcomes=[{"terminal_status": "completed", "detail": {"actual_success": True}, "recorded_at": "t"}],
+        outcomes=[{
+            "terminal_status": "completed",
+            "detail": {"actual_success": True, "_pebra_label_source": "host"},
+            "recorded_at": "t",
+        }],
         guardrails=[{"measured_benefit": 0.5, "measured_benefit_deltas": {}}],
     )
     port = FakeLearningPort()
@@ -77,7 +81,11 @@ def test_completed_outcome_marks_rows_production_eligible() -> None:
     # proceeded_edits_only) so load_production_calibration_rows finally returns them.
     store = FakeStore(
         predictions=_PREDS,
-        outcomes=[{"terminal_status": "completed", "detail": {"actual_success": True}, "recorded_at": "t"}],
+        outcomes=[{
+            "terminal_status": "completed",
+            "detail": {"actual_success": True, "_pebra_label_source": "host"},
+            "recorded_at": "t",
+        }],
     )
     port = FakeLearningPort()
     result = lc.measure_learning("asm_1", store=store, learning_port=port)

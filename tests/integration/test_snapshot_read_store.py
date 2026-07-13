@@ -136,6 +136,7 @@ def test_active_fact_hydrates_pooling_fields(tmp_path) -> None:
             "calibration_quality": 0.5,
             "scope_change_count": 7,
             "variance": 0.0015,
+            "aleatoric_variance": 0.003,
         },
     )
     bundle = SnapshotReadStore(store).load_active_snapshot("r1")
@@ -147,6 +148,7 @@ def test_active_fact_hydrates_pooling_fields(tmp_path) -> None:
     assert f.calibration_quality == 0.5
     assert f.scope_change_count == 7
     assert f.variance == 0.0015
+    assert f.aleatoric_variance == 0.003
 
 
 def test_negative_fact_variance_is_excluded(tmp_path) -> None:

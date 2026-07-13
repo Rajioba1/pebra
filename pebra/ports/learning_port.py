@@ -10,6 +10,10 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 
+class MeasurementAlreadyRecordedError(ValueError):
+    """Raised when an atomic measurement write loses an idempotent retry race."""
+
+
 class LearningPort(Protocol):
     def write_measurement(
         self,

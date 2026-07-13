@@ -238,7 +238,8 @@
     const controls = el("div", "controls");
     controls.appendChild(sel("target", calState.target_type,
       [["risk_binary", "risk (binary)"], ["benefit_binary", "benefit (binary)"],
-       ["benefit_continuous", "benefit (continuous)"]],
+       ["benefit_continuous", "benefit (continuous)"],
+       ["cost_continuous", "review cost (continuous)"]],
       (v) => { calState.target_type = v; renderCalibration(view); }));
     controls.appendChild(sel("scope", calState.scope,
       [["production", "production"], ["all", "all observed"]],

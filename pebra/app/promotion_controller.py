@@ -126,6 +126,7 @@ def _extract_provider_provenance(rows: list[dict[str, Any]]) -> tuple[str | None
 def _collect_facts(
     all_rows: list[dict[str, Any]], *, config: pe.PromotionConfig, gate_fn, value_fn,
     calibration_method: str, variance_fn=None, variance_method: str | None = None,
+    aleatoric_variance_fn=None,
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """Group rows by target, derive scope candidates, run the gate, and build promotable fact dicts.
     Shared by risk and benefit promotion — only the gate_fn (replay metric) + value_fn (fact value) +
@@ -170,6 +171,8 @@ def _collect_facts(
             if variance_fn is not None:
                 fact_json["variance"] = variance_fn(group_rows)
                 fact_json["variance_method"] = variance_method
+            if aleatoric_variance_fn is not None:
+                fact_json["aleatoric_variance"] = aleatoric_variance_fn(group_rows)
             fact_dicts.append({
                 "target_type": target_type,
                 "target_name": candidate.target_name,
@@ -237,6 +240,7 @@ def run_promotion(
         value_fn=pe.compute_empirical_value, calibration_method="observed_rate_v1",
         variance_fn=pe.beta_parameter_variance,
         variance_method="beta_1_1_parameter_variance",
+        aleatoric_variance_fn=pe.binary_aleatoric_variance,
     )
     drift_score: float | None = None
     if config.drift_freeze_threshold is not None and fact_dicts:
@@ -275,6 +279,7 @@ def run_benefit_promotion(
         value_fn=pe.compute_empirical_value, calibration_method="observed_rate_v1",
         variance_fn=pe.beta_parameter_variance,
         variance_method="beta_1_1_parameter_variance",
+        aleatoric_variance_fn=pe.binary_aleatoric_variance,
     )
     fc, vc, cc = _collect_facts(
         store.load_production_calibration_rows(repo_id, BENEFIT_CONTINUOUS),
@@ -282,6 +287,7 @@ def run_benefit_promotion(
         value_fn=pe.compute_empirical_continuous_value, calibration_method="observed_mean_v1",
         variance_fn=pe.continuous_mean_variance,
         variance_method="sample_mean_variance",
+        aleatoric_variance_fn=pe.continuous_aleatoric_variance,
     )
     return _result(repo_id, fb + fc, vb + vc, cb + cc,
                    learning_port=learning_port, promotion_reason="M5d_benefit_promotion",
@@ -306,6 +312,7 @@ def run_review_cost_promotion(
         calibration_method="observed_mean_v1",
         variance_fn=pe.continuous_mean_variance,
         variance_method="sample_mean_variance",
+        aleatoric_variance_fn=pe.continuous_aleatoric_variance,
     )
     return _result(
         repo_id,

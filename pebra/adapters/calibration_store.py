@@ -24,6 +24,8 @@ class CalibrationStore(CalibrationPort):
 
     def production_calibration_data(self, repo_id: str) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
-        for target_type in ("risk_binary", "benefit_binary", "benefit_continuous"):
+        for target_type in (
+            "risk_binary", "benefit_binary", "benefit_continuous", "cost_continuous",
+        ):
             rows.extend(self._store.load_production_calibration_rows(repo_id, target_type))
         return prediction_error.summarize_errors(rows)

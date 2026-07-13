@@ -48,6 +48,7 @@ def test_full_shadow_loop(tmp_path) -> None:
         "actual_success": True,
         "event_outcomes": {"test_regression": False, "security_sensitive_change": False},
         "benefit_realized": True,
+        "actual_review_cost": 0.15,
     })
     r = _pebra(tmp_path, "record-outcome", "--assessment-id", "asm_1", "--status", "completed",
                "--detail", labels, "--repo-root", str(tmp_path), "--db", db)
@@ -66,7 +67,12 @@ def test_full_shadow_loop(tmp_path) -> None:
     card = json.loads(sc.stdout)
     assert card["calibration"]["risk_binary"]["status"] == "ok"      # observed risk labels -> metrics
     assert card["calibration"]["risk_binary"]["brier"] >= 0.0
+    assert card["calibration"]["cost_continuous"]["status"] == "ok"
     assert card["shadow_counts"]["prediction_errors"] == 7
+
+    human = _pebra(tmp_path, "scorecard", "--repo-root", str(tmp_path), "--db", db)
+    assert human.returncode == 0, human.stderr
+    assert "Review-cost Calibration (continuous)" in human.stdout
 
 
 def test_learn_without_outcome_exits_nonzero(tmp_path) -> None:

@@ -22,6 +22,7 @@ from typing import Any
 
 from pebra.core.constants import MIN_CALIBRATION_SAMPLES
 from pebra.core.models import AssessmentResult
+from pebra.ports.learning_port import MeasurementAlreadyRecordedError
 
 GENESIS = "GENESIS"
 
@@ -1143,6 +1144,15 @@ class SqliteStore:
             self._con.execute("BEGIN IMMEDIATE")
             if self._con.execute("SELECT 1 FROM assessments WHERE id = ?", (row_id,)).fetchone() is None:
                 raise KeyError(f"no assessment {assessment_id!r}")
+            # The controller's optimistic pre-check is not enough across processes. Re-check after the
+            # write lock is acquired so two finalization retries cannot append duplicate calibration
+            # rows and shadow snapshots.
+            if self._con.execute(
+                "SELECT 1 FROM prediction_errors WHERE assessment_id = ? LIMIT 1", (row_id,)
+            ).fetchone() is not None:
+                raise MeasurementAlreadyRecordedError(
+                    f"{assessment_id!r} has already been measured"
+                )
             error_ids = [
                 self._insert_prediction_error_for_row_id(row_id, row, recorded_at)
                 for row in normalized
