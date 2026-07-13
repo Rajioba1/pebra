@@ -140,6 +140,35 @@ def test_probability_floor_is_never_crossed() -> None:
     assert adjusted[0]["p_event"] == 0.05
 
 
+def test_probability_update_records_the_effective_binding_floor() -> None:
+    event = {
+        "event": "public_api_break",
+        "risk_source": "graph_modify_risk",
+        "owner_node_ids": ["owner"],
+        "p_event": 0.60,
+        "independent_probability_floor": 0.30,
+    }
+    evidence = CandidateGraphRiskEvidence(
+        status="available",
+        verified_patch_hash="abc",
+        facts=(ScopedGraphRiskFact(
+            fact_kind="exported_binding_continuity",
+            event="public_api_break",
+            risk_source="graph_modify_risk",
+            owner_node_ids=("owner",),
+        ),),
+    )
+
+    adjusted, _ = apply_scoped_adjustments([event], evidence, patch_hash="abc")
+
+    update = adjusted[0]["graph_risk_update"]
+    assert adjusted[0]["p_event"] == 0.30
+    assert update["probability_floor"] == 0.30
+    assert update["structural_probability_floor"] == 0.05
+    assert update["independent_probability_floor"] == 0.30
+    assert update["binding_term"] == "independent_probability_floor"
+
+
 def test_partial_owner_or_wrong_source_never_reduces_event() -> None:
     events = [{
         "event": "public_api_break",

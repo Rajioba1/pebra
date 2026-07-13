@@ -178,6 +178,20 @@ class SubjectResult:
     graph_refinement_revision_risk_benefit_improved: bool = False
     graph_refinement_proof_path: str | None = None
     candidate_lineage_invalidated: bool = False
+    calibration_assessment_id: str | None = None
+    calibration_score_source: str | None = None
+    calibration_join_valid: bool = False
+    calibration_label_scope: str = "unresolved"
+    predicted_decision: str | None = None
+    predicted_expected_loss: float | None = None
+    predicted_benefit: float | None = None
+    predicted_expected_utility: float | None = None
+    predicted_utility_sd: float | None = None
+    predicted_rau: float | None = None
+    predicted_effective_threshold: float | None = None
+    predicted_benefit_source_type: str | None = None
+    assessment_proof_class: str | None = None
+    calibration_lanes: dict[str, Any] = field(default_factory=dict)
 
 
 # ---- scored outcome ---------------------------------------------------------------------------
@@ -267,6 +281,21 @@ class RunOutcome:
     graph_refinement_revision_risk_benefit_improved: bool = False
     graph_refinement_proof_path: str | None = None
     candidate_lineage_invalidated: bool = False
+    language: str = "unknown"
+    proof_class: str = "none"
+    calibration_assessment_id: str | None = None
+    calibration_score_source: str | None = None
+    calibration_join_valid: bool = False
+    calibration_label_scope: str = "unresolved"
+    predicted_decision: str | None = None
+    predicted_expected_loss: float | None = None
+    predicted_benefit: float | None = None
+    predicted_expected_utility: float | None = None
+    predicted_utility_sd: float | None = None
+    predicted_rau: float | None = None
+    predicted_effective_threshold: float | None = None
+    predicted_benefit_source_type: str | None = None
+    calibration_lanes: dict[str, Any] = field(default_factory=dict)
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------

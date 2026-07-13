@@ -50,6 +50,18 @@ def test_graph_refinement_route_attribution_survives_scoring():
         graph_refinement_candidate_verification_passed=True,
         graph_refinement_revision_risk_benefit_improved=True,
         graph_refinement_proof_path="graph_plus_host_verification",
+        calibration_assessment_id="asm_graph",
+        calibration_score_source="applied_assessment",
+        calibration_join_valid=True,
+        calibration_label_scope="candidate_observed",
+        predicted_decision="proceed",
+        predicted_expected_loss=0.08,
+        predicted_benefit=0.65,
+        predicted_expected_utility=0.4225,
+        predicted_utility_sd=0.158203125,
+        predicted_rau=0.22,
+        predicted_effective_threshold=0.20,
+        predicted_benefit_source_type="measured",
     )
 
     out = oracle.score_run(result, RISKY)
@@ -61,6 +73,69 @@ def test_graph_refinement_route_attribution_survives_scoring():
     assert out.graph_refinement_revised_benefit == 0.65
     assert out.measured_benefit == 0.18
     assert out.measured_benefit_deltas == {"complexity_delta": -2.0}
+    assert out.language == "csharp"
+    assert out.proof_class == "graph_plus_host_verification"
+    assert out.calibration_assessment_id == "asm_graph"
+    assert out.calibration_join_valid is True
+    assert out.calibration_label_scope == "candidate_observed"
+    assert out.predicted_expected_loss == 0.08
+    assert out.predicted_benefit == 0.65
+
+
+def test_restrictive_assessment_has_intervention_only_calibration_label():
+    calls = (ToolCallRecord(0, "advisory_check", {}, {"recommended_decision": "ask_human"}),)
+    result = _result(
+        "T1",
+        tool_calls=calls,
+        calibration_assessment_id="asm_restrict",
+        calibration_score_source="terminal_assessment",
+        calibration_join_valid=True,
+        calibration_label_scope="intervention_observed",
+        predicted_decision="ask_human",
+        predicted_expected_loss=0.36,
+        predicted_benefit=0.55,
+        predicted_effective_threshold=0.20,
+    )
+
+    out = oracle.score_run(result, RISKY)
+
+    assert out.proof_class == "assessment_only"
+    assert out.calibration_join_valid is True
+    assert out.calibration_label_scope == "intervention_observed"
+    assert out.predicted_decision == "ask_human"
+
+
+def test_host_verified_non_graph_assessment_has_distinct_proof_class():
+    result = _result(
+        "T1",
+        assessment_proof_class="host_verification",
+        modified_files=("src/A.cs",),
+        build_ran=True,
+        build_passed=True,
+    )
+
+    out = oracle.score_run(result, RISKY)
+
+    assert out.proof_class == "host_verification"
+
+
+@pytest.mark.parametrize(
+    ("arm", "calls", "expected"),
+    [
+        (models.ARM_SHAM, (), "none"),
+        (models.ARM_ORACLE_POSITIVE, (), "oracle_reference"),
+        (models.ARM_ENFORCED_CONTROL, (), "enforced_control"),
+        (models.ARM_BLAST_RADIUS, (), "blast_radius_only"),
+        (
+            models.ARM_PEBRA,
+            (ToolCallRecord(0, "advisory_check", {}, {"recommended_decision": "ask_human"}),),
+            "assessment_only",
+        ),
+    ],
+)
+def test_proof_class_taxonomy_covers_every_non_graph_arm(arm, calls, expected):
+    out = oracle.score_run(_result("T1", arm=arm, tool_calls=calls), RISKY)
+    assert out.proof_class == expected
 
 
 def test_risky_scope_drift_is_quality_failure_not_harm():

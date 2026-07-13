@@ -614,6 +614,15 @@ def _score_prepared_input(
     graph_provenance = _graph_provenance(inp)
     if graph_provenance:
         result.provenance["graph_provenance"] = graph_provenance
+        capability = graph_provenance.get("language_capability")
+        lanes = result.scores.get("calibration_lanes")
+        if isinstance(capability, dict) and isinstance(lanes, dict):
+            # Persist measured language context with the score bundle. Provenance itself is not part
+            # of the assessment content hash, while scores are; calibration must not lose this join.
+            lanes["context"] = {
+                "language": capability.get("language"),
+                "language_tier": capability.get("tier"),
+            }
     explanation = explanation_generator.render(result, inp.thresholds)
     packet = model_guidance.render(result, action, explanation)
     candidate_binding_provider = ports.get("candidate_binding_provider")

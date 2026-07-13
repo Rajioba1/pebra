@@ -342,6 +342,8 @@ def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
     )
 
     advisory({"target_file": "a.ts", "proposed_patch": "diff", "change_summary": "x"})
+    assert telemetry.assessment_calibration_by_id["asm_graph"]["expected_loss"] == 0.08
+    assert telemetry.assessment_calibration_by_id["asm_graph"]["benefit"] == 0.65
     decision = gate({"tool_name": "Write", "tool_input": {"file_path": "a.ts"}})
     assert telemetry.applied_graph_refinement is None
     run_pair._write_applied_backend(telemetry)(decision)
@@ -361,6 +363,9 @@ def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
             "revised_probability": 0.1575,
             "probability_multiplier": None,
             "probability_floor": 0.05,
+            "structural_probability_floor": None,
+            "independent_probability_floor": None,
+            "binding_term": None,
             "owner_node_ids": ("owner-a",),
             "calibration": None,
         },),
@@ -381,6 +386,84 @@ def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
             "run targeted tests for the touched scope before commit",
         ),
     }
+
+
+def test_calibration_summary_captures_generic_scores_without_graph_refinement():
+    result = SimpleNamespace(raw_payload={
+        "recommended_decision": "ask_human",
+        "scores": {
+            "expected_loss": 0.36,
+            "benefit": 0.55,
+            "expected_utility": 0.0575,
+            "utility_sd": 0.091796875,
+            "rau": -0.06,
+            "effective_threshold": 0.20,
+            "calibration_lanes": {
+                "benefit": {"source_type": "measured"},
+                "context": {"language": "typescript", "language_tier": "full"},
+            },
+        },
+    })
+
+    summary = run_pair._assessment_calibration_summary(result, "asm_9")
+
+    assert summary == {
+        "assessment_id": "asm_9",
+        "decision": "ask_human",
+        "expected_loss": 0.36,
+        "benefit": 0.55,
+        "expected_utility": 0.0575,
+        "utility_sd": 0.091796875,
+        "rau": -0.06,
+        "effective_threshold": 0.20,
+        "benefit_source_type": "measured",
+        "assessment_proof_class": "assessment_only",
+        "language": "typescript",
+        "language_tier": "full",
+        "calibration_lanes": {
+            "benefit": {"source_type": "measured"},
+            "context": {"language": "typescript", "language_tier": "full"},
+        },
+    }
+
+
+def test_calibration_fields_bind_applied_or_restrictive_terminal_assessment():
+    telemetry = run_pair.ArmTelemetry(
+        last_assessment_id="asm_restrict",
+        assessment_calibration_by_id={
+            "asm_applied": {
+                "assessment_id": "asm_applied", "decision": "proceed",
+                "expected_loss": 0.08, "benefit": 0.65,
+                "expected_utility": 0.42, "utility_sd": 0.15, "rau": 0.22,
+                "effective_threshold": 0.20,
+            },
+            "asm_restrict": {
+                "assessment_id": "asm_restrict", "decision": "ask_human",
+                "expected_loss": 0.36, "benefit": 0.55,
+                "expected_utility": 0.06, "utility_sd": 0.09, "rau": -0.06,
+                "effective_threshold": 0.20,
+            },
+        },
+    )
+
+    restricted = run_pair._calibration_result_fields(telemetry)
+    assert restricted["calibration_assessment_id"] == "asm_restrict"
+    assert restricted["calibration_score_source"] == "terminal_assessment"
+    assert restricted["calibration_join_valid"] is True
+    assert restricted["calibration_label_scope"] == "intervention_observed"
+
+    telemetry.applied_assessment_id = "asm_applied"
+    applied = run_pair._calibration_result_fields(telemetry)
+    assert applied["calibration_assessment_id"] == "asm_applied"
+    assert applied["calibration_score_source"] == "applied_assessment"
+    assert applied["calibration_join_valid"] is True
+    assert applied["calibration_label_scope"] == "candidate_observed"
+    assert applied["predicted_expected_loss"] == 0.08
+
+    telemetry.candidate_lineage_invalidated = True
+    invalidated = run_pair._calibration_result_fields(telemetry)
+    assert invalidated["calibration_join_valid"] is False
+    assert invalidated["calibration_label_scope"] == "unresolved"
 
 
 def test_graph_refinement_summary_rejects_incoherent_fact_and_probability_update():

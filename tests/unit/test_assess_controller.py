@@ -781,6 +781,10 @@ def test_language_capability_provenance_includes_measured_node_count() -> None:
     result = _run_cg_unparsed_with_cap(ev, cap, _request_with_patch()).recommended_result
 
     assert result.provenance["graph_provenance"]["language_capability"]["node_count"] == 12
+    assert result.scores["calibration_lanes"]["context"] == {
+        "language": "typescript",
+        "language_tier": "risk_only",
+    }
 
 
 def test_codegraph_structural_tier_requires_a_candidate_patch() -> None:

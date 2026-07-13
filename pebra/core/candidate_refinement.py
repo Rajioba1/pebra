@@ -81,14 +81,28 @@ def apply_scoped_adjustments(
         multiplier = 1.0 - (
             (1.0 - STRUCTURAL_CONTINUITY_MULTIPLIER) * float(fact.confidence)
         )
+        independent_floor = float(event.get("independent_probability_floor", 0.0))
+        if not math.isfinite(independent_floor) or independent_floor < 0.0:
+            independent_floor = 0.0
+        effective_floor = max(
+            STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR,
+            independent_floor,
+        )
+        multiplied_probability = original * multiplier
         revised = min(
             original,
-            max(
-                STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR,
-                float(event.get("independent_probability_floor", 0.0)),
-                original * multiplier,
-            ),
+            max(effective_floor, multiplied_probability),
         )
+        if revised == original:
+            binding_term = "original_probability"
+        elif effective_floor >= multiplied_probability:
+            binding_term = (
+                "independent_probability_floor"
+                if independent_floor > STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR
+                else "structural_probability_floor"
+            )
+        else:
+            binding_term = "probability_multiplier"
         updated = dict(event)
         updated["p_event"] = revised
         updated["graph_risk_update"] = {
@@ -100,7 +114,11 @@ def apply_scoped_adjustments(
             "original_probability": original,
             "revised_probability": revised,
             "probability_multiplier": multiplier,
-            "probability_floor": STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR,
+            # Backward-compatible field now records the floor that actually constrained the update.
+            "probability_floor": effective_floor,
+            "structural_probability_floor": STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR,
+            "independent_probability_floor": independent_floor,
+            "binding_term": binding_term,
             "calibration": "prior_uncalibrated_conservative",
             "owner_node_ids": list(owners),
         }

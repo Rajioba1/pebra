@@ -153,6 +153,9 @@ class ArmTelemetry:
     graph_refinement_by_assessment: dict[str, dict[str, Any]] = dataclasses.field(
         default_factory=dict
     )
+    assessment_calibration_by_id: dict[str, dict[str, Any]] = dataclasses.field(
+        default_factory=dict
+    )
     required_checks_by_assessment: dict[str, tuple[str, ...]] = dataclasses.field(
         default_factory=dict
     )
@@ -383,6 +386,108 @@ def _finite_number(value: Any) -> float | None:
     return number if number == number and abs(number) != float("inf") else None
 
 
+def _assessment_calibration_summary(
+    result: Any, assessment_id: str
+) -> dict[str, Any] | None:
+    """Extract a generic, host-only prediction bundle from one production assessment."""
+    raw = getattr(result, "raw_payload", None)
+    if not isinstance(raw, dict):
+        return None
+    scores = raw.get("scores")
+    if not isinstance(scores, dict):
+        return None
+    lanes = scores.get("calibration_lanes")
+    lanes = lanes if isinstance(lanes, dict) else {}
+    context = lanes.get("context") if isinstance(lanes.get("context"), dict) else {}
+    graph = raw.get("graph_provenance")
+    capability = (
+        graph.get("language_capability")
+        if isinstance(graph, dict) and isinstance(graph.get("language_capability"), dict)
+        else {}
+    )
+    benefit_lane = lanes.get("benefit") if isinstance(lanes.get("benefit"), dict) else {}
+    gates = raw.get("gates_fired") if isinstance(raw.get("gates_fired"), list) else []
+    verification_gates = [
+        gate for gate in gates
+        if isinstance(gate, dict) and gate.get("name") == "candidate_verification_passed"
+    ]
+    return {
+        "assessment_id": assessment_id,
+        "decision": (
+            str(raw["recommended_decision"])
+            if isinstance(raw.get("recommended_decision"), str)
+            else None
+        ),
+        "expected_loss": _finite_number(scores.get("expected_loss")),
+        "benefit": _finite_number(scores.get("benefit")),
+        "expected_utility": _finite_number(scores.get("expected_utility")),
+        "utility_sd": _finite_number(scores.get("utility_sd")),
+        "rau": _finite_number(scores.get("rau")),
+        "effective_threshold": _finite_number(scores.get("effective_threshold")),
+        "benefit_source_type": (
+            str(benefit_lane["source_type"])
+            if isinstance(benefit_lane.get("source_type"), str)
+            else None
+        ),
+        "assessment_proof_class": (
+            "host_verification" if len(verification_gates) == 1 else "assessment_only"
+        ),
+        "language": context.get("language") or capability.get("language"),
+        "language_tier": context.get("language_tier") or capability.get("tier"),
+        "calibration_lanes": json.loads(json.dumps(lanes, sort_keys=True)),
+    }
+
+
+def _calibration_result_fields(telemetry: ArmTelemetry) -> dict[str, Any]:
+    """Bind calibration scores to the applied assessment, or retain a censored restrict row."""
+    applied = telemetry.applied_assessment_id
+    summary = (
+        telemetry.assessment_calibration_by_id.get(applied)
+        if isinstance(applied, str)
+        else None
+    )
+    source = "applied_assessment" if summary is not None else None
+    label_scope = "candidate_observed" if summary is not None else "unresolved"
+    if summary is None and isinstance(telemetry.last_assessment_id, str):
+        terminal = telemetry.assessment_calibration_by_id.get(telemetry.last_assessment_id)
+        if terminal is not None and terminal.get("decision") in {
+            "reject", "ask_human", "revise_safer", "inspect_first", "test_first",
+        }:
+            summary = terminal
+            source = "terminal_assessment"
+            # The intervention outcome is observable, but the blocked candidate's counterfactual
+            # harm is not. Calibration/DCA must not treat this as a candidate-level negative label.
+            label_scope = "intervention_observed"
+    required_prediction_fields = (
+        "decision", "expected_loss", "benefit", "expected_utility", "utility_sd", "rau",
+        "effective_threshold",
+    )
+    valid = (
+        summary is not None
+        and all(summary.get(field) is not None for field in required_prediction_fields)
+        and not telemetry.candidate_lineage_invalidated
+    )
+    if not valid:
+        summary = summary or {}
+        label_scope = "unresolved"
+    return {
+        "calibration_assessment_id": summary.get("assessment_id"),
+        "calibration_score_source": source,
+        "calibration_join_valid": valid,
+        "calibration_label_scope": label_scope,
+        "predicted_decision": summary.get("decision"),
+        "predicted_expected_loss": summary.get("expected_loss"),
+        "predicted_benefit": summary.get("benefit"),
+        "predicted_expected_utility": summary.get("expected_utility"),
+        "predicted_utility_sd": summary.get("utility_sd"),
+        "predicted_rau": summary.get("rau"),
+        "predicted_effective_threshold": summary.get("effective_threshold"),
+        "predicted_benefit_source_type": summary.get("benefit_source_type"),
+        "assessment_proof_class": summary.get("assessment_proof_class"),
+        "calibration_lanes": dict(summary.get("calibration_lanes") or {}),
+    }
+
+
 def _graph_refinement_summary(result: Any, assessment_id: str) -> dict[str, Any] | None:
     """Extract host-only route attribution from one raw production assessment payload."""
     raw = getattr(result, "raw_payload", None)
@@ -481,6 +586,17 @@ def _graph_refinement_summary(result: Any, assessment_id: str) -> dict[str, Any]
         "revised_probability": _finite_number(update.get("revised_probability")),
         "probability_multiplier": _finite_number(update.get("probability_multiplier")),
         "probability_floor": _finite_number(update.get("probability_floor")),
+        "structural_probability_floor": _finite_number(
+            update.get("structural_probability_floor")
+        ),
+        "independent_probability_floor": _finite_number(
+            update.get("independent_probability_floor")
+        ),
+        "binding_term": (
+            str(update["binding_term"])
+            if isinstance(update.get("binding_term"), str)
+            else None
+        ),
         "owner_node_ids": tuple(sorted(set(update.get("owner_node_ids") or ()))),
         "calibration": (
             str(update["calibration"])
@@ -702,6 +818,9 @@ def _advisory_backend(
                 telemetry.required_checks_by_assessment[assessment_id] = (
                     _required_checks_from_result(result)
                 )
+                calibration = _assessment_calibration_summary(result, assessment_id)
+                if calibration is not None:
+                    telemetry.assessment_calibration_by_id[assessment_id] = calibration
                 refinement = _graph_refinement_summary(result, assessment_id)
                 if refinement is not None:
                     telemetry.graph_refinement_by_assessment[assessment_id] = refinement
@@ -1227,6 +1346,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         write_before_approval=setup.telemetry.write_before_approval,
         write_before_reassessment=setup.telemetry.write_before_reassessment,
         **_graph_refinement_result_fields(setup.telemetry),
+        **_calibration_result_fields(setup.telemetry),
     )
 
 

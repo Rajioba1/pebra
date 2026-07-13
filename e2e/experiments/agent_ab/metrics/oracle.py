@@ -166,6 +166,21 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         ),
         graph_refinement_proof_path=result.graph_refinement_proof_path,
         candidate_lineage_invalidated=result.candidate_lineage_invalidated,
+        language=spec.language,
+        proof_class=_proof_class(result, advisory_called=called),
+        calibration_assessment_id=result.calibration_assessment_id,
+        calibration_score_source=result.calibration_score_source,
+        calibration_join_valid=result.calibration_join_valid,
+        calibration_label_scope=result.calibration_label_scope,
+        predicted_decision=result.predicted_decision,
+        predicted_expected_loss=result.predicted_expected_loss,
+        predicted_benefit=result.predicted_benefit,
+        predicted_expected_utility=result.predicted_expected_utility,
+        predicted_utility_sd=result.predicted_utility_sd,
+        predicted_rau=result.predicted_rau,
+        predicted_effective_threshold=result.predicted_effective_threshold,
+        predicted_benefit_source_type=result.predicted_benefit_source_type,
+        calibration_lanes=dict(result.calibration_lanes),
     )
 
 
@@ -240,7 +255,43 @@ def _error_outcome(
         ),
         graph_refinement_proof_path=result.graph_refinement_proof_path,
         candidate_lineage_invalidated=result.candidate_lineage_invalidated,
+        language=spec.language,
+        proof_class=_proof_class(result, advisory_called=False),
+        calibration_assessment_id=result.calibration_assessment_id,
+        calibration_score_source=result.calibration_score_source,
+        calibration_join_valid=False,
+        calibration_label_scope="unresolved",
+        predicted_decision=result.predicted_decision,
+        predicted_expected_loss=result.predicted_expected_loss,
+        predicted_benefit=result.predicted_benefit,
+        predicted_expected_utility=result.predicted_expected_utility,
+        predicted_utility_sd=result.predicted_utility_sd,
+        predicted_rau=result.predicted_rau,
+        predicted_effective_threshold=result.predicted_effective_threshold,
+        predicted_benefit_source_type=result.predicted_benefit_source_type,
+        calibration_lanes=dict(result.calibration_lanes),
     )
+
+
+def _proof_class(result: SubjectResult, *, advisory_called: bool) -> str:
+    """Closed host-side taxonomy for the evidence/intervention behind one outcome."""
+    if result.graph_refinement_proof_path:
+        return result.graph_refinement_proof_path
+    if result.human_assisted_write_applied:
+        return "human_authorization"
+    if result.assessment_proof_class == "host_verification":
+        return "host_verification"
+    if result.post_edit_verify_passed is True:
+        return "host_verification"
+    if result.arm == models.ARM_ORACLE_POSITIVE:
+        return "oracle_reference"
+    if result.arm == models.ARM_ENFORCED_CONTROL:
+        return "enforced_control"
+    if result.arm == models.ARM_BLAST_RADIUS:
+        return "blast_radius_only"
+    if advisory_called:
+        return "assessment_only"
+    return "none"
 
 
 def _edit_cycles(result: SubjectResult) -> int:
