@@ -113,6 +113,46 @@ _TS_ARROW_LITERAL_SWAP_PATCH = (
     "+export const oldName = newName;\n"
 )
 
+_TS_MULTILINE_SOURCE = (
+    "export function oldName(value: number): number {\n"
+    "  const doubled = value * 2;\n"
+    "  return doubled;\n"
+    "}\n"
+)
+
+_TS_MULTILINE_CONTINUITY_PATCH = (
+    "diff --git a/src/api.ts b/src/api.ts\n--- a/src/api.ts\n+++ b/src/api.ts\n"
+    "@@ -1,4 +1,5 @@\n"
+    "-export function oldName(value: number): number {\n"
+    "+export function newName(value: number): number {\n"
+    "   const doubled = value * 2;\n"
+    "   return doubled;\n"
+    " }\n"
+    "+export const oldName = newName;\n"
+)
+
+_TS_MULTILINE_BODY_SWAP_PATCH = (
+    "diff --git a/src/api.ts b/src/api.ts\n--- a/src/api.ts\n+++ b/src/api.ts\n"
+    "@@ -1,4 +1,5 @@\n"
+    "-export function oldName(value: number): number {\n"
+    "-  const doubled = value * 2;\n"
+    "+export function newName(value: number): number {\n"
+    "+  const doubled = value * 3;\n"
+    "   return doubled;\n"
+    " }\n"
+    "+export const oldName = newName;\n"
+)
+
+
+def _multiline_scope() -> GraphRiskScope:
+    return GraphRiskScope(
+        event="public_api_break",
+        risk_source="graph_modify_risk",
+        owner_node_ids=("original-owner",),
+        owner_file_paths=("src/api.ts",),
+        owner_qualified_names=("oldName",),
+    )
+
 
 @requires_codegraph
 def test_materialized_graph_proves_exported_binding_continuity(tmp_path):
@@ -138,6 +178,44 @@ def test_materialized_graph_proves_exported_binding_continuity(tmp_path):
     assert result.status == "available", result.reason
     assert result.facts[0].owner_node_ids == ("original-owner",)
     assert result.facts[0].fact_kind == "exported_binding_continuity"
+
+
+@requires_codegraph
+def test_materialized_graph_proves_multiline_function_continuity(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "api.ts").write_text(_TS_MULTILINE_SOURCE, encoding="utf-8")
+    action = CandidateAction(
+        id="multiline-rename",
+        label="rename multiline function",
+        action_type="edit",
+        proposed_patch=_TS_MULTILINE_CONTINUITY_PATCH,
+    )
+
+    result = CodeGraphCandidateRefinementAdapter(
+        cache_root=tmp_path / "host-cache"
+    ).analyze(action, str(tmp_path), _multiline_scope())
+
+    assert result.status == "available", result.reason
+    assert result.facts[0].fact_kind == "exported_binding_continuity"
+
+
+@requires_codegraph
+def test_materialized_graph_rejects_multiline_function_body_change(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "api.ts").write_text(_TS_MULTILINE_SOURCE, encoding="utf-8")
+    action = CandidateAction(
+        id="multiline-swap",
+        label="change multiline implementation",
+        action_type="edit",
+        proposed_patch=_TS_MULTILINE_BODY_SWAP_PATCH,
+    )
+
+    result = CodeGraphCandidateRefinementAdapter(
+        cache_root=tmp_path / "host-cache"
+    ).analyze(action, str(tmp_path), _multiline_scope())
+
+    assert result.status == "ambiguous"
+    assert result.facts == ()
 
 
 @requires_codegraph

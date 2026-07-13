@@ -475,6 +475,44 @@ def test_multi_action_refinement_budget_is_one_and_order_independent() -> None:
     assert forward_by_id[unselected].refinement_status == "budget_exhausted"
 
 
+def test_multi_action_refinement_budget_two_caps_three_eligible_candidates() -> None:
+    request = _ranked_revision_request()
+    request.candidate_actions.append(m.CandidateAction(
+        id="a3", label="three", action_type="edit", expected_files=["src/auth.py"],
+        proposed_patch=(
+            "diff --git a/src/auth.py b/src/auth.py\n--- a/src/auth.py\n+++ b/src/auth.py\n"
+            "@@ -1 +1 @@\n-old\n+new-three\n"
+        ),
+    ))
+    provider = FakeGraphRefinement(status="unavailable")
+
+    outcome = ac.assess(
+        request,
+        thresholds={
+            **_THRESHOLDS,
+            "revise_safer_attempt": 1,
+            "max_materialized_candidates_per_assess": 2,
+        },
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeRevisionEvidence(),
+        symbol_diff_provider=FakeRevisionSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=FakeRevisionAttemptStore(count=1),
+        graph_risk_refinement_provider=provider,
+        fanin_provider=FakeGraphFanin(),
+        language_capability_provider=FakeFullCapability(),
+    )
+
+    assert len(provider.calls) == 2
+    by_id = {item.action.id: item for item in outcome.scored_actions}
+    selected = {action_id for action_id, _repo, _scope in provider.calls}
+    assert all(by_id[action_id].refinement_selected for action_id in selected)
+    unselected = ({"a1", "a2", "a3"} - selected).pop()
+    assert by_id[unselected].refinement_status == "budget_exhausted"
+
+
 def test_api_contract_event_is_not_eligible_for_export_continuity_refinement() -> None:
     action = _ranked_revision_request().candidate_actions[0]
     inp = m.AssessmentInput(

@@ -571,7 +571,6 @@ def decide(
     ):
         provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 5
         gates_fired.append({"gate": 5, "name": "utility_sd_over_limit", "utility_sd": s["utility_sd"]})
-    # --- Gate 9: a safer revision may not win by silently dropping origin obligations ---
     # --- Gate 8: low edit confidence ---
     elif assessment.confidence_band == "low":
         provisional, fired_gate = Decision.INSPECT_FIRST, 8

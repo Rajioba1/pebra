@@ -159,6 +159,26 @@ def test_direct_alias_proof_rejects_non_text_patch_operations(unsupported: str) 
     ) is False
 
 
+def test_direct_alias_proof_rejects_helper_rebinding_in_another_hunk() -> None:
+    patch = (
+        "diff --git a/src/api.ts b/src/api.ts\n"
+        "--- a/src/api.ts\n+++ b/src/api.ts\n"
+        "@@ -1 +1,2 @@\n"
+        "-export function oldName(): number { return helper(); }\n"
+        "+export function newName(): number { return helper(); }\n"
+        "+export const oldName = newName;\n"
+        "diff --git a/src/helper.ts b/src/helper.ts\n"
+        "--- a/src/helper.ts\n+++ b/src/helper.ts\n"
+        "@@ -1 +1 @@\n"
+        "-export function helper(): number { return 1; }\n"
+        "+export function helper(): number { return 2; }\n"
+    )
+
+    assert CodeGraphCandidateRefinementAdapter._patch_is_exhaustive_direct_alias(
+        patch, "oldName", "newName"
+    ) is False
+
+
 def test_full_adapter_rejects_alias_with_unrelated_binary_payload(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "api.ts").write_text(
@@ -1124,7 +1144,7 @@ def test_regex_literal_migration_is_not_structural_continuity() -> None:
     ) is False
 
 
-def test_candidate_after_index_timeout_is_retryable_infrastructure(tmp_path: Path) -> None:
+def test_candidate_after_index_timeout_consumes_attempt(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "api.ts").write_text(
         "export function oldName(): void {}\n", encoding="utf-8"
@@ -1145,7 +1165,7 @@ def test_candidate_after_index_timeout_is_retryable_infrastructure(tmp_path: Pat
     ).analyze(_action(_patch()), str(tmp_path), _scope())
 
     assert result.status == "unavailable"
-    assert result.retryable_infrastructure is True
+    assert result.retryable_infrastructure is False
 
 
 def test_before_index_infrastructure_failure_is_retryable(tmp_path: Path) -> None:

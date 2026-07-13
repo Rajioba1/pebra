@@ -542,6 +542,9 @@ class CodeGraphCandidateRefinementAdapter:
             rf"\s*export\s+const\s+{re.escape(old_name)}\s*=\s*"
             rf"{re.escape(target_name)}\s*;\s*"
         )
+        # Deliberately aggregate every hunk in every touched file. A helper rebinding anywhere in
+        # the candidate invalidates the proof; narrowing this to the declaration file would reopen
+        # a false-continuity path for functions that close over changed free identifiers.
         removed: list[str] = []
         added: list[str] = []
         alias_count = 0
@@ -979,7 +982,7 @@ class CodeGraphCandidateRefinementAdapter:
                     status="unavailable",
                     reason="candidate after-graph unavailable",
                     retryable_infrastructure=isinstance(
-                        exc, (OSError, sqlite3.Error, subprocess.TimeoutExpired, TimeoutError)
+                        exc, (OSError, sqlite3.Error)
                     ),
                     context_file_count=len(before), context_bytes=context_bytes,
                     prefilter_latency_ms=prefilter_ms, materialize_latency_ms=materialize_ms,
