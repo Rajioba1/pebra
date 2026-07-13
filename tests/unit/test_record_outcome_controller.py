@@ -22,7 +22,16 @@ class _FakeOutcome:
 def test_terminal_status_is_recorded() -> None:
     fake = _FakeOutcome({"pre_commit_decision": "proceed"})
     roc.record_outcome("asm_1", "completed", outcome_port=fake, detail={"x": 1})
-    assert fake.calls == [("asm_1", "completed", {"x": 1})]
+    assert fake.calls == [("asm_1", "completed", {"x": 1, "_pebra_label_source": "host"})]
+
+
+def test_agent_label_source_is_persisted_for_censoring() -> None:
+    fake = _FakeOutcome()
+    roc.record_outcome(
+        "asm_1", "skipped", outcome_port=fake,
+        detail={"actual_success": True}, label_source="agent",
+    )
+    assert fake.calls[0][2]["_pebra_label_source"] == "agent"
 
 
 @pytest.mark.parametrize("status", ["completed", "skipped", "rejected"])

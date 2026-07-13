@@ -453,8 +453,8 @@ class EvidenceBundle:
     thresholds: dict[str, float] = field(default_factory=dict)
     policy_violations: list[str] = field(default_factory=list)
     variance_breakdown: dict[str, float] | None = None
-    p_success_variance: float = 0.0
-    review_cost_variance: float = 0.0
+    p_success_variance: float | None = None
+    review_cost_variance: float | None = None
     benefit_delta_evidence: "BenefitDeltaEvidence" = field(default_factory=lambda: BenefitDeltaEvidence())
     architecture_evidence: "ArchitectureEvidence" = field(default_factory=lambda: ArchitectureEvidence())
     candidate_verification: "CandidateVerificationEvidence" = field(
@@ -479,8 +479,9 @@ class AssessmentInput:
     repo_id: str
     repo_root: str
     policy_violations: list[str] = field(default_factory=list)
-    p_success_variance: float = 0.0
-    review_cost_variance: float = 0.0
+    p_success_variance: float | None = None
+    review_cost_variance: float | None = None
+    event_probability_variances: dict[str, float] = field(default_factory=dict)
     variance_breakdown: dict[str, float] | None = None  # explicit variance (AD-5 precedence 1)
     benefit_delta_evidence: BenefitDeltaEvidence = field(default_factory=BenefitDeltaEvidence)
     symbol_diff_evidence: SymbolDiffEvidence = field(default_factory=SymbolDiffEvidence)
@@ -517,6 +518,8 @@ class AssessmentInput:
     # M5b: provenance of learned-override facts applied by apply_snapshot (which fact won each target,
     # prior vs new value). Set on the adjusted copy; builder/engine IGNORE it. None when nothing applied.
     applied_snapshot_provenance: dict[str, Any] | None = None
+    # Reviewed cross-repository prior used only when request evidence omitted the corresponding field.
+    warm_prior_provenance: dict[str, Any] | None = None
     # Benefit-continuous learned override for the final projected/measured benefit target. None unless an
     # active ``measured_benefit`` fact applied; assessment_builder owns the actual score replacement.
     benefit_override: float | None = None

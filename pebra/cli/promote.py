@@ -70,6 +70,9 @@ def run(args: Any) -> int:
         benefit = promotion_controller.run_benefit_promotion(
             ctx.repo.repo_id, store=ctx.store, learning_port=learning_port, config=config
         )
+        review_cost = promotion_controller.run_review_cost_promotion(
+            ctx.repo.repo_id, store=ctx.store, learning_port=learning_port, config=config
+        )
     except (KeyError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -77,9 +80,11 @@ def run(args: Any) -> int:
         ctx.store.close()
 
     if args.as_json:
-        print(json.dumps({"risk": _summary(risk), "benefit": _summary(benefit)},
+        print(json.dumps({"risk": _summary(risk), "benefit": _summary(benefit),
+                          "review_cost": _summary(review_cost)},
                          indent=2, sort_keys=True))
     else:
         print(_line("risk", risk))
         print(_line("benefit", benefit))
+        print(_line("review_cost", review_cost))
     return 0

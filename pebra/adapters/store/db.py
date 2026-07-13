@@ -629,6 +629,15 @@ class SqliteStore:
                   AND pe.calibration_scope = 'proceeded_edits_only'
                   AND pe.guidance_packet_id IS NULL
                   AND pe.benefit_guidance_influenced = 0;
+            CREATE VIEW IF NOT EXISTS cost_continuous_calibration_data AS
+                SELECT pe.*
+                FROM prediction_errors pe
+                WHERE pe.target_type = 'cost_continuous'
+                  AND pe.shadow_mode = 0
+                  AND pe.hash_version = 2
+                  AND pe.outcome_label_status = 'observed'
+                  AND pe.calibration_scope = 'proceeded_edits_only'
+                  AND pe.guidance_packet_id IS NULL;
             """
         )
 
@@ -1204,6 +1213,24 @@ class SqliteStore:
         created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
             self._con.execute("BEGIN IMMEDIATE")
+            trigger_key = snapshot_metrics.get("trigger_key")
+            if trigger_key is not None:
+                for existing_id, metrics_json in self._con.execute(
+                    "SELECT id, metrics_json FROM risk_snapshots WHERE repo_id = ? ORDER BY id ASC",
+                    (repo_id,),
+                ):
+                    existing_metrics = json.loads(metrics_json)
+                    if existing_metrics.get("trigger_key") != trigger_key:
+                        continue
+                    fact_ids = [
+                        f"lrf_{row[0]}" for row in self._con.execute(
+                            "SELECT id FROM learned_risk_facts WHERE repo_id = ? AND snapshot_id = ? "
+                            "ORDER BY id ASC",
+                            (repo_id, str(existing_id)),
+                        )
+                    ]
+                    self._con.commit()
+                    return f"rs_{existing_id}", fact_ids
             snapshot_display = self._insert_risk_snapshot(
                 repo_id, snapshot_metrics, snapshot_status, created_at
             )
@@ -1260,6 +1287,7 @@ class SqliteStore:
             "risk_binary": "risk_binary_calibration_data",
             "benefit_binary": "benefit_binary_calibration_data",
             "benefit_continuous": "benefit_continuous_calibration_data",
+            "cost_continuous": "cost_continuous_calibration_data",
         }
         view = views[target_type]
         # Expose the persisted features_json so promotion can derive symbol/public_api/domain/fan-in
@@ -1428,6 +1456,7 @@ class SqliteStore:
         "risk_binary": "risk_binary_calibration_data",
         "benefit_binary": "benefit_binary_calibration_data",
         "benefit_continuous": "benefit_continuous_calibration_data",
+        "cost_continuous": "cost_continuous_calibration_data",
     }
 
     def list_prediction_errors(

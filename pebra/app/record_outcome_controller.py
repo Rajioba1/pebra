@@ -23,6 +23,7 @@ def record_outcome(
     *,
     outcome_port: OutcomePort,
     detail: dict | None = None,
+    label_source: str = "host",
 ) -> None:
     if status not in _TERMINAL_STATUSES:
         raise ValueError(
@@ -31,7 +32,11 @@ def record_outcome(
     # Milestone 4b: the detail may carry explicit learning labels (actual_success, event_outcomes,
     # benefit_realized, actual_review_cost, actual_rework_cost). Reject malformed labels before the
     # immutable write so a bad label never enters the chain. Absent labels are fine (-> censored).
-    outcome_labels.validate_labels(detail)
+    if label_source not in {"host", "agent"}:
+        raise ValueError("label_source must be 'host' or 'agent'")
+    persisted_detail = dict(detail or {})
+    persisted_detail[outcome_labels.LABEL_SOURCE_KEY] = label_source
+    outcome_labels.validate_labels(persisted_detail)
     if status == ActionStatus.COMPLETED.value:
         latest = outcome_port.latest_guardrails(assessment_id)
         if latest is None:
@@ -42,4 +47,4 @@ def record_outcome(
             raise ValueError(
                 "completed outcome requires latest pebra verify pre_commit_decision='proceed'"
             )
-    outcome_port.record_outcome(assessment_id, status, detail)
+    outcome_port.record_outcome(assessment_id, status, persisted_detail)

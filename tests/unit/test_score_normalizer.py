@@ -70,6 +70,28 @@ def test_confidence_maps_to_variance_when_component_variance_absent() -> None:
     assert breakdown["event_losses"] == pytest.approx(0.045)
 
 
+def test_explicit_zero_component_variance_is_not_replaced_by_cold_start() -> None:
+    breakdown, _total, source = sn.resolve_utility_variance(
+        explicit_breakdown=None,
+        benefit=0.80,
+        p_success=0.75,
+        var_p_success=0.0,
+        var_benefit=0.0,
+        var_review_cost=0.0,
+        event_variance=0.0,
+        scenario_variance=0.0,
+    )
+
+    assert source == "first_order"
+    assert breakdown == {
+        "p_success": 0.0,
+        "benefit": 0.0,
+        "event_losses": 0.0,
+        "review_cost": 0.0,
+        "scenario_variance": 0.0,
+    }
+
+
 def test_cold_start_default_when_nothing_supplied() -> None:
     breakdown, total, source = sn.resolve_utility_variance(explicit_breakdown=None)
     assert source == "cold_start"

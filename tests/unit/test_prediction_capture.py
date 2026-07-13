@@ -19,6 +19,7 @@ def _worked_example_manifest():
             {"event": "security_sensitive_change", "p_event": 0.04},
         ],
         immediate_benefit=0.82,
+        review_cost=0.12,
         projected_deltas={},
         projected_benefit=0.82,
         action_id="a1",
@@ -35,6 +36,8 @@ def test_manifest_captures_p_success_events_and_benefit_targets() -> None:
     assert by_name["immediate_benefit_realized"].target_type == "benefit_binary"
     assert by_name["measured_benefit"].target_type == "benefit_continuous"
     assert by_name["measured_benefit"].predicted_value == 0.82
+    assert by_name["review_cost"].target_type == "cost_continuous"
+    assert by_name["review_cost"].predicted_value == 0.12
 
 
 def test_every_target_carries_action_id_and_shadow_scope() -> None:
@@ -91,3 +94,17 @@ def test_no_event_targets_when_no_events() -> None:
         projected_benefit=0.5, action_id="a1",
     )
     assert not any(t.target_name.startswith("p_event.") for t in manifest)
+
+
+def test_manifest_tags_warm_prior_targets() -> None:
+    manifest = build_prediction_manifest(
+        p_success=0.7, events=[], immediate_benefit=0.0, projected_deltas={},
+        projected_benefit=0.0, action_id="a", review_cost=0.1,
+        warm_prior_provenance={
+            "calibration_tag": "ts-edit", "sample_size": 60,
+            "applied_fields": ["p_success", "review_cost"],
+        },
+    )
+    by_name = {target.target_name: target for target in manifest}
+    assert by_name["p_success"].provenance["warm_prior"]["calibration_tag"] == "ts-edit"
+    assert by_name["review_cost"].provenance["warm_prior"]["sample_size"] == 60

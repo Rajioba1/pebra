@@ -14,6 +14,7 @@ from pebra.cli import candidate_patch as candidate_patch_cmd
 from pebra.cli import dashboard as dashboard_cmd
 from pebra.cli import dependents as dependents_cmd
 from pebra.cli import gate_check as gate_check_cmd
+from pebra.cli import finalize_outcome as finalize_outcome_cmd
 from pebra.cli import gate_hook as gate_hook_cmd
 from pebra.cli import graph_stats as graph_stats_cmd
 from pebra.cli import learn as learn_cmd
@@ -32,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_init_cmd.register(subparsers)
     verify_cmd.register(subparsers)
     record_outcome_cmd.register(subparsers)
+    finalize_outcome_cmd.register(subparsers)
     learn_cmd.register(subparsers)
     promote_cmd.register(subparsers)
     scorecard_cmd.register(subparsers)

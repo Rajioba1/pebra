@@ -33,7 +33,12 @@ from typing import Any
 
 from pebra.core import risk_fact_decay
 from pebra.core.models import AssessmentInput
-from pebra.core.prediction_capture import BENEFIT_BINARY, BENEFIT_CONTINUOUS, RISK_BINARY
+from pebra.core.prediction_capture import (
+    BENEFIT_BINARY,
+    BENEFIT_CONTINUOUS,
+    COST_CONTINUOUS,
+    RISK_BINARY,
+)
 
 _CLAMP_LO = 0.01
 _CLAMP_HI = 0.99
@@ -65,6 +70,9 @@ class SnapshotFact:
     # since the fact was learned (drives AD-17 decay).
     calibration_quality: float = 1.0
     scope_change_count: int = 0
+    # Epistemic variance of the learned target estimate. ``None`` means the promoted fact predates
+    # variance calibration; ``0.0`` is a valid deterministic estimate and must be preserved.
+    variance: float | None = None
 
 
 @dataclass(frozen=True)
@@ -116,11 +124,12 @@ def _applicable(fact: SnapshotFact) -> bool:
     [0.01, 0.99] at application; the benefit-continuous `measured_benefit` override is NOT a probability,
     so it bypasses that clamp and is bounded separately by BENEFIT_OVERRIDE_MAX in assessment_builder."""
     return (
-        fact.target_type in {RISK_BINARY, BENEFIT_BINARY, BENEFIT_CONTINUOUS}
+        fact.target_type in {RISK_BINARY, BENEFIT_BINARY, BENEFIT_CONTINUOUS, COST_CONTINUOUS}
         and not fact.requires_human_ratification
         and fact.sample_size > 0
         and bool(fact.calibration_method)
         and math.isfinite(fact.value)
+        and (fact.variance is None or (fact.variance >= 0.0 and math.isfinite(fact.variance)))
     )
 
 
@@ -196,6 +205,7 @@ def _provenance(target: str, prior: float, new: float, fact: SnapshotFact) -> di
         "new_value": new,
         "sample_size": fact.sample_size,
         "calibration_method": fact.calibration_method,
+        "variance": fact.variance,
     }
 
 
@@ -283,11 +293,15 @@ def _pool_value(
 def _pool_provenance(
     target: str, prior: float, new: float, contributors: list[tuple[SnapshotFact, float]]
 ) -> dict[str, Any]:
+    variances = [f.variance for f, _ in contributors if f.variance is not None]
     return {
         "target": target,
         "mode": "log_pool",
         "prior_predicted_p": prior,
         "new_value": new,
+        # Conservative aggregation: pooling must not claim less epistemic uncertainty than its most
+        # uncertain accepted contributor until covariance-aware pooling is calibrated.
+        "variance": max(variances) if variances else None,
         "pooled_facts": [
             {
                 "fact_id": f.fact_id, "scope_kind": f.scope_kind, "scope_rank": f.specificity_rank,
@@ -342,14 +356,18 @@ def apply_snapshot(
     applied: list[dict[str, Any]] = []
 
     new_p_success = inp.p_success
+    new_p_success_variance = inp.p_success_variance
     val, prov = _resolve_target(
         snapshot.facts, "p_success", inp.p_success, inp, features, pool_config
     )
     if val is not None:
         new_p_success = val
+        if prov is not None and prov.get("variance") is not None:
+            new_p_success_variance = float(prov["variance"])
         applied.append(prov)  # type: ignore[arg-type]
 
     new_events: list[dict[str, Any]] | None = None
+    new_event_probability_variances = dict(inp.event_probability_variances)
     for idx, event in enumerate(inp.events):
         prior = event["p_event"]
         val, prov = _resolve_target(
@@ -362,6 +380,8 @@ def apply_snapshot(
             # elicited_disutility). Revisit if the event schema ever gains nested mutables.
             new_events = [dict(e) for e in inp.events]  # never mutate the original
         new_events[idx]["p_event"] = val
+        if prov is not None and prov.get("variance") is not None:
+            new_event_probability_variances[event["event"]] = float(prov["variance"])
         applied.append(prov)  # type: ignore[arg-type]
 
     new_immediate_benefit = inp.immediate_benefit
@@ -409,15 +429,31 @@ def apply_snapshot(
         new_benefit_override = val
         applied.append(prov)  # type: ignore[arg-type]
 
+    new_review_cost = inp.review_cost
+    new_review_cost_variance = inp.review_cost_variance
+    val, prov = _resolve_target(
+        snapshot.facts, "review_cost", inp.review_cost,
+        inp, features, None, probability=False,
+    )
+    if val is not None:
+        new_review_cost = max(0.0, val)
+        if prov is not None and prov.get("variance") is not None:
+            new_review_cost_variance = float(prov["variance"])
+        applied.append(prov)  # type: ignore[arg-type]
+
     if not applied:
         return inp  # no matching facts -> byte-equivalent
 
     return dataclasses.replace(
         inp,
         p_success=new_p_success,
+        p_success_variance=new_p_success_variance,
         events=new_events if new_events is not None else inp.events,
+        event_probability_variances=new_event_probability_variances,
         immediate_benefit=new_immediate_benefit,
         benefit_delta_evidence=new_benefit_delta_evidence,
         benefit_override=new_benefit_override,
+        review_cost=new_review_cost,
+        review_cost_variance=new_review_cost_variance,
         applied_snapshot_provenance={"snapshot_id": snapshot.snapshot_id, "applied_facts": applied},
     )

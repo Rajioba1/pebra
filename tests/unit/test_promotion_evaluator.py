@@ -37,6 +37,19 @@ def test_empirical_value_empty_raises():
         pe.compute_empirical_value([])
 
 
+def test_beta_parameter_variance_shrinks_with_more_observations() -> None:
+    small = pe.beta_parameter_variance(_rows([1, 0]))
+    large = pe.beta_parameter_variance(_rows([1, 0] * 50))
+
+    assert large < small
+    assert large > 0.0
+
+
+def test_continuous_mean_variance_is_zero_for_deterministic_values() -> None:
+    rows = [{"actual_value": 0.3} for _ in range(5)]
+    assert pe.continuous_mean_variance(rows) == pytest.approx(0.0)
+
+
 # --- _scope_matches_features -----------------------------------------------------------------
 
 def _features(*, action_type="edit", symbol_id=None, is_public_api=False, domains=None,
@@ -150,6 +163,24 @@ def test_genuinely_predictive_fact_is_promoted():
     assert r.promoted is True
     assert r.veto_reason is None
     assert r.delta_brier > 0
+    assert r.interval_coverage == pytest.approx(1.0)
+
+
+def test_interval_coverage_vetoes_a_regime_split() -> None:
+    rows = [_crow(0.9, 0) for _ in range(50)] + [_crow(0.1, 1) for _ in range(50)]
+    cfg = pe.PromotionConfig(
+        min_calibration_samples=100,
+        min_delta_brier=-1.0,
+        min_delta_log_loss=-10.0,
+        min_interval_coverage=0.90,
+        coverage_folds=10,
+    )
+
+    result = pe.evaluate_promotion_gate(_cand(target_name="p_success"), rows, cfg)
+
+    assert result.interval_coverage < 0.90
+    assert result.promoted is False
+    assert result.veto_reason == "INTERVAL_COVERAGE_LOW"
 
 
 def test_positive_delta_threshold_is_scored_on_matched_scope_not_diluted():

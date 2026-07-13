@@ -116,7 +116,8 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "status": {"type": "string", "enum": ["completed", "skipped", "rejected"]},
                 "detail": {
                     "type": "object",
-                    "description": "Optional result detail. Recognized learning labels (4b): "
+                    "description": "Optional agent-reported result detail. Lifecycle data is stored, "
+                    "but self-reported learning labels are censored: "
                     "actual_success (bool), event_outcomes ({event: bool}), benefit_realized (bool), "
                     "actual_review_cost (number), actual_rework_cost (number). Absent -> censored.",
                 },
@@ -229,6 +230,7 @@ def _handle_record_outcome(arguments: dict[str, Any]) -> dict[str, Any]:
             arguments["status"],
             outcome_port=ctx.store,
             detail=arguments.get("detail"),
+            label_source="agent",
         )
         return {
             "assessment_id": arguments["assessment_id"],

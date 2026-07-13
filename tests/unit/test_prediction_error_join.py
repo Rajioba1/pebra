@@ -14,6 +14,7 @@ _PREDS = [
     {"target_type": "benefit_binary", "target_name": "immediate_benefit_realized", "predicted_value": 0.82, "action_id": "a1"},
     {"target_type": "benefit_continuous", "target_name": "measured_benefit", "predicted_value": 0.82, "action_id": "a1"},
     {"target_type": "benefit_continuous", "target_name": "maintainability_delta.complexity_delta", "predicted_value": -2.0, "action_id": "a1"},
+    {"target_type": "cost_continuous", "target_name": "review_cost", "predicted_value": 0.20, "action_id": "a1"},
 ]
 
 
@@ -26,6 +27,7 @@ def test_observed_rows_compute_the_right_errors() -> None:
         "actual_success": True,
         "event_outcomes": {"test_regression": False},  # public_api_break unlabeled
         "benefit_realized": True,
+        "actual_review_cost": 0.30,
     }
     rows = _by_name(
         pe.build_error_rows(_PREDS, labels, measured_benefit=0.5, measured_deltas={"complexity_delta": -1.5})
@@ -44,6 +46,8 @@ def test_observed_rows_compute_the_right_errors() -> None:
     assert mb["actual_value"] == 0.5
     assert mb["squared_error"] == pytest.approx((0.82 - 0.5) ** 2)
     assert rows["maintainability_delta.complexity_delta"]["actual_value"] == -1.5
+    assert rows["review_cost"]["actual_value"] == pytest.approx(0.30)
+    assert rows["review_cost"]["squared_error"] == pytest.approx(0.01)
 
 
 def test_unlabeled_targets_are_censored_not_guessed() -> None:
@@ -53,6 +57,7 @@ def test_unlabeled_targets_are_censored_not_guessed() -> None:
     assert rows["p_event.test_regression"]["outcome_label_status"] == "censored"
     assert rows["immediate_benefit_realized"]["outcome_label_status"] == "censored"
     assert rows["measured_benefit"]["outcome_label_status"] == "censored"
+    assert rows["review_cost"]["outcome_label_status"] == "censored"
     assert rows["p_success"]["outcome_label_status"] == "observed"  # the one real label
 
 

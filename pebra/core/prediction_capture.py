@@ -21,6 +21,7 @@ from typing import Any
 RISK_BINARY = "risk_binary"
 BENEFIT_BINARY = "benefit_binary"
 BENEFIT_CONTINUOUS = "benefit_continuous"
+COST_CONTINUOUS = "cost_continuous"
 
 
 @dataclass(frozen=True)
@@ -52,10 +53,12 @@ def build_prediction_manifest(
     projected_deltas: dict[str, float],
     projected_benefit: float,
     action_id: str,
+    review_cost: float | None = None,
     prediction_scope: str = "shadow",
     provenance: dict[str, Any] | None = None,
     features: dict[str, Any] | None = None,
     applied_snapshot_provenance: dict[str, Any] | None = None,
+    warm_prior_provenance: dict[str, Any] | None = None,
 ) -> list[PredictionTarget]:
     """Build the immutable prediction manifest for one scored action.
 
@@ -77,6 +80,7 @@ def build_prediction_manifest(
         if isinstance(item, dict)
     }
     applied_snapshot_id = (applied_snapshot_provenance or {}).get("snapshot_id")
+    warm_fields = set((warm_prior_provenance or {}).get("applied_fields", []))
 
     def _target(
         target_type: str,
@@ -91,6 +95,8 @@ def build_prediction_manifest(
                 "snapshot_id": applied_snapshot_id,
                 **copy.deepcopy(applied),
             }
+        if name in warm_fields:
+            target_provenance["warm_prior"] = copy.deepcopy(warm_prior_provenance)
         return PredictionTarget(
             target_type=target_type,
             target_name=name,
@@ -119,4 +125,6 @@ def build_prediction_manifest(
     for metric, value in projected_deltas.items():
         manifest.append(_target(BENEFIT_CONTINUOUS, f"maintainability_delta.{metric}", value))
     manifest.append(_target(BENEFIT_CONTINUOUS, "measured_benefit", projected_benefit))
+    if review_cost is not None:
+        manifest.append(_target(COST_CONTINUOUS, "review_cost", review_cost))
     return manifest

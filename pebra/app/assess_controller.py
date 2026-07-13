@@ -31,6 +31,8 @@ from pebra.core import (
     request_validator,
 )
 from pebra.core.apply_snapshot import apply_snapshot
+from pebra.core.calibrated_priors import CALIBRATED_PRIORS
+from pebra.core.warm_prior import apply_warm_prior
 from pebra.core.explanation_generator import Explanation
 from pebra.core.graph_trust import is_trusted_fanin
 from pebra.core.language_capability import LanguageCapability, classify_tier
@@ -583,6 +585,7 @@ def _prepare_action_input(
     sfp = ports.get("structural_feature_provider")
     if sfp is not None:
         inp.structural_features = sfp.build_features(inp)
+    inp = apply_warm_prior(inp, ports.get("calibrated_prior_cells", CALIBRATED_PRIORS))
     # M5c: apply the active learned snapshot PRE-scoring. The bundle is loaded once per assess()
     # (not once per action) and passed in here. apply_snapshot is pure; the assess path performs NO
     # learning write. No active facts -> identity (golden unchanged).
@@ -658,8 +661,10 @@ def _score_prepared_input(
         projected_deltas=inp.benefit_delta_evidence.deltas,
         projected_benefit=result.scores["benefit"],
         action_id=action.id,
+        review_cost=inp.review_cost,
         features=prediction_features,
         applied_snapshot_provenance=inp.applied_snapshot_provenance,
+        warm_prior_provenance=inp.warm_prior_provenance,
     )
     return ScoredAction(
         action=action,

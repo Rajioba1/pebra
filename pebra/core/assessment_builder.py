@@ -25,6 +25,7 @@ from pebra.core.constants import (
     CODEGRAPH_FILE_PARSE_ERROR_PENALTY,
     CODEGRAPH_LARGE_FILE_NODE_COUNT,
     CODEGRAPH_LARGE_FILE_SIZE_BYTES,
+    COLD_START_VARIANCES,
     ActionStatus,
 )
 from pebra.core.models import AssessmentInput
@@ -126,6 +127,19 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         expected_loss=expected_loss,
         review_cost=inp.review_cost,
     )
+    event_variance = None
+    if inp.event_probability_variances:
+        event_variance = 0.0
+        for event in floored_events:
+            probability = float(event["p_event"])
+            disutility = float(event["disutility"])
+            probability_variance = inp.event_probability_variances.get(
+                str(event["event"]), COLD_START_VARIANCES["p_event"]
+            )
+            event_variance += (
+                (disutility**2) * probability_variance
+                + (probability**2) * COLD_START_VARIANCES["disutility"]
+            )
     # AD-5 precedence: explicit breakdown (1) -> first-order propagation (2) -> cold-start (3).
     # Wire all component variances so precedence 2 is actually reachable through the pipeline:
     # benefit_variance comes from the benefit model; p_success/review_cost variances from evidence.
@@ -136,6 +150,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         var_p_success=inp.p_success_variance,
         var_benefit=benefit_breakdown.benefit_variance,
         var_review_cost=inp.review_cost_variance,
+        event_variance=event_variance,
     )
     utility_sd = score_math.utility_sd(variance_breakdown)
     rau = score_math.risk_adjusted_utility(expected_utility, utility_sd)

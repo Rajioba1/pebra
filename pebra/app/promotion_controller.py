@@ -10,11 +10,18 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+import hashlib
+import json
 from typing import Any
 
 from pebra.core import promotion_evaluator as pe
 from pebra.core import snapshot_reconciler
-from pebra.core.prediction_capture import BENEFIT_BINARY, BENEFIT_CONTINUOUS, RISK_BINARY
+from pebra.core.prediction_capture import (
+    BENEFIT_BINARY,
+    BENEFIT_CONTINUOUS,
+    COST_CONTINUOUS,
+    RISK_BINARY,
+)
 from pebra.ports.learning_port import LearningPort
 from pebra.ports.store_port import StorePort
 
@@ -118,7 +125,7 @@ def _extract_provider_provenance(rows: list[dict[str, Any]]) -> tuple[str | None
 
 def _collect_facts(
     all_rows: list[dict[str, Any]], *, config: pe.PromotionConfig, gate_fn, value_fn,
-    calibration_method: str,
+    calibration_method: str, variance_fn=None, variance_method: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """Group rows by target, derive scope candidates, run the gate, and build promotable fact dicts.
     Shared by risk and benefit promotion — only the gate_fn (replay metric) + value_fn (fact value) +
@@ -150,6 +157,19 @@ def _collect_facts(
                 if pe.scope_matches_features(candidate.scope_kind, candidate.scope_value,
                                              candidate.scope_json, r.get("features") or {})
             ]
+            fact_json = {
+                "value": value_fn(group_rows),
+                "weight": 1.0,
+                "sample_size": len(group_rows),
+                "calibration_method": calibration_method,
+                "calibration_quality": 1.0,
+                "scope_change_count": 0,
+                "provider_version": provider_v,
+                "index_version": index_v,
+            }
+            if variance_fn is not None:
+                fact_json["variance"] = variance_fn(group_rows)
+                fact_json["variance_method"] = variance_method
             fact_dicts.append({
                 "target_type": target_type,
                 "target_name": candidate.target_name,
@@ -157,16 +177,7 @@ def _collect_facts(
                 "scope_value": candidate.scope_value,
                 "specificity_rank": candidate.specificity_rank,
                 "scope_json": candidate.scope_json,
-                "fact_json": {
-                    "value": value_fn(group_rows),
-                    "weight": 1.0,
-                    "sample_size": len(group_rows),
-                    "calibration_method": calibration_method,
-                    "calibration_quality": 1.0,
-                    "scope_change_count": 0,
-                    "provider_version": provider_v,
-                    "index_version": index_v,
-                },
+                "fact_json": fact_json,
                 "fact_type": "learned_override",
                 "status": "active",
                 "requires_human_ratification": False,
@@ -176,7 +187,8 @@ def _collect_facts(
 
 def _result(repo_id, fact_dicts, veto_reasons, considered, *, learning_port,
             promotion_reason, drift_score: float | None = None,
-            metrics_extra: dict[str, Any] | None = None) -> PromotionResult:
+            metrics_extra: dict[str, Any] | None = None,
+            trigger_key: str | None = None) -> PromotionResult:
     if not fact_dicts:
         return PromotionResult(
             repo_id=repo_id, promoted=False, snapshot_id=None, fact_ids=[],
@@ -189,7 +201,12 @@ def _result(repo_id, fact_dicts, veto_reasons, considered, *, learning_port,
         "facts_promoted": len(fact_dicts),
         "target_names": sorted({f["target_name"] for f in fact_dicts}),
         "hash_version": 2,
+        "facts_fingerprint": hashlib.sha256(
+            json.dumps(fact_dicts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
     }
+    if trigger_key is not None:
+        snapshot_metrics["trigger_key"] = trigger_key
     if drift_score is not None:
         snapshot_metrics["drift_score"] = drift_score
     if metrics_extra:
@@ -208,6 +225,7 @@ def run_promotion(
     store: StorePort,
     learning_port: LearningPort,
     config: pe.PromotionConfig | None = None,
+    trigger_key: str | None = None,
 ) -> PromotionResult:
     """Risk-binary promotion (AD-18). Decoupled from benefit — risk never waits on benefit. When a
     drift-freeze threshold is configured, promotion PAUSES if the active snapshot has diverged from the
@@ -217,6 +235,8 @@ def run_promotion(
     fact_dicts, veto_reasons, considered = _collect_facts(
         all_rows, config=config, gate_fn=pe.evaluate_promotion_gate,
         value_fn=pe.compute_empirical_value, calibration_method="observed_rate_v1",
+        variance_fn=pe.beta_parameter_variance,
+        variance_method="beta_1_1_parameter_variance",
     )
     drift_score: float | None = None
     if config.drift_freeze_threshold is not None and fact_dicts:
@@ -232,7 +252,8 @@ def run_promotion(
     return _result(repo_id, fact_dicts, veto_reasons, considered,
                    learning_port=learning_port, promotion_reason="M5d_auto_promotion",
                    drift_score=drift_score,
-                   metrics_extra={"event_concern_budget": config.event_concern_budget})
+                   metrics_extra={"event_concern_budget": config.event_concern_budget},
+                   trigger_key=trigger_key)
 
 
 def run_benefit_promotion(
@@ -241,6 +262,7 @@ def run_benefit_promotion(
     store: StorePort,
     learning_port: LearningPort,
     config: pe.PromotionConfig | None = None,
+    trigger_key: str | None = None,
 ) -> PromotionResult:
     """Benefit promotion (AD-29), DECOUPLED from risk: benefit_binary uses the Brier/log-loss gate
     (the false-proceed veto is naturally skipped — its target isn't p_event.*); benefit_continuous uses
@@ -251,11 +273,46 @@ def run_benefit_promotion(
         store.load_production_calibration_rows(repo_id, BENEFIT_BINARY),
         config=config, gate_fn=pe.evaluate_promotion_gate,
         value_fn=pe.compute_empirical_value, calibration_method="observed_rate_v1",
+        variance_fn=pe.beta_parameter_variance,
+        variance_method="beta_1_1_parameter_variance",
     )
     fc, vc, cc = _collect_facts(
         store.load_production_calibration_rows(repo_id, BENEFIT_CONTINUOUS),
         config=config, gate_fn=pe.evaluate_benefit_continuous_gate,
         value_fn=pe.compute_empirical_continuous_value, calibration_method="observed_mean_v1",
+        variance_fn=pe.continuous_mean_variance,
+        variance_method="sample_mean_variance",
     )
     return _result(repo_id, fb + fc, vb + vc, cb + cc,
-                   learning_port=learning_port, promotion_reason="M5d_benefit_promotion")
+                   learning_port=learning_port, promotion_reason="M5d_benefit_promotion",
+                   trigger_key=trigger_key)
+
+
+def run_review_cost_promotion(
+    repo_id: str,
+    *,
+    store: StorePort,
+    learning_port: LearningPort,
+    config: pe.PromotionConfig | None = None,
+    trigger_key: str | None = None,
+) -> PromotionResult:
+    """Promote observed review effort independently from risk and benefit."""
+    config = config or pe.PromotionConfig()
+    facts, vetoes, considered = _collect_facts(
+        store.load_production_calibration_rows(repo_id, COST_CONTINUOUS),
+        config=config,
+        gate_fn=pe.evaluate_benefit_continuous_gate,
+        value_fn=pe.compute_empirical_continuous_value,
+        calibration_method="observed_mean_v1",
+        variance_fn=pe.continuous_mean_variance,
+        variance_method="sample_mean_variance",
+    )
+    return _result(
+        repo_id,
+        facts,
+        vetoes,
+        considered,
+        learning_port=learning_port,
+        promotion_reason="M5d_review_cost_promotion",
+        trigger_key=trigger_key,
+    )

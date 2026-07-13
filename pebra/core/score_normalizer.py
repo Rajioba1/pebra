@@ -37,7 +37,7 @@ def variance_from_confidence(confidence: float) -> float:
 def _component_variance(
     supplied: float | None, confidence: float | None, cold_start_key: str
 ) -> float:
-    if supplied is not None and supplied > 0.0:
+    if supplied is not None and supplied >= 0.0:
         return supplied
     if confidence is not None:
         return variance_from_confidence(confidence)

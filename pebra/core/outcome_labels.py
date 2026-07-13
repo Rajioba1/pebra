@@ -17,6 +17,7 @@ from typing import Any
 _BOOL_LABELS = ("actual_success", "benefit_realized")
 _COST_LABELS = ("actual_review_cost", "actual_rework_cost")
 LABEL_KEYS = (*_BOOL_LABELS, *_COST_LABELS, "event_outcomes")
+LABEL_SOURCE_KEY = "_pebra_label_source"
 
 
 def validate_labels(detail: dict[str, Any] | None) -> None:
@@ -48,6 +49,10 @@ def extract_labels(detail: dict[str, Any] | None) -> dict[str, Any]:
     """The recognized label subset of a (validated) detail dict — the single source the learning
     controller reads to decide which prediction targets have a real label vs. are censored."""
     if not detail:
+        return {}
+    # Agent-facing surfaces may report lifecycle outcomes, but their self-reported labels must not
+    # train the decision model. Missing provenance is retained as legacy host data.
+    if detail.get(LABEL_SOURCE_KEY) == "agent":
         return {}
     labels: dict[str, Any] = {key: detail[key] for key in LABEL_KEYS if key in detail}
     return labels

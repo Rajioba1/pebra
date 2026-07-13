@@ -41,6 +41,63 @@ def compute_empirical_value(rows: list[dict[str, Any]]) -> float:
     return sum(int(r["actual_outcome"]) for r in rows) / len(rows)
 
 
+def beta_parameter_variance(rows: list[dict[str, Any]]) -> float:
+    """Beta(1,1) posterior variance of the Bernoulli-rate parameter."""
+    if not rows:
+        raise ValueError("cannot compute variance over empty rows")
+    successes = sum(int(row["actual_outcome"]) for row in rows)
+    alpha = 1.0 + successes
+    beta = 1.0 + len(rows) - successes
+    total = alpha + beta
+    return (alpha * beta) / ((total**2) * (total + 1.0))
+
+
+def continuous_mean_variance(rows: list[dict[str, Any]]) -> float:
+    """Estimated epistemic variance of a learned continuous mean."""
+    if not rows:
+        raise ValueError("cannot compute variance over empty rows")
+    values = [float(row["actual_value"]) for row in rows]
+    if len(values) == 1:
+        return 0.0
+    mean = sum(values) / len(values)
+    sample_variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return sample_variance / len(values)
+
+
+def _cross_fitted_binary_coverage(
+    rows: list[dict[str, Any]], *, folds: int, z_value: float = 1.645
+) -> float:
+    """Coverage of held-out fold rates by Beta-posterior predictive intervals.
+
+    Contiguous folds preserve regime shifts instead of randomly mixing them away. The interval
+    includes posterior parameter variance and held-out Bernoulli sampling variance.
+    """
+    if len(rows) < 2:
+        return 0.0
+    fold_count = max(2, min(int(folds), len(rows)))
+    boundaries = [round(i * len(rows) / fold_count) for i in range(fold_count + 1)]
+    covered = 0
+    evaluated = 0
+    for index in range(fold_count):
+        lo, hi = boundaries[index], boundaries[index + 1]
+        held_out = rows[lo:hi]
+        training = rows[:lo] + rows[hi:]
+        if not held_out or not training:
+            continue
+        successes = sum(int(row["actual_outcome"]) for row in training)
+        alpha = 1.0 + successes
+        beta = 1.0 + len(training) - successes
+        total = alpha + beta
+        mean = alpha / total
+        parameter_variance = (alpha * beta) / ((total**2) * (total + 1.0))
+        sampling_variance = mean * (1.0 - mean) / len(held_out)
+        radius = z_value * (parameter_variance + sampling_variance) ** 0.5
+        observed_rate = sum(int(row["actual_outcome"]) for row in held_out) / len(held_out)
+        covered += int(max(0.0, mean - radius) <= observed_rate <= min(1.0, mean + radius))
+        evaluated += 1
+    return covered / evaluated if evaluated else 0.0
+
+
 def scope_matches_features(
     scope_kind: str, scope_value: str, scope_json: dict[str, Any], features: dict[str, Any]
 ) -> bool:
@@ -100,6 +157,9 @@ class PromotionConfig:
     # functional on the proceeded-only corpus (a faithful proceed-replay would saturate the veto). The
     # exact non-proceeded/canary replay is a Phase 5b DATA requirement, not a design deferral.
     event_concern_budget: float = 0.10
+    min_interval_coverage: float = 0.90
+    coverage_folds: int = 10
+    min_interval_coverage_samples: int = 100
 
 
 @dataclass(frozen=True)
@@ -130,6 +190,7 @@ class PromotionGateResult:
     n_group: int
     n_eval: int
     delta_mse: float | None = None  # benefit_continuous gate only (AD-29)
+    interval_coverage: float | None = None
 
 
 def _criticality(row: dict[str, Any]) -> str:
@@ -175,6 +236,9 @@ def evaluate_promotion_gate(
     log_loss_with = mean_log_loss(pairs_with)
     delta_brier = brier_without - brier_with
     delta_log_loss = log_loss_without - log_loss_with
+    interval_coverage = _cross_fitted_binary_coverage(
+        [all_event_rows[i] for i in matched_idx], folds=config.coverage_folds
+    )
 
     is_event = candidate.target_name.startswith(_LOW)
     fpr_without: float | None = None
@@ -220,6 +284,11 @@ def evaluate_promotion_gate(
         veto = "FALSE_PROCEED_RATE_INCREASE"
     elif is_event and c4_weak:
         veto = "C4_WEAKENING_DETECTED"
+    elif (
+        n_group >= config.min_interval_coverage_samples
+        and interval_coverage < config.min_interval_coverage
+    ):
+        veto = "INTERVAL_COVERAGE_LOW"
 
     return PromotionGateResult(
         promoted=veto is None, veto_reason=veto, delta_brier=delta_brier,
@@ -227,6 +296,7 @@ def evaluate_promotion_gate(
         log_loss_without=log_loss_without, log_loss_with=log_loss_with,
         false_proceed_rate_without=fpr_without, false_proceed_rate_with=fpr_with,
         c4_weakening_detected=c4_weak, n_group=n_group, n_eval=n_eval,
+        interval_coverage=interval_coverage,
     )
 
 

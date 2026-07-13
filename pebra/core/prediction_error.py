@@ -15,7 +15,12 @@ import math
 from typing import Any
 
 from pebra.core.constants import LOG_LOSS_CLIP_EPS
-from pebra.core.prediction_capture import BENEFIT_BINARY, BENEFIT_CONTINUOUS, RISK_BINARY
+from pebra.core.prediction_capture import (
+    BENEFIT_BINARY,
+    BENEFIT_CONTINUOUS,
+    COST_CONTINUOUS,
+    RISK_BINARY,
+)
 
 
 def brier_score(predicted: float, actual_binary: int) -> float:
@@ -89,7 +94,10 @@ def _risk_actual(target_name: str, labels: dict[str, Any]) -> int | None:
 
 
 def _continuous_actual(
-    target_name: str, measured_benefit: float | None, measured_deltas: dict[str, float]
+    target_name: str,
+    labels: dict[str, Any],
+    measured_benefit: float | None,
+    measured_deltas: dict[str, float],
 ) -> float | None:
     """The actual continuous value for a benefit target, or None when unmeasured (-> censored)."""
     if target_name == "measured_benefit":
@@ -97,6 +105,9 @@ def _continuous_actual(
     if target_name.startswith("maintainability_delta."):
         metric = target_name[len("maintainability_delta.") :]
         return measured_deltas.get(metric)
+    if target_name == "review_cost":
+        value = labels.get("actual_review_cost")
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
     return None
 
 
@@ -133,10 +144,22 @@ def summarize_errors(rows: list[dict[str, Any]]) -> dict[str, Any]:
         else {"status": "ok", "n": len(cont_pairs), "mse": mse(cont_pairs),
               "bias": signed_bias(cont_pairs)}
     )
+    cost_pairs = [
+        (r["predicted_value"], r["actual_value"])
+        for r in observed
+        if r["target_type"] == COST_CONTINUOUS
+    ]
+    cost_continuous = (
+        {"status": "pending_min_n", "n": 0}
+        if not cost_pairs
+        else {"status": "ok", "n": len(cost_pairs), "mse": mse(cost_pairs),
+              "bias": signed_bias(cost_pairs)}
+    )
     return {
         "risk_binary": _binary(RISK_BINARY),
         "benefit_binary": _binary(BENEFIT_BINARY),
         "benefit_continuous": continuous,
+        "cost_continuous": cost_continuous,
         "observed": len(observed),
         "censored": len(rows) - len(observed),
         "total": len(rows),
@@ -187,9 +210,9 @@ def build_error_rows(
                     residual=residual(pv, actual),
                     outcome_label_status="observed",
                 )
-        elif tt == BENEFIT_CONTINUOUS:
+        elif tt in (BENEFIT_CONTINUOUS, COST_CONTINUOUS):
             row["predicted_value"] = pv
-            actual_value = _continuous_actual(tn, measured_benefit, measured_deltas)
+            actual_value = _continuous_actual(tn, labels, measured_benefit, measured_deltas)
             if actual_value is not None:
                 row.update(
                     actual_value=actual_value,

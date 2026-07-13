@@ -59,14 +59,14 @@ def test_full_shadow_loop(tmp_path) -> None:
     out = json.loads(learn.stdout)
     assert out["mode"] == "shadow measurement only; no decision parameters changed"
     assert out["observed"] >= 3            # p_success + 2 labeled events + benefit_realized
-    assert out["prediction_errors"] == 6   # the full worked-example manifest
+    assert out["prediction_errors"] == 7   # full manifest, including learned review cost
 
     sc = _pebra(tmp_path, "scorecard", "--json", "--repo-root", str(tmp_path), "--db", db)
     assert sc.returncode == 0, sc.stderr
     card = json.loads(sc.stdout)
     assert card["calibration"]["risk_binary"]["status"] == "ok"      # observed risk labels -> metrics
     assert card["calibration"]["risk_binary"]["brier"] >= 0.0
-    assert card["shadow_counts"]["prediction_errors"] == 6
+    assert card["shadow_counts"]["prediction_errors"] == 7
 
 
 def test_learn_without_outcome_exits_nonzero(tmp_path) -> None:

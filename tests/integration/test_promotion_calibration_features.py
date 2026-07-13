@@ -167,3 +167,25 @@ def test_malformed_calibration_features_default_empty(tmp_path) -> None:
 
     assert len(rows) == 1
     assert rows[0]["features"] == {}
+
+
+def test_review_cost_calibration_row_is_available(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "p.db"))
+    asm = store.persist_assessment(
+        _result(), {"task": "t"},
+        predictions=[{
+            "action_id": "a1", "target_type": "cost_continuous", "target_name": "review_cost",
+            "predicted_value": 0.4, "features": _FEATURES,
+        }],
+    )
+    store.insert_prediction_error(asm, {
+        "action_id": "a1", "target_type": "cost_continuous", "target_name": "review_cost",
+        "predicted_value": 0.4, "actual_value": 0.2, "residual": -0.2,
+        "squared_error": 0.04, "outcome_label_status": "observed",
+        "calibration_scope": "proceeded_edits_only", "shadow_mode": 0,
+    })
+    rows = store.load_production_calibration_rows("r", "cost_continuous")
+    store.close()
+    assert len(rows) == 1
+    assert rows[0]["actual_value"] == pytest.approx(0.2)
+    assert rows[0]["features"] == _FEATURES

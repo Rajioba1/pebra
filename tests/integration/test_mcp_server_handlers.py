@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from pebra.adapters.candidate_binding import binding_for_patch
+from pebra.adapters.store.db import SqliteStore
+from pebra.core import outcome_labels
 from pebra.mcp_server import server
 
 REPO = Path(__file__).resolve().parents[2]
@@ -168,9 +170,14 @@ def test_record_outcome_then_duplicate_raises(tmp_path) -> None:
     asm = server._handle_assess(_assess_args(tmp_path))["assessment_id"]
     common = _common(tmp_path)
     out = server._handle_record_outcome(
-        {"assessment_id": asm, "status": "skipped", **common}
+        {"assessment_id": asm, "status": "skipped", "detail": {"actual_success": True}, **common}
     )
     assert out["recorded"] is True
+    store = SqliteStore(common["db"])
+    detail = store.load_outcomes(asm)[0]["detail"]
+    store.close()
+    assert detail["_pebra_label_source"] == "agent"
+    assert outcome_labels.extract_labels(detail) == {}
     with pytest.raises(ValueError):
         server._handle_record_outcome({"assessment_id": asm, "status": "rejected", **common})
 

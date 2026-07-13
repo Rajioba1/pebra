@@ -54,3 +54,8 @@ def test_extract_pulls_only_recognized_label_fields() -> None:
     assert labels["event_outcomes"] == {"test_regression": True}
     assert "note" not in labels
     assert "benefit_realized" not in labels  # absent -> not present (caller treats as censored)
+
+
+def test_agent_supplied_labels_are_censored() -> None:
+    detail = {"actual_success": True, "_pebra_label_source": "agent"}
+    assert outcome_labels.extract_labels(detail) == {}

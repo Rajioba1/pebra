@@ -48,7 +48,11 @@ def run(args: Any) -> int:
     store = SqliteStore(db_path)
     try:
         record_outcome_controller.record_outcome(
-            args.assessment_id, args.status, outcome_port=store, detail=detail
+            args.assessment_id,
+            args.status,
+            outcome_port=store,
+            detail=detail,
+            label_source="host",
         )
     except (KeyError, ValueError) as exc:
         # unknown assessment, or an outcome already recorded -> clean exit, not a traceback

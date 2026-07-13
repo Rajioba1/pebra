@@ -71,7 +71,7 @@ Supported languages: Python, JavaScript/JSX, TypeScript/TSX, Java, Rust, C/C++.
 
 ```text
 assess proposed edit -> agent decides -> apply edit -> verify actual diff ->
-record-outcome -> learn -> promote -> future assess uses learned snapshot
+finalize trusted outcome -> future assess uses promoted learned snapshot
 ```
 
 Example command surface:
@@ -82,10 +82,17 @@ pebra verify --assessment-id <assessment_id> --json
 pebra record-outcome --assessment-id <assessment_id> --status completed --detail '{"actual_success": true}'
 pebra learn --assessment-id <assessment_id>
 pebra promote --repo-root <repo_root>
+# Preferred host path: one idempotent record + measure + gated-promotion operation.
+pebra finalize-outcome --trusted-outcome-file outcome.json --repo-root <repo_root> --json
 pebra scorecard --repo-root <repo_root>
 pebra dashboard --port 4500 --open
 pebra capabilities --repo-root <repo_root>
 ```
+
+`outcome.json` contains `assessment_id`, terminal `status`, and an optional `detail` object. The
+`finalize-outcome` command is host-only: MCP outcome reports are retained for lifecycle telemetry but
+their self-reported learning labels are censored. The legacy three-command sequence remains available
+for diagnosis and manual operation.
 
 ## Agent Enforcement
 

@@ -135,6 +135,7 @@ def test_active_fact_hydrates_pooling_fields(tmp_path) -> None:
             "weight": 0.75,
             "calibration_quality": 0.5,
             "scope_change_count": 7,
+            "variance": 0.0015,
         },
     )
     bundle = SnapshotReadStore(store).load_active_snapshot("r1")
@@ -145,6 +146,24 @@ def test_active_fact_hydrates_pooling_fields(tmp_path) -> None:
     assert f.weight == 0.75
     assert f.calibration_quality == 0.5
     assert f.scope_change_count == 7
+    assert f.variance == 0.0015
+
+
+def test_negative_fact_variance_is_excluded(tmp_path) -> None:
+    store = _store(tmp_path)
+    _seed_snapshot(store)
+    _seed_fact(
+        store,
+        fact={
+            "value": 0.8,
+            "sample_size": 100,
+            "calibration_method": "brier_bucket",
+            "variance": -0.01,
+        },
+    )
+
+    assert SnapshotReadStore(store).load_active_snapshot("r1").facts == ()
+    store.close()
 
 
 def test_malformed_pooling_fields_excluded(tmp_path) -> None:

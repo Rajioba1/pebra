@@ -366,6 +366,24 @@ def test_builder_uses_first_order_variance_when_no_explicit_breakdown() -> None:
     assert a.scores["variance_breakdown"]["benefit"] == pytest.approx((0.74**2) * 0.04)
 
 
+def test_builder_propagates_learned_event_probability_variance() -> None:
+    inp = replace(
+        _worked_example_input(),
+        variance_breakdown=None,
+        events=[
+            {"event": "test_regression", "p_event": 0.20, "elicited_disutility": 0.50},
+        ],
+        event_probability_variances={"test_regression": 0.01},
+    )
+
+    scores = ab.build_assessment(inp).scores
+
+    # Var(p*d) ~= d^2 Var(p) + p^2 Var(d), retaining the cold-start disutility variance.
+    assert scores["variance_breakdown"]["event_losses"] == pytest.approx(
+        (0.50**2) * 0.01 + (0.20**2) * 0.0025
+    )
+
+
 def test_builder_scope_basis_file_fallback_when_not_parsed() -> None:
     from dataclasses import replace
     from pebra.core import models as m

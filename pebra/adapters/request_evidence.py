@@ -51,8 +51,8 @@ class RequestEvidenceProvider:
             ),
             thresholds=dict(request.thresholds),
             variance_breakdown=ev.get("variance_breakdown"),
-            p_success_variance=ev.get("p_success_variance", 0.0),
-            review_cost_variance=ev.get("review_cost_variance", 0.0),
+            p_success_variance=ev.get("p_success_variance"),
+            review_cost_variance=ev.get("review_cost_variance"),
             benefit_delta_evidence=benefit_delta,
             candidate_verification=verification,
         )

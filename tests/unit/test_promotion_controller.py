@@ -165,6 +165,26 @@ def test_run_benefit_promotion_continuous_writes_decoupled_snapshot():
     assert facts[0]["fact_json"]["calibration_method"] == "observed_mean_v1"
 
 
+def test_run_review_cost_promotion_writes_decoupled_snapshot_with_variance():
+    rows = [
+        {"predicted_value": 0.8, "actual_value": 0.2, "target_type": "cost_continuous",
+         "target_name": "review_cost", "features": _features()}
+        for _ in range(5)
+    ]
+    learning = _FakeLearning()
+    result = pc.run_review_cost_promotion(
+        "r", store=_FakeStoreByType({"cost_continuous": rows}), learning_port=learning,
+        config=pe.PromotionConfig(min_calibration_samples=5),
+    )
+    assert result.promoted is True
+    _, metrics, facts, _ = learning.calls[0]
+    assert metrics["promotion_reason"] == "M5d_review_cost_promotion"
+    assert facts[0]["target_type"] == "cost_continuous"
+    assert facts[0]["target_name"] == "review_cost"
+    assert facts[0]["fact_json"]["variance"] == pytest.approx(0.0)
+    assert facts[0]["fact_json"]["variance_method"] == "sample_mean_variance"
+
+
 def test_risk_promotion_ignores_benefit_rows():
     # run_promotion loads RISK_BINARY only; benefit rows present but not promoted by the risk path.
     store = _FakeStoreByType({"benefit_continuous": [_bcont(0.0, 1.0) for _ in range(5)]})
@@ -234,6 +254,8 @@ def test_promoted_fact_carries_version_metadata():
     assert fj["index_version"] == "idx-7"
     assert fj["calibration_method"] == "observed_rate_v1"
     assert fj["value"] == pytest.approx(1.0)
+    assert fj["variance"] > 0.0
+    assert fj["variance_method"] == "beta_1_1_parameter_variance"
 
 
 def test_derives_public_api_domain_and_domain_change_kind_scopes():

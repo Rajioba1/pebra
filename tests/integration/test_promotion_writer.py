@@ -42,6 +42,18 @@ def test_chain_validates_after_first_insert(tmp_path):
     store.close()
 
 
+def test_trigger_key_makes_promotion_batch_idempotent(tmp_path):
+    store = SqliteStore(str(tmp_path / "p.db"))
+    metrics = {**_metrics(), "trigger_key": "finalize:asm_1:risk"}
+    first = store.insert_learned_fact_batch_with_snapshot("r", metrics, [_fact()])
+    second = store.insert_learned_fact_batch_with_snapshot("r", metrics, [_fact()])
+    assert second == first
+    assert store._con.execute("SELECT COUNT(*) FROM risk_snapshots").fetchone()[0] == 1
+    assert store._con.execute("SELECT COUNT(*) FROM learned_risk_facts").fetchone()[0] == 1
+    assert store.validate_chain() is True
+    store.close()
+
+
 def test_learned_fact_canonical_byte_matches_validator(tmp_path):
     store = SqliteStore(str(tmp_path / "p.db"))
     store.insert_learned_fact_batch_with_snapshot("repo1", _metrics(), [_fact()])
