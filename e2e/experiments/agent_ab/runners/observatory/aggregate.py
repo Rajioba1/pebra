@@ -130,6 +130,10 @@ def _summary(o: models.RunOutcome) -> dict:
             "human_assisted_write_applied": o.human_assisted_write_applied,
             "graph_refinement_status": o.graph_refinement_status,
             "graph_refinement_selected": o.graph_refinement_selected,
+            "graph_refinement_language": o.graph_refinement_language,
+            "graph_refinement_witness": o.graph_refinement_witness,
+            "graph_refinement_witness_version": o.graph_refinement_witness_version,
+            "graph_refinement_engine_version": o.graph_refinement_engine_version,
             "graph_refinement_fact_kinds": list(o.graph_refinement_fact_kinds),
             "graph_refinement_risk_probability_update_count": (
                 o.graph_refinement_risk_probability_update_count

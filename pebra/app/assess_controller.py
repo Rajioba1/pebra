@@ -796,11 +796,7 @@ def _graph_risk_scope(inp: AssessmentInput) -> GraphRiskScope | None:
     fanin = inp.fanin_evidence
     if event is None or not is_trusted_fanin(fanin):
         return None
-    if (
-        classify_tier(inp.language_capability) != "full"
-        or inp.language_capability.language
-        not in candidate_refinement.MEASURED_CONTINUITY_LANGUAGES
-    ):
+    if classify_tier(inp.language_capability) != "full":
         return None
     owner_by_id = {owner.node_id: owner for owner in fanin.owner_risk}
     owner_ids = tuple(sorted(set(str(value) for value in event["owner_node_ids"] if value)))
@@ -815,6 +811,7 @@ def _graph_risk_scope(inp: AssessmentInput) -> GraphRiskScope | None:
             owner_by_id[owner_id].qualified_name for owner_id in owner_ids
         ),
         expected_consumer_count=int(fanin.symbol_caller_count),
+        language=inp.language_capability.language,
     )
 
 

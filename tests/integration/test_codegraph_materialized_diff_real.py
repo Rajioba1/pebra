@@ -264,3 +264,188 @@ def test_materialized_graph_rejects_arrow_body_name_normalization_trick(tmp_path
 
     assert result.status == "ambiguous"
     assert result.facts == ()
+
+
+@pytest.mark.parametrize(
+    ("language", "file_path", "qualified_name", "before_source", "patch"),
+    [
+        (
+            "java",
+            "Api.java",
+            "Api::oldName",
+            "public class Api {\n  public static int oldName(int x) { return x + 1; }\n}\n",
+            "diff --git a/Api.java b/Api.java\n--- a/Api.java\n+++ b/Api.java\n"
+            "@@ -1,3 +1,4 @@\n public class Api {\n"
+            "-  public static int oldName(int x) { return x + 1; }\n"
+            "+  public static int newName(int x) { return x + 1; }\n"
+            "+  public static int oldName(int x) { return newName(x); }\n }\n",
+        ),
+        (
+            "rust",
+            "lib.rs",
+            "old_name",
+            "pub fn old_name(x: i32) -> i32 { x + 1 }\n",
+            "diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n"
+            "@@ -1 +1,2 @@\n-pub fn old_name(x: i32) -> i32 { x + 1 }\n"
+            "+pub fn new_name(x: i32) -> i32 { x + 1 }\n"
+            "+pub fn old_name(x: i32) -> i32 { new_name(x) }\n",
+        ),
+        (
+            "go",
+            "api.go",
+            "OldName",
+            "package sample\nfunc OldName(x int) int { return x + 1 }\n",
+            "diff --git a/api.go b/api.go\n--- a/api.go\n+++ b/api.go\n"
+            "@@ -1,2 +1,3 @@\n package sample\n"
+            "-func OldName(x int) int { return x + 1 }\n"
+            "+func NewName(x int) int { return x + 1 }\n"
+            "+func OldName(x int) int { return NewName(x) }\n",
+        ),
+        (
+            "dart",
+            "api.dart",
+            "oldName",
+            "int oldName(int x) => x + 1;\n",
+            "diff --git a/api.dart b/api.dart\n--- a/api.dart\n+++ b/api.dart\n"
+            "@@ -1 +1,2 @@\n-int oldName(int x) => x + 1;\n"
+            "+int newName(int x) => x + 1;\n"
+            "+int oldName(int x) => newName(x);\n",
+        ),
+        (
+            "scala",
+            "Api.scala",
+            "Api::oldName",
+            "object Api {\n  def oldName(x: Int): Int = x + 1\n}\n",
+            "diff --git a/Api.scala b/Api.scala\n--- a/Api.scala\n+++ b/Api.scala\n"
+            "@@ -1,3 +1,4 @@\n object Api {\n"
+            "-  def oldName(x: Int): Int = x + 1\n"
+            "+  def newName(x: Int): Int = x + 1\n"
+            "+  def oldName(x: Int): Int = newName(x)\n }\n",
+        ),
+    ],
+)
+@requires_codegraph
+def test_materialized_graph_proves_callable_forwarder_continuity(
+    tmp_path, language, file_path, qualified_name, before_source, patch
+):
+    (tmp_path / file_path).write_text(before_source, encoding="utf-8")
+    action = CandidateAction(
+        id=f"{language}-rename",
+        label="rename with forwarding compatibility surface",
+        action_type="edit",
+        proposed_patch=patch,
+    )
+    scope = GraphRiskScope(
+        event="public_api_break",
+        risk_source="graph_modify_risk",
+        owner_node_ids=("original-owner",),
+        owner_file_paths=(file_path,),
+        owner_qualified_names=(qualified_name,),
+        language=language,
+    )
+
+    result = CodeGraphCandidateRefinementAdapter(
+        cache_root=tmp_path / "host-cache"
+    ).analyze(action, str(tmp_path), scope)
+
+    assert result.status == "available", result.reason
+    assert result.language == language
+    assert result.witness == language
+    assert result.facts[0].fact_kind == "exported_binding_continuity"
+
+
+@pytest.mark.parametrize(
+    ("language", "file_path", "before_source", "patch"),
+    [
+        (
+            "javascript",
+            "api.js",
+            "export function oldName(value) { return value + 1; }\n",
+            "diff --git a/api.js b/api.js\n--- a/api.js\n+++ b/api.js\n"
+            "@@ -1 +1,2 @@\n-export function oldName(value) { return value + 1; }\n"
+            "+export function newName(value) { return value + 1; }\n"
+            "+export const oldName = newName;\n",
+        ),
+        (
+            "jsx",
+            "Widget.jsx",
+            "export function oldName(value) { return <span>{value}</span>; }\n",
+            "diff --git a/Widget.jsx b/Widget.jsx\n--- a/Widget.jsx\n+++ b/Widget.jsx\n"
+            "@@ -1 +1,2 @@\n-export function oldName(value) { return <span>{value}</span>; }\n"
+            "+export function newName(value) { return <span>{value}</span>; }\n"
+            "+export const oldName = newName;\n",
+        ),
+        (
+            "tsx",
+            "Widget.tsx",
+            "export function oldName(value: string): JSX.Element { return <span>{value}</span>; }\n",
+            "diff --git a/Widget.tsx b/Widget.tsx\n--- a/Widget.tsx\n+++ b/Widget.tsx\n"
+            "@@ -1 +1,2 @@\n"
+            "-export function oldName(value: string): JSX.Element { return <span>{value}</span>; }\n"
+            "+export function newName(value: string): JSX.Element { return <span>{value}</span>; }\n"
+            "+export const oldName = newName;\n",
+        ),
+    ],
+)
+@requires_codegraph
+def test_materialized_graph_proves_ecmascript_family_continuity(
+    tmp_path, language, file_path, before_source, patch
+):
+    (tmp_path / file_path).write_text(before_source, encoding="utf-8")
+    result = CodeGraphCandidateRefinementAdapter(
+        cache_root=tmp_path / "host-cache"
+    ).analyze(
+        CandidateAction(
+            id=f"{language}-rename",
+            label="rename with direct alias",
+            action_type="edit",
+            proposed_patch=patch,
+        ),
+        str(tmp_path),
+        GraphRiskScope(
+            event="public_api_break",
+            risk_source="graph_modify_risk",
+            owner_node_ids=("original-owner",),
+            owner_file_paths=(file_path,),
+            owner_qualified_names=("oldName",),
+            language=language,
+        ),
+    )
+
+    assert result.status == "available", result.reason
+    assert result.witness == "ecmascript"
+
+
+@requires_codegraph
+def test_dart_signature_match_with_changed_body_does_not_prove_continuity(tmp_path):
+    (tmp_path / "api.dart").write_text(
+        "int oldName(int x) => x + 1;\n", encoding="utf-8"
+    )
+    patch = (
+        "diff --git a/api.dart b/api.dart\n--- a/api.dart\n+++ b/api.dart\n"
+        "@@ -1 +1,2 @@\n-int oldName(int x) => x + 1;\n"
+        "+int newName(int x) => x - 1;\n"
+        "+int oldName(int x) => newName(x);\n"
+    )
+    result = CodeGraphCandidateRefinementAdapter(
+        cache_root=tmp_path / "host-cache"
+    ).analyze(
+        CandidateAction(
+            id="dart-body-swap",
+            label="rename and change behavior",
+            action_type="edit",
+            proposed_patch=patch,
+        ),
+        str(tmp_path),
+        GraphRiskScope(
+            event="public_api_break",
+            risk_source="graph_modify_risk",
+            owner_node_ids=("original-owner",),
+            owner_file_paths=("api.dart",),
+            owner_qualified_names=("oldName",),
+            language="dart",
+        ),
+    )
+
+    assert result.status == "ambiguous"
+    assert result.facts == ()

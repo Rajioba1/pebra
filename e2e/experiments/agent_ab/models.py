@@ -161,6 +161,10 @@ class SubjectResult:
     graph_refinement_status: str | None = None
     graph_refinement_assessment_id: str | None = None
     graph_refinement_selected: bool = False
+    graph_refinement_language: str | None = None
+    graph_refinement_witness: str | None = None
+    graph_refinement_witness_version: str | None = None
+    graph_refinement_engine_version: str | None = None
     graph_refinement_fact_kinds: tuple[str, ...] = ()
     graph_refinement_risk_probability_update_count: int = 0
     graph_refinement_risk_probability_updates: tuple[dict[str, Any], ...] = ()
@@ -264,6 +268,10 @@ class RunOutcome:
     graph_refinement_status: str | None = None
     graph_refinement_assessment_id: str | None = None
     graph_refinement_selected: bool = False
+    graph_refinement_language: str | None = None
+    graph_refinement_witness: str | None = None
+    graph_refinement_witness_version: str | None = None
+    graph_refinement_engine_version: str | None = None
     graph_refinement_fact_kinds: tuple[str, ...] = ()
     graph_refinement_risk_probability_update_count: int = 0
     graph_refinement_risk_probability_updates: tuple[dict[str, Any], ...] = ()

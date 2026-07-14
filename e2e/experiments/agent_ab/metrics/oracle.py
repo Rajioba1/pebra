@@ -137,6 +137,10 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         graph_refinement_status=result.graph_refinement_status,
         graph_refinement_assessment_id=result.graph_refinement_assessment_id,
         graph_refinement_selected=result.graph_refinement_selected,
+        graph_refinement_language=result.graph_refinement_language,
+        graph_refinement_witness=result.graph_refinement_witness,
+        graph_refinement_witness_version=result.graph_refinement_witness_version,
+        graph_refinement_engine_version=result.graph_refinement_engine_version,
         graph_refinement_fact_kinds=result.graph_refinement_fact_kinds,
         graph_refinement_risk_probability_update_count=(
             result.graph_refinement_risk_probability_update_count
@@ -226,6 +230,10 @@ def _error_outcome(
         graph_refinement_status=result.graph_refinement_status,
         graph_refinement_assessment_id=result.graph_refinement_assessment_id,
         graph_refinement_selected=result.graph_refinement_selected,
+        graph_refinement_language=result.graph_refinement_language,
+        graph_refinement_witness=result.graph_refinement_witness,
+        graph_refinement_witness_version=result.graph_refinement_witness_version,
+        graph_refinement_engine_version=result.graph_refinement_engine_version,
         graph_refinement_fact_kinds=result.graph_refinement_fact_kinds,
         graph_refinement_risk_probability_update_count=(
             result.graph_refinement_risk_probability_update_count

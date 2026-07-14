@@ -33,6 +33,9 @@ from pebra.core.engine_paths import find_engine
 _FIXTURES: dict[str, tuple[str, str]] = {
     "typescript": ("calc.ts",
         "export class Calc {\n  public add(a: number, b: number): number { return a + b }\n}\n"),
+    "tsx": ("Card.tsx",
+        "export function Card(props: { value: number }) { return <span>{props.value}</span> }\n"
+        "export const Label = (props: { text: string }) => <b>{props.text}</b>\n"),
     "java": ("Calc.java",
         "public class Calc {\n  public int add(int a, int b) { return a + b; }\n"
         "  private String secret(String x) { return x; }\n}\n"),
@@ -65,7 +68,7 @@ _FIXTURES: dict[str, tuple[str, str]] = {
 }
 
 _EXPECT_FULL = frozenset(
-    {"typescript", "java", "rust", "dart", "scala", "pascal", "go", "javascript", "jsx"})
+    {"typescript", "tsx", "java", "rust", "dart", "scala", "pascal", "go", "javascript", "jsx"})
 _EXPECT_PARTIAL = frozenset({"kotlin", "swift"})
 
 

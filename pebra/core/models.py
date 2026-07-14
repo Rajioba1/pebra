@@ -346,6 +346,7 @@ class GraphRiskScope:
     owner_file_paths: tuple[str, ...]
     owner_qualified_names: tuple[str, ...]
     expected_consumer_count: int = 0
+    language: str | None = None
 
 
 @dataclass(frozen=True)
@@ -356,6 +357,10 @@ class CandidateGraphRiskEvidence:
     facts: tuple[ScopedGraphRiskFact, ...] = ()
     verified_patch_hash: str | None = None
     provider: str | None = None
+    language: str | None = None
+    witness: str | None = None
+    witness_version: str | None = None
+    engine_version: str | None = None
     reason: str | None = None
     retryable_infrastructure: bool = False
     manifest_hash: str | None = None

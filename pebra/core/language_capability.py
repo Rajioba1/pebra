@@ -65,8 +65,10 @@ DECLARED_LANGUAGES: tuple[str, ...] = (
 # varying, not a defaults-0 artifact). The null-only guard in derive_visibility_from_export means any real
 # emitted modifier still wins, so nothing is masked. This is a CURATED, source-verified set (like
 # DECLARED_LANGUAGES) — NEVER DB-derive it: is_exported defaults to 0 for UNIMPLEMENTED extractors, so a
-# language may only be added after confirming its is_exported genuinely varies. (tsx: not yet verified.)
-EXPORT_AS_VISIBILITY_LANGUAGES: frozenset[str] = frozenset({"go", "javascript", "jsx", "typescript"})
+# language may only be added after confirming its is_exported genuinely varies.
+EXPORT_AS_VISIBILITY_LANGUAGES: frozenset[str] = frozenset(
+    {"go", "javascript", "jsx", "tsx", "typescript"}
+)
 
 
 def derive_visibility_from_export(

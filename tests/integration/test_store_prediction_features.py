@@ -37,7 +37,7 @@ def test_features_persisted_and_loaded(tmp_path) -> None:
 
 def test_features_in_chain_and_tamper_breaks_it(tmp_path) -> None:
     store = SqliteStore(str(tmp_path / "p.db"))
-    asm = store.persist_assessment(
+    store.persist_assessment(
         _result(), {"task": "t"}, predictions=_pred({"symbol": {"is_public_api": False}})
     )
     assert store.validate_chain() is True

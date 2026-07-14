@@ -291,6 +291,10 @@ def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
             "status": "available",
             "selected": True,
             "evidence": {
+                "language": "typescript",
+                "witness": "ecmascript",
+                "witness_version": "1",
+                "engine_version": "1.1.1",
                 "facts": [{
                     "fact_kind": "exported_binding_continuity",
                     "event": "public_api_break",
@@ -352,6 +356,10 @@ def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
         "assessment_id": "asm_graph",
         "status": "available",
         "selected": True,
+        "language": "typescript",
+        "witness": "ecmascript",
+        "witness_version": "1",
+        "engine_version": "1.1.1",
         "fact_kinds": ("exported_binding_continuity",),
         "risk_probability_update_count": 1,
         "risk_probability_updates": ({

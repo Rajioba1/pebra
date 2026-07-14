@@ -630,6 +630,18 @@ def _graph_refinement_summary(result: Any, assessment_id: str) -> dict[str, Any]
         "assessment_id": assessment_id,
         "status": refinement.get("status"),
         "selected": selected,
+        "language": evidence.get("language") if isinstance(evidence.get("language"), str) else None,
+        "witness": evidence.get("witness") if isinstance(evidence.get("witness"), str) else None,
+        "witness_version": (
+            evidence.get("witness_version")
+            if isinstance(evidence.get("witness_version"), str)
+            else None
+        ),
+        "engine_version": (
+            evidence.get("engine_version")
+            if isinstance(evidence.get("engine_version"), str)
+            else None
+        ),
         "fact_kinds": fact_kinds,
         "risk_probability_update_count": len(continuity_updates),
         "risk_probability_updates": calibration_updates,
@@ -659,6 +671,10 @@ def _graph_refinement_result_fields(telemetry: ArmTelemetry) -> dict[str, Any]:
         "graph_refinement_assessment_id": refinement.get("assessment_id"),
         "graph_refinement_status": refinement.get("status"),
         "graph_refinement_selected": refinement.get("selected") is True,
+        "graph_refinement_language": refinement.get("language"),
+        "graph_refinement_witness": refinement.get("witness"),
+        "graph_refinement_witness_version": refinement.get("witness_version"),
+        "graph_refinement_engine_version": refinement.get("engine_version"),
         "graph_refinement_fact_kinds": tuple(refinement.get("fact_kinds") or ()),
         "graph_refinement_risk_probability_update_count": int(
             refinement.get("risk_probability_update_count") or 0

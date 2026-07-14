@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-sklearn_metrics = pytest.importorskip("sklearn.metrics")
-np = pytest.importorskip("numpy")
-
 from pebra.core import learning_eval as le
 from pebra.core.prediction_error import mean_brier, mean_log_loss
+
+sklearn_metrics = pytest.importorskip("sklearn.metrics")
+np = pytest.importorskip("numpy")
 
 _PAIRS = [
     (0.90, 1), (0.20, 0), (0.80, 1), (0.10, 0),

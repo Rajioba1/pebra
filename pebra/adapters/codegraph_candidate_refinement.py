@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -18,6 +17,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from pebra.adapters._paths import safe_relative_files
+from pebra.adapters.continuity_witness import ContinuityWitness, witness_for_language
 from pebra.adapters.patch_header_adapter import touched_files
 from pebra.adapters.patch_materializer import materialize_patch
 from pebra.core.graph_version import CODEGRAPH_DEFAULT_VERSION
@@ -32,10 +32,9 @@ from pebra.core.models import (
 
 
 _SCHEMA_VERSION = 1
-_CACHE_VERSION = 7
+_CACHE_VERSION = 8
 _PROVIDER_VERSION = f"materialized-continuity-v{_CACHE_VERSION}"
 _CALLABLE_KINDS = {"function", "method", "class", "struct", "interface", "trait", "protocol"}
-_ALIAS_BINDING_KINDS = {"constant", "variable"}
 _SUPPORTED_EVENTS = {"public_api_break"}
 _CONTINUITY_EDGE_KINDS = ("calls", "instantiates", "references")
 _CONFIG_NAMES = (
@@ -45,6 +44,19 @@ _CONFIG_NAMES = (
 
 Indexer = Callable[[Path], Path]
 ContextFiles = Callable[[str, GraphRiskScope], tuple[str, ...]]
+
+_LANGUAGE_BY_SUFFIX = {
+    ".dart": "dart",
+    ".go": "go",
+    ".java": "java",
+    ".js": "javascript",
+    ".jsx": "jsx",
+    ".pas": "pascal",
+    ".rs": "rust",
+    ".scala": "scala",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+}
 
 
 def _elapsed(start: float) -> float:
@@ -310,7 +322,7 @@ class CodeGraphCandidateRefinementAdapter:
     def _read_nodes(con: sqlite3.Connection) -> list[sqlite3.Row]:
         return con.execute(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line, "
-            "start_column, end_column, visibility, is_exported, signature FROM nodes"
+            "start_column, end_column, visibility, is_exported, signature, language FROM nodes"
         ).fetchall()
 
     @staticmethod
@@ -326,7 +338,10 @@ class CodeGraphCandidateRefinementAdapter:
         start_column = max(0, int(row["start_column"] or 0))
         end_column = max(0, int(row["end_column"] or 0))
         if start_line == end_line:
-            return lines[start_line][start_column:end_column]
+            # Several extractors end a callable span at its signature. The complete source line is
+            # required to prove that a forwarding body is behavior-free; extra syntax only makes the
+            # language witness fail closed.
+            return lines[start_line].rstrip("\r\n")
         selected = [lines[start_line][start_column:], *lines[start_line + 1:end_line]]
         selected.append(lines[end_line][:end_column])
         return "".join(selected)
@@ -345,25 +360,13 @@ class CodeGraphCandidateRefinementAdapter:
         target_name = str(target["name"] or "")
         if not old_source or not target_source or not old_name or not target_name:
             return False
-        def canonical(source: str, name: str) -> str | None:
-            normalized = source.replace("\r\n", "\n")
-            pattern = re.compile(rf"\bfunction\s+{re.escape(name)}\b")
-            matches = list(pattern.finditer(normalized))
-            if len(matches) != 1:
-                return None
-            match = matches[0]
-            name_start = match.end() - len(name)
-            return (
-                normalized[:name_start]
-                + "__PEBRA_RENAMED__"
-                + normalized[match.end():]
+        witness = witness_for_language("typescript")
+        return bool(
+            witness
+            and witness.same_implementation(
+                old_source, target_source, old_name, target_name
             )
-
-        canonical_old = canonical(old_source, old_name)
-        canonical_target = canonical(target_source, target_name)
-        if canonical_old is None or canonical_target is None:
-            return False
-        return canonical_old == canonical_target
+        )
 
     @staticmethod
     def _is_exported(row: sqlite3.Row) -> bool:
@@ -443,94 +446,19 @@ class CodeGraphCandidateRefinementAdapter:
         cls, source: str, name: str
     ) -> tuple[str, int] | None:
         """Replace code identifiers only; literals, comments, and property names fail closed."""
-        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name) is None:
-            return None
-        out: list[str] = []
-        count = 0
-        index = 0
-        length = len(source)
-        while index < length:
-            char = source[index]
-            if char in {"'", '"', "`"}:
-                quote = char
-                end = index + 1
-                escaped = False
-                while end < length:
-                    current = source[end]
-                    if escaped:
-                        escaped = False
-                    elif current == "\\":
-                        escaped = True
-                    elif current == quote:
-                        end += 1
-                        break
-                    end += 1
-                segment = source[index:end]
-                if re.search(rf"\b{re.escape(name)}\b", segment):
-                    return None
-                out.append(segment)
-                index = end
-                continue
-            if source.startswith("//", index):
-                end = source.find("\n", index)
-                end = length if end < 0 else end
-                segment = source[index:end]
-                if re.search(rf"\b{re.escape(name)}\b", segment):
-                    return None
-                out.append(segment)
-                index = end
-                continue
-            if source.startswith("/*", index):
-                end = source.find("*/", index + 2)
-                end = length if end < 0 else end + 2
-                segment = source[index:end]
-                if re.search(rf"\b{re.escape(name)}\b", segment):
-                    return None
-                out.append(segment)
-                index = end
-                continue
-            if char == "/":
-                # Distinguishing division from a JavaScript/TypeScript regex literal requires a real
-                # parser. This proof must under-fire rather than rewrite identifiers inside regexes.
-                return None
-            if char.isalpha() or char in {"_", "$"}:
-                end = index + 1
-                while end < length and (source[end].isalnum() or source[end] in {"_", "$"}):
-                    end += 1
-                token = source[index:end]
-                if token == name:
-                    previous = next(
-                        (source[pos] for pos in range(index - 1, -1, -1) if not source[pos].isspace()),
-                        "",
-                    )
-                    following = next(
-                        (source[pos] for pos in range(end, length) if not source[pos].isspace()),
-                        "",
-                    )
-                    if previous == "." or following == ":":
-                        return None
-                    out.append("__PEBRA_BINDING__")
-                    count += 1
-                else:
-                    out.append(token)
-                index = end
-                continue
-            out.append(char)
-            index += 1
-        return "".join(out).replace("\r\n", "\n"), count
+        witness = witness_for_language("typescript")
+        return witness._canonical_identifier_source(source, name) if witness else None
 
     @classmethod
     def _identifier_only_migration(
         cls, before_source: str, after_source: str, old_name: str, target_name: str
     ) -> bool:
-        before = cls._canonical_identifier_source(before_source, old_name)
-        after = cls._canonical_identifier_source(after_source, target_name)
-        return (
-            before is not None
-            and after is not None
-            and before[1] > 0
-            and before[1] == after[1]
-            and before[0] == after[0]
+        witness = witness_for_language("typescript")
+        return bool(
+            witness
+            and witness.identifier_only_migration(
+                before_source, after_source, old_name, target_name
+            )
         )
 
     @classmethod
@@ -538,69 +466,19 @@ class CodeGraphCandidateRefinementAdapter:
         cls, patch: str, old_name: str, target_name: str
     ) -> bool:
         """Prove every changed line is the identifier migration or one exact direct alias."""
-        alias = re.compile(
-            rf"\s*export\s+const\s+{re.escape(old_name)}\s*=\s*"
-            rf"{re.escape(target_name)}\s*;\s*"
-        )
-        # Deliberately aggregate every hunk in every touched file. A helper rebinding anywhere in
-        # the candidate invalidates the proof; narrowing this to the declaration file would reopen
-        # a false-continuity path for functions that close over changed free identifiers.
-        removed: list[str] = []
-        added: list[str] = []
-        alias_count = 0
-        saw_block = False
-        block_has_hunk = False
-        in_hunk = False
-        for line in patch.splitlines():
-            if line.startswith("diff --git "):
-                if saw_block and not block_has_hunk:
-                    return False
-                saw_block = True
-                block_has_hunk = False
-                in_hunk = False
-                continue
-            if line.startswith("@@ "):
-                if not saw_block:
-                    return False
-                block_has_hunk = True
-                in_hunk = True
-                continue
-            if not in_hunk:
-                if line.startswith(("index ", "--- ", "+++ ")) or not line.strip():
-                    continue
-                return False
-            if line.startswith("\\ No newline at end of file") or line.startswith(" "):
-                continue
-            if line.startswith(("--- ", "+++ ")):
-                continue
-            if line.startswith("-"):
-                candidate = line[1:]
-                if candidate.strip():
-                    removed.append(candidate)
-            elif line.startswith("+"):
-                candidate = line[1:]
-                if alias.fullmatch(candidate):
-                    alias_count += 1
-                elif candidate.strip():
-                    added.append(candidate)
-            elif line:
-                return False
-        before = cls._canonical_identifier_source("\n".join(removed), old_name)
-        after = cls._canonical_identifier_source("\n".join(added), target_name)
-        return (
-            saw_block
-            and block_has_hunk
-            and alias_count == 1
-            and before is not None
-            and after is not None
-            and before[1] > 0
-            and before[1] == after[1]
-            and before[0] == after[0]
+        witness = witness_for_language("typescript")
+        forwarder = f"export const {old_name} = {target_name};"
+        return bool(
+            witness
+            and witness.patch_is_exhaustive_forwarder(
+                patch, old_name, target_name, forwarder
+            )
         )
 
     @classmethod
     def _same_external_source(
         cls,
+        witness: ContinuityWitness,
         before_files: Mapping[str, str | None],
         after_files: Mapping[str, str | None],
         before_node: sqlite3.Row | None,
@@ -624,13 +502,14 @@ class CodeGraphCandidateRefinementAdapter:
         after_normalized = after_source.replace("\r\n", "\n")
         if before_normalized == after_normalized:
             return True
-        return cls._identifier_only_migration(
+        return witness.identifier_only_migration(
             before_normalized, after_normalized, old_name, target_name
         )
 
     @classmethod
     def _same_reference_migration(
         cls,
+        witness: ContinuityWitness,
         before_files: Mapping[str, str | None],
         after_files: Mapping[str, str | None],
         old: sqlite3.Row,
@@ -644,7 +523,7 @@ class CodeGraphCandidateRefinementAdapter:
         after_source = cls._node_source(after_files, surviving)
         if not before_source or not after_source:
             return False
-        return cls._identifier_only_migration(
+        return witness.identifier_only_migration(
             before_source, after_source, old_name, target_name
         )
 
@@ -657,6 +536,9 @@ class CodeGraphCandidateRefinementAdapter:
         after_files: Mapping[str, str | None],
         patch: str,
     ) -> tuple[ScopedGraphRiskFact, ...]:
+        witness = witness_for_language(scope.language)
+        if witness is None:
+            return ()
         before = sqlite3.connect(before_db)
         after = sqlite3.connect(after_db)
         before.row_factory = after.row_factory = sqlite3.Row
@@ -682,12 +564,17 @@ class CodeGraphCandidateRefinementAdapter:
                 ]
                 if len(old) != 1 or len(surviving) != 1:
                     return ()
+                if (
+                    str(old[0]["language"] or "").lower() != scope.language
+                    or str(surviving[0]["language"] or "").lower() != scope.language
+                ):
+                    return ()
                 owners.append((real_id, old[0], surviving))
 
             alias_owners = [
                 (real_id, old, surviving[0])
                 for real_id, old, surviving in owners
-                if str(surviving[0]["kind"]) in _ALIAS_BINDING_KINDS
+                if str(surviving[0]["kind"]) in witness.forwarder_kinds
                 and self._is_exported(old)
                 and self._is_exported(surviving[0])
             ]
@@ -702,9 +589,21 @@ class CodeGraphCandidateRefinementAdapter:
             ):
                 return ()
             target, binding_confidence = binding_target
+            old_source = self._node_source(before_files, renamed_old)
+            target_source = self._node_source(after_files, target)
+            forwarder_source = self._node_source(after_files, binding)
             if (
-                target["signature"] != renamed_old["signature"]
-                or not self._same_implementation(before_files, after_files, renamed_old, target)
+                str(target["language"] or "").lower() != scope.language
+                or target["signature"] != renamed_old["signature"]
+                or not old_source
+                or not target_source
+                or not forwarder_source
+                or not witness.same_implementation(
+                    old_source,
+                    target_source,
+                    str(renamed_old["name"] or ""),
+                    str(target["name"] or ""),
+                )
             ):
                 return ()
 
@@ -715,8 +614,8 @@ class CodeGraphCandidateRefinementAdapter:
             }
             old_name = str(renamed_old["name"] or "")
             target_name = str(target["name"] or "")
-            if not self._patch_is_exhaustive_direct_alias(
-                patch, old_name, target_name
+            if not witness.patch_is_exhaustive_forwarder(
+                patch, old_name, target_name, forwarder_source
             ):
                 return ()
             for real_id, old, surviving in owners:
@@ -724,7 +623,13 @@ class CodeGraphCandidateRefinementAdapter:
                     continue
                 current = surviving[0]
                 if not self._same_reference_migration(
-                    before_files, after_files, old, current, old_name, target_name
+                    witness,
+                    before_files,
+                    after_files,
+                    old,
+                    current,
+                    old_name,
+                    target_name,
                 ):
                     return ()
                 before_edges = before.execute(
@@ -806,6 +711,7 @@ class CodeGraphCandidateRefinementAdapter:
                     current_source = matches[0]
                     after_source = str(current_source["id"])
                 if not self._same_external_source(
+                    witness,
                     before_files,
                     after_files,
                     old_source,
@@ -847,6 +753,7 @@ class CodeGraphCandidateRefinementAdapter:
                     risk_source=scope.risk_source,
                     owner_node_ids=tuple(sorted(covered)),
                     confidence=min(edge_confidences),
+                    provenance=f"materialized_codegraph:{witness.name}:v{witness.version}",
                 ),
             )
         finally:
@@ -862,6 +769,31 @@ class CodeGraphCandidateRefinementAdapter:
             return CandidateGraphRiskEvidence(status="not_applicable")
         if scope.event not in _SUPPORTED_EVENTS:
             return CandidateGraphRiskEvidence(status="not_applicable")
+        language = str(scope.language or "").lower()
+        if not language:
+            inferred = {
+                _LANGUAGE_BY_SUFFIX.get(Path(path).suffix.lower(), "")
+                for path in scope.owner_file_paths
+            }
+            inferred.discard("")
+            language = next(iter(inferred)) if len(inferred) == 1 else ""
+            scope = GraphRiskScope(
+                event=scope.event,
+                risk_source=scope.risk_source,
+                owner_node_ids=scope.owner_node_ids,
+                owner_file_paths=scope.owner_file_paths,
+                owner_qualified_names=scope.owner_qualified_names,
+                expected_consumer_count=scope.expected_consumer_count,
+                language=language or None,
+            )
+        witness = witness_for_language(language)
+        if witness is None:
+            label = language or "unknown"
+            return CandidateGraphRiskEvidence(
+                status="not_applicable",
+                language=language or None,
+                reason=f"no measured continuity witness for {label}",
+            )
         if not (
             len(scope.owner_node_ids)
             == len(scope.owner_file_paths)
@@ -993,6 +925,10 @@ class CodeGraphCandidateRefinementAdapter:
             status="available" if facts else "ambiguous",
             facts=facts,
             provider="materialized_codegraph",
+            language=language,
+            witness=witness.name,
+            witness_version=witness.version,
+            engine_version=CODEGRAPH_DEFAULT_VERSION,
             reason=None if facts else "structural continuity was not established",
             manifest_hash=manifest_hash,
             context_file_count=len(before),

@@ -15,13 +15,14 @@ from pebra.adapters.codegraph_adapter import _FANIN_EDGE_KINDS
 from pebra.core.models import CandidateAction, GraphRiskScope
 
 
-def _scope() -> GraphRiskScope:
+def _scope(language: str = "typescript") -> GraphRiskScope:
     return GraphRiskScope(
         event="public_api_break",
         risk_source="graph_modify_risk",
         owner_node_ids=("real-owner",),
         owner_file_paths=("src/api.ts",),
         owner_qualified_names=("oldName",),
+        language=language,
     )
 
 
@@ -108,7 +109,114 @@ def test_safe_exported_binding_yields_scoped_structural_fact(tmp_path: Path) -> 
     assert result.verified_patch_hash is None
     assert result.facts[0].owner_node_ids == ("real-owner",)
     assert result.facts[0].fact_kind == "exported_binding_continuity"
+    assert result.language == "typescript"
+    assert result.witness == "ecmascript"
+    assert result.witness_version == "1"
     assert calls == 2
+
+
+@pytest.mark.parametrize("language", ["pascal", "python"])
+def test_unsupported_language_does_not_spend_an_index(
+    tmp_path: Path, language: str
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "api.ts").write_text(
+        "export function oldName(): void {}\n", encoding="utf-8"
+    )
+    calls = 0
+
+    def indexer(_root: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("unsupported language must not index")
+
+    result = CodeGraphCandidateRefinementAdapter(indexer=indexer).analyze(
+        _action(_patch()), str(tmp_path), _scope(language)
+    )
+
+    assert result.status == "not_applicable"
+    assert result.reason == f"no measured continuity witness for {language}"
+    assert calls == 0
+
+
+def test_java_callable_forwarder_yields_scoped_structural_fact(tmp_path: Path) -> None:
+    before_source = "public static int oldName(int x) { return x + 1; }\n"
+    after_source = (
+        "public static int newName(int x) { return x + 1; }\n"
+        "public static int oldName(int x) { return newName(x); }\n"
+    )
+    (tmp_path / "Api.java").write_text(before_source, encoding="utf-8")
+    calls = 0
+
+    def indexer(root: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        path = root / ".codegraph" / "codegraph.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(path)
+        con.executescript(
+            """
+            CREATE TABLE nodes (
+              id TEXT PRIMARY KEY, kind TEXT, name TEXT, qualified_name TEXT, file_path TEXT,
+              language TEXT, start_line INTEGER, end_line INTEGER,
+              start_column INTEGER, end_column INTEGER, visibility TEXT,
+              is_exported INTEGER, signature TEXT
+            );
+            CREATE TABLE edges (
+              id TEXT PRIMARY KEY, source TEXT, target TEXT, kind TEXT, line INTEGER,
+              metadata TEXT, provenance TEXT
+            );
+            """
+        )
+        if calls == 1:
+            con.execute(
+                "INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("old", "method", "oldName", "Api::oldName", "Api.java", "java", 1, 1,
+                 0, len(before_source.rstrip()), "public", 0, "int (int x)"),
+            )
+        else:
+            con.executemany(
+                "INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    ("new", "method", "newName", "Api::newName", "Api.java", "java", 1, 1,
+                     0, len(after_source.splitlines()[0]), "public", 0, "int (int x)"),
+                    ("old-wrapper", "method", "oldName", "Api::oldName", "Api.java", "java", 2, 2,
+                     0, len(after_source.splitlines()[1]), "public", 0, "int (int x)"),
+                ],
+            )
+            con.execute(
+                "INSERT INTO edges VALUES (?,?,?,?,?,?,?)",
+                ("forward", "old-wrapper", "new", "calls", 2,
+                 '{"confidence":0.95,"resolvedBy":"exact-match"}', None),
+            )
+        con.commit()
+        con.close()
+        return path
+
+    patch = (
+        "diff --git a/Api.java b/Api.java\n"
+        "--- a/Api.java\n+++ b/Api.java\n"
+        "@@ -1 +1,2 @@\n"
+        f"-{before_source}"
+        f"+{after_source.splitlines()[0]}\n"
+        f"+{after_source.splitlines()[1]}\n"
+    )
+    scope = GraphRiskScope(
+        event="public_api_break",
+        risk_source="graph_modify_risk",
+        owner_node_ids=("real-owner",),
+        owner_file_paths=("Api.java",),
+        owner_qualified_names=("Api::oldName",),
+        language="java",
+    )
+
+    result = CodeGraphCandidateRefinementAdapter(
+        indexer=indexer, cache_root=tmp_path / "cache"
+    ).analyze(_action(patch), str(tmp_path), scope)
+
+    assert result.status == "available"
+    assert result.facts[0].fact_kind == "exported_binding_continuity"
+    assert result.witness == "java"
 
 
 def test_direct_alias_proof_allows_only_formatting_blank_after_declaration() -> None:
@@ -996,7 +1104,7 @@ def test_cache_hit_reuses_only_conservative_ambiguity_without_reindexing(tmp_pat
 def test_cache_namespace_tracks_current_proof_contract(tmp_path: Path) -> None:
     adapter = CodeGraphCandidateRefinementAdapter(cache_root=tmp_path / "cache")
 
-    assert adapter._cache_path(str(tmp_path), "manifest").parent.name == "v7"
+    assert adapter._cache_path(str(tmp_path), "manifest").parent.name == "v8"
 
 
 def test_default_cache_root_never_uses_repository_marker(

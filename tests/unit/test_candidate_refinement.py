@@ -23,6 +23,10 @@ def test_scoped_adjustment_is_patch_bound_and_event_specific() -> None:
         status="available",
         verified_patch_hash="abc",
         provider="materialized_codegraph",
+        language="java",
+        witness="java",
+        witness_version="1",
+        engine_version="1.1.1",
         facts=(
             ScopedGraphRiskFact(
                 fact_kind="exported_binding_continuity",
@@ -36,7 +40,13 @@ def test_scoped_adjustment_is_patch_bound_and_event_specific() -> None:
     adjusted, applied = apply_scoped_adjustments(events, evidence, patch_hash="abc")
 
     assert adjusted[0]["p_event"] == 0.21
-    assert adjusted[0]["graph_risk_update"]["probability_multiplier"] == 0.35
+    update = adjusted[0]["graph_risk_update"]
+    assert update["probability_multiplier"] == 0.35
+    assert update["calibration"] == "multilang_continuity_provisional_v1"
+    assert update["language"] == "java"
+    assert update["witness"] == "java"
+    assert update["witness_version"] == "1"
+    assert update["engine_version"] == "1.1.1"
     assert adjusted[1] == events[1]
     assert applied == ["public_api_break"]
 

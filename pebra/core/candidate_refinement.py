@@ -16,14 +16,10 @@ from pebra.core.models import CandidateGraphRiskEvidence
 STRUCTURAL_CONTINUITY_MULTIPLIER = 0.35
 STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR = 0.05
 STRUCTURAL_CONTINUITY_MIN_CONFIDENCE = 0.90
+STRUCTURAL_CONTINUITY_CALIBRATION = "multilang_continuity_provisional_v1"
 _ALLOWED_FACT_SCOPES = {
     "exported_binding_continuity": {("public_api_break", "graph_modify_risk")},
 }
-# Adapter logic is language-neutral; autonomous credit is enabled only for extractor families whose
-# real binary edge/signature semantics have been measured end-to-end.
-MEASURED_CONTINUITY_LANGUAGES = frozenset({"typescript", "tsx"})
-
-
 def apply_scoped_adjustments(
     events: list[dict[str, Any]],
     evidence: CandidateGraphRiskEvidence,
@@ -119,7 +115,11 @@ def apply_scoped_adjustments(
             "structural_probability_floor": STRUCTURAL_CONTINUITY_PROBABILITY_FLOOR,
             "independent_probability_floor": independent_floor,
             "binding_term": binding_term,
-            "calibration": "prior_uncalibrated_conservative",
+            "calibration": STRUCTURAL_CONTINUITY_CALIBRATION,
+            "language": evidence.language,
+            "witness": evidence.witness,
+            "witness_version": evidence.witness_version,
+            "engine_version": evidence.engine_version,
             "owner_node_ids": list(owners),
         }
         adjusted.append(updated)

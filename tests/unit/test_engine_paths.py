@@ -4,7 +4,6 @@ so `setup-graph` makes PEBRA ready without a persistent PATH edit. Pure; mocks e
 from __future__ import annotations
 
 from pebra.core import engine_paths as ep
-from pebra.core.graph_version import CODEGRAPH_DEFAULT_VERSION
 
 
 def _no_env(monkeypatch):
