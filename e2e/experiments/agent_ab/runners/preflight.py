@@ -715,6 +715,7 @@ def _live_revise_safer_assess(
             "repo_root": repo_path,
             "db": db,
             "trusted_candidate_verification_path": verification_path,
+            "include_host_metadata": True,
             "extra_env": {"PEBRA_CODEGRAPH_SEMANTIC_DIFF": "1"},
         }
         if obligations_path is not None:

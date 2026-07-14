@@ -1104,7 +1104,7 @@ def test_cache_hit_reuses_only_conservative_ambiguity_without_reindexing(tmp_pat
 def test_cache_namespace_tracks_current_proof_contract(tmp_path: Path) -> None:
     adapter = CodeGraphCandidateRefinementAdapter(cache_root=tmp_path / "cache")
 
-    assert adapter._cache_path(str(tmp_path), "manifest").parent.name == "v8"
+    assert adapter._cache_path(str(tmp_path), "manifest").parent.name == "v9"
 
 
 def test_default_cache_root_never_uses_repository_marker(

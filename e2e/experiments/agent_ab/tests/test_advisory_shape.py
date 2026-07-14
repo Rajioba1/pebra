@@ -178,8 +178,12 @@ def test_build_request_does_not_carry_candidate_verification_in_untrusted_eviden
 def test_real_advise_enables_semantic_diff_in_subprocess_env(monkeypatch, tmp_path):
     seen = {}
 
-    def _assess(req_path, *, repo_root, db, trusted_candidate_verification_path=None, extra_env=None):
+    def _assess(
+        req_path, *, repo_root, db, trusted_candidate_verification_path=None,
+        include_host_metadata=False, extra_env=None,
+    ):
         seen["extra_env"] = dict(extra_env or {})
+        seen["include_host_metadata"] = include_host_metadata
         return {"recommended_decision": "proceed", "scores": {"expected_loss": 0.0}}
 
     monkeypatch.setattr(real.cli_harness, "assess", _assess)
@@ -191,6 +195,7 @@ def test_real_advise_enables_semantic_diff_in_subprocess_env(monkeypatch, tmp_pa
 
     assert out["recommended_decision"] == "proceed"
     assert seen["extra_env"] == {"PEBRA_CODEGRAPH_SEMANTIC_DIFF": "1"}
+    assert seen["include_host_metadata"] is True
 
 
 def test_real_advise_forwards_remaining_timeout_to_cli(monkeypatch, tmp_path):

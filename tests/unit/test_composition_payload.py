@@ -2,7 +2,7 @@ from pebra.app.assess_controller import AssessmentOutcome, ScoredAction
 from pebra import composition
 from pebra.core.constants import ActionStatus, Decision, RiskMode
 from pebra.core.explanation_generator import Explanation
-from pebra.core.models import AssessmentResult, CandidateAction
+from pebra.core.models import AssessmentResult, CandidateAction, CandidateGraphRiskEvidence
 
 
 def test_assess_payload_hides_host_snapshot_provenance_by_default() -> None:
@@ -80,6 +80,54 @@ def test_assess_payload_exposes_prior_provenance_only_to_host() -> None:
     assert "prior_provenance" not in composition.assess_payload(outcome)
     payload = composition.assess_payload(outcome, include_host_metadata=True)
     assert payload["prior_provenance"]["source"] == "shipped"
+
+
+def test_assess_payload_exposes_graph_refinement_only_to_host() -> None:
+    result = AssessmentResult(
+        recommended_decision=Decision.ASK_HUMAN,
+        requires_confirmation=True,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.ELEVATED_REVIEW,
+        scores={},
+        repo_id="r",
+        repo_root="/repo",
+    )
+    explanation = Explanation(
+        risk_level_band="Moderate", value_after_risk_band="Borderline",
+        confidence_band="medium", confidence_percent=60,
+        code_sensitivity_label="Moderate", code_sensitivity_descriptor="code",
+        expected_damage=0.1, risk_budget_percent=50, affected_area="small",
+    )
+    scored = ScoredAction(
+        action=CandidateAction(
+            id="a1", label="rename", action_type="edit", expected_files=["api.ts"]
+        ),
+        result=result,
+        explanation=explanation,
+        candidate_graph_risk_evidence=CandidateGraphRiskEvidence(
+            status="available",
+            provider="materialized_codegraph",
+            language="typescript",
+            witness="ecmascript",
+            witness_version="1",
+            engine_version="1.1.1",
+        ),
+        refinement_enabled=True,
+        refinement_selected=True,
+        refinement_status="available",
+    )
+    outcome = AssessmentOutcome(
+        recommended_result=result,
+        recommended_explanation=explanation,
+        assessment_id="asm_1",
+        repo_id="r",
+        repo_root="/repo",
+        scored_actions=[scored],
+    )
+
+    assert "graph_refinement" not in composition.assess_payload(outcome)
+    host_payload = composition.assess_payload(outcome, include_host_metadata=True)
+    assert host_payload["graph_refinement"]["evidence"]["witness"] == "ecmascript"
 
 
 def test_assess_payload_exposes_repo_state_and_graph_provenance() -> None:

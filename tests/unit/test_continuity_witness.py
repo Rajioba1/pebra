@@ -15,13 +15,18 @@ def test_ecmascript_family_uses_one_measured_witness(language: str) -> None:
     assert witness.forwarder_kinds == frozenset({"constant", "variable"})
 
 
-@pytest.mark.parametrize("language", ["java", "rust", "go", "dart", "scala"])
-def test_callable_forwarder_families_have_explicit_witnesses(language: str) -> None:
+@pytest.mark.parametrize(
+    ("language", "version"),
+    [("java", "2"), ("rust", "1"), ("go", "1"), ("dart", "2"), ("scala", "1")],
+)
+def test_callable_forwarder_families_have_explicit_witnesses(
+    language: str, version: str
+) -> None:
     witness = witness_for_language(language)
 
     assert witness is not None
     assert witness.name == language
-    assert witness.version == "1"
+    assert witness.version == version
     assert witness.forwarder_kinds <= frozenset({"function", "method"})
 
 
@@ -128,6 +133,52 @@ def test_language_witnesses_reject_behavioral_wrappers(
     assert witness is not None
 
     assert witness.is_safe_forwarder(source, old_name, new_name) is False
+
+
+@pytest.mark.parametrize(
+    ("language", "old_name", "new_name", "old_source", "new_source", "smuggled"),
+    [
+        (
+            "java",
+            "oldName",
+            "newName",
+            "public static int oldName(int x) { return x + 1; }",
+            "public static int newName(int x) { return x + 1; }",
+            "static { System.exit(leakSecrets()); } public static int oldName(int x) "
+            "{ return newName(x); }",
+        ),
+        (
+            "dart",
+            "oldName",
+            "newName",
+            "int oldName(int x) => x + 1;",
+            "int newName(int x) => x + 1;",
+            "final stolen = leakSecrets(); int oldName(int x) => newName(x);",
+        ),
+    ],
+)
+def test_patch_proof_rejects_code_smuggled_before_forwarder(
+    language: str,
+    old_name: str,
+    new_name: str,
+    old_source: str,
+    new_source: str,
+    smuggled: str,
+) -> None:
+    witness = witness_for_language(language)
+    assert witness is not None
+    patch = (
+        "diff --git a/Api b/Api\n"
+        "--- a/Api\n+++ b/Api\n"
+        "@@ -1 +1,2 @@\n"
+        f"-{old_source}\n"
+        f"+{new_source}\n"
+        f"+{smuggled}\n"
+    )
+
+    assert witness.patch_is_exhaustive_forwarder(
+        patch, old_name, new_name, smuggled
+    ) is False
 
 
 def test_ecmascript_witness_rejects_regex_identifier_migration() -> None:

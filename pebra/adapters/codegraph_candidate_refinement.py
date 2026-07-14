@@ -32,7 +32,7 @@ from pebra.core.models import (
 
 
 _SCHEMA_VERSION = 1
-_CACHE_VERSION = 8
+_CACHE_VERSION = 9
 _PROVIDER_VERSION = f"materialized-continuity-v{_CACHE_VERSION}"
 _CALLABLE_KINDS = {"function", "method", "class", "struct", "interface", "trait", "protocol"}
 _SUPPORTED_EVENTS = {"public_api_break"}

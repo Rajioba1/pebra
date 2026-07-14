@@ -38,6 +38,29 @@ def _build(ran=True, passed=True, err=""):
     return SimpleNamespace(ran=ran, passed=passed, error_summary=err)
 
 
+def test_live_revise_safer_assess_requests_host_refinement_metadata(
+    monkeypatch, tmp_path
+) -> None:
+    from e2e.utils import cli_harness
+
+    seen: dict[str, object] = {}
+
+    def _assess(_request_path, **kwargs):
+        seen.update(kwargs)
+        return {"recommended_decision": "ask_human"}
+
+    monkeypatch.setattr(cli_harness, "assess", _assess)
+
+    preflight._live_revise_safer_assess(
+        tmp_path,
+        _JS_TRAP,
+        "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n",
+        tmp_path / "pebra.db",
+    )
+
+    assert seen["include_host_metadata"] is True
+
+
 # ---- oracle-outcome assertions ----
 
 def test_trap_that_fails_is_ok():

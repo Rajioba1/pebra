@@ -242,8 +242,8 @@ def assess_payload(
 ) -> dict[str, Any]:
     """Build the canonical model-facing assessment result.
 
-    Host-only calibration provenance is opt-in for trusted CLI consumers and is never included in
-    the default payload shared with MCP tools.
+    Host-only calibration and graph-refinement provenance are opt-in for trusted CLI consumers and
+    are never included in the default payload shared with MCP tools.
     """
     r = outcome.recommended_result
     repo_state = r.provenance.get("repo_state") or {
@@ -288,8 +288,8 @@ def assess_payload(
             "applied_snapshot_provenance"
         )
         payload["prior_provenance"] = r.provenance.get("prior_provenance")
-    if refinement is not None:
-        payload["graph_refinement"] = refinement
+        if refinement is not None:
+            payload["graph_refinement"] = refinement
     return payload
 
 

@@ -201,6 +201,9 @@ def advise(
             "repo_root": repo_root,
             "db": db,
             "trusted_candidate_verification_path": trusted_path,
+            # Private harness telemetry consumes refinement provenance from raw_payload. The shaped
+            # AdvisoryOutput remains arm-neutral and never exposes these host-only fields to subjects.
+            "include_host_metadata": True,
             "extra_env": {"PEBRA_CODEGRAPH_SEMANTIC_DIFF": "1"},
         }
         if timeout_seconds is not None:

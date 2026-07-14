@@ -184,11 +184,22 @@ class ContinuityWitness:
             return re.fullmatch(
                 rf"export\s+const\s+{old}\s*=\s*{target}\s*;", normalized, flags
             ) is not None
+        java_modifiers = (
+            r"(?:(?:public|protected|private|static|final|synchronized|native|abstract|"
+            r"strictfp|default)\s+)*"
+        )
+        java_return_type = (
+            r"(?:[A-Za-z_$][A-Za-z0-9_$.]*(?:<[^(){};]+>)?(?:\[\])?|void)"
+        )
+        dart_modifiers = r"(?:(?:external|static|covariant)\s+)*"
+        dart_return_type = (
+            r"(?:[A-Za-z_$][A-Za-z0-9_$.]*(?:<[^(){};]+>)?\??\s+)?"
+        )
         patterns = {
-            "java": rf"^.*\b{old}\s*\((?P<params>[^()]*)\)\s*\{{\s*(?:return\s+)?{target}\s*\((?P<args>[^()]*)\)\s*;\s*\}}$",
+            "java": rf"^{java_modifiers}{java_return_type}\s+{old}\s*\((?P<params>[^()]*)\)\s*\{{\s*(?:return\s+)?{target}\s*\((?P<args>[^()]*)\)\s*;\s*\}}$",
             "rust": rf"^(?:pub(?:\([^)]*\))?\s+)?fn\s+{old}\s*\((?P<params>[^()]*)\)[^{{]*\{{\s*(?:return\s+)?{target}\s*\((?P<args>[^()]*)\)\s*;?\s*\}}$",
             "go": rf"^func\s+(?:\([^)]*\)\s*)?{old}\s*\((?P<params>[^()]*)\)[^{{]*\{{\s*return\s+{target}\s*\((?P<args>[^()]*)\)\s*\}}$",
-            "dart": rf"^.*\b{old}\s*\((?P<params>[^()]*)\)\s*=>\s*{target}\s*\((?P<args>[^()]*)\)\s*;$",
+            "dart": rf"^{dart_modifiers}{dart_return_type}{old}\s*\((?P<params>[^()]*)\)\s*=>\s*{target}\s*\((?P<args>[^()]*)\)\s*;$",
             "scala": rf"^def\s+{old}\s*\((?P<params>[^()]*)\)[^=]*=\s*{target}\s*\((?P<args>[^()]*)\)$",
             "pascal": rf"^function\s+{old}\s*\((?P<params>[^()]*)\)[^;]*;\s*begin\s+{old}\s*:=\s*{target}\s*\((?P<args>[^()]*)\)\s*;\s*end;$",
         }
@@ -273,7 +284,7 @@ _WITNESSES = (
     _ECMASCRIPT,
     ContinuityWitness(
         name="java",
-        version="1",
+        version="2",
         languages=frozenset({"java"}),
         forwarder_kinds=frozenset({"method"}),
         declaration_pattern=r"\b(?P<name>{name})\s*\(",
@@ -294,7 +305,7 @@ _WITNESSES = (
     ),
     ContinuityWitness(
         name="dart",
-        version="1",
+        version="2",
         languages=frozenset({"dart"}),
         forwarder_kinds=frozenset({"function", "method"}),
         declaration_pattern=r"\b(?P<name>{name})\s*\(",
