@@ -8,6 +8,7 @@
   Value After Risk:  Positive
   Code Sensitivity:  High - sensitive auth code
   Expected Damage:   0.10
+  Prior Source:      Cold Start
   
   Why:
     - Risk budget 50% used: expected_loss 0.10 divided by C3 threshold 0.20.

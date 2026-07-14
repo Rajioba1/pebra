@@ -156,11 +156,11 @@
     view.appendChild(tcard);
     drawSeries(chartBox, series.items);
 
-    // Measured (post-verify) RCA benefit drill-in — the History `benefit` column is the assess-time
-    // projected benefit; this panel shows the MEASURED maintainability delta persisted by `verify`.
-    const bcard = card("Measured benefit detail");
+    // Assessment drill-in shows the persisted prior source and post-verify RCA benefit.
+    const bcard = card("Assessment detail");
+    bcard.dataset.testid = "assessment-detail";
     const bbody = el("div");
-    bbody.appendChild(el("p", "chart-note", "Select a row to see its measured RCA benefit (post-verify)."));
+    bbody.appendChild(el("p", "chart-note", "Select a row to see its prior source and measured RCA benefit."));
     bcard.appendChild(bbody);
 
     const hcard = card("Recent assessments");
@@ -206,6 +206,19 @@
         return x && x.measured_benefit_deltas && Object.keys(x.measured_benefit_deltas).length;
       }).pop();
       clear(box);
+      const prior = d.prior_provenance || { source: "cold_start", calibration_tags: [] };
+      const priorTable = el("table");
+      priorTable.appendChild(headRow(["prior measure", "value"]));
+      const priorBody = el("tbody");
+      [["Prior source", prior.source || "cold_start"],
+       ["Calibration version", (prior.calibration_tags || []).join(", ") || "none"]].forEach(function (kv) {
+        const tr = el("tr");
+        tr.appendChild(cell(kv[0], "mono"));
+        tr.appendChild(cell(kv[1], "mono"));
+        priorBody.appendChild(tr);
+      });
+      priorTable.appendChild(priorBody);
+      box.appendChild(priorTable);
       if (!g || g.measured_benefit == null) {
         box.appendChild(emptyMsg("No verify / measured-benefit recorded for " + id + " yet."));
         return;

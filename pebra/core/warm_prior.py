@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from pebra.core.language_capability import classify_tier
 from pebra.core.models import AssessmentInput
+from pebra.core.variance_bounds import bound_predictive_variance
 
 
 @dataclass(frozen=True)
@@ -23,13 +24,16 @@ class CalibratedPriorCell:
     graph_fact_kind: str | None = None
     p_success: float | None = None
     p_success_variance: float | None = None
+    p_success_aleatoric_variance: float | None = None
     review_cost: float | None = None
     review_cost_variance: float | None = None
+    review_cost_aleatoric_variance: float | None = None
 
 
 def _valid(cell: CalibratedPriorCell) -> bool:
     values = (
-        cell.p_success, cell.p_success_variance, cell.review_cost, cell.review_cost_variance,
+        cell.p_success, cell.p_success_variance, cell.p_success_aleatoric_variance,
+        cell.review_cost, cell.review_cost_variance, cell.review_cost_aleatoric_variance,
     )
     if (
         cell.sample_size <= 0
@@ -45,7 +49,10 @@ def _valid(cell: CalibratedPriorCell) -> bool:
         return False
     return not any(
         value is not None and value < 0.0
-        for value in (cell.p_success_variance, cell.review_cost_variance)
+        for value in (
+            cell.p_success_variance, cell.p_success_aleatoric_variance,
+            cell.review_cost_variance, cell.review_cost_aleatoric_variance,
+        )
     )
 
 
@@ -86,14 +93,12 @@ def apply_warm_prior(
     changes: dict[str, object] = {}
     field_sources: dict[str, dict[str, object]] = {}
     selected_cells: dict[str, CalibratedPriorCell] = {}
-    for field_name in (
-        "p_success", "p_success_variance", "review_cost", "review_cost_variance",
-    ):
-        candidates = [cell for cell in matches if getattr(cell, field_name) is not None]
-        if field_name in explicit or not candidates:
-            continue
-        cell = max(candidates, key=_specificity)
-        changes[field_name] = getattr(cell, field_name)
+
+    def record_source(
+        field_name: str,
+        cell: CalibratedPriorCell,
+        extra: dict[str, object] | None = None,
+    ) -> None:
         selected_cells[field_name] = cell
         field_sources[field_name] = {
             "calibration_tag": cell.calibration_tag,
@@ -101,7 +106,39 @@ def apply_warm_prior(
             "action_type": cell.action_type,
             "language_tier": cell.language_tier,
             "graph_fact_kind": cell.graph_fact_kind,
+            **(extra or {}),
         }
+
+    for field_name in ("p_success", "review_cost"):
+        candidates = [cell for cell in matches if getattr(cell, field_name) is not None]
+        if field_name in explicit or not candidates:
+            continue
+        cell = max(candidates, key=_specificity)
+        changes[field_name] = getattr(cell, field_name)
+        record_source(field_name, cell)
+
+    variance_specs = (
+        ("p_success_variance", "p_success_aleatoric_variance", "p_success"),
+        ("review_cost_variance", "review_cost_aleatoric_variance", "review_cost"),
+    )
+    for field_name, aleatoric_name, component in variance_specs:
+        candidates = [cell for cell in matches if getattr(cell, field_name) is not None]
+        if field_name in explicit or not candidates:
+            continue
+        cell = max(candidates, key=_specificity)
+        bounded = bound_predictive_variance(
+            component,
+            float(getattr(cell, field_name)),
+            getattr(cell, aleatoric_name),
+        )
+        changes[field_name] = bounded.applied_variance
+        record_source(field_name, cell, {
+            "epistemic_variance": bounded.epistemic_variance,
+            "aleatoric_variance": bounded.aleatoric_variance,
+            "applied_variance": bounded.applied_variance,
+            "variance_floor": bounded.variance_floor,
+            "variance_cap": bounded.variance_cap,
+        })
     if not changes:
         return inp
     primary = max(selected_cells.values(), key=_specificity)

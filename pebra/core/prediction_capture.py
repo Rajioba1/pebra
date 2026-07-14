@@ -41,6 +41,87 @@ class PredictionTarget:
     features: dict[str, Any] = field(default_factory=dict)
 
 
+def summarize_prior_provenance(
+    predictions: list[PredictionTarget] | list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return the prior source summary carried by persisted prediction rows."""
+    targets: dict[str, dict[str, Any]] = {}
+    active_sources: set[str] = set()
+    calibration_tags: set[str] = set()
+    snapshot_ids: set[str] = set()
+    for prediction in predictions:
+        if isinstance(prediction, PredictionTarget):
+            target_name = prediction.target_name
+            provenance = prediction.provenance
+        else:
+            target_name = str(prediction.get("target_name") or "")
+            provenance = prediction.get("provenance") or {}
+        warm = provenance.get("warm_prior") if isinstance(provenance, dict) else None
+        local = provenance.get("applied_snapshot") if isinstance(provenance, dict) else None
+        sources: list[str] = []
+        detail: dict[str, Any] = {}
+        if isinstance(local, dict):
+            sources.append("local_learned")
+            active_sources.add("local_learned")
+            snapshot_id = local.get("snapshot_id")
+            if isinstance(snapshot_id, str) and snapshot_id:
+                snapshot_ids.add(snapshot_id)
+                detail["snapshot_id"] = snapshot_id
+            for key in ("winning_fact_id", "applied_variance", "variance_floor", "variance_cap"):
+                if local.get(key) is not None:
+                    detail[key] = local[key]
+        if isinstance(warm, dict):
+            sources.append("shipped")
+            active_sources.add("shipped")
+            related_fields = {
+                "p_success": ("p_success", "p_success_variance"),
+                "review_cost": ("review_cost", "review_cost_variance"),
+            }.get(target_name, (target_name,))
+            field_sources = warm.get("field_sources") or {}
+            target_tags: list[str] = []
+            if isinstance(field_sources, dict):
+                for field_name in related_fields:
+                    field_source = field_sources.get(field_name)
+                    calibration_tag = (
+                        field_source.get("calibration_tag")
+                        if isinstance(field_source, dict)
+                        else None
+                    )
+                    if isinstance(calibration_tag, str) and calibration_tag:
+                        target_tags.append(calibration_tag)
+                        calibration_tags.add(calibration_tag)
+            if not target_tags:
+                calibration_tag = warm.get("calibration_tag")
+                if isinstance(calibration_tag, str) and calibration_tag:
+                    target_tags.append(calibration_tag)
+                    calibration_tags.add(calibration_tag)
+            if target_tags:
+                detail["calibration_tag"] = target_tags[0]
+                detail["calibration_tags"] = list(dict.fromkeys(target_tags))
+            variance_field = related_fields[1] if len(related_fields) > 1 else None
+            field_source = field_sources.get(variance_field, {}) if variance_field else {}
+            if isinstance(field_source, dict):
+                for key in ("applied_variance", "variance_floor", "variance_cap"):
+                    if key not in detail and field_source.get(key) is not None:
+                        detail[key] = field_source[key]
+        primary = "local_learned" if "local_learned" in sources else (
+            "shipped" if "shipped" in sources else "cold_start"
+        )
+        targets[target_name] = {"source": primary, "sources": sources or ["cold_start"], **detail}
+    source = "local_learned" if "local_learned" in active_sources else (
+        "shipped" if "shipped" in active_sources else "cold_start"
+    )
+    source_order = ("local_learned", "shipped")
+    sources = [item for item in source_order if item in active_sources] or ["cold_start"]
+    return {
+        "source": source,
+        "sources": sources,
+        "calibration_tags": sorted(calibration_tags),
+        "snapshot_ids": sorted(snapshot_ids),
+        "targets": targets,
+    }
+
+
 def _clamp_unit(value: float) -> float:
     return max(0.0, min(1.0, value))
 
@@ -82,6 +163,13 @@ def build_prediction_manifest(
     applied_snapshot_id = (applied_snapshot_provenance or {}).get("snapshot_id")
     warm_fields = set((warm_prior_provenance or {}).get("applied_fields", []))
 
+    def _warm_applies(target_name: str) -> bool:
+        related_fields = {
+            "p_success": {"p_success", "p_success_variance"},
+            "review_cost": {"review_cost", "review_cost_variance"},
+        }.get(target_name, {target_name})
+        return bool(warm_fields.intersection(related_fields))
+
     def _target(
         target_type: str,
         name: str,
@@ -95,7 +183,7 @@ def build_prediction_manifest(
                 "snapshot_id": applied_snapshot_id,
                 **copy.deepcopy(applied),
             }
-        if name in warm_fields:
+        if _warm_applies(name):
             target_provenance["warm_prior"] = copy.deepcopy(warm_prior_provenance)
         return PredictionTarget(
             target_type=target_type,

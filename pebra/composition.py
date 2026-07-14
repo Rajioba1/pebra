@@ -276,6 +276,7 @@ def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
         "high_risk_triggers": r.high_risk_triggers,
         "model_guidance_packet": r.model_guidance_packet,
         "applied_snapshot_provenance": r.provenance.get("applied_snapshot_provenance"),
+        "prior_provenance": r.provenance.get("prior_provenance"),
         "repo_state": repo_state,
         "graph_provenance": _graph_provenance(r),
     }

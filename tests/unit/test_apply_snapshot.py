@@ -173,6 +173,25 @@ def test_p_event_hard_replace_uses_monotone_risk_envelope_across_matching_scopes
     assert entry["winning_fact_id"] == "lrf_domain"
 
 
+def test_consequence_event_learning_cannot_lower_candidate_specific_risk() -> None:
+    inp = _inp(events=[{
+        "event": "public_api_break", "p_event": 0.45, "elicited_disutility": 0.8,
+    }])
+
+    out = apply_snapshot(inp, _bundle(_fact(
+        target_name="p_event.public_api_break",
+        value=0.05,
+        variance=0.0002,
+        aleatoric_variance=0.0008,
+    )))
+
+    assert out.events[0]["p_event"] == pytest.approx(0.45)
+    (entry,) = out.applied_snapshot_provenance["applied_facts"]
+    assert entry["learned_value"] == pytest.approx(0.05)
+    assert entry["new_value"] == pytest.approx(0.45)
+    assert entry["safety_constraint"] == "consequence_event_non_decreasing"
+
+
 # --- specificity + tiebreak --------------------------------------------------
 
 

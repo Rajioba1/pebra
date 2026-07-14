@@ -55,6 +55,25 @@ def test_render_card_surfaces_graph_rollup_in_human_labels() -> None:
     assert "Graph callers/references: 13" in card
 
 
+def test_render_card_surfaces_prior_source_and_version() -> None:
+    result = AssessmentResult(
+        recommended_decision=Decision.ASK_HUMAN,
+        requires_confirmation=True,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.NORMAL,
+        scores={},
+        repo_id="r",
+        repo_root="/repo",
+        provenance={"prior_provenance": {
+            "source": "shipped", "calibration_tags": ["population-v1"],
+        }},
+    )
+
+    card = render_card(result, _explanation())
+
+    assert "Prior Source:      Shipped (population-v1)" in card
+
+
 def test_assess_parser_accepts_host_only_task_obligations_sidecar() -> None:
     args = build_parser().parse_args([
         "assess",

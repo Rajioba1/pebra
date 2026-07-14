@@ -22,6 +22,7 @@ from typing import Any
 
 from pebra.core.constants import MIN_CALIBRATION_SAMPLES
 from pebra.core.models import AssessmentResult
+from pebra.core.prediction_capture import summarize_prior_provenance
 from pebra.ports.learning_port import MeasurementAlreadyRecordedError
 
 GENESIS = "GENESIS"
@@ -1453,6 +1454,7 @@ class SqliteStore:
         return {
             "assessment_id": assessment_id,
             "content": content,
+            "prior_provenance": summarize_prior_provenance(self.load_predictions(assessment_id)),
             "model_guidance_packet": (
                 json.loads(packet[0]) if packet else content.get("model_guidance_packet")
             ),

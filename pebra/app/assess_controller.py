@@ -666,6 +666,7 @@ def _score_prepared_input(
         applied_snapshot_provenance=inp.applied_snapshot_provenance,
         warm_prior_provenance=inp.warm_prior_provenance,
     )
+    result.provenance["prior_provenance"] = prediction_capture.summarize_prior_provenance(manifest)
     return ScoredAction(
         action=action,
         result=result,

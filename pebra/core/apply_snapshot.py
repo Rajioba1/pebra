@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pebra.core import risk_fact_decay
-from pebra.core.constants import COLD_START_VARIANCES, LEARNED_VARIANCE_FLOOR_RATIO
+from pebra.core.constants import CONSEQUENCE_BEARING_EVENTS
 from pebra.core.models import AssessmentInput
 from pebra.core.prediction_capture import (
     BENEFIT_BINARY,
@@ -40,6 +40,7 @@ from pebra.core.prediction_capture import (
     COST_CONTINUOUS,
     RISK_BINARY,
 )
+from pebra.core.variance_bounds import bound_predictive_variance
 
 _CLAMP_LO = 0.01
 _CLAMP_HI = 0.99
@@ -359,17 +360,15 @@ def _bounded_learned_variance(prov: dict[str, Any] | None, component: str) -> fl
     """
     if prov is None or prov.get("variance") is None:
         return None
-    cap = COLD_START_VARIANCES[component]
-    floor = cap * LEARNED_VARIANCE_FLOOR_RATIO
-    aleatoric = prov.get("aleatoric_variance")
-    if aleatoric is None:
-        applied = cap
-    else:
-        applied = max(floor, min(cap, float(prov["variance"]) + float(aleatoric)))
-    prov["applied_variance"] = applied
-    prov["variance_floor"] = floor
-    prov["variance_cap"] = cap
-    return applied
+    bounded = bound_predictive_variance(
+        component,
+        float(prov["variance"]),
+        prov.get("aleatoric_variance"),
+    )
+    prov["applied_variance"] = bounded.applied_variance
+    prov["variance_floor"] = bounded.variance_floor
+    prov["variance_cap"] = bounded.variance_cap
+    return bounded.applied_variance
 
 
 def apply_snapshot(
@@ -410,6 +409,16 @@ def apply_snapshot(
         )
         if val is None:
             continue
+        if prov is None:  # defensive: a value without provenance must never adjust a live event
+            continue
+        if event["event"] in CONSEQUENCE_BEARING_EVENTS and val < prior:
+            # A repository-level outcome rate is not patch-bound proof. It may make a consequence
+            # event more cautious, but only candidate refinement may earn a risk reduction for the
+            # current patch. Preserve the learned estimate in provenance without authorizing from it.
+            prov["learned_value"] = val
+            prov["new_value"] = prior
+            prov["safety_constraint"] = "consequence_event_non_decreasing"
+            val = prior
         if new_events is None:
             # shallow copy is sufficient: v1 event dicts hold only scalars (event/p_event/
             # elicited_disutility). Revisit if the event schema ever gains nested mutables.

@@ -124,6 +124,10 @@ def render_card(result: AssessmentResult, ex: Explanation) -> str:
     if result.recommended_decision is Decision.PROCEED and result.requires_confirmation:
         title += " (confirmation required)"
 
+    prior = result.provenance.get("prior_provenance") or {"source": "cold_start"}
+    source = str(prior.get("source") or "cold_start").replace("_", " ").title()
+    tags = [str(tag) for tag in prior.get("calibration_tags") or [] if tag]
+    prior_label = f"{source} ({', '.join(tags)})" if tags else source
     lines = [
         f"PEBRA Decision: {title}",
         "",
@@ -132,6 +136,7 @@ def render_card(result: AssessmentResult, ex: Explanation) -> str:
         f"Value After Risk:  {ex.value_after_risk_band}",
         f"Code Sensitivity:  {ex.code_sensitivity_label} - {ex.code_sensitivity_descriptor}",
         f"Expected Damage:   {ex.expected_damage:.2f}",
+        f"Prior Source:      {prior_label}",
         "",
         "Why:",
     ]

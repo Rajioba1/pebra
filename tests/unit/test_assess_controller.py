@@ -12,6 +12,7 @@ from pebra.app import assess_controller as ac
 from pebra.core import models as m
 from pebra.core.constants import Decision, RiskMode
 from pebra.core.language_capability import LanguageCapability
+from pebra.core.warm_prior import CalibratedPriorCell
 from pebra.ports.repository_registry_port import RepoMetadata
 
 _THRESHOLDS = {
@@ -294,6 +295,36 @@ def test_controller_reproduces_worked_example_decision() -> None:
     assert r.recommended_decision is Decision.PROCEED
     assert r.requires_confirmation is True
     assert r.risk_mode is RiskMode.SENSITIVE_CONTEXT
+
+
+def test_controller_surfaces_shipped_prior_provenance(monkeypatch) -> None:
+    store = FakeStore()
+    monkeypatch.setattr(ac, "CALIBRATED_PRIORS", (CalibratedPriorCell(
+        action_type="edit",
+        p_success=0.8,
+        p_success_variance=0.006,
+        p_success_aleatoric_variance=0.004,
+        calibration_tag="population-v1",
+        sample_size=120,
+    ),))
+    outcome = ac.assess(
+        _request(),
+        thresholds=_THRESHOLDS,
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+    )
+
+    prior = outcome.recommended_result.provenance["prior_provenance"]
+    assert prior["source"] == "shipped"
+    assert prior["calibration_tags"] == ["population-v1"]
+    assert prior["targets"]["p_success"]["applied_variance"] == pytest.approx(0.01)
+    persisted_predictions = store.persisted[0][2]
+    assert any("warm_prior" in row["provenance"] for row in persisted_predictions)
 
 
 def test_refinement_disabled_keeps_persisted_request_surface_unchanged() -> None:

@@ -44,6 +44,37 @@ def test_assess_payload_exposes_applied_snapshot_provenance_when_present() -> No
     assert "graph_refinement" not in payload
 
 
+def test_assess_payload_exposes_prior_provenance() -> None:
+    result = AssessmentResult(
+        recommended_decision=Decision.ASK_HUMAN,
+        requires_confirmation=True,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.NORMAL,
+        scores={},
+        repo_id="r",
+        repo_root="/repo",
+        provenance={"prior_provenance": {
+            "source": "shipped",
+            "sources": ["shipped"],
+            "calibration_tags": ["population-v1"],
+            "snapshot_ids": [],
+            "targets": {},
+        }},
+    )
+    outcome = AssessmentOutcome(
+        recommended_result=result,
+        recommended_explanation=Explanation(
+            risk_level_band="Moderate", value_after_risk_band="Borderline",
+            confidence_band="medium", confidence_percent=60,
+            code_sensitivity_label="Moderate", code_sensitivity_descriptor="code",
+            expected_damage=0.1, risk_budget_percent=50, affected_area="small",
+        ),
+        assessment_id="asm_1", repo_id="r", repo_root="/repo",
+    )
+
+    assert composition.assess_payload(outcome)["prior_provenance"]["source"] == "shipped"
+
+
 def test_assess_payload_exposes_repo_state_and_graph_provenance() -> None:
     result = AssessmentResult(
         recommended_decision=Decision.REJECT,

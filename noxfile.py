@@ -86,6 +86,15 @@ def bench_continuity_smoke(session: nox.Session) -> None:
     )
 
 
+@nox.session(name="bench-continuity-warm")
+def bench_continuity_warm(session: nox.Session) -> None:
+    """Unpaid pure-core check for cold, shipped, and repository-local prior behavior."""
+    session.install("-e", ".")
+    session.install("pytest")
+    session.run("pytest", "benchmarks/continuity/test_warm.py", "-q")
+    session.run("python", "-m", "benchmarks.continuity.warm")
+
+
 @nox.session(name="e2e")
 def e2e(session: nox.Session) -> None:
     """Full current agent/product e2e. Runs the fast lane plus seeded-learning/dashboard metrics.

@@ -27,7 +27,9 @@ def _seed(tmp_path) -> tuple[str, str]:
     return db, asm
 
 
-def _persist_assessment(store: SqliteStore, *, repo_id: str = "r") -> str:
+def _persist_assessment(
+    store: SqliteStore, *, repo_id: str = "r", predictions: list[dict] | None = None
+) -> str:
     return store.persist_assessment(
         AssessmentResult(
             recommended_decision=Decision.PROCEED,
@@ -40,6 +42,7 @@ def _persist_assessment(store: SqliteStore, *, repo_id: str = "r") -> str:
             model_guidance_packet={"decision": "proceed"},
         ),
         {"task": "t"},
+        predictions=predictions,
     )
 
 
@@ -276,6 +279,31 @@ def test_assessment_detail_exposes_measured_benefit(tmp_path) -> None:
     assert g["_store"]["row_hash"]
 
 
+def test_assessment_detail_exposes_hash_chained_prior_provenance(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    asm = _persist_assessment(store, predictions=[{
+        "action_id": "a",
+        "target_type": "risk_binary",
+        "target_name": "p_success",
+        "predicted_value": 0.8,
+        "prediction_scope": "shadow",
+        "provenance": {"warm_prior": {
+            "calibration_tag": "population-v1",
+            "applied_fields": ["p_success", "p_success_variance"],
+            "field_sources": {"p_success_variance": {"applied_variance": 0.01}},
+        }},
+        "features": {},
+    }])
+    store.close()
+
+    body = _client(db).get(f"/api/repos/r/assessments/{asm}", headers=_AUTH).json()
+
+    assert body["prior_provenance"]["source"] == "shipped"
+    assert body["prior_provenance"]["calibration_tags"] == ["population-v1"]
+    assert body["prior_provenance"]["targets"]["p_success"]["applied_variance"] == 0.01
+
+
 def test_dashboard_static_wires_measured_benefit_drilldown(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     text = _client(db).get("/static/app.js").text
@@ -283,6 +311,7 @@ def test_dashboard_static_wires_measured_benefit_drilldown(tmp_path) -> None:
     assert 'rp("/assessments/"' in text
     assert 'getJSON("/api/assessments/"' not in text
     assert "measured_benefit_deltas" in text
+    assert "Prior source" in text
 
 
 def test_dashboard_static_renders_expected_utility_in_history_and_chart(tmp_path) -> None:
