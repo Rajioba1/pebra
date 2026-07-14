@@ -411,7 +411,7 @@ def _assessment_calibration_summary(
         gate for gate in gates
         if isinstance(gate, dict) and gate.get("name") == "candidate_verification_passed"
     ]
-    return {
+    summary = {
         "assessment_id": assessment_id,
         "decision": (
             str(raw["recommended_decision"])
@@ -436,6 +436,39 @@ def _assessment_calibration_summary(
         "language_tier": context.get("language_tier") or capability.get("tier"),
         "calibration_lanes": json.loads(json.dumps(lanes, sort_keys=True)),
     }
+    prior = raw.get("prior_provenance")
+    if isinstance(prior, dict):
+        source = prior.get("source")
+        tags = prior.get("calibration_tags")
+        if isinstance(source, str):
+            summary["prior_source"] = source
+        if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
+            summary["prior_calibration_tags"] = list(tags)
+    return summary
+
+
+def _assay_prior_mode() -> str:
+    mode = os.environ.get("E2E_AB_PRIOR_MODE", "explicit").strip().lower() or "explicit"
+    if mode not in {"explicit", "shipped"}:
+        raise RunPairError("E2E_AB_PRIOR_MODE must be 'explicit' or 'shipped'")
+    return mode
+
+
+def _assay_benefit_profile(spec: TaskSpec | None) -> dict[str, Any]:
+    """Build task evidence without letting the shipped-prior lane inject its own priors."""
+    mode = _assay_prior_mode()
+    if spec is None:
+        return {}
+    profile: dict[str, Any] = {
+        "immediate_benefit": spec.assay_immediate_benefit,
+        "task": spec.description,
+    }
+    if mode == "explicit":
+        profile.update({
+            "p_success": spec.assay_p_success,
+            "review_cost": spec.assay_review_cost,
+        })
+    return profile
 
 
 def _calibration_result_fields(telemetry: ArmTelemetry) -> dict[str, Any]:
@@ -485,6 +518,8 @@ def _calibration_result_fields(telemetry: ArmTelemetry) -> dict[str, Any]:
         "predicted_benefit_source_type": summary.get("benefit_source_type"),
         "assessment_proof_class": summary.get("assessment_proof_class"),
         "calibration_lanes": dict(summary.get("calibration_lanes") or {}),
+        "prior_source": summary.get("prior_source"),
+        "prior_calibration_tags": tuple(summary.get("prior_calibration_tags") or ()),
     }
 
 
@@ -789,14 +824,8 @@ def _advisory_backend(
                     else _verify_candidate_for_repair(*verification_args)
                 )
                 payload = {**payload, "candidate_verification": host_verification}
-            benefit_profile = {}
+            benefit_profile = _assay_benefit_profile(spec)
             if spec is not None:
-                benefit_profile = {
-                    "p_success": spec.assay_p_success,
-                    "immediate_benefit": spec.assay_immediate_benefit,
-                    "review_cost": spec.assay_review_cost,
-                    "task": spec.description,
-                }
                 if (
                     spec.required_task_files
                     or spec.required_task_symbols
@@ -814,6 +843,11 @@ def _advisory_backend(
                 "max_revise_safer_attempts": max_attempts,
                 **benefit_profile,
             }
+            if _assay_prior_mode() == "shipped":
+                # ``advise`` keeps historical defaults for non-assay callers. Explicit None is a
+                # host-only request-builder signal to omit these fields and let production resolve
+                # the shipped prior; it never appears in the model-facing request.
+                advise_kwargs.update({"p_success": None, "review_cost": None})
             if timeout_seconds is not None:
                 remaining_for_assess = timeout_seconds - (time.monotonic() - backend_started)
                 if remaining_for_assess <= 0:

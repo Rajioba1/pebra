@@ -42,6 +42,7 @@ _PATCH_DIR = _CORPUS_DIR / "oracle_patches"
 _CORRECT_PATCH_DIR = _CORPUS_DIR / "correct_fix_patches"
 
 _TRUSTED_RESOLUTION = {"location"}
+_EXPECTED_SHIPPED_PRIOR_TAG = "zod_single_repo_provisional_v1"
 
 # Independent graph-validity floor: a freshly-built index that parsed no C# must NOT pass the graph
 # preflight (self-reported freshness can't catch it). avalonia_template indexes ~700 C# callable nodes;
@@ -601,6 +602,31 @@ def _expected_loss(payload: dict[str, Any]) -> float | None:
     return _finite_number(value)
 
 
+def _revise_safer_route_record(
+    spec: TaskSpec,
+    origin: dict[str, Any],
+    revised: dict[str, Any],
+    *,
+    route: str,
+    gate_name: str,
+) -> dict[str, Any]:
+    prior = revised.get("prior_provenance") or {}
+    tags = prior.get("calibration_tags") or []
+    return {
+        "task_id": spec.task_id,
+        "language": spec.language,
+        "route": route,
+        "decision": revised.get("recommended_decision"),
+        "gate_name": gate_name,
+        "origin_expected_loss": _expected_loss(origin),
+        "revised_expected_loss": _expected_loss(revised),
+        "origin_rau": _finite_number((origin.get("scores") or {}).get("rau")),
+        "revised_rau": _finite_number((revised.get("scores") or {}).get("rau")),
+        "prior_source": prior.get("source"),
+        "calibration_tags": sorted(tag for tag in tags if isinstance(tag, str)),
+    }
+
+
 def _benefit_discrimination_failure(
     spec: TaskSpec, bad: dict[str, Any], fixed: dict[str, Any]
 ) -> str | None:
@@ -684,15 +710,18 @@ def _live_revise_safer_assess(
     target = _single_patch_target(proposed_patch) or (
         spec.expected_edit_scope[0] if spec.expected_edit_scope else ""
     )
+    benefit_profile = run_pair._assay_benefit_profile(spec)  # noqa: SLF001 - shared run policy
+    if run_pair._assay_prior_mode() == "shipped":  # noqa: SLF001 - shared run policy
+        # _build_request has explicit-mode defaults. Pass None rather than omitting these keys so
+        # preflight exercises the same shipped-prior path as the live subject advisory.
+        benefit_profile = {**benefit_profile, "p_success": None, "review_cost": None}
     request = advisory_check_real._build_request({  # noqa: SLF001 - shared e2e request builder
         "target_file": target,
         "change_summary": spec.description,
         "proposed_patch": proposed_patch,
     }, revise_safer_attempt=revise_safer_attempt,
        max_revise_safer_attempts=max_revise_safer_attempts,
-       p_success=spec.assay_p_success,
-       immediate_benefit=spec.assay_immediate_benefit,
-       review_cost=spec.assay_review_cost)
+       **benefit_profile)
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
         json.dump(request, fh)
         req_path = fh.name
@@ -727,6 +756,21 @@ def _live_revise_safer_assess(
             Path(verification_path).unlink(missing_ok=True)
         if obligations_path is not None:
             Path(obligations_path).unlink(missing_ok=True)
+
+
+def _shipped_prior_failure(payload: dict[str, Any]) -> str | None:
+    if os.environ.get("E2E_AB_PRIOR_MODE", "explicit").strip().lower() != "shipped":
+        return None
+    provenance = payload.get("prior_provenance")
+    if not isinstance(provenance, dict) or provenance.get("source") != "shipped":
+        return "shipped-prior mode did not report shipped prior provenance"
+    tags = provenance.get("calibration_tags")
+    if not isinstance(tags, list) or _EXPECTED_SHIPPED_PRIOR_TAG not in tags:
+        return (
+            "shipped-prior mode reported unexpected calibration tags "
+            f"{tags!r}; expected {_EXPECTED_SHIPPED_PRIOR_TAG!r}"
+        )
+    return None
 
 
 def _live_candidate_verification(repo_path: Path, spec: TaskSpec, patch_text: str) -> dict[str, Any]:
@@ -768,8 +812,9 @@ def run_revise_safer_calibration(
 
     For each risky task with a reference correct-fix patch, the intentional bad route must produce
     ``revise_safer``. Legacy tasks then require the reference route to be non-blocking and lower
-    expected loss. JS/TS graph-repair tasks instead require the reference route to pass host-produced
-    candidate verification and proceed at attempt 1 with cap 2, which is the live repair-arm mechanism.
+    expected loss. JS/TS graph-repair tasks require host-produced candidate verification and an exact
+    graph-continuity refinement. A shipped provisional prior may conservatively end at ``ask_human``;
+    that proves the guide/escalation route, not autonomous completion, so the patch is not applied.
     """
     live_boundaries = assess_fn is None
     assess_fn = assess_fn or _live_revise_safer_assess
@@ -785,6 +830,7 @@ def run_revise_safer_calibration(
 
         post_edit_verify_fn = cli_harness.verify
     failures: list[str] = []
+    route_records: list[dict[str, Any]] = []
     risky_seen = 0
     checked = 0
     for spec in corpus:
@@ -902,6 +948,15 @@ def run_revise_safer_calibration(
                     revise_safer_attempt=0,
                 )
             fixed_decision = fixed.get("recommended_decision")
+            conservative_shipped_route = (
+                os.environ.get("E2E_AB_PRIOR_MODE", "explicit").strip().lower() == "shipped"
+                and spec.requires_graph_refinement_route
+                and fixed_decision == "ask_human"
+            )
+            prior_failure = _shipped_prior_failure(fixed)
+            if prior_failure:
+                failures.append(f"{spec.task_id}: {prior_failure}")
+                continue
             benefit_failure = _benefit_discrimination_failure(spec, bad, fixed)
             if benefit_failure:
                 failures.append(benefit_failure)
@@ -921,8 +976,13 @@ def run_revise_safer_calibration(
                         f"{spec.task_id}: natural safe route did not lower expected_loss "
                         f"({fixed_loss} >= {bad_loss})"
                     )
+                else:
+                    route_records.append(_revise_safer_route_record(
+                        spec, bad, fixed, route="natural_safe_route",
+                        gate_name="revision_risk_benefit_improved",
+                    ))
                 continue
-            if fixed_decision in _BLOCKING_DECISIONS:
+            if fixed_decision in _BLOCKING_DECISIONS and not conservative_shipped_route:
                 failures.append(
                     f"{spec.task_id}: reference route remained blocked ({fixed_decision!r})"
                 )
@@ -967,6 +1027,21 @@ def run_revise_safer_calibration(
                     bad_loss = _expected_loss(bad)
                     fixed_loss = _expected_loss(fixed)
                     fixed_rau = (fixed.get("scores") or {}).get("rau")
+                    expected_revision_gate = (
+                        "revision_risk_still_outweighs_benefit"
+                        if conservative_shipped_route
+                        else "revision_risk_benefit_improved"
+                    )
+                    route_rau_is_valid = (
+                        isinstance(fixed_rau, (int, float))
+                        and not isinstance(fixed_rau, bool)
+                        and math.isfinite(float(fixed_rau))
+                        and (
+                            float(fixed_rau) < 0.0
+                            if conservative_shipped_route
+                            else float(fixed_rau) >= 0.0
+                        )
+                    )
                     if not (
                         refinement.get("status") == "available"
                         and refinement.get("selected") is True
@@ -974,19 +1049,20 @@ def run_revise_safer_calibration(
                         and len(continuity_updates) == 1
                         and set(continuity_facts[0]["owner_node_ids"])
                         == set(continuity_updates[0]["owner_node_ids"])
-                        and "revision_risk_benefit_improved" in gate_names
+                        and expected_revision_gate in gate_names
                         and bad_loss is not None
                         and fixed_loss is not None
                         and fixed_loss < bad_loss
-                        and isinstance(fixed_rau, (int, float))
-                        and not isinstance(fixed_rau, bool)
-                        and float(fixed_rau) >= 0.0
+                        and route_rau_is_valid
                     ):
                         failures.append(
                             f"{spec.task_id}: reference did not prove the graph refinement route"
                         )
                         continue
-                if not any(g.get("name") == "candidate_verification_passed" for g in gates):
+                if (
+                    not conservative_shipped_route
+                    and not any(g.get("name") == "candidate_verification_passed" for g in gates)
+                ):
                     failures.append(
                         f"{spec.task_id}: verified reference route did not prove candidate "
                         "verification gate 7"
@@ -1001,10 +1077,21 @@ def run_revise_safer_calibration(
                     reference_gate = gate_check_fn(
                         reference_event, db=reference_db, consult_only=True
                     )
-                    if reference_gate.get("permission") != "allow":
+                    expected_permission = "deny" if conservative_shipped_route else "allow"
+                    expected_tier = (
+                        "consulted_review_unavailable" if conservative_shipped_route else None
+                    )
+                    if (
+                        reference_gate.get("permission") != expected_permission
+                        or (
+                            expected_tier is not None
+                            and reference_gate.get("tier") != expected_tier
+                        )
+                    ):
                         failures.append(
-                            f"{spec.task_id}: assessed reference candidate was not allowed by "
-                            f"the real gate ({reference_gate.get('tier')!r})"
+                            f"{spec.task_id}: assessed reference candidate did not produce the "
+                            f"expected {expected_permission!r} gate result "
+                            f"({reference_gate.get('tier')!r})"
                         )
                         continue
                     mismatch_gate = gate_check_fn(
@@ -1038,7 +1125,11 @@ def run_revise_safer_calibration(
                             f"{spec.task_id}: pending restriction allowed an out-of-envelope write"
                         )
                         continue
-                if apply_patch_fn is not None and post_edit_verify_fn is not None:
+                if (
+                    not conservative_shipped_route
+                    and apply_patch_fn is not None
+                    and post_edit_verify_fn is not None
+                ):
                     assessment_id = fixed.get("assessment_id")
                     if not isinstance(assessment_id, str) or not assessment_id:
                         failures.append(
@@ -1059,6 +1150,22 @@ def run_revise_safer_calibration(
                             f"{spec.task_id}: applied reference failed real post-edit verify "
                             f"({verify_payload.get('pre_commit_decision')!r})"
                         )
+                        continue
+                route_records.append(_revise_safer_route_record(
+                    spec,
+                    bad,
+                    fixed,
+                    route=(
+                        "graph_proven_conservative_ask_human"
+                        if conservative_shipped_route
+                        else "graph_refined_autonomous_proceed"
+                    ),
+                    gate_name=(
+                        "revision_risk_still_outweighs_benefit"
+                        if conservative_shipped_route
+                        else "revision_risk_benefit_improved"
+                    ),
+                ))
                 continue
             bad_loss = _expected_loss(bad)
             fixed_loss = _expected_loss(fixed)
@@ -1069,11 +1176,23 @@ def run_revise_safer_calibration(
                     f"{spec.task_id}: reference route did not lower expected_loss "
                     f"({fixed_loss} >= {bad_loss})"
                 )
+            else:
+                route_records.append(_revise_safer_route_record(
+                    spec, bad, fixed, route="reference_safe_route",
+                    gate_name="candidate_verification_passed",
+                ))
         except PreflightError as exc:
             failures.append(f"{spec.task_id}: {exc.args[0] if exc.args else exc}")
         except Exception as exc:  # noqa: BLE001 - infra error recorded with the task id
             failures.append(f"{spec.task_id}: infrastructure error: {type(exc).__name__}: {exc}")
     if risky_seen and checked == 0:
         failures.append("revise-safer calibration validated zero risky patch pairs")
+    try:
+        run_artifacts.atomic_write_json(
+            out_dir / "preflight" / "revise_safer_calibration.json",
+            {"schema_version": 1, "routes": route_records},
+        )
+    except OSError as exc:
+        failures.append(f"could not persist revise-safer calibration artifact: {exc}")
     if failures:
         raise PreflightError("revise-safer calibration failed:\n" + "\n".join(failures))

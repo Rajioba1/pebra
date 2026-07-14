@@ -435,6 +435,70 @@ def test_calibration_summary_captures_generic_scores_without_graph_refinement():
     }
 
 
+def test_shipped_prior_profile_omits_explicit_priors_but_keeps_task_benefit(monkeypatch):
+    spec = TaskSpec(
+        "JS4", "Rename helper", ("a.ts",), "risky", ("a.ts",), "test_failure", False,
+        assay_p_success=0.85,
+        assay_immediate_benefit=0.65,
+        assay_review_cost=0.05,
+    )
+    monkeypatch.setenv("E2E_AB_PRIOR_MODE", "shipped")
+
+    profile = run_pair._assay_benefit_profile(spec)
+
+    assert profile == {"immediate_benefit": 0.65, "task": "Rename helper"}
+
+
+def test_explicit_prior_profile_preserves_existing_assay_behavior(monkeypatch):
+    spec = TaskSpec(
+        "JS4", "Rename helper", ("a.ts",), "risky", ("a.ts",), "test_failure", False,
+        assay_p_success=0.85,
+        assay_immediate_benefit=0.65,
+        assay_review_cost=0.05,
+    )
+    monkeypatch.delenv("E2E_AB_PRIOR_MODE", raising=False)
+
+    profile = run_pair._assay_benefit_profile(spec)
+
+    assert profile == {
+        "p_success": 0.85,
+        "immediate_benefit": 0.65,
+        "review_cost": 0.05,
+        "task": "Rename helper",
+    }
+
+
+def test_unknown_prior_mode_fails_closed(monkeypatch):
+    monkeypatch.setenv("E2E_AB_PRIOR_MODE", "magic")
+
+    with pytest.raises(run_pair.RunPairError, match="E2E_AB_PRIOR_MODE"):
+        run_pair._assay_benefit_profile(None)
+
+
+def test_calibration_summary_captures_host_only_prior_provenance():
+    result = SimpleNamespace(raw_payload={
+        "recommended_decision": "proceed",
+        "scores": {
+            "expected_loss": 0.12,
+            "benefit": 0.5,
+            "expected_utility": 0.38,
+            "utility_sd": 0.08,
+            "rau": 0.30,
+            "effective_threshold": 0.20,
+            "calibration_lanes": {"context": {"language": "typescript", "language_tier": "full"}},
+        },
+        "prior_provenance": {
+            "source": "shipped",
+            "calibration_tags": ["zod_single_repo_provisional_v1"],
+        },
+    })
+
+    summary = run_pair._assessment_calibration_summary(result, "asm_9")
+
+    assert summary["prior_source"] == "shipped"
+    assert summary["prior_calibration_tags"] == ["zod_single_repo_provisional_v1"]
+
+
 def test_calibration_fields_bind_applied_or_restrictive_terminal_assessment():
     telemetry = run_pair.ArmTelemetry(
         last_assessment_id="asm_restrict",
@@ -444,6 +508,8 @@ def test_calibration_fields_bind_applied_or_restrictive_terminal_assessment():
                 "expected_loss": 0.08, "benefit": 0.65,
                 "expected_utility": 0.42, "utility_sd": 0.15, "rau": 0.22,
                 "effective_threshold": 0.20,
+                "prior_source": "shipped",
+                "prior_calibration_tags": ["zod_single_repo_provisional_v1"],
             },
             "asm_restrict": {
                 "assessment_id": "asm_restrict", "decision": "ask_human",
@@ -467,6 +533,8 @@ def test_calibration_fields_bind_applied_or_restrictive_terminal_assessment():
     assert applied["calibration_join_valid"] is True
     assert applied["calibration_label_scope"] == "candidate_observed"
     assert applied["predicted_expected_loss"] == 0.08
+    assert applied["prior_source"] == "shipped"
+    assert applied["prior_calibration_tags"] == ("zod_single_repo_provisional_v1",)
 
     telemetry.candidate_lineage_invalidated = True
     invalidated = run_pair._calibration_result_fields(telemetry)
@@ -1072,6 +1140,28 @@ def test_real_advisory_backend_threads_task_benefit_profile(monkeypatch, tmp_pat
     assert seen["p_success"] == pytest.approx(0.85)
     assert seen["immediate_benefit"] == pytest.approx(0.65)
     assert seen["review_cost"] == pytest.approx(0.05)
+
+
+def test_real_advisory_backend_omits_priors_in_shipped_mode(monkeypatch, tmp_path):
+    seen = {}
+    spec = TaskSpec(
+        "JS4", "d", ("a.ts",), "risky", ("a.ts",), "test_failure", False,
+        assay_p_success=0.85, assay_immediate_benefit=0.65, assay_review_cost=0.05,
+    )
+    monkeypatch.setenv("E2E_AB_PRIOR_MODE", "shipped")
+
+    def _advise(payload, **kwargs):
+        seen.update(kwargs)
+        return {"recommended_decision": "proceed", "risk_level": "low", "advisory": "x", "detail": {}}
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    backend = run_pair._advisory_backend("pebra", tmp_path, tmp_path / "p.db", spec=spec)
+
+    backend({"target_file": "a.ts", "proposed_patch": "diff", "change_summary": "x"})
+
+    assert seen["p_success"] is None
+    assert seen["review_cost"] is None
+    assert seen["immediate_benefit"] == pytest.approx(0.65)
 
 
 @pytest.mark.parametrize(

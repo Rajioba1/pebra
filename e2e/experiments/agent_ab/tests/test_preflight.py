@@ -6,6 +6,7 @@ import dataclasses
 import json
 import subprocess
 import os
+from pathlib import Path
 import stat
 from types import SimpleNamespace
 
@@ -59,6 +60,47 @@ def test_live_revise_safer_assess_requests_host_refinement_metadata(
     )
 
     assert seen["include_host_metadata"] is True
+
+
+def test_live_revise_safer_assess_uses_shipped_prior_profile(monkeypatch, tmp_path) -> None:
+    from e2e.utils import cli_harness
+
+    captured: dict[str, object] = {}
+
+    def _assess(request_path, **_kwargs):
+        captured.update(json.loads(Path(request_path).read_text(encoding="utf-8")))
+        return {"recommended_decision": "proceed"}
+
+    monkeypatch.setenv("E2E_AB_PRIOR_MODE", "shipped")
+    monkeypatch.setattr(cli_harness, "assess", _assess)
+
+    preflight._live_revise_safer_assess(
+        tmp_path,
+        _JS_TRAP,
+        "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n",
+        tmp_path / "pebra.db",
+    )
+
+    evidence = captured["evidence"]
+    assert evidence["immediate_benefit"] == _JS_TRAP.assay_immediate_benefit
+    assert "p_success" not in evidence
+    assert evidence["edit_confidence_factors"]["p_success"] == 0.5
+    assert "review_cost" not in evidence
+
+
+def test_shipped_prior_preflight_requires_the_reviewed_tag(monkeypatch) -> None:
+    monkeypatch.setenv("E2E_AB_PRIOR_MODE", "shipped")
+
+    assert "did not report" in preflight._shipped_prior_failure({})
+    assert "unexpected" in preflight._shipped_prior_failure({
+        "prior_provenance": {"source": "shipped", "calibration_tags": ["other"]}
+    })
+    assert preflight._shipped_prior_failure({
+        "prior_provenance": {
+            "source": "shipped",
+            "calibration_tags": ["zod_single_repo_provisional_v1"],
+        }
+    }) is None
 
 
 # ---- oracle-outcome assertions ----
@@ -1240,6 +1282,113 @@ def test_revise_safer_calibration_accepts_graph_plus_host_verified_route(
         patch_dir=patch_dir,
         correct_patch_dir=correct_dir,
     )
+
+def test_shipped_prior_calibration_accepts_proven_conservative_graph_route(
+    tmp_path, monkeypatch
+):
+    patch_dir = tmp_path / "patches"
+    correct_dir = tmp_path / "correct"
+    patch_dir.mkdir()
+    correct_dir.mkdir()
+    (patch_dir / "JS4.patch").write_text("bad route", encoding="utf-8")
+    (correct_dir / "JS4.patch").write_text("reference route", encoding="utf-8")
+    spec = dataclasses.replace(
+        _JS_TRAP,
+        task_id="JS4",
+        requires_graph_refinement_route=True,
+    )
+    monkeypatch.setenv("E2E_AB_PRIOR_MODE", "shipped")
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda _external, dest: dest)
+
+    def _assess(_repo, _spec, patch, _db, **_kwargs):
+        if patch == "bad route":
+            return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
+        return {
+            "assessment_id": "asm_reference",
+            "recommended_decision": "ask_human",
+            "prior_provenance": {
+                "source": "shipped",
+                "calibration_tags": ["zod_single_repo_provisional_v1"],
+            },
+            "scores": {
+                "expected_loss": 0.1,
+                "benefit": 0.5,
+                "rau": -0.05,
+                "risk_probability_updates": [{
+                    "fact_kind": "exported_binding_continuity",
+                    "provider": "materialized_codegraph",
+                    "event": "public_api_break",
+                    "risk_source": "graph_modify_risk",
+                    "owner_node_ids": ["owner-1"],
+                    "original_probability": 0.45,
+                    "revised_probability": 0.1575,
+                    "probability_floor": 0.05,
+                }],
+            },
+            "graph_refinement": {
+                "status": "available",
+                "selected": True,
+                "evidence": {"facts": [{
+                    "fact_kind": "exported_binding_continuity",
+                    "event": "public_api_break",
+                    "risk_source": "graph_modify_risk",
+                    "owner_node_ids": ["owner-1"],
+                }]},
+            },
+            "gates_fired": [
+                {"name": "revision_risk_still_outweighs_benefit"},
+            ],
+        }
+
+    def _conservative_gate(*_args, **_kwargs):
+        return {"permission": "deny", "tier": "consulted_review_unavailable"}
+
+    preflight.run_revise_safer_calibration(
+        [spec], None, out_dir=tmp_path,
+        assess_fn=_assess,
+        candidate_verification_fn=lambda _repo, _spec, patch: {
+            "status": "failed" if patch == "bad route" else "passed",
+        },
+        gate_check_fn=_conservative_gate,
+        setup_graph_fn=lambda _repo: None,
+        patch_dir=patch_dir,
+        correct_patch_dir=correct_dir,
+    )
+
+    artifact = json.loads(
+        (tmp_path / "preflight" / "revise_safer_calibration.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert artifact == {
+        "schema_version": 1,
+        "routes": [{
+            "task_id": "JS4",
+            "language": "typescript",
+            "route": "graph_proven_conservative_ask_human",
+            "decision": "ask_human",
+            "gate_name": "revision_risk_still_outweighs_benefit",
+            "origin_expected_loss": 0.8,
+            "revised_expected_loss": 0.1,
+            "origin_rau": None,
+            "revised_rau": -0.05,
+            "prior_source": "shipped",
+            "calibration_tags": ["zod_single_repo_provisional_v1"],
+        }],
+    }
+
+    monkeypatch.delenv("E2E_AB_PRIOR_MODE")
+    with pytest.raises(preflight.PreflightError, match="reference route remained blocked"):
+        preflight.run_revise_safer_calibration(
+            [spec], None, out_dir=tmp_path,
+            assess_fn=_assess,
+            candidate_verification_fn=lambda _repo, _spec, patch: {
+                "status": "failed" if patch == "bad route" else "passed",
+            },
+            setup_graph_fn=lambda _repo: None,
+            patch_dir=patch_dir,
+            correct_patch_dir=correct_dir,
+        )
 
 
 def test_revise_safer_calibration_requires_nonzero_declared_public_tests(

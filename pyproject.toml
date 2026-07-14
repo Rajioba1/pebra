@@ -64,6 +64,7 @@ agent-ab = ["anthropic>=0.30"]
 
 [tool.setuptools.packages.find]
 include = ["pebra*"]
+exclude = ["benchmarks*", "docs*", "e2e*", "tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,11 +1,11 @@
 {
   "label": "learned",
   "metrics": {
-    "brier": 0.1345,
+    "brier": 0.2465,
     "ece": 0.01,
     "false_block_rate_c0_c2": 0.0,
     "false_proceed_rate": 1.0,
-    "log_loss": 0.44005509836
+    "log_loss": 0.686132106759
   },
   "n": 50,
   "schema_version": 1

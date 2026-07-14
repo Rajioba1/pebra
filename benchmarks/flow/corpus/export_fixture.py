@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pebra.core.constants import MIN_CALIBRATION_SAMPLES
+from pebra.core import promotion_evaluator as pe
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 REPO_ID = "bench-flow"
@@ -56,8 +57,8 @@ def build_corpus(
     n_promote: int = 120,
     n_score: int = 50,
     *,
-    success_rate: float = 0.85,
-    genesis_p: float = 0.70,
+    success_rate: float = 0.55,
+    genesis_p: float = 0.35,
     seed: int = 42,
 ) -> Corpus:
     rng = random.Random(seed)
@@ -106,6 +107,33 @@ def validate_coverage(corpus: Corpus) -> None:
         raise RuntimeError(
             f"promote empirical rate {rate:.3f} does not clear genesis_p {corpus.genesis_p} by >=0.05; "
             "the learned fact could not improve the score track"
+        )
+    predicted_by_id = {row["case_id"]: row for row in corpus.predictions}
+    gate = pe.evaluate_promotion_gate(
+        pe.CandidateFact(
+            target_name="p_success",
+            target_type="risk_binary",
+            scope_kind="global",
+            scope_value="",
+            value=rate,
+            sample_size=len(promote),
+        ),
+        [
+            {
+                "actual_outcome": int(bool(by_id[case["case_id"]])),
+                "predicted_probability": float(
+                    predicted_by_id[case["case_id"]]["predicted_value"]
+                ),
+                "features": predicted_by_id[case["case_id"]].get("features") or {},
+            }
+            for case in promote
+        ],
+        pe.PromotionConfig(),
+    )
+    if not gate.promoted:
+        raise RuntimeError(
+            "promote partition does not pass the production promotion gate: "
+            f"{gate.veto_reason}"
         )
 
 

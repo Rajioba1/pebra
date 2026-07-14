@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from pebra.core.constants import Decision
 
 from benchmarks.continuity import warm
@@ -17,6 +19,8 @@ def test_safe_evidence_improves_rau_without_changing_expected_loss() -> None:
     assert local.expected_loss == cold.expected_loss
     assert shipped.rau > cold.rau
     assert local.rau > cold.rau
+    assert shipped.review_cost == cold.review_cost
+    assert shipped.review_cost_variance == cold.review_cost_variance
     assert shipped.prior_source == "shipped"
     assert local.prior_source == "local_learned"
 
@@ -47,3 +51,12 @@ def test_probe_is_explicitly_not_calibration_evidence() -> None:
     assert payload["schema_version"] == "continuity-warm-probe-v1"
     assert payload["evidence_class"] == "synthetic_policy_probe"
     assert payload["calibration_eligible"] is False
+
+
+def test_main_can_preserve_the_cold_baseline_artifact(tmp_path) -> None:
+    output = tmp_path / "warm.json"
+
+    assert warm.main(["--output", str(output)]) == 0
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload == warm.to_payload(warm.run_probe())

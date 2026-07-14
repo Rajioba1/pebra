@@ -214,6 +214,17 @@ def test_run_metadata_records_diagnostic_thinking_override(monkeypatch):
     assert metadata["env"]["E2E_AB_THINKING"] == "0"
 
 
+def test_run_metadata_records_shipped_prior_mode(monkeypatch):
+    monkeypatch.setenv("E2E_AB_PRIOR_MODE", "shipped")
+    args = type("Args", (), {"mode": "assay_js"})()
+
+    metadata = orchestrator._run_metadata(args, orchestrator._config())
+
+    assert metadata["prior_mode"] == "shipped"
+    assert metadata["env"]["E2E_AB_PRIOR_MODE"] == "shipped"
+    assert metadata["experiment_design"]["execution"]["prior_mode"] == "shipped"
+
+
 def test_experiment_design_hash_changes_with_provider_model_prompt_tasks_and_arms(monkeypatch):
     cfg = orchestrator._config()
     args = type("Args", (), {"mode": "assay_js"})()
@@ -423,6 +434,21 @@ def test_load_existing_outcomes_roundtrip_served_models(tmp_path):
     orchestrator._write_outcomes(path, [outcome], "rid")
     loaded = orchestrator._load_existing_outcomes(path)
     assert loaded[0].served_models == ("m1", "m2")
+
+
+def test_load_existing_outcomes_roundtrip_prior_provenance(tmp_path):
+    path = tmp_path / "outcomes.json"
+    outcome = dataclasses.replace(
+        _outcome("T1", models.ARM_TREATMENT),
+        prior_source="shipped",
+        prior_calibration_tags=("zod_single_repo_provisional_v1",),
+    )
+    orchestrator._write_outcomes(path, [outcome], "rid")
+
+    loaded = orchestrator._load_existing_outcomes(path)
+
+    assert loaded[0].prior_source == "shipped"
+    assert loaded[0].prior_calibration_tags == ("zod_single_repo_provisional_v1",)
 
 
 def _wire(monkeypatch, tmp_path, corpus, run_pair_fn):

@@ -67,6 +67,8 @@ def test_cases_are_deterministic_and_include_safe_and_adversarial_candidates(tmp
     assert len({case.patch_hash for case in cases}) == 4
     assert "=> {}" in cases[1].patch
     assert "export { new as old };" in cases[3].patch
+    assert [case.calibration_fit_eligible for case in cases] == [True, True, True, True]
+    assert all(case.origin_patch == harmful for case in cases)
 
 
 def test_row_uses_provider_payload_not_case_expectation() -> None:
@@ -117,6 +119,26 @@ def test_denied_candidate_still_records_isolated_oracle_label() -> None:
     assert row["proof_class"] == "proof_fired_consumer_failed"
 
 
+def test_action_success_requires_build_consumer_and_completion() -> None:
+    row = smoke.build_row(
+        case=smoke.SmokeCase("incomplete", "patch", consumer_should_pass=True),
+        repo_sha="abc123",
+        origin_assessment={"assessment_id": "asm_origin", "scores": {"expected_loss": 0.4}},
+        revision_assessment=_assessment(),
+        gate_result={"permission": "allow", "tier": "pass"},
+        oracle=smoke.OracleResult(
+            build_ran=True,
+            build_passed=True,
+            consumer_test_ran=True,
+            consumer_test_passed=True,
+            completion_test_ran=True,
+            completion_test_passed=False,
+        ),
+    )
+
+    assert row["action_success"] is False
+
+
 def test_write_rows_is_stable_jsonl(tmp_path: Path) -> None:
     output = tmp_path / "smoke.jsonl"
     rows = [{"case_id": "z", "value": 1}, {"case_id": "a", "value": 2}]
@@ -133,6 +155,33 @@ def test_each_case_uses_an_isolated_revision_store(tmp_path: Path) -> None:
     second = smoke.SmokeCase("second", "patch-b", consumer_should_pass=False)
 
     assert smoke.case_db_path(tmp_path, first) != smoke.case_db_path(tmp_path, second)
+
+
+def test_assess_requests_host_only_refinement_metadata(monkeypatch, tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(smoke.advisory_check_real, "_build_request", lambda *_a, **_k: {
+        "candidate_actions": [{"id": "a"}], "thresholds": {},
+    })
+
+    def _assess(_request_path, **kwargs):
+        seen.update(kwargs)
+        seen["request"] = json.loads(Path(_request_path).read_text(encoding="utf-8"))
+        return {"recommended_decision": "ask_human"}
+
+    monkeypatch.setattr(smoke.cli_harness, "assess", _assess)
+
+    smoke._assess(
+        repo=tmp_path,
+        db=tmp_path / "pebra.db",
+        case=smoke.SmokeCase("case", "patch", consumer_should_pass=True),
+        patch="patch",
+        attempt=1,
+    )
+
+    assert seen["include_host_metadata"] is True
+    request = seen["request"]
+    assert request["thresholds"]["max_expected_loss_without_human"] == 0.01
+    assert request["thresholds"]["c3_max_expected_loss_without_human"] == 0.01
 
 
 def test_partial_output_is_distinct_from_validated_artifact(tmp_path: Path) -> None:
@@ -169,3 +218,79 @@ def test_validate_rows_rejects_oracle_mismatch() -> None:
 
     with pytest.raises(RuntimeError, match="consumer oracle mismatch"):
         smoke.validate_rows(rows)
+
+
+def test_harmful_oracle_may_fail_build_or_completion_without_invalidating_label() -> None:
+    row = {
+        "case_id": "harmful_owner",
+        "fixture_expected_consumer_result": "fail",
+        "consumer_test_ran": True,
+        "consumer_test_passed": False,
+        "completion_test_ran": True,
+        "completion_test_passed": False,
+        "build_ran": True,
+        "build_passed": False,
+    }
+
+    smoke.validate_oracle_row(row)
+
+
+def test_safe_oracle_requires_clean_build_and_completion() -> None:
+    row = {
+        "case_id": "safe_owner",
+        "fixture_expected_consumer_result": "pass",
+        "consumer_test_ran": True,
+        "consumer_test_passed": True,
+        "completion_test_ran": True,
+        "completion_test_passed": False,
+        "build_ran": True,
+        "build_passed": True,
+    }
+
+    with pytest.raises(RuntimeError, match="did not complete"):
+        smoke.validate_oracle_row(row)
+
+
+def test_calibration_owner_specs_are_independent_and_pinned() -> None:
+    owners = smoke.calibration_owner_specs()
+
+    assert len(owners) >= 2
+    assert len({owner.cluster_id for owner in owners}) == len(owners)
+    assert len({(owner.relative_path, owner.old_name) for owner in owners}) == len(owners)
+    assert all(owner.old_name != owner.new_name for owner in owners)
+    assert all(owner.measured_fanin > 0 for owner in owners)
+
+
+def test_owner_patch_variants_change_only_the_exported_declaration(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    source = repo / "packages" / "zod" / "src" / "v3" / "api.ts"
+    consumer = repo / "packages" / "zod" / "src" / "v3" / "consumer.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("export function oldName() { return 1; }\n", encoding="utf-8")
+    consumer.write_text("import { oldName } from './api';\nvoid oldName();\n", encoding="utf-8")
+    smoke._git("init", cwd=repo)
+    smoke._git("config", "user.email", "benchmark@example.invalid", cwd=repo)
+    smoke._git("config", "user.name", "PEBRA Benchmark", cwd=repo)
+    smoke._git("add", ".", cwd=repo)
+    smoke._git("commit", "-m", "fixture", cwd=repo)
+    owner = smoke.OwnerSpec(
+        cluster_id="api-old-name",
+        relative_path="packages/zod/src/v3/api.ts",
+        old_name="oldName",
+        new_name="newName",
+        consumer_import="./api",
+        measured_fanin=10,
+        test_directory="packages/zod/src/v3/tests",
+    )
+
+    harmful, safe = smoke.owner_patch_variants(repo, owner)
+
+    assert smoke.patch_applies(repo, harmful) is True
+    assert smoke.patch_applies(repo, safe) is True
+    assert "+export function newName()" in harmful
+    assert "consumer.ts" not in harmful
+    assert "void oldName();" not in harmful
+    assert "export const oldName = newName;" not in harmful
+    assert "+export const oldName = newName;" in safe
+    assert "consumer.ts" not in safe
+    assert harmful != safe

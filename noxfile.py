@@ -73,7 +73,7 @@ def bench_flow_regen(session: nox.Session) -> None:
 
 @nox.session(name="bench-continuity-smoke")
 def bench_continuity_smoke(session: nox.Session) -> None:
-    """Unpaid real-provider smoke over pinned Zod candidates plus isolated consumer oracles."""
+    """Unpaid multi-owner Zod evidence capture plus the provisional continuity-prior fit."""
     session.install("-e", ".")
     session.install("pytest")
     session.run("pytest", "benchmarks/continuity", "-q")
@@ -84,15 +84,24 @@ def bench_continuity_smoke(session: nox.Session) -> None:
         "python", "-m", "benchmarks.continuity.smoke", "--repo", repo,
         "--output", "e2e/out/continuity/smoke.jsonl",
     )
+    session.run(
+        "python", "-m", "benchmarks.continuity.fit",
+        "--input", "e2e/out/continuity/smoke.jsonl",
+        "--output", "e2e/out/continuity/fit.json",
+        "--verify-frozen",
+    )
 
 
 @nox.session(name="bench-continuity-warm")
 def bench_continuity_warm(session: nox.Session) -> None:
     """Unpaid pure-core check for cold, shipped, and repository-local prior behavior."""
-    session.install("-e", ".")
+    session.install("-e", ".", "--no-deps")
     session.install("pytest")
     session.run("pytest", "benchmarks/continuity/test_warm.py", "-q")
-    session.run("python", "-m", "benchmarks.continuity.warm")
+    session.run(
+        "python", "-m", "benchmarks.continuity.warm",
+        "--output", "e2e/out/continuity/warm.json",
+    )
 
 
 @nox.session(name="e2e")

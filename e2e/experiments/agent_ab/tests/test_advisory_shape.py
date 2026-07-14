@@ -149,6 +149,18 @@ def test_build_request_leaves_maintainability_evidence_open_for_production_measu
     assert "benefit_delta_evidence" not in req["evidence"]
 
 
+def test_build_request_omits_explicit_priors_for_shipped_mode():
+    req = real._build_request({
+        "target_file": "x.ts",
+        "change_summary": "change x",
+        "proposed_patch": "diff --git a/x.ts b/x.ts",
+    }, p_success=None, review_cost=None)
+
+    assert "p_success" not in req["evidence"]
+    assert req["evidence"]["edit_confidence_factors"]["p_success"] == 0.5
+    assert "review_cost" not in req["evidence"]
+
+
 def test_build_request_declares_every_file_in_multifile_patch():
     patch = (
         "diff --git a/src/a.ts b/src/a.ts\n"

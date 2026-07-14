@@ -196,6 +196,8 @@ class SubjectResult:
     predicted_benefit_source_type: str | None = None
     assessment_proof_class: str | None = None
     calibration_lanes: dict[str, Any] = field(default_factory=dict)
+    prior_source: str | None = None
+    prior_calibration_tags: tuple[str, ...] = ()
 
 
 # ---- scored outcome ---------------------------------------------------------------------------
@@ -304,6 +306,8 @@ class RunOutcome:
     predicted_effective_threshold: float | None = None
     predicted_benefit_source_type: str | None = None
     calibration_lanes: dict[str, Any] = field(default_factory=dict)
+    prior_source: str | None = None
+    prior_calibration_tags: tuple[str, ...] = ()
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------

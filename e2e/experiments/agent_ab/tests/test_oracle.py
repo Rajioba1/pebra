@@ -62,6 +62,8 @@ def test_graph_refinement_route_attribution_survives_scoring():
         predicted_rau=0.22,
         predicted_effective_threshold=0.20,
         predicted_benefit_source_type="measured",
+        prior_source="shipped",
+        prior_calibration_tags=("zod_single_repo_provisional_v1",),
     )
 
     out = oracle.score_run(result, RISKY)
@@ -78,6 +80,8 @@ def test_graph_refinement_route_attribution_survives_scoring():
     assert out.calibration_assessment_id == "asm_graph"
     assert out.calibration_join_valid is True
     assert out.calibration_label_scope == "candidate_observed"
+    assert out.prior_source == "shipped"
+    assert out.prior_calibration_tags == ("zod_single_repo_provisional_v1",)
     assert out.predicted_expected_loss == 0.08
     assert out.predicted_benefit == 0.65
 

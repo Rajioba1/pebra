@@ -2,27 +2,37 @@
 
 This module is not a calibration corpus or fit. It exercises the same pure scoring, prior,
 learning-snapshot, and decision functions used by production with synthetic evidence. The probe
-checks two invariants before real priors are shipped: relevant evidence may improve a safe action's
+checks two invariants for the reviewed provisional prior: relevant evidence may improve a safe action's
 risk-adjusted utility, while it must not erase an independent harmful event.
 """
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from pebra.core import assessment_builder, decision_engine, prediction_capture
 from pebra.core.apply_snapshot import SnapshotBundle, SnapshotFact, apply_snapshot
+from pebra.core.calibrated_priors import CALIBRATED_PRIORS
 from pebra.core.constants import (
     COLD_START_VARIANCES,
     LEARNED_VARIANCE_FLOOR_RATIO,
     Decision,
 )
-from pebra.core.models import AssessmentInput, AssessmentRequest, SymbolDiffEvidence
+from pebra.core.language_capability import LanguageCapability
+from pebra.core.models import (
+    AssessmentInput,
+    AssessmentRequest,
+    CandidateAction,
+    CandidateGraphRiskEvidence,
+    ScopedGraphRiskFact,
+    SymbolDiffEvidence,
+)
 from pebra.core.prediction_capture import COST_CONTINUOUS, RISK_BINARY
-from pebra.core.warm_prior import CalibratedPriorCell, apply_warm_prior
-
-_TAG = "synthetic_probe_v1"
+from pebra.core.warm_prior import apply_warm_prior
 
 
 @dataclass(frozen=True)
@@ -36,6 +46,7 @@ class ProbeRow:
     utility_sd: float
     rau: float
     effective_threshold: float
+    review_cost: float
     p_success_variance: float
     p_success_variance_floor: float
     p_success_variance_cap: float
@@ -46,11 +57,19 @@ class ProbeRow:
 
 
 def _input(*, harmful: bool) -> AssessmentInput:
-    request = AssessmentRequest.single_action(
+    patch = (
+        "diff --git a/src/compat.ts b/src/compat.ts\n"
+        "--- a/src/compat.ts\n+++ b/src/compat.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    request = AssessmentRequest(
         task="Apply a bounded compatibility improvement",
-        action_id="a1",
-        label="Update the compatibility path",
-        expected_files=["src/compat.ts"],
+        candidate_actions=[CandidateAction(
+            id="a1",
+            action_type="edit",
+            label="Update the compatibility path",
+            expected_files=["src/compat.ts"],
+            proposed_patch=patch,
+        )],
     )
     event = (
         {"event": "public_api_break", "p_event": 0.50, "elicited_disutility": 0.80}
@@ -85,26 +104,30 @@ def _input(*, harmful: bool) -> AssessmentInput:
         ),
         repo_id="synthetic_probe",
         repo_root="/synthetic/probe",
+        language_capability=LanguageCapability(
+            language="typescript",
+            probe_status="measured",
+            node_count=10,
+            signature_coverage_ratio=1.0,
+            visibility_coverage_ratio=1.0,
+        ),
+        candidate_graph_risk_evidence=CandidateGraphRiskEvidence(
+            status="available",
+            verified_patch_hash=hashlib.sha256(patch.encode("utf-8")).hexdigest(),
+            provider="materialized_codegraph",
+            facts=(ScopedGraphRiskFact(
+                fact_kind="exported_binding_continuity",
+                event="public_api_break",
+                risk_source="graph_modify_risk",
+                owner_node_ids=("owner",),
+                confidence=1.0,
+            ),),
+        ),
     )
 
 
 def _shipped(inp: AssessmentInput) -> AssessmentInput:
-    return apply_warm_prior(
-        inp,
-        (
-            CalibratedPriorCell(
-                calibration_tag=_TAG,
-                sample_size=120,
-                action_type="edit",
-                p_success=0.85,
-                p_success_variance=0.001,
-                p_success_aleatoric_variance=0.003,
-                review_cost=0.05,
-                review_cost_variance=0.001,
-                review_cost_aleatoric_variance=0.001,
-            ),
-        ),
-    )
+    return apply_warm_prior(inp, CALIBRATED_PRIORS)
 
 
 def _local(inp: AssessmentInput) -> AssessmentInput:
@@ -184,6 +207,7 @@ def _row(case_id: str, inp: AssessmentInput) -> ProbeRow:
         utility_sd=float(scores["utility_sd"]),
         rau=float(scores["rau"]),
         effective_threshold=float(scores["effective_threshold"]),
+        review_cost=float(inp.review_cost),
         p_success_variance=float(inp.p_success_variance or p_cap),
         p_success_variance_floor=float(p_target.get("variance_floor", p_cap * LEARNED_VARIANCE_FLOOR_RATIO)),
         p_success_variance_cap=float(p_target.get("variance_cap", p_cap)),
@@ -229,9 +253,20 @@ def to_json(rows: dict[str, ProbeRow]) -> str:
     return json.dumps(to_payload(rows), sort_keys=True, separators=(",", ":"))
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args(argv)
     rows = run_probe()
-    print(json.dumps(to_payload(rows), indent=2, sort_keys=True))
+    payload = to_payload(rows)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 

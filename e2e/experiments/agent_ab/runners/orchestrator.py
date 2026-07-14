@@ -286,6 +286,7 @@ def _experiment_design(
         "execution": {
             "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
             "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
+            "prior_mode": os.environ.get("E2E_AB_PRIOR_MODE", "explicit"),
             "semantic_diff_env": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF"),
             "thinking_env": os.environ.get("E2E_AB_THINKING"),
             "human_approval_policy": os.environ.get(
@@ -346,6 +347,7 @@ def _run_metadata(
         ),
         "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
         "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
+        "prior_mode": os.environ.get("E2E_AB_PRIOR_MODE", "explicit"),
         "human_approval_policy": os.environ.get(
             "E2E_AB_HUMAN_APPROVAL_POLICY", "always_approve"
         ),
@@ -353,6 +355,7 @@ def _run_metadata(
             "E2E_AB_PARALLEL_ARMS": os.environ.get("E2E_AB_PARALLEL_ARMS"),
             "E2E_AB_MAX_WORKERS": os.environ.get("E2E_AB_MAX_WORKERS"),
             "E2E_AB_MODEL": os.environ.get("E2E_AB_MODEL"),
+            "E2E_AB_PRIOR_MODE": os.environ.get("E2E_AB_PRIOR_MODE"),
             "E2E_AB_PROVIDER": os.environ.get("E2E_AB_PROVIDER"),
             "E2E_AB_THINKING": os.environ.get("E2E_AB_THINKING"),
             "E2E_AB_HUMAN_APPROVAL_POLICY": os.environ.get(
@@ -452,6 +455,8 @@ def _outcome_from_dict(d: dict[str, Any]) -> RunOutcome:
         d["blinding_terms"] = tuple(d["blinding_terms"])
     if d.get("served_models") is not None:
         d["served_models"] = tuple(d["served_models"])
+    if d.get("prior_calibration_tags") is not None:
+        d["prior_calibration_tags"] = tuple(d["prior_calibration_tags"])
     if d.get("graph_refinement_fact_kinds") is not None:
         d["graph_refinement_fact_kinds"] = tuple(d["graph_refinement_fact_kinds"])
     if d.get("graph_refinement_risk_probability_updates") is not None:

@@ -185,6 +185,8 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         predicted_effective_threshold=result.predicted_effective_threshold,
         predicted_benefit_source_type=result.predicted_benefit_source_type,
         calibration_lanes=dict(result.calibration_lanes),
+        prior_source=result.prior_source,
+        prior_calibration_tags=result.prior_calibration_tags,
     )
 
 
@@ -278,6 +280,8 @@ def _error_outcome(
         predicted_effective_threshold=result.predicted_effective_threshold,
         predicted_benefit_source_type=result.predicted_benefit_source_type,
         calibration_lanes=dict(result.calibration_lanes),
+        prior_source=result.prior_source,
+        prior_calibration_tags=result.prior_calibration_tags,
     )
 
 

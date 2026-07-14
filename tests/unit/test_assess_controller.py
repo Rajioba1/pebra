@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from pebra.app import assess_controller as ac
+from pebra.core.apply_snapshot import SnapshotBundle, SnapshotFact
 from pebra.core import models as m
 from pebra.core.constants import Decision, RiskMode
 from pebra.core.language_capability import LanguageCapability
@@ -157,6 +158,27 @@ class FakeSnapshotRead:
         assert repo_id == "repo_local_example"
         self.calls += 1
         return None
+
+
+class FakeSnapshotReadWithSuccess:
+    def load_active_snapshot(self, repo_id):
+        assert repo_id == "repo_local_example"
+        return SnapshotBundle(
+            snapshot_id="local",
+            facts=(SnapshotFact(
+                fact_id="local-success",
+                target_type="risk_binary",
+                target_name="p_success",
+                scope_kind="action_type",
+                scope_value="edit",
+                specificity_rank=1,
+                value=0.92,
+                sample_size=20,
+                calibration_method="local_outcome_fit",
+                variance=0.01,
+                aleatoric_variance=0.01,
+            ),),
+        )
 
 
 class FakeCandidateBinding:
@@ -394,6 +416,81 @@ def test_revision_uses_ranked_graph_refinement_and_controller_binds_patch_hash()
         if item["target_name"] == "p_event.public_api_break"
     )
     assert prediction["predicted_value"] < 0.45
+
+
+def test_graph_scoped_shipped_prior_is_applied_after_refinement(monkeypatch) -> None:
+    monkeypatch.setattr(ac, "CALIBRATED_PRIORS", (CalibratedPriorCell(
+        action_type="edit",
+        language_tier="full",
+        graph_fact_kind="exported_binding_continuity",
+        p_success=0.8,
+        p_success_variance=0.02,
+        p_success_aleatoric_variance=0.0,
+        calibration_tag="graph-prior",
+        sample_size=3,
+    ),))
+
+    outcome = ac.assess(
+        _request_with_patch(),
+        thresholds={**_THRESHOLDS, "revise_safer_attempt": 1},
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeRevisionEvidence(),
+        symbol_diff_provider=FakeRevisionSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=FakeRevisionAttemptStore(count=1),
+        graph_risk_refinement_provider=FakeGraphRefinement(),
+        fanin_provider=FakeGraphFanin(),
+        language_capability_provider=FakeFullCapability(),
+    )
+
+    prior = outcome.recommended_result.provenance["prior_provenance"]
+    assert prior["source"] == "shipped"
+    assert prior["calibration_tags"] == ["graph-prior"]
+    p_success = next(
+        row for row in outcome.scored_actions[0].predictions
+        if row["target_name"] == "p_success"
+    )
+    assert p_success["predicted_value"] == pytest.approx(0.8)
+
+
+def test_repository_snapshot_still_overrides_graph_scoped_prior_after_refinement(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(ac, "CALIBRATED_PRIORS", (CalibratedPriorCell(
+        action_type="edit",
+        language_tier="full",
+        graph_fact_kind="exported_binding_continuity",
+        p_success=0.8,
+        p_success_variance=0.02,
+        p_success_aleatoric_variance=0.0,
+        calibration_tag="graph-prior",
+        sample_size=3,
+    ),))
+
+    outcome = ac.assess(
+        _request_with_patch(),
+        thresholds={**_THRESHOLDS, "revise_safer_attempt": 1},
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeRevisionEvidence(),
+        symbol_diff_provider=FakeRevisionSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=FakeRevisionAttemptStore(count=1),
+        snapshot_read_port=FakeSnapshotReadWithSuccess(),
+        graph_risk_refinement_provider=FakeGraphRefinement(),
+        fanin_provider=FakeGraphFanin(),
+        language_capability_provider=FakeFullCapability(),
+    )
+
+    p_success = next(
+        row for row in outcome.scored_actions[0].predictions
+        if row["target_name"] == "p_success"
+    )
+    assert p_success["predicted_value"] == pytest.approx(0.92)
+    assert outcome.recommended_result.provenance["prior_provenance"]["source"] == "local_learned"
 
 
 def test_internal_graph_refinement_is_revision_only() -> None:

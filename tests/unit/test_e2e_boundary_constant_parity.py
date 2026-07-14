@@ -20,8 +20,11 @@ from e2e.experiments.agent_ab.tools.candidate_verifier import (
     candidate_patch_hash as e2e_candidate_patch_hash,
 )
 from e2e.external.utils.compiler_scenario import SEED_N as COMPILER_SEED_N
+from e2e.experiments.agent_ab.tools.advisory_check_real import (
+    _COLD_CONFIDENCE_P_SUCCESS,
+)
 from e2e.utils.learning_scenario import SEED_N as LEARNING_SEED_N
-from pebra.core.constants import MIN_CALIBRATION_SAMPLES
+from pebra.core.constants import COLD_START_PRIORS, MIN_CALIBRATION_SAMPLES
 from pebra.core.decision_engine import candidate_patch_hash as prod_candidate_patch_hash
 
 # Independently-computed sha256 hexdigests (external oracle) of the exact UTF-8 bytes — NOT produced by
@@ -50,3 +53,10 @@ def test_compiler_seed_n_is_the_promotion_tipping_boundary() -> None:
 def test_learning_seed_n_stays_above_the_calibration_floor() -> None:
     # the learning scenario deliberately seeds PAST the promotion floor (already-calibrated regime).
     assert LEARNING_SEED_N >= MIN_CALIBRATION_SAMPLES
+
+
+def test_advisory_cold_confidence_factor_matches_production() -> None:
+    assert (
+        _COLD_CONFIDENCE_P_SUCCESS
+        == COLD_START_PRIORS["edit_confidence_factors"]["p_success"]
+    )

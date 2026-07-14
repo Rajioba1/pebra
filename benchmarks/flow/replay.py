@@ -22,6 +22,7 @@ from pathlib import Path
 from benchmarks.flow import scorecard as sc
 from benchmarks.flow.corpus import export_fixture as corpus_mod
 from pebra.core import learning_eval as le
+from pebra.core import outcome_labels
 from pebra.core.apply_snapshot import apply_snapshot
 from pebra.core.models import AssessmentInput, AssessmentRequest
 
@@ -76,7 +77,14 @@ def _seed_case(store, learning_port, case: dict, pred: dict, outcome: dict) -> s
             "features": pred["features"],
         }],
     )
-    store.record_outcome(asm, outcome["terminal_status"], {"actual_success": bool(outcome["actual_success"])})
+    store.record_outcome(
+        asm,
+        outcome["terminal_status"],
+        {
+            "actual_success": bool(outcome["actual_success"]),
+            outcome_labels.LABEL_SOURCE_KEY: "host",
+        },
+    )
     lc.measure_learning(asm, store=store, learning_port=learning_port)
     return asm
 

@@ -30,6 +30,7 @@ _THRESHOLDS = {
     "revise_safer_enabled": True, "max_revise_safer_attempts": 1,
     "codegraph_semantic_diff_enabled": 1.0,
 }
+_COLD_CONFIDENCE_P_SUCCESS = 0.50
 
 
 class AdvisoryOutput(dict[str, Any]):
@@ -49,7 +50,8 @@ class AdvisoryOutput(dict[str, Any]):
 
 def _build_request(
     payload: dict[str, Any], *, revise_safer_attempt: int = 0, max_revise_safer_attempts: int = 1,
-    p_success: float = 0.75, immediate_benefit: float = 0.5, review_cost: float = 0.1,
+    p_success: float | None = 0.75, immediate_benefit: float = 0.5,
+    review_cost: float | None = 0.1,
     task: str | None = None,
 ) -> dict[str, Any]:
     target = payload.get("target_file", "")
@@ -66,14 +68,22 @@ def _build_request(
         # is unreachable, making candidate verification dead code. Plain PEBRA keeps the default 1.
         "max_revise_safer_attempts": max(1, int(max_revise_safer_attempts)),
     }
-    evidence = {
-        "events": [], "p_success": p_success, "immediate_benefit": immediate_benefit,
-        "review_cost": review_cost,
+    evidence: dict[str, Any] = {
+        "events": [], "immediate_benefit": immediate_benefit,
         "criticality_stage": "C3", "criticality_value": 0.8,
-        "edit_confidence_factors": {"p_success": p_success, "evidence_quality": 0.7, "testability": 0.7,
-                                    "reversibility": 0.7, "source_reliability": 0.7,
-                                    "scope_control": 0.7},
+        "edit_confidence_factors": {
+            "evidence_quality": 0.7, "testability": 0.7, "reversibility": 0.7,
+            "source_reliability": 0.7, "scope_control": 0.7,
+            # This confidence component is required by the score schema but is not the predictive
+            # p_success evidence resolved by shipped priors. Keep it at the production cold default
+            # when top-level p_success is intentionally omitted.
+            "p_success": p_success if p_success is not None else _COLD_CONFIDENCE_P_SUCCESS,
+        },
     }
+    if p_success is not None:
+        evidence["p_success"] = p_success
+    if review_cost is not None:
+        evidence["review_cost"] = review_cost
     return {
         "schema_version": "0.1", "task": task or summary, "repo_id": "ab_experiment",
         "candidate_actions": [{
@@ -169,8 +179,8 @@ def _shape_output(result: dict[str, Any]) -> dict[str, Any]:
 
 def advise(
     payload: dict[str, Any], *, repo_root: Path | str, db: Path | str, revise_safer_attempt: int = 0,
-    max_revise_safer_attempts: int = 1, p_success: float = 0.75,
-    immediate_benefit: float = 0.5, review_cost: float = 0.1,
+    max_revise_safer_attempts: int = 1, p_success: float | None = 0.75,
+    immediate_benefit: float = 0.5, review_cost: float | None = 0.1,
     task: str | None = None,
     trusted_task_obligations: dict[str, Any] | None = None,
     timeout_seconds: float | None = None,

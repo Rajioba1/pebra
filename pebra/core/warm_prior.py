@@ -7,6 +7,7 @@ after this resolver and therefore remain the more local learned evidence source.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import math
 from dataclasses import dataclass
 
@@ -21,8 +22,13 @@ class CalibratedPriorCell:
     calibration_tag: str
     sample_size: int
     action_type: str | None = None
+    language: str | None = None
     language_tier: str | None = None
     graph_fact_kind: str | None = None
+    graph_event: str | None = None
+    graph_risk_source: str | None = None
+    graph_provider: str | None = None
+    min_graph_confidence: float | None = None
     p_success: float | None = None
     p_success_variance: float | None = None
     p_success_aleatoric_variance: float | None = None
@@ -39,7 +45,7 @@ def _valid(cell: CalibratedPriorCell) -> bool:
     if (
         cell.sample_size <= 0
         or not cell.calibration_tag
-        or not any((cell.action_type, cell.language_tier, cell.graph_fact_kind))
+        or not any((cell.action_type, cell.language, cell.language_tier, cell.graph_fact_kind))
     ):
         return False
     if any(value is not None and not math.isfinite(value) for value in values):
@@ -47,6 +53,8 @@ def _valid(cell: CalibratedPriorCell) -> bool:
     if cell.p_success is not None and not 0.0 <= cell.p_success <= 1.0:
         return False
     if cell.review_cost is not None and cell.review_cost < 0.0:
+        return False
+    if cell.min_graph_confidence is not None and not 0.0 <= cell.min_graph_confidence <= 1.0:
         return False
     return not any(
         value is not None and value < 0.0
@@ -60,11 +68,32 @@ def _valid(cell: CalibratedPriorCell) -> bool:
 def _matches(cell: CalibratedPriorCell, inp: AssessmentInput) -> bool:
     if cell.action_type is not None and cell.action_type != inp.action.action_type:
         return False
+    capability_language = (inp.language_capability.language or "").strip().lower()
+    if cell.language is not None and cell.language.strip().lower() != capability_language:
+        return False
     if cell.language_tier is not None and cell.language_tier != classify_tier(inp.language_capability):
         return False
     if cell.graph_fact_kind is not None:
-        fact_kinds = {fact.fact_kind for fact in inp.candidate_graph_risk_evidence.facts}
-        if cell.graph_fact_kind not in fact_kinds:
+        evidence = inp.candidate_graph_risk_evidence
+        patch = inp.action.proposed_patch
+        if (
+            evidence.status != "available"
+            or not patch
+            or evidence.verified_patch_hash
+            != hashlib.sha256(patch.encode("utf-8")).hexdigest()
+            or (cell.graph_provider is not None and evidence.provider != cell.graph_provider)
+        ):
+            return False
+        minimum = cell.min_graph_confidence if cell.min_graph_confidence is not None else 0.0
+        if not any(
+            fact.fact_kind == cell.graph_fact_kind
+            and (cell.graph_event is None or fact.event == cell.graph_event)
+            and (cell.graph_risk_source is None or fact.risk_source == cell.graph_risk_source)
+            and math.isfinite(fact.confidence)
+            and minimum <= fact.confidence <= 1.0
+            and bool(fact.owner_node_ids)
+            for fact in evidence.facts
+        ):
             return False
     return True
 
@@ -72,7 +101,9 @@ def _matches(cell: CalibratedPriorCell, inp: AssessmentInput) -> bool:
 def _specificity(cell: CalibratedPriorCell) -> tuple[int, int, str]:
     return (
         sum(value is not None for value in (
-            cell.action_type, cell.language_tier, cell.graph_fact_kind,
+            cell.action_type, cell.language, cell.language_tier, cell.graph_fact_kind,
+            cell.graph_event, cell.graph_risk_source, cell.graph_provider,
+            cell.min_graph_confidence,
         )),
         cell.sample_size,
         cell.calibration_tag,
@@ -105,8 +136,13 @@ def apply_warm_prior(
             "calibration_tag": cell.calibration_tag,
             "sample_size": cell.sample_size,
             "action_type": cell.action_type,
+            "language": cell.language,
             "language_tier": cell.language_tier,
             "graph_fact_kind": cell.graph_fact_kind,
+            "graph_event": cell.graph_event,
+            "graph_risk_source": cell.graph_risk_source,
+            "graph_provider": cell.graph_provider,
+            "min_graph_confidence": cell.min_graph_confidence,
             **(extra or {}),
         }
 
@@ -148,6 +184,7 @@ def apply_warm_prior(
         "calibration_tag": primary.calibration_tag,
         "sample_size": primary.sample_size,
         "action_type": primary.action_type,
+        "language": primary.language,
         "language_tier": primary.language_tier,
         "graph_fact_kind": primary.graph_fact_kind,
         "applied_fields": sorted(changes),

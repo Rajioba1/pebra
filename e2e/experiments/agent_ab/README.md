@@ -366,8 +366,9 @@ PowerShell:
 
 ```powershell
 $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
+$env:E2E_AB_PRIOR_MODE="shipped"
 python -m e2e.experiments.agent_ab.runners.orchestrator `
-  --run-id js_zod_preflight_001 `
+  --run-id js_zod_shipped_prior_preflight_001 `
   --mode assay_js `
   --preflight-only
 ```
@@ -376,8 +377,9 @@ Bash:
 
 ```bash
 E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
+E2E_AB_PRIOR_MODE=shipped \
 python -m e2e.experiments.agent_ab.runners.orchestrator \
-  --run-id js_zod_preflight_001 \
+  --run-id js_zod_shipped_prior_preflight_001 \
   --mode assay_js \
   --preflight-only
 ```
@@ -405,11 +407,14 @@ PowerShell:
 ```powershell
 $env:DEEPSEEK_API_KEY="sk-..."
 $env:E2E_AB_PROVIDER="deepseek"
+$env:E2E_AB_MODEL="deepseek-v4-pro"
+$env:E2E_AB_THINKING="0"
+$env:E2E_AB_PRIOR_MODE="shipped"
 $env:E2E_AB_MODE="assay_js"
 $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
-$env:E2E_AB_MAX_WORKERS="5"
-$env:E2E_AB_RUN_ID="js_zod_deepseek_assay_001"
+$env:E2E_AB_MAX_WORKERS="10"
+$env:E2E_AB_RUN_ID="js4_v4pro_nothinking_shipped_prior_3seed_001"
 nox -s e2e-ab
 ```
 
@@ -426,9 +431,12 @@ Then set run-shape variables in the shell:
 
 ```powershell
 $env:E2E_AB_MODE="assay_js"
+$env:E2E_AB_MODEL="deepseek-v4-pro"
+$env:E2E_AB_THINKING="0"
+$env:E2E_AB_PRIOR_MODE="shipped"
 $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
-$env:E2E_AB_MAX_WORKERS="5"
+$env:E2E_AB_MAX_WORKERS="10"
 nox -s e2e-ab
 ```
 
@@ -448,13 +456,22 @@ Bash:
 ```bash
 DEEPSEEK_API_KEY=sk-... \
 E2E_AB_PROVIDER=deepseek \
+E2E_AB_MODEL=deepseek-v4-pro \
+E2E_AB_THINKING=0 \
+E2E_AB_PRIOR_MODE=shipped \
 E2E_AB_MODE=assay_js \
 E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
 E2E_AB_PARALLEL_ARMS=1 \
-E2E_AB_MAX_WORKERS=5 \
-E2E_AB_RUN_ID=js_zod_deepseek_assay_001 \
+E2E_AB_MAX_WORKERS=10 \
+E2E_AB_RUN_ID=js4_v4pro_nothinking_shipped_prior_3seed_001 \
 nox -s e2e-ab
 ```
+
+`E2E_AB_PRIOR_MODE=shipped` removes the task fixture's explicit `p_success` and `review_cost` so the
+run exercises the reviewed `zod_single_repo_provisional_v1` cell. It retains the task-specific
+immediate benefit. The initial validation keeps DeepSeek thinking disabled to isolate the governance
+mechanism; a later thinking-enabled run is a separate model-capability comparison. The prior remains
+single-repository provisional, and a weak result must be reported rather than used to tune the cell.
 
 The run writes local artifacts under `e2e/out/ab/<run-id>/`, which is ignored by git. The two validated
 one-seed assay runs were `mn_gamma_deepseek_assay_1seed_20260705_214503` (sequential) and

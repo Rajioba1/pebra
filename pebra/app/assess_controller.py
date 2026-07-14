@@ -554,6 +554,37 @@ def _build_input(
     )
 
 
+def _apply_prior_layers(inp: AssessmentInput, **ports: Any) -> AssessmentInput:
+    """Apply reviewed population evidence, then the repository-local override."""
+    prior_p_success_variance = inp.p_success_variance
+    prior_review_cost_variance = inp.review_cost_variance
+    inp = apply_warm_prior(inp, ports.get("calibrated_prior_cells", CALIBRATED_PRIORS))
+    bundle = ports.get("active_snapshot_bundle")
+    inp = apply_snapshot(inp, bundle)
+    applied = (
+        (inp.applied_snapshot_provenance or {}).get("applied_facts", [])
+        if isinstance(inp.applied_snapshot_provenance, dict)
+        else []
+    )
+    legacy_targets = {
+        item.get("target")
+        for item in applied
+        if isinstance(item, dict) and item.get("variance") is None
+    }
+    # A repository-local mean is authoritative over a shipped mean. Legacy local facts without a
+    # variance estimate must retain the uncertainty that existed before warm-prior application,
+    # rather than silently inheriting a tighter population variance.
+    variance_changes: dict[str, float | None] = {}
+    if "p_success" in legacy_targets:
+        variance_changes["p_success_variance"] = prior_p_success_variance
+    if "review_cost" in legacy_targets:
+        variance_changes["review_cost_variance"] = prior_review_cost_variance
+    if variance_changes:
+        inp = replace(inp, **variance_changes)
+    inp.active_snapshot = bundle
+    return inp
+
+
 def _prepare_action_input(
     request: AssessmentRequest,
     action: CandidateAction,
@@ -585,16 +616,12 @@ def _prepare_action_input(
     sfp = ports.get("structural_feature_provider")
     if sfp is not None:
         inp.structural_features = sfp.build_features(inp)
-    inp = apply_warm_prior(inp, ports.get("calibrated_prior_cells", CALIBRATED_PRIORS))
     # M5c: apply the active learned snapshot PRE-scoring. The bundle is loaded once per assess()
     # (not once per action) and passed in here. apply_snapshot is pure; the assess path performs NO
     # learning write. No active facts -> identity (golden unchanged).
     # The prediction manifest below records the USED (possibly overridden) values; the raw priors are
     # preserved in inp.applied_snapshot_provenance.
-    bundle = ports.get("active_snapshot_bundle")
-    inp = apply_snapshot(inp, bundle)
-    inp.active_snapshot = bundle
-    return inp
+    return _apply_prior_layers(inp, **ports)
 
 
 def _score_prepared_input(
@@ -1153,6 +1180,12 @@ def assess(
                 )
             refined_input = replace(
                 prepared_action.inp, candidate_graph_risk_evidence=evidence
+            )
+            # Graph-fact-scoped priors cannot match until materialized refinement has produced the
+            # candidate fact. Re-apply both prior layers in their original order so repository-local
+            # learned evidence remains authoritative over the newly matching shipped cell.
+            refined_input = _apply_prior_layers(
+                refined_input, **prepared_action.score_ports
             )
             refined = _score_prepared_input(
                 refined_input,
