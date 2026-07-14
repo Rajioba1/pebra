@@ -106,11 +106,14 @@ table.matrix th.rowh { text-align: left; color: var(--ink-dim); position: sticky
 .trace-table tr.trace-timeout td { color: var(--caution); }
 
 /* generic tables */
-table.data { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+.table-scroll { width: 100%; overflow-x: auto; margin: 8px 0 14px; }
+table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.data th, table.data td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--edge); }
-table.data th, table.data td { overflow-wrap: anywhere; }
-table.data th { color: var(--ink-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+table.data th { color: var(--ink-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
+table.data td:first-child { white-space: nowrap; }
 table.data th.num, table.data td.num { font-family: var(--mono); text-align: right; }
+.metric-detail { border-top: 1px solid var(--edge); padding: 10px 0 2px; }
+.metric-detail summary { color: var(--accent-2); cursor: pointer; font-weight: 600; }
 
 /* dashboards */
 .dash-cmd { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }

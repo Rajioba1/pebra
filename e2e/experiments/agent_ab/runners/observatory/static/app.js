@@ -3,7 +3,6 @@
 // DOM APIs (never innerHTML), so a task_id authored on disk can never inject markup. Polls every 5s.
 
 const POLL_MS = 5000;
-const MIN_PAIRS_FOR_VERDICT = 3; // below this an assay verdict is structural noise, not a finding
 let timer = null;
 const launchState = new Map(); // key: run_id|clone -> {state, text}
 
@@ -78,6 +77,13 @@ function findPebraVsSham(pairwise) {
   return (pairwise || []).find((p) => p.intervention === "pebra" && p.baseline === "sham");
 }
 
+function tableScroll(table) { return el("div", { class: "table-scroll" }, [table]); }
+function detailSection(label, child, open = false) {
+  const details = el("details", { class: "metric-detail" }, [el("summary", { text: label }), child]);
+  if (open) details.open = true;
+  return details;
+}
+
 function renderScoreboard(sb) {
   const wrap = el("div", {});
   wrap.appendChild(el("h2", { text: "Scoreboard" }));
@@ -85,17 +91,22 @@ function renderScoreboard(sb) {
     // assay scoreboard
     const key = findPebraVsSham(sb.pairwise);
     const nPairs = key ? key.n_pairs_risky : 0;
-    const weak = nPairs < MIN_PAIRS_FOR_VERDICT;
-    const vrow = el("div", { class: "verdict" + (weak ? " weak" : "") }, [
-      el("span", { class: "v", text: sb.verdict }),
+    const diagnostic = !!sb.diagnostic_only;
+    const vrow = el("div", { class: "verdict" + (diagnostic ? " weak" : "") }, [
+      el("span", { class: "v", text: diagnostic ? "Live diagnostic" : "Claim result" }),
+      el("span", { class: "tag", text: sb.verdict }),
       el("span", { class: "npairs", text: "pebra·vs·sham risky pairs: " + nPairs }),
     ]);
     const panel = el("div", { class: "panel" }, [vrow]);
-    if (weak) panel.appendChild(el("div", { class: "banner", text: "Too few matched pairs (" + nPairs + " < " + MIN_PAIRS_FOR_VERDICT + ") — this verdict is not yet meaningful. It will firm up as the run fills in." }));
+    if (diagnostic) panel.appendChild(el("div", { class: "banner", text: "Diagnostic evidence only. Read the observed counts and mechanism trace; no efficacy claim is authorized for this run design." }));
     if (sb.conclusion) panel.appendChild(el("div", { class: "verdict-note", text: sb.conclusion }));
-    panel.appendChild(el("div", { class: "verdict-note", text: "Human-review policy: " + (sb.human_approval_policy || "unspecified") + ". Deterministic approval is not human judgment." }));
     panel.appendChild(renderArmTable(sb.arms));
     panel.appendChild(renderPairwiseTable(sb.pairwise));
+    panel.appendChild(detailSection("Mechanism diagnostics", renderMechanismTable(sb.arms, sb.pairwise)));
+    if (Object.values(sb.arms || {}).some((a) => (a.approval_offered_count || 0) > 0)) {
+      panel.appendChild(detailSection("Simulated approval-path diagnostics", renderGovernanceTable(sb.arms)));
+    }
+    panel.appendChild(detailSection("Integrity and exclusions", renderIntegrityTable(sb.arms)));
     wrap.appendChild(panel);
   } else if (sb.endpoints) {
     // legacy AB scoreboard
@@ -115,52 +126,73 @@ function num(x) { return x == null ? "—" : Number(x).toFixed(3); }
 
 function renderArmTable(arms) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "n" }), el("th", { class: "num", text: "harm" }), el("th", { class: "num", text: "over-caution" }), el("th", { class: "num", text: "completion" }), el("th", { class: "num", text: "autonomous" }), el("th", { class: "num", text: "graph-authorized + post-verify" }), el("th", { class: "num", text: "graph + pre-edit host verification + post-verify" }), el("th", { class: "num", text: "human-assisted" }), el("th", { class: "num", text: "safe escalation" }), el("th", { class: "num", text: "approval request" }), el("th", { class: "num", text: "approval grant" }), el("th", { class: "num", text: "post-approval reassess" }), el("th", { class: "num", text: "write before approval" }), el("th", { class: "num", text: "write before reassess" }), el("th", { class: "num", text: "adherence" }), el("th", { class: "num", text: "no-attempt" }), el("th", { class: "num", text: "errors" }), el("th", { class: "num", text: "leaks" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "n" }), el("th", { class: "num", text: "harm" }), el("th", { class: "num", text: "completion" }), el("th", { class: "num", text: "verified autonomous" }), el("th", { class: "num", text: "escalation" }), el("th", { class: "num", text: "errors" })]));
   for (const [arm, a] of Object.entries(arms || {})) {
     t.appendChild(el("tr", {}, [
       el("td", { text: arm }), el("td", { class: "num", text: a.n_runs }),
-      el("td", { class: "num", text: pct(a.harm_rate) }), el("td", { class: "num", text: pct(a.over_caution_rate) }),
+      el("td", { class: "num", text: pct(a.harm_rate) }),
       el("td", { class: "num", text: pct(a.task_completion_rate) }),
-      el("td", { class: "num", text: pct(a.autonomous_completion_rate) }),
-      el("td", { class: "num", text: pct(a.graph_only_autonomous_completion_rate) }),
-      el("td", { class: "num", text: pct(a.graph_plus_host_verified_completion_rate) }),
-      el("td", { class: "num", text: pct(a.human_assisted_completion_rate) }),
+      el("td", { class: "num", text: pct(a.graph_refined_autonomous_completion_rate) }),
       el("td", { class: "num", text: pct(a.safe_escalation_rate) }),
-      el("td", { class: "num", text: pct(a.approval_request_adherence_rate) }),
-      el("td", { class: "num", text: pct(a.approval_grant_rate) }),
-      el("td", { class: "num", text: pct(a.post_approval_reassessment_rate) }),
-      el("td", { class: "num", text: pct(a.write_before_approval_rate) }),
-      el("td", { class: "num", text: pct(a.write_before_reassessment_rate) }),
-      el("td", { class: "num", text: pct(a.adherence_rate) }),
-      el("td", { class: "num", text: a.no_attempt_count || 0 }),
-      el("td", { class: "num", text: a.error_run_count }), el("td", { class: "num", text: a.blinding_leak_count }),
+      el("td", { class: "num", text: a.error_run_count }),
     ]));
   }
-  return t;
+  return tableScroll(t);
 }
 function renderPairwiseTable(pairwise) {
   const t = el("table", { class: "data" });
-  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "harm avoided" }), el("th", { class: "num", text: "completion Δ" }), el("th", { class: "num", text: "autonomous Δ" }), el("th", { class: "num", text: "graph-authorized + post-verify Δ" }), el("th", { class: "num", text: "graph + pre-edit host verification + post-verify Δ" }), el("th", { class: "num", text: "assisted Δ" }), el("th", { class: "num", text: "over-caution Δ" }), el("th", { class: "num", text: "net benefit" }), el("th", { class: "num", text: "risky pairs" })]));
+  t.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "harm avoided" }), el("th", { class: "num", text: "completion Δ" }), el("th", { class: "num", text: "over-caution Δ" }), el("th", { class: "num", text: "harm-over-caution balance", title: "Unweighted harm avoided minus over-caution; not total or decision-curve benefit." }), el("th", { class: "num", text: "risky pairs" }), el("th", { class: "num", text: "safe pairs" }), el("th", { class: "num", text: "independent tasks" }), el("th", { text: "harm 95% CI" })]));
   for (const p of pairwise || []) {
+    const ci = p.harm_diff_ci95 ? "[" + num(p.harm_diff_ci95[0]) + ", " + num(p.harm_diff_ci95[1]) + "]" : "—";
     t.appendChild(el("tr", {}, [
       el("td", { text: p.intervention }), el("td", { text: p.baseline }),
-      el("td", { class: "num", text: num(p.harm_avoided_rate) }), el("td", { class: "num", text: num(p.risky_completion_gain) }),
-      el("td", { class: "num", text: num(p.autonomous_completion_gain) }),
-      el("td", { class: "num", text: num(p.graph_only_autonomous_completion_gain) }),
-      el("td", { class: "num", text: num(p.graph_plus_host_verified_completion_gain) }),
-      el("td", { class: "num", text: num(p.human_assisted_completion_gain) }),
+      el("td", { class: "num", text: (p.harm_avoided_count ?? 0) + "/" + p.n_pairs_risky + " (" + num(p.harm_avoided_rate) + ")" }),
+      el("td", { class: "num", text: (p.completion_gain_count ?? 0) + "/" + p.n_pairs_risky + " (" + num(p.risky_completion_gain) + ")" }),
       el("td", { class: "num", text: num(p.over_caution_delta) }),
-      el("td", { class: "num", text: num(p.net_benefit) }), el("td", { class: "num", text: p.n_pairs_risky }),
+      el("td", { class: "num", text: num(p.harm_overcaution_balance ?? p.net_benefit) }),
+      el("td", { class: "num", text: p.n_pairs_risky }),
+      el("td", { class: "num", text: p.n_pairs_safe }),
+      el("td", { class: "num", text: p.n_independent_risky_tasks ?? 0 }),
+      el("td", { text: ci }),
     ]));
   }
-  return t;
+  return tableScroll(t);
+}
+
+function renderMechanismTable(arms, pairwise) {
+  const wrap = el("div");
+  const t = el("table", { class: "data" });
+  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "decision cycle" }), el("th", { class: "num", text: "adherence" }), el("th", { class: "num", text: "graph-only verified" }), el("th", { class: "num", text: "graph + host verified" })]));
+  for (const [arm, a] of Object.entries(arms || {})) t.appendChild(el("tr", {}, [el("td", { text: arm }), el("td", { class: "num", text: pct(a.decision_cycle_completion_rate) }), el("td", { class: "num", text: pct(a.adherence_rate) }), el("td", { class: "num", text: pct(a.graph_only_autonomous_completion_rate) }), el("td", { class: "num", text: pct(a.graph_plus_host_verified_completion_rate) })]));
+  wrap.appendChild(tableScroll(t));
+  const gains = el("table", { class: "data" });
+  gains.appendChild(el("tr", {}, [el("th", { text: "intervention" }), el("th", { text: "baseline" }), el("th", { class: "num", text: "autonomous Δ" }), el("th", { class: "num", text: "graph-only verified Δ" }), el("th", { class: "num", text: "graph + host verified Δ" })]));
+  for (const p of pairwise || []) gains.appendChild(el("tr", {}, [el("td", { text: p.intervention }), el("td", { text: p.baseline }), el("td", { class: "num", text: num(p.autonomous_completion_gain) }), el("td", { class: "num", text: num(p.graph_only_autonomous_completion_gain) }), el("td", { class: "num", text: num(p.graph_plus_host_verified_completion_gain) })]));
+  wrap.appendChild(tableScroll(gains));
+  return wrap;
+}
+
+function renderGovernanceTable(arms) {
+  const wrap = el("div", {}, [el("p", { class: "dim", text: "A deterministic approval policy tests plumbing, not human judgment." })]);
+  const t = el("table", { class: "data" });
+  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "approval request" }), el("th", { class: "num", text: "deterministic policy grant" }), el("th", { class: "num", text: "reassessment" }), el("th", { class: "num", text: "simulated approval-path" })]));
+  for (const [arm, a] of Object.entries(arms || {})) if ((a.approval_offered_count || 0) > 0) t.appendChild(el("tr", {}, [el("td", { text: arm }), el("td", { class: "num", text: pct(a.approval_request_adherence_rate) }), el("td", { class: "num", text: pct(a.deterministic_policy_grant_rate ?? a.approval_grant_rate) }), el("td", { class: "num", text: pct(a.post_approval_reassessment_rate) }), el("td", { class: "num", text: pct(a.simulated_approval_path_completion_rate ?? a.human_assisted_completion_rate) })]));
+  wrap.appendChild(tableScroll(t));
+  return wrap;
+}
+
+function renderIntegrityTable(arms) {
+  const t = el("table", { class: "data" });
+  t.appendChild(el("tr", {}, [el("th", { text: "arm" }), el("th", { class: "num", text: "no attempt" }), el("th", { class: "num", text: "errors" }), el("th", { class: "num", text: "blinding leaks" }), el("th", { class: "num", text: "write before approval" }), el("th", { class: "num", text: "write before reassess" })]));
+  for (const [arm, a] of Object.entries(arms || {})) t.appendChild(el("tr", {}, [el("td", { text: arm }), el("td", { class: "num", text: a.no_attempt_count || 0 }), el("td", { class: "num", text: a.error_run_count || 0 }), el("td", { class: "num", text: a.blinding_leak_count || 0 }), el("td", { class: "num", text: pct(a.write_before_approval_rate) }), el("td", { class: "num", text: pct(a.write_before_reassessment_rate) })]));
+  return tableScroll(t);
 }
 function abEndpointTable(e) {
   const rows = [["harm rate", pct(e.harm_rate.control), pct(e.harm_rate.treatment)], ["over-caution", pct(e.over_caution_rate.control), pct(e.over_caution_rate.treatment)], ["completion", pct(e.task_completion_rate.control), pct(e.task_completion_rate.treatment)]];
   const t = el("table", { class: "data" });
   t.appendChild(el("tr", {}, [el("th", { text: "endpoint" }), el("th", { class: "num", text: "control" }), el("th", { class: "num", text: "treatment" })]));
   for (const r of rows) t.appendChild(el("tr", {}, [el("td", { text: r[0] }), el("td", { class: "num", text: r[1] }), el("td", { class: "num", text: r[2] })]));
-  t.appendChild(el("tr", {}, [el("td", { text: "net benefit" }), el("td", { class: "num dim", text: "" }), el("td", { class: "num", text: num(e.net_benefit) })]));
+  t.appendChild(el("tr", {}, [el("td", { text: "harm-over-caution balance" }), el("td", { class: "num dim", text: "" }), el("td", { class: "num", text: num(e.harm_overcaution_balance ?? e.net_benefit) })]));
   return t;
 }
 

@@ -325,6 +325,10 @@ def pairwise_comparison(
         graph_plus_host_verified_completion_gain=(
             statistics.fmean(graph_plus_host_diffs) if graph_plus_host_diffs else 0.0
         ),
+        harm_avoided_count=int(sum(harm_diffs)),
+        completion_gain_count=int(sum(completion_diffs)),
+        over_caution_count=int(sum(oc_diffs)),
+        n_independent_risky_tasks=len({intervention.task_id for intervention, _ in risky}),
     )
 
 

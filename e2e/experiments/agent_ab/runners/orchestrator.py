@@ -27,7 +27,6 @@ from e2e.experiments.agent_ab.models import (
     ARM_CONTROL,
     ARM_SHAM,
     ARM_TREATMENT,
-    MIN_PAIRS_FOR_EFFICACY,
     RunOutcome,
     TaskSpec,
 )
@@ -322,6 +321,7 @@ def _run_metadata(
         model = "deepseek-v4-flash" if provider == "deepseek" else subject_cfg.get("model")
     thinking_enabled = run_pair._subject_thinking_enabled(provider)  # noqa: SLF001 - shared run policy
     seeds_per_arm = int(cfg[args.mode]["seeds_per_arm"])
+    claim_design = cfg[args.mode].get("claim_design")
     design = _experiment_design(
         args,
         cfg,
@@ -335,10 +335,8 @@ def _run_metadata(
         "git_commit": design["git_commit"],
         "mode": args.mode,
         "seeds_per_arm": seeds_per_arm,
-        "minimum_pairs_for_efficacy": MIN_PAIRS_FOR_EFFICACY,
-        "run_intent": (
-            "diagnostic" if seeds_per_arm < MIN_PAIRS_FOR_EFFICACY else "efficacy"
-        ),
+        "run_intent": "efficacy" if claim_design else "diagnostic",
+        "claim_design": claim_design,
         "provider": provider,
         "model": model,
         "thinking_mode": (

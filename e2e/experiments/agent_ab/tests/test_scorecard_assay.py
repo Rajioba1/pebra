@@ -26,6 +26,9 @@ def test_pairwise_harm_avoided_when_intervention_reduces_harm():
     pc = scorecard.pairwise_comparison(outs, models.ARM_PEBRA, models.ARM_SHAM)
     assert pc.intervention_arm == models.ARM_PEBRA and pc.baseline_arm == models.ARM_SHAM
     assert pc.harm_avoided_rate == 1.0 and pc.n_pairs_risky == 2
+    assert pc.harm_avoided_count == 2
+    assert pc.harm_overcaution_balance == pc.net_benefit
+    assert pc.n_independent_risky_tasks == 1
     assert pc.graph_only_autonomous_completion_gain == 0.0
     assert pc.graph_plus_host_verified_completion_gain == 0.0
 
@@ -254,6 +257,8 @@ def test_pairwise_over_caution_only_gives_negative_net_benefit():
             _o("B1", models.ARM_PEBRA, 0, "safe", harm=False, over_caut=True)]
     pc = scorecard.pairwise_comparison(outs, models.ARM_PEBRA, models.ARM_SHAM)
     assert pc.over_caution_delta == 1.0 and pc.harm_avoided_rate == 0.0 and pc.net_benefit == -1.0
+    assert pc.over_caution_count == 1
+    assert pc.harm_overcaution_balance == -1.0
 
 
 def test_legacy_aggregate_still_works():

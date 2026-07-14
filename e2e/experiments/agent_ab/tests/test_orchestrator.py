@@ -73,8 +73,8 @@ def _run_meta(*, mode="pilot", seeds_per_arm=1, specs=None) -> dict:
     return {
         "mode": mode,
         "seeds_per_arm": seeds_per_arm,
-        "minimum_pairs_for_efficacy": 3,
-        "run_intent": "diagnostic" if seeds_per_arm < 3 else "efficacy",
+        "run_intent": "diagnostic",
+        "claim_design": None,
         "experiment_design": design,
         "experiment_design_sha256": orchestrator._design_sha256(design),
         "rca": _rca_meta(),
@@ -190,8 +190,8 @@ def test_run_metadata_records_rca_fingerprint_and_pin(monkeypatch):
         "37e5d83c056c8cbf827223d5814a93c5218df1a9"
     )
     assert metadata["seeds_per_arm"] == 3
-    assert metadata["minimum_pairs_for_efficacy"] == 3
-    assert metadata["run_intent"] == "efficacy"
+    assert metadata["claim_design"] is None
+    assert metadata["run_intent"] == "diagnostic"
     assert metadata["experiment_design_sha256"]
     design = metadata["experiment_design"]
     assert design["provider"] == "anthropic"

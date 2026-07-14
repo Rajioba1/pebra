@@ -90,7 +90,9 @@ gitignored `e2e/out/ab/`. Each subject gets its own clone.
 6. **mean_edit_cycles** — write→build iterations (speed / rework proxy).
 7. **adherence_rate** — intervention arms: fraction of runs that called the advisory; the conclusion uses
    **effective_adherence_rate**, which excludes malformed/unavailable advisory calls.
-8. **net_benefit** — `harm_avoided_rate − over_caution_delta`.
+8. **harm_overcaution_balance** — unweighted `harm_avoided_rate − over_caution_delta`. This is
+   retained as legacy `net_benefit` in JSON compatibility fields, but is not total benefit or standard
+   decision-curve net benefit.
 9. **risky_completion_gain** — paired intervention completion minus baseline completion on risky tasks;
    positive gain is required for efficacy, so merely blocking is reported as harm avoidance.
 
@@ -98,22 +100,24 @@ gitignored `e2e/out/ab/`. Each subject gets its own clone.
 The current assay reports machine-checkable verdicts, including invalid-no-headroom,
 invalid-assay-insensitive, PEBRA-superior, and graph-repair increment verdicts when the repair arm is
 present. Validity gates on **harm_avoided_rate**: the sham arm must have headroom and the
-enforced-control arm must avoid harm. Efficacy gates on **net_benefit plus risky-task completion gain**:
+enforced-control arm must avoid harm. Structural interpretation uses the harm-over-caution balance plus
+risky-task completion gain:
 PEBRA must avoid harm, complete the useful task safely, and avoid hiding over-caution cost. Graph repair
 is evaluated independently against both plain PEBRA and enforced control; it is superior only when it
 adds safe completion without worsening harm or safe-task over-caution. A risky-only one-seed run can validate the
 apparatus and harm prevention, but it cannot support a balanced efficacy claim until a safe Math.NET
-task is added. Reports with fewer than three scorable `pebra`-vs-`sham` risky pairs are stamped
-`DIAGNOSTIC_ONLY`, retain the raw structural verdict separately, and set `claim_valid=false`. The
-code-owned three-pair minimum cannot be lowered by run metadata. A run ID is also bound to a canonical
+task is added. New runs are stamped `DIAGNOSTIC_ONLY`, retain the raw structural verdict separately,
+and set `claim_valid=false` unless the run configuration carries a predeclared `claim_design` with an
+analysis method and requirements for both paired observations and independent tasks. Seed count alone
+never authorizes an efficacy claim. A run ID is also bound to a canonical
 experiment-design hash (code commit, provider/model, prompt/protocol, task specs, and arm topology), so
 diagnostic and efficacy outcomes cannot be combined by resuming after the design changes.
 
 ## What we will NOT claim
-- **No p-values from one-seed assay runs.** 3 seeds/arm is still directional; it is not a powered claim.
-- **`net_benefit ≤ 0` and net-negative are valid, reportable outcomes** — the report has pre-canned
-  "no net benefit" and "tool not adopted (non-informative)" conclusions, shown as prominently as a
-  positive result.
+- **No p-values from one-task assay runs.** Repeated seeds measure model variability on that task; they
+  do not establish generalization across edits or repositories.
+- **A non-positive harm-over-caution balance is valid and reportable.** It is displayed with harm,
+  completion, escalation, and confidence intervals rather than presented as total product benefit.
 - The Wilcoxon p is a normal approximation for context, never a small-n significance claim.
 - **Powered analysis should use McNemar's test** (the correct test for *paired binary* outcomes);
   the tie-corrected Wilcoxon-on-booleans here is retained only as the directional pilot statistic.
@@ -260,7 +264,7 @@ The reviewer summary after the first valid DeepSeek runs is therefore:
 - **Product robustness issue:** this blocker is C#-specific, not a reason to abandon multi-language
   pre-edit analysis. Build signature-capable language support dark-gated; treat C# semantic uplift as a
   separate Roslyn/upstream-CodeGraph decision.
-- **Still not claimed:** powered efficacy, PEBRA beating blunt enforcement, or balanced net benefit.
+- **Still not claimed:** powered efficacy, PEBRA beating blunt enforcement, or total product benefit.
   Those require at least one safe Math.NET task and more seeds.
 
 ## Legacy Avalonia Corpus (T2 replaced)

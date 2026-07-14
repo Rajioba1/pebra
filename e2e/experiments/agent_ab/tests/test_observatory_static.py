@@ -15,9 +15,14 @@ def test_matrix_distinguishes_not_planned_from_pending():
     assert "not planned" in app_js
 
 
-def test_data_tables_use_fixed_layout_for_stable_columns():
+def test_data_tables_scroll_without_forcing_fixed_narrow_columns():
     css = (_STATIC / "style.css").read_text(encoding="utf-8")
-    assert "table.data { width: 100%; table-layout: fixed;" in css
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "table-layout: fixed" not in css
+    assert "overflow-wrap: anywhere" not in css
+    assert ".table-scroll" in css
+    assert 'class: "table-scroll"' in app_js
 
 
 def test_numeric_headers_align_with_numeric_cells():
@@ -27,6 +32,25 @@ def test_numeric_headers_align_with_numeric_cells():
     assert 'el("th", { class: "num", text: "n" })' in app_js
     assert 'el("th", { class: "num", text: "harm" })' in app_js
     assert "table.data th.num, table.data td.num" in css
+
+
+def test_scoreboard_uses_server_claim_state_not_a_client_pair_magic_number():
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "MIN_PAIRS_FOR_VERDICT" not in app_js
+    assert "sb.diagnostic_only" in app_js
+    assert "It will firm up" not in app_js
+
+
+def test_scoreboard_separates_primary_mechanism_governance_and_integrity_tables():
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "renderMechanismTable" in app_js
+    assert "renderGovernanceTable" in app_js
+    assert "renderIntegrityTable" in app_js
+    assert "simulated approval-path" in app_js
+    assert "deterministic policy grant" in app_js
+    assert "harm-over-caution balance" in app_js
 
 
 def test_no_attempt_matrix_state_is_visible_before_over_caution():
@@ -62,8 +86,9 @@ def test_run_failure_kinds_are_visible_in_the_observatory():
 def test_graph_refined_completion_is_visible_in_scoreboard_and_matrix():
     app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
 
-    assert "graph-authorized + post-verify" in app_js
-    assert "graph + pre-edit host verification + post-verify" in app_js
+    assert "verified autonomous" in app_js
+    assert "graph-only verified" in app_js
+    assert "graph + host verified" in app_js
     assert "graph_only_autonomous_completion_rate" in app_js
     assert "graph_plus_host_verified_completion_rate" in app_js
     assert "graph_only_autonomous_completion_gain" in app_js

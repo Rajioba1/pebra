@@ -42,9 +42,10 @@ class ContinuityWitness:
                 end = normalized.find(marker, index + len(start))
                 end = len(normalized) if end < 0 else end + (0 if marker == "\n" else len(marker))
                 segment = normalized[index:end]
-                if re.search(rf"\b{re.escape(name)}\b", segment, flags):
-                    return None
-                out.append(segment)
+                # Comments are documentation, not executable continuity evidence. Preserve line
+                # separation, then normalize whitespace below. Comment-only renames still fail
+                # because they produce no executable identifier occurrences.
+                out.append("\n" * segment.count("\n"))
                 index = end
                 continue
             char = normalized[index]
@@ -105,7 +106,7 @@ class ContinuityWitness:
                 continue
             out.append(char)
             index += 1
-        return "".join(out), count
+        return " ".join("".join(out).split()), count
 
     def _canonical_implementation(self, source: str, name: str) -> str | None:
         flags = 0 if self.case_sensitive else re.IGNORECASE

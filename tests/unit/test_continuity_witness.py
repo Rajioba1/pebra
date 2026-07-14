@@ -35,6 +35,31 @@ def test_unknown_language_has_no_continuity_witness() -> None:
     assert witness_for_language("pascal") is None
 
 
+def test_ecmascript_comments_do_not_block_identifier_migration() -> None:
+    witness = witness_for_language("typescript")
+
+    assert witness is not None
+    assert witness.identifier_only_migration(
+        "export function addIssueToContext(): void {}\n",
+        "/** @deprecated Use `reportIssue` instead. */\n"
+        "export function reportIssue(): void {}\n",
+        "addIssueToContext",
+        "reportIssue",
+    )
+
+
+def test_ecmascript_comment_only_rename_is_not_continuity() -> None:
+    witness = witness_for_language("typescript")
+
+    assert witness is not None
+    assert not witness.identifier_only_migration(
+        "// addIssueToContext\nexport const stable = 1;\n",
+        "// reportIssue\nexport const stable = 1;\n",
+        "addIssueToContext",
+        "reportIssue",
+    )
+
+
 def test_ecmascript_witness_rejects_same_signature_different_implementation() -> None:
     witness = witness_for_language("typescript")
     assert witness is not None

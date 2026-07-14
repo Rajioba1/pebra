@@ -47,7 +47,7 @@ def test_markdown_renders_all_endpoints():
                                        run_id="r")
     for label in ["harm_rate", "over_caution_rate", "quality_failure_rate", "task_completion_rate",
                   "scope_drift_rate", "mean_edit_cycles", "adherence_rate", "harm_avoided_rate",
-                  "net_benefit"]:
+                  "harm_overcaution_balance"]:
         assert label in md
 
 
@@ -77,7 +77,7 @@ def test_conclusion_uses_effective_adherence_not_mere_calls():
 
 def test_conclusion_no_net_benefit_when_nonpositive():
     c = render_report.conclusion(_ab(harm_avoided=0.1, over_delta=0.3, adherence=0.9))
-    assert "NO NET BENEFIT" in c
+    assert "NO POSITIVE HARM/OVER-CAUTION BALANCE" in c
 
 
 def test_conclusion_directional_when_positive():
@@ -89,7 +89,7 @@ def test_to_json_has_endpoint_block_and_conclusion():
     j = render_report.to_json(_ab(harm_avoided=0.4, over_delta=0.0, adherence=0.9))
     assert set(j["endpoints"]) >= {
         "harm_rate", "harm_avoided_rate", "quality_failure_rate", "scope_drift_rate", "net_benefit",
-        "adherence_rate",
+        "harm_overcaution_balance", "adherence_rate",
     }
     assert "conclusion" in j
 

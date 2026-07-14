@@ -1225,13 +1225,13 @@ def test_identifier_migration_inside_string_is_not_structural_continuity() -> No
     ) is False
 
 
-def test_identifier_migration_inside_comment_is_not_structural_continuity() -> None:
-    before = "export function oldName(): void {} // oldName\n"
-    after = "export function newName(): void {} // newName\n"
+def test_added_deprecation_comment_does_not_hide_structural_continuity() -> None:
+    before = "export function oldName(): void {}\n"
+    after = "/** @deprecated Use newName. */\nexport function newName(): void {}\n"
 
     assert CodeGraphCandidateRefinementAdapter._identifier_only_migration(
         before, after, "oldName", "newName"
-    ) is False
+    ) is True
 
 
 def test_property_name_migration_is_not_structural_continuity() -> None:

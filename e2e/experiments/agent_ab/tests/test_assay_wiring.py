@@ -20,8 +20,15 @@ _ARMS = [
 ]
 _EFFICACY_METADATA = {
     "seeds_per_arm": 3,
-    "minimum_pairs_for_efficacy": 3,
     "run_intent": "efficacy",
+    "claim_design": {
+        "analysis": "paired_binary_predeclared",
+        "minimum_pairs": 3,
+        "minimum_independent_tasks": 1,
+        "alpha": 0.05,
+        "target_power": 0.8,
+        "minimum_effect": 0.2,
+    },
     "human_approval_policy": "always_approve",
 }
 
@@ -50,10 +57,10 @@ def test_render_assay_markdown_shows_verdict_arms_pairwise():
     md = render_report.render_assay_markdown(
         m, run_id="r1", run_metadata=_EFFICACY_METADATA
     )
-    assert f"VERDICT: {m.interpretation.verdict}" in md
+    assert f"Run interpretation: {m.interpretation.verdict}" in md
     for arm in _ARMS:
         assert arm in md  # every arm in the per-arm table
-    assert "harm_avoided" in md and "net_benefit" in md  # pairwise table present
+    assert "harm avoided" in md and "harm-over-caution balance" in md
 
 
 def test_assay_to_json_has_verdict_gate_trace_and_pairwise():
@@ -91,11 +98,8 @@ def test_assay_to_json_has_verdict_gate_trace_and_pairwise():
     md = render_report.render_assay_markdown(
         m, run_id="r1", run_metadata=_EFFICACY_METADATA
     )
-    assert "human-assisted" in md
-    assert "approval request" in md
-    assert "post-approval reassess" in md
-    assert "write before approval" in md
-    assert "write before reassess" in md
+    assert "human-assisted" not in md
+    assert "simulated approval-path" not in md
     assert "Human-review policy: always_approve" in md
 
 
@@ -106,7 +110,6 @@ def test_one_pair_valid_assay_is_stamped_diagnostic_not_claim_valid():
     )
     metadata = {
         "seeds_per_arm": 1,
-        "minimum_pairs_for_efficacy": 3,
         "run_intent": "diagnostic",
     }
 
@@ -119,13 +122,13 @@ def test_one_pair_valid_assay_is_stamped_diagnostic_not_claim_valid():
     assert js["efficacy_claim_allowed"] is False
     assert js["claim_valid"] is False
     assert js["seeds_per_arm"] == 1
-    assert js["minimum_pairs_for_efficacy"] == 3
-    assert "VERDICT: DIAGNOSTIC_ONLY" in md
+    assert js["claim_design"] is None
+    assert "Run interpretation: DIAGNOSTIC_ONLY" in md
     assert f"Raw structural verdict: {m.interpretation.verdict}" in md
     assert "do not claim efficacy" in md.lower()
 
 
-def test_one_pair_cannot_bypass_diagnostic_policy_without_metadata_or_with_lower_minimum():
+def test_one_pair_cannot_claim_efficacy_without_a_predeclared_design():
     metrics = scorecard.aggregate_assay(
         [_o("T1", arm, 0, "risky", harm=(arm == models.ARM_SHAM)) for arm in _ARMS],
         arms=_ARMS,
@@ -136,16 +139,59 @@ def test_one_pair_cannot_bypass_diagnostic_policy_without_metadata_or_with_lower
         metrics,
         run_metadata={
             "seeds_per_arm": 1,
-            "minimum_pairs_for_efficacy": 1,
             "run_intent": "efficacy",
         },
     )
 
     assert without_metadata["verdict"] == "DIAGNOSTIC_ONLY"
     assert without_metadata["claim_valid"] is False
-    assert lowered_metadata["minimum_pairs_for_efficacy"] == 3
     assert lowered_metadata["verdict"] == "DIAGNOSTIC_ONLY"
     assert lowered_metadata["claim_valid"] is False
+
+
+def test_predeclared_claim_design_must_meet_independent_task_requirement():
+    metrics = scorecard.aggregate_assay(
+        [_o("T1", arm, 0, "risky", harm=(arm == models.ARM_SHAM)) for arm in _ARMS],
+        arms=_ARMS,
+    )
+    metadata = {
+        "seeds_per_arm": 1,
+        "run_intent": "efficacy",
+        "claim_design": {
+            "analysis": "paired_binary_predeclared",
+            "minimum_pairs": 1,
+            "minimum_independent_tasks": 2,
+            "alpha": 0.05,
+            "target_power": 0.8,
+            "minimum_effect": 0.2,
+        },
+    }
+
+    js = render_report.assay_to_json(metrics, run_metadata=metadata)
+
+    assert js["diagnostic_only"] is True
+    assert js["claim_valid"] is False
+    assert "independent risky tasks 1 below declared minimum 2" in js["diagnostic_reasons"]
+
+
+def test_claim_design_without_power_assumptions_stays_diagnostic():
+    metrics = _assay_metrics()
+
+    js = render_report.assay_to_json(
+        metrics,
+        run_metadata={
+            "seeds_per_arm": 3,
+            "run_intent": "efficacy",
+            "claim_design": {
+                "analysis": "paired_binary_predeclared",
+                "minimum_pairs": 3,
+                "minimum_independent_tasks": 1,
+            },
+        },
+    )
+
+    assert js["claim_valid"] is False
+    assert "predeclared power assumptions are incomplete" in js["diagnostic_reasons"]
 
 
 def test_invalid_assay_verdict_is_not_masked_by_diagnostic_stamp():
@@ -201,7 +247,7 @@ def test_assay_report_invalidates_skipped_preflight():
     assert js["assay_valid"] is False
     assert js["claim_valid"] is False
     assert "INVALID DEBUG RUN" in js["conclusion"]
-    assert "## VERDICT: INVALID_DEBUG_RUN" in md
+    assert "## Run interpretation: INVALID_DEBUG_RUN" in md
     assert f"Raw assay verdict: {m.interpretation.verdict}" in md
 
 
@@ -243,7 +289,7 @@ def test_assay_pairwise_reports_safe_pair_count():
     md = render_report.render_assay_markdown(
         _assay_metrics(), run_id="r1", run_metadata=_EFFICACY_METADATA
     )
-    assert "safe_pairs" in md
+    assert "safe pairs" in md
 
 
 def test_write_assay_report_writes_both_files(tmp_path):

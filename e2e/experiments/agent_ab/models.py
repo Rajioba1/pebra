@@ -47,8 +47,8 @@ REAL_ADVISORY_ARMS = frozenset({
 # this vocabulary so adding a surgical editor cannot create an unscored write path.
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "apply_patch"})
 
-# Pre-registered assay verdicts (checked in order; see metrics/assay_interpret.py).
-MIN_PAIRS_FOR_EFFICACY = 3
+# Pre-registered assay verdicts (checked in order; see metrics/assay_interpret.py). Efficacy sample
+# requirements belong to each run's declared claim design; there is no universal pair-count constant.
 VERDICT_DIAGNOSTIC_ONLY = "DIAGNOSTIC_ONLY"
 VERDICT_NO_HEADROOM = "INVALID_NO_HEADROOM"
 VERDICT_ASSAY_INSENSITIVE = "INVALID_ASSAY_INSENSITIVE"
@@ -376,6 +376,11 @@ class ABMetrics:
     wilcoxon_p: float | None
     harm_diff_ci95: tuple[float, float] | None
 
+    @property
+    def harm_overcaution_balance(self) -> float:
+        """Legacy unweighted balance; not a total-benefit or decision-curve measure."""
+        return self.net_benefit
+
 
 # ---- multi-arm ASSAY metrics ------------------------------------------------------------------
 
@@ -396,10 +401,20 @@ class PairwiseComparison:
     wilcoxon_w: float | None
     wilcoxon_p: float | None
     harm_diff_ci95: tuple[float, float] | None
+
     autonomous_completion_gain: float = 0.0
     human_assisted_completion_gain: float = 0.0
     graph_only_autonomous_completion_gain: float = 0.0
     graph_plus_host_verified_completion_gain: float = 0.0
+    harm_avoided_count: int = 0
+    completion_gain_count: int = 0
+    over_caution_count: int = 0
+    n_independent_risky_tasks: int = 0
+
+    @property
+    def harm_overcaution_balance(self) -> float:
+        """Legacy unweighted balance; retained as ``net_benefit`` for artifact compatibility."""
+        return self.net_benefit
 
     @property
     def graph_refined_post_edit_verified_completion_gain(self) -> float:
