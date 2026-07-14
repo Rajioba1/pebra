@@ -61,7 +61,7 @@ def _repo_files(dest: Path, files: dict[str, str]) -> Path:
 def _patch(filename: str, before: str, after: str) -> str:
     return "".join(difflib.unified_diff(
         before.splitlines(keepends=True), after.splitlines(keepends=True),
-        fromfile=filename, tofile=filename))
+        fromfile=f"a/{filename}", tofile=f"b/{filename}"))
 
 
 def _write_request(path: Path, repo_id: str, filename: str, patch: str, *, exposure: float) -> Path:

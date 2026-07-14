@@ -91,6 +91,8 @@ def test_tool_schemas_are_well_formed() -> None:
 
 def test_assess_reproduces_worked_example(tmp_path) -> None:
     payload = server._handle_assess(_assess_args(tmp_path))
+    assert "applied_snapshot_provenance" not in payload
+    assert "prior_provenance" not in payload
     assert payload["recommended_decision"] == "proceed"
     assert payload["requires_confirmation"] is True
     assert payload["risk_mode"] == "sensitive_context"

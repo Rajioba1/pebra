@@ -140,6 +140,11 @@ COLD_START_VARIANCES: dict[str, float] = {
 # cannot make a decision more uncertain than the conservative prior.
 LEARNED_VARIANCE_FLOOR_RATIO: float = 0.10
 
+# Shipped population priors are weaker evidence than repository-local promoted outcomes. Until
+# cross-repository outcome data calibrates a target-specific value, retain a deliberately conservative
+# residual floor and expose it as provenance rather than presenting it as an empirical estimate.
+WARM_PRIOR_VARIANCE_FLOOR_RATIO: float = 0.20
+
 # --- Graph-incompleteness penalties (Slice 3c) — uncalibrated, bounded defaults. ---
 # Each unresolved/dynamic/wildcard import (and missing expected file) erodes confidence in the blast
 # estimate. Weights are per-count, summed, then capped at GRAPH_UNCERTAINTY_CAP: incompleteness can

@@ -5,7 +5,7 @@ from pebra.core.explanation_generator import Explanation
 from pebra.core.models import AssessmentResult, CandidateAction
 
 
-def test_assess_payload_exposes_applied_snapshot_provenance_when_present() -> None:
+def test_assess_payload_hides_host_snapshot_provenance_by_default() -> None:
     result = AssessmentResult(
         recommended_decision=Decision.INSPECT_FIRST,
         requires_confirmation=False,
@@ -40,11 +40,16 @@ def test_assess_payload_exposes_applied_snapshot_provenance_when_present() -> No
 
     payload = composition.assess_payload(outcome)
 
-    assert payload["applied_snapshot_provenance"] == {"snapshot_id": "snap_1"}
+    assert "applied_snapshot_provenance" not in payload
+    assert "prior_provenance" not in payload
     assert "graph_refinement" not in payload
 
+    host_payload = composition.assess_payload(outcome, include_host_metadata=True)
+    assert host_payload["applied_snapshot_provenance"] == {"snapshot_id": "snap_1"}
+    assert "prior_provenance" in host_payload
 
-def test_assess_payload_exposes_prior_provenance() -> None:
+
+def test_assess_payload_exposes_prior_provenance_only_to_host() -> None:
     result = AssessmentResult(
         recommended_decision=Decision.ASK_HUMAN,
         requires_confirmation=True,
@@ -72,7 +77,9 @@ def test_assess_payload_exposes_prior_provenance() -> None:
         assessment_id="asm_1", repo_id="r", repo_root="/repo",
     )
 
-    assert composition.assess_payload(outcome)["prior_provenance"]["source"] == "shipped"
+    assert "prior_provenance" not in composition.assess_payload(outcome)
+    payload = composition.assess_payload(outcome, include_host_metadata=True)
+    assert payload["prior_provenance"]["source"] == "shipped"
 
 
 def test_assess_payload_exposes_repo_state_and_graph_provenance() -> None:

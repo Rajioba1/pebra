@@ -40,7 +40,12 @@ def build_seeded_learning_state(
     # Future assess is pre-edit again: clean working tree, a distinct similar proposed edit, learned
     # snapshot active.
     ah.reset_risky_edit(repo_path)
-    learned = ch.assess(future_request_path, repo_root=repo_path, db=db_path)
+    learned = ch.assess(
+        future_request_path,
+        repo_root=repo_path,
+        db=db_path,
+        include_host_metadata=True,
+    )
 
     return SeededLearningState(
         repo_path=repo_path,

@@ -85,6 +85,17 @@ def test_assess_parser_accepts_host_only_task_obligations_sidecar() -> None:
     assert args.trusted_task_obligations_file == "obligations.json"
 
 
+def test_assess_parser_accepts_host_metadata_flag() -> None:
+    args = build_parser().parse_args([
+        "assess",
+        "request.json",
+        "--json",
+        "--include-host-metadata",
+    ])
+
+    assert args.include_host_metadata is True
+
+
 @pytest.mark.parametrize("payload", [None, {}, {"required_files": []}])
 def test_trusted_obligations_sidecar_rejects_empty_payload(tmp_path, payload) -> None:
     path = tmp_path / "obligations.json"

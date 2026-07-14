@@ -21,6 +21,8 @@ def bound_predictive_variance(
     component: str,
     epistemic_variance: float,
     aleatoric_variance: float | None,
+    *,
+    floor_ratio: float = LEARNED_VARIANCE_FLOOR_RATIO,
 ) -> BoundedVariance:
     """Combine uncertainty components without allowing learned caution to vanish or explode.
 
@@ -33,8 +35,11 @@ def bound_predictive_variance(
         raise ValueError("epistemic_variance must be finite and nonnegative")
     if aleatoric is not None and (not math.isfinite(aleatoric) or aleatoric < 0.0):
         raise ValueError("aleatoric_variance must be finite and nonnegative")
+    ratio = float(floor_ratio)
+    if not math.isfinite(ratio) or not 0.0 <= ratio <= 1.0:
+        raise ValueError("floor_ratio must be finite and between 0 and 1")
     cap = COLD_START_VARIANCES[component]
-    floor = cap * LEARNED_VARIANCE_FLOOR_RATIO
+    floor = cap * ratio
     applied = cap if aleatoric is None else max(floor, min(cap, epistemic + aleatoric))
     return BoundedVariance(
         epistemic_variance=epistemic,

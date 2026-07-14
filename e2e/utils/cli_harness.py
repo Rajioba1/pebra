@@ -67,6 +67,7 @@ def assess(
     db: Path | str,
     trusted_candidate_verification_path: Path | str | None = None,
     trusted_task_obligations_path: Path | str | None = None,
+    include_host_metadata: bool = False,
     extra_env: dict[str, str] | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict:
@@ -80,6 +81,8 @@ def assess(
         ]
     if trusted_task_obligations_path is not None:
         args += ["--trusted-task-obligations-file", str(trusted_task_obligations_path)]
+    if include_host_metadata:
+        args.append("--include-host-metadata")
     return _run_json(args, extra_env=extra_env, timeout=timeout)
 
 

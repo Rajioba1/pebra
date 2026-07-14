@@ -10,6 +10,7 @@ import dataclasses
 import math
 from dataclasses import dataclass
 
+from pebra.core.constants import WARM_PRIOR_VARIANCE_FLOOR_RATIO
 from pebra.core.language_capability import classify_tier
 from pebra.core.models import AssessmentInput
 from pebra.core.variance_bounds import bound_predictive_variance
@@ -130,6 +131,7 @@ def apply_warm_prior(
             component,
             float(getattr(cell, field_name)),
             getattr(cell, aleatoric_name),
+            floor_ratio=WARM_PRIOR_VARIANCE_FLOOR_RATIO,
         )
         changes[field_name] = bounded.applied_variance
         record_source(field_name, cell, {

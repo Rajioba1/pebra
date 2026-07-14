@@ -411,7 +411,10 @@ def apply_snapshot(
             continue
         if prov is None:  # defensive: a value without provenance must never adjust a live event
             continue
-        if event["event"] in CONSEQUENCE_BEARING_EVENTS and val < prior:
+        consequence_floor_applied = (
+            event["event"] in CONSEQUENCE_BEARING_EVENTS and val < prior
+        )
+        if consequence_floor_applied:
             # A repository-level outcome rate is not patch-bound proof. It may make a consequence
             # event more cautious, but only candidate refinement may earn a risk reduction for the
             # current patch. Preserve the learned estimate in provenance without authorizing from it.
@@ -424,9 +427,13 @@ def apply_snapshot(
             # elicited_disutility). Revisit if the event schema ever gains nested mutables.
             new_events = [dict(e) for e in inp.events]  # never mutate the original
         new_events[idx]["p_event"] = val
-        learned_variance = _bounded_learned_variance(prov, "p_event")
-        if learned_variance is not None:
-            new_event_probability_variances[event["event"]] = learned_variance
+        # If repository-level evidence is not allowed to lower this patch's consequence
+        # probability, it also cannot earn narrower uncertainty around that rejected estimate.
+        # Preserve the candidate-specific variance (or its cold-start fallback) unchanged.
+        if not consequence_floor_applied:
+            learned_variance = _bounded_learned_variance(prov, "p_event")
+            if learned_variance is not None:
+                new_event_probability_variances[event["event"]] = learned_variance
         applied.append(prov)  # type: ignore[arg-type]
 
     new_immediate_benefit = inp.immediate_benefit

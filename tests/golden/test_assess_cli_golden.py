@@ -52,6 +52,8 @@ def test_assess_json_reproduces_numbers(tmp_path) -> None:
     proc = _run(["assess", str(FIXTURE), "--json"], cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
+    assert "prior_provenance" not in payload
+    assert "applied_snapshot_provenance" not in payload
     s = payload["scores"]
     assert payload["recommended_decision"] == "proceed"
     assert payload["requires_confirmation"] is True
@@ -62,3 +64,15 @@ def test_assess_json_reproduces_numbers(tmp_path) -> None:
     assert round(s["rau"], 2) == 0.31
     assert round(s["edit_confidence"], 2) == 0.83
     assert round(s["risk_budget_used"], 2) == 0.50
+
+
+def test_assess_json_can_expose_host_provenance_explicitly(tmp_path) -> None:
+    proc = _run(
+        ["assess", str(FIXTURE), "--json", "--include-host-metadata"],
+        cwd=tmp_path,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["prior_provenance"]["source"] in {"cold_start", "shipped", "local_learned"}
+    assert "applied_snapshot_provenance" in payload

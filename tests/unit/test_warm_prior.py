@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from pebra.core.constants import COLD_START_VARIANCES, LEARNED_VARIANCE_FLOOR_RATIO
+from pebra.core.constants import COLD_START_VARIANCES, WARM_PRIOR_VARIANCE_FLOOR_RATIO
 from pebra.core.language_capability import LanguageCapability
 from pebra.core.models import AssessmentInput, AssessmentRequest, CandidateAction
 from pebra.core.warm_prior import CalibratedPriorCell, apply_warm_prior
@@ -124,7 +124,7 @@ def test_warm_prior_variance_is_floored_and_capped_per_target() -> None:
     out = apply_warm_prior(_input(), (cell,))
 
     assert out.p_success_variance == pytest.approx(
-        COLD_START_VARIANCES["p_success"] * LEARNED_VARIANCE_FLOOR_RATIO
+        COLD_START_VARIANCES["p_success"] * WARM_PRIOR_VARIANCE_FLOOR_RATIO
     )
     assert out.review_cost_variance == pytest.approx(COLD_START_VARIANCES["review_cost"])
     sources = out.warm_prior_provenance["field_sources"]

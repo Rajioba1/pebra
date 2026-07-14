@@ -190,6 +190,20 @@ def test_consequence_event_learning_cannot_lower_candidate_specific_risk() -> No
     assert entry["learned_value"] == pytest.approx(0.05)
     assert entry["new_value"] == pytest.approx(0.45)
     assert entry["safety_constraint"] == "consequence_event_non_decreasing"
+    assert "public_api_break" not in out.event_probability_variances
+
+    with_existing_variance = apply_snapshot(
+        replace(inp, event_probability_variances={"public_api_break": 0.0024}),
+        _bundle(_fact(
+            target_name="p_event.public_api_break",
+            value=0.05,
+            variance=0.0002,
+            aleatoric_variance=0.0008,
+        )),
+    )
+    assert with_existing_variance.event_probability_variances == {
+        "public_api_break": pytest.approx(0.0024),
+    }
 
 
 # --- specificity + tiebreak --------------------------------------------------
@@ -563,3 +577,27 @@ def test_log_pool_applies_to_p_event_targets_too() -> None:
     out = apply_snapshot(inp, bundle, PoolConfig(mode="log_pool", top_k=2, max_logit_shift=10.0))
     expected = _sigmoid((_logit(0.80) + _logit(0.60)) / 2.0)
     assert out.events[0]["p_event"] == pytest.approx(expected)
+
+
+def test_log_pool_cannot_narrow_consequence_event_mean_or_variance() -> None:
+    inp = replace(
+        _inp(events=[{"event": "public_api_break", "p_event": 0.45}]),
+        event_probability_variances={"public_api_break": 0.0024},
+    )
+    bundle = _bundle(
+        _fact(
+            target_name="p_event.public_api_break", value=0.08, fact_id="lrf_a",
+            variance=0.0002, aleatoric_variance=0.0008,
+        ),
+        _fact(
+            target_name="p_event.public_api_break", value=0.12, fact_id="lrf_b",
+            variance=0.0003, aleatoric_variance=0.0009,
+        ),
+    )
+
+    out = apply_snapshot(inp, bundle, PoolConfig(mode="log_pool", top_k=2, max_logit_shift=10.0))
+
+    assert out.events[0]["p_event"] == pytest.approx(0.45)
+    assert out.event_probability_variances == {"public_api_break": pytest.approx(0.0024)}
+    (entry,) = out.applied_snapshot_provenance["applied_facts"]
+    assert entry["safety_constraint"] == "consequence_event_non_decreasing"

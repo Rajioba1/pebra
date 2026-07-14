@@ -237,9 +237,14 @@ def _next_action(outcome: AssessmentOutcome) -> dict[str, Any]:
     return {"type": "stop", "reason": reason}
 
 
-def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
-    """The canonical assess result (the recommended action). Identical bytes for `assess --json` and
-    the pebra_assess MCP tool."""
+def assess_payload(
+    outcome: AssessmentOutcome, *, include_host_metadata: bool = False,
+) -> dict[str, Any]:
+    """Build the canonical model-facing assessment result.
+
+    Host-only calibration provenance is opt-in for trusted CLI consumers and is never included in
+    the default payload shared with MCP tools.
+    """
     r = outcome.recommended_result
     repo_state = r.provenance.get("repo_state") or {
         "repo_head_sha": r.assessed_commit,
@@ -275,11 +280,14 @@ def assess_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
         "gates_fired": r.gates_fired,
         "high_risk_triggers": r.high_risk_triggers,
         "model_guidance_packet": r.model_guidance_packet,
-        "applied_snapshot_provenance": r.provenance.get("applied_snapshot_provenance"),
-        "prior_provenance": r.provenance.get("prior_provenance"),
         "repo_state": repo_state,
         "graph_provenance": _graph_provenance(r),
     }
+    if include_host_metadata:
+        payload["applied_snapshot_provenance"] = r.provenance.get(
+            "applied_snapshot_provenance"
+        )
+        payload["prior_provenance"] = r.provenance.get("prior_provenance")
     if refinement is not None:
         payload["graph_refinement"] = refinement
     return payload

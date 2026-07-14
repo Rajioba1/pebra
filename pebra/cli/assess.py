@@ -34,6 +34,11 @@ def register(subparsers: Any) -> None:
     p.add_argument("--repo-root", default=None, help="Repo root (defaults to current directory).")
     p.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
     p.add_argument(
+        "--include-host-metadata",
+        action="store_true",
+        help="Include host-only learning and prior provenance in JSON output.",
+    )
+    p.add_argument(
         "--trusted-candidate-verification-file",
         default=None,
         help="Host-produced candidate verification JSON, outside untrusted request.evidence.",
@@ -72,7 +77,14 @@ def run(args: Any) -> int:
             **composition.build_assess_ports(request, ctx),
         )
         if args.as_json:
-            print(json.dumps(composition.assess_payload(outcome), indent=2, sort_keys=True))
+            print(json.dumps(
+                composition.assess_payload(
+                    outcome,
+                    include_host_metadata=getattr(args, "include_host_metadata", False),
+                ),
+                indent=2,
+                sort_keys=True,
+            ))
         else:
             print(render_card(outcome.recommended_result, outcome.recommended_explanation))
     finally:

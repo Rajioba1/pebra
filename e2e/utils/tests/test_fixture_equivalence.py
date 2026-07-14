@@ -6,9 +6,10 @@ cross-request comparison is only sound if the two requests are SCORING-IDENTICAL
 ONLY in identity (task / action id / label), never in evidence or thresholds. Otherwise a future edit to
 the second fixture could make the comparison pass (or fail) for reasons unrelated to learning.
 
-The CLI now emits ``applied_snapshot_provenance``, so the headline seeded-learning test can assert
-directly that the future assess consumed the promoted snapshot. This fixture guard still matters: it
-keeps the baseline-vs-learned RAU/decision comparison tied to learning rather than fixture drift.
+The seeded-learning host explicitly requests ``applied_snapshot_provenance``, so the headline test
+can assert directly that the future assess consumed the promoted snapshot without exposing that
+host-only evidence to ordinary model-facing CLI or MCP consumers. This fixture guard still matters:
+it keeps the baseline-vs-learned RAU/decision comparison tied to learning rather than fixture drift.
 """
 
 from __future__ import annotations
