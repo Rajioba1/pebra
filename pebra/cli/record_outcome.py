@@ -31,8 +31,8 @@ def register(subparsers: Any) -> None:
         'actual_success (bool), event_outcomes ({event: bool}), benefit_realized (bool), '
         "actual_review_cost (number), actual_rework_cost (number). Absent labels stay censored.",
     )
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--db", default=None)
+    p.add_argument("--repo-root", default=None, help="Repository path (defaults to current directory).")
+    p.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
     p.set_defaults(func=run)
 
 

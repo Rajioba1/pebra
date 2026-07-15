@@ -14,9 +14,18 @@ def register(subparsers: Any) -> None:
         "apply-candidate",
         help="Apply the exact candidate cached for an authorized assessment.",
     )
-    parser.add_argument("--assessment-id", required=True)
-    parser.add_argument("--repo-root", default=None)
-    parser.add_argument("--db", default=None)
+    parser.add_argument(
+        "--assessment-id", required=True,
+        help="Authorized assessment whose exact cached candidate should be applied.",
+    )
+    parser.add_argument(
+        "--repo-root", default=None,
+        help="Repository path (defaults to current directory).",
+    )
+    parser.add_argument(
+        "--db", default=None,
+        help="SQLite store path (defaults to <repo>/.pebra/pebra.db).",
+    )
     parser.set_defaults(func=run)
 
 

@@ -16,10 +16,13 @@ def register(subparsers: Any) -> None:
         "finalize-outcome",
         help="Record a trusted host outcome, measure it, and run gated promotion.",
     )
-    parser.add_argument("--trusted-outcome-file", required=True)
-    parser.add_argument("--repo-root", default=None)
-    parser.add_argument("--db", default=None)
-    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument(
+        "--trusted-outcome-file", required=True,
+        help="Host-produced JSON outcome evidence to record and evaluate.",
+    )
+    parser.add_argument("--repo-root", default=None, help="Repository path (defaults to current directory).")
+    parser.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
+    parser.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     parser.set_defaults(func=run)
 
 

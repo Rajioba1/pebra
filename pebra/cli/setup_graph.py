@@ -63,7 +63,7 @@ def register(subparsers: Any) -> None:
                "(a bin directory or the launcher path) — takes precedence over PATH and the "
                "managed install.",
     )
-    sg.add_argument("--repo-root", default=".")
+    sg.add_argument("--repo-root", default=".", help="Repository path (defaults to current directory).")
     sg.add_argument("--fix", action="store_true",
                     help="Repair a worktree mismatch by building a worktree-local index.")
     sg.add_argument("--version", default=None,
@@ -72,15 +72,15 @@ def register(subparsers: Any) -> None:
                     help="Permit a --version outside the accepted range (graph then marked untrusted).")
     sg.add_argument("--via", choices=("auto", "standalone", "npm"), default="auto",
                     help="Install route: auto (standalone, npm fallback), standalone-only, or npm-only.")
-    sg.add_argument("--json", action="store_true", dest="as_json")
+    sg.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     sg.set_defaults(func=run_setup_graph)
 
     dr = subparsers.add_parser(
         "doctor", help="Diagnose (read-only) the graph engine; --fix-graph to repair this worktree."
     )
-    dr.add_argument("--repo-root", default=".")
+    dr.add_argument("--repo-root", default=".", help="Repository path (defaults to current directory).")
     dr.add_argument("--fix-graph", action="store_true", help="Repair the graph index for this worktree.")
-    dr.add_argument("--json", action="store_true", dest="as_json")
+    dr.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     dr.set_defaults(func=run_doctor)
 
 

@@ -85,8 +85,14 @@ def register(subparsers: Any) -> None:
         "agent-init",
         help="Scaffold the pebra-safe-edit skill/rules and optionally a host pre-edit gate hook.",
     )
-    p.add_argument("--target", choices=("claude", "codex"), required=True)
-    p.add_argument("--repo-root", default=".")
+    p.add_argument(
+        "--target", choices=("claude", "codex"), required=True,
+        help="Agent host whose PEBRA protocol files should be installed.",
+    )
+    p.add_argument(
+        "--repo-root", default=".",
+        help="Repository path (defaults to current directory).",
+    )
     p.add_argument("--with-hook", action="store_true",
                    help="Also install a pre-edit gate hook config (Claude verified; Codex repo-local "
                         ".codex/hooks.json is best-effort and host-dependent). Default: instructions only.")

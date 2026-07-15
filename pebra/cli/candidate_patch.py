@@ -15,8 +15,8 @@ def register(subparsers: Any) -> None:
         help="Build a deterministic unified diff from exact structured replacements.",
     )
     parser.add_argument("edits_file", help="JSON file containing an edits array.")
-    parser.add_argument("--repo-root", default=".")
-    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument("--repo-root", default=".", help="Repository path (defaults to current directory).")
+    parser.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     parser.set_defaults(func=run)
 
 

@@ -15,7 +15,8 @@ from pebra.app import accept_risk_controller, human_approval_controller
 
 def register(subparsers: Any) -> None:
     p = subparsers.add_parser(
-        "accept-risk", help="Create a controlled-high-risk sanction from a JSON spec."
+        "accept-risk",
+        help="Create a sanction from JSON or interactively approve and apply a pending candidate.",
     )
     p.add_argument("sanction_file", nargs="?", help="Path to the sanction spec JSON.")
     p.add_argument(
@@ -28,8 +29,8 @@ def register(subparsers: Any) -> None:
         default=None,
         help="Select a pending assessment when more than one requires approval.",
     )
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--db", default=None)
+    p.add_argument("--repo-root", default=None, help="Repository path (defaults to current directory).")
+    p.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
     p.set_defaults(func=run)
 
 

@@ -17,8 +17,8 @@ def register(subparsers: Any) -> None:
     p = subparsers.add_parser(
         "dashboard", help="Launch the local Risk Observatory (read-only viewer)."
     )
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--db", default=None)
+    p.add_argument("--repo-root", default=None, help="Repository path (defaults to current directory).")
+    p.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
     p.add_argument(
         "--repo-id", default=None,
         help="Override the resolved repo_id (for replaying a db copied from another path/machine).",
@@ -29,7 +29,10 @@ def register(subparsers: Any) -> None:
              "Requires --db and --repo-id (skips repo-root resolution). For strict filesystem isolation "
              "from a WAL db, serve a copied db instead of the live clone file.",
     )
-    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument(
+        "--host", default="127.0.0.1",
+        help="Network interface to bind (default: 127.0.0.1).",
+    )
     p.add_argument(
         "--port", type=int, default=None,
         help="Pin a port (0 = OS-assigned). Default: auto-increment from 9473.",

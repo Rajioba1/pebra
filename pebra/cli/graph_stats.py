@@ -20,8 +20,8 @@ def register(subparsers: Any) -> None:
         "graph-stats",
         help="Report CodeGraph node counts (total / callable / C# callable) for a repo.",
     )
-    p.add_argument("--repo-root", default=".")
-    p.add_argument("--json", action="store_true", dest="as_json")
+    p.add_argument("--repo-root", default=".", help="Repository path (defaults to current directory).")
+    p.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     p.set_defaults(func=run_graph_stats)
 
 

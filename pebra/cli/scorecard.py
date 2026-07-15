@@ -19,9 +19,9 @@ def register(subparsers: Any) -> None:
     p = subparsers.add_parser(
         "scorecard", help="Report calibration + benefit metrics (read-only)."
     )
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--db", default=None)
-    p.add_argument("--json", action="store_true", dest="as_json")
+    p.add_argument("--repo-root", default=None, help="Repository path (defaults to current directory).")
+    p.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
+    p.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     p.set_defaults(func=run)
 
 

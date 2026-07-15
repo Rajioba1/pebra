@@ -19,8 +19,8 @@ def register(subparsers: Any) -> None:
         help="List files that depend on a target file (file-level blast radius; read-only).",
     )
     p.add_argument("--target", required=True, help="Repo-relative (or absolute) path of the file being changed.")
-    p.add_argument("--repo-root", default=".")
-    p.add_argument("--json", action="store_true", dest="as_json")
+    p.add_argument("--repo-root", default=".", help="Repository path (defaults to current directory).")
+    p.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     p.set_defaults(func=run_dependents)
 
 

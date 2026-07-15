@@ -24,9 +24,9 @@ def register(subparsers: Any) -> None:
         "learn", help="Record shadow learning measurement for an assessment (no decisions change)."
     )
     p.add_argument("--assessment-id", required=True, help="The stored assessment id (e.g. asm_1).")
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--db", default=None)
-    p.add_argument("--json", action="store_true", dest="as_json")
+    p.add_argument("--repo-root", default=None, help="Repository path (defaults to current directory).")
+    p.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
+    p.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     p.set_defaults(func=run)
 
 

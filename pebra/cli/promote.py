@@ -21,15 +21,15 @@ def register(subparsers: Any) -> None:
     p = subparsers.add_parser(
         "promote", help="Run shadow-to-active learned-fact promotion for a repo."
     )
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--db", default=None)
+    p.add_argument("--repo-root", default=None, help="Repository path (defaults to current directory).")
+    p.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
     p.add_argument(
         "--drift-freeze-threshold",
         type=float,
         default=None,
         help="Pause risk promotion when active-snapshot drift is at or above this threshold.",
     )
-    p.add_argument("--json", action="store_true", dest="as_json")
+    p.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     p.set_defaults(func=run)
 
 

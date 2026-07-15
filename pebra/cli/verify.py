@@ -43,9 +43,9 @@ def register(subparsers: Any) -> None:
         "--dry-run-preview", action="store_true",
         help="Assert an impact preview was produced (satisfies the dry-run-required check).",
     )
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--db", default=None)
-    p.add_argument("--json", action="store_true", dest="as_json")
+    p.add_argument("--repo-root", default=None, help="Repository path (defaults to current directory).")
+    p.add_argument("--db", default=None, help="SQLite store path (defaults to <repo>/.pebra/pebra.db).")
+    p.add_argument("--json", action="store_true", dest="as_json", help="Emit machine-readable JSON.")
     p.set_defaults(func=run)
 
 
