@@ -59,16 +59,43 @@ def _decode_git_path(raw: str) -> str:
 
 def _parse_diff_header(line: str) -> tuple[str, str] | None:
     match = _DIFF_GIT.match(line)
-    if not match:
-        return None
-    old = _decode_git_path(match.group(1))
-    new = _decode_git_path(match.group(2))
+    if match:
+        old = _decode_git_path(match.group(1))
+        new = _decode_git_path(match.group(2))
+    else:
+        unquoted = _parse_unquoted_diff_header(line)
+        if unquoted is None:
+            return None
+        old, new = unquoted
     if not old.startswith("a/") or not new.startswith("b/"):
         return None
     return old[2:], new[2:]
 
 
+def _parse_unquoted_diff_header(line: str) -> tuple[str, str] | None:
+    prefix = "diff --git "
+    if not line.startswith(prefix):
+        return None
+    value = line[len(prefix):]
+    candidates: list[tuple[str, str]] = []
+    offset = 0
+    while (separator := value.find(" b/", offset)) >= 0:
+        old, new = value[:separator], value[separator + 1:]
+        if old.startswith("a/") and new.startswith("b/"):
+            candidates.append((old, new))
+        offset = separator + 1
+
+    matching = [pair for pair in candidates if pair[0][2:] == pair[1][2:]]
+    if len(matching) == 1:
+        return matching[0]
+    if not matching and len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def touched_files(patch: str) -> tuple[str, ...]:
+    if any(line.startswith("*** ") for line in patch.splitlines()):
+        return ()
     paths: set[str] = set()
     current: tuple[str, str] | None = None
     old_seen = new_seen = False
@@ -105,6 +132,8 @@ def touched_files(patch: str) -> tuple[str, ...]:
             old_seen = new_seen = False
             paths.update(current)
             continue
+        if line.startswith("diff --git "):
+            return ()
         if match := _OLD_FILE.match(line):
             value = _decode_git_path(match.group(1))
             if not saw_diff_header:

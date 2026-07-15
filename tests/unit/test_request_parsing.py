@@ -112,6 +112,29 @@ def test_validate_accepts_exact_multifile_patch_envelope() -> None:
     rv.validate(cp.parse(raw))
 
 
+def test_validate_accepts_multifile_patch_with_unquoted_space_paths() -> None:
+    patch = (
+        "diff --git a/docs/readme.md b/docs/readme.md\n"
+        "index 3367afd..3e75765 100644\n"
+        "--- a/docs/readme.md\n+++ b/docs/readme.md\n"
+        "@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/docs/release notes.md b/docs/release notes.md\n"
+        "index 3367afd..3e75765 100644\n"
+        "--- a/docs/release notes.md\n+++ b/docs/release notes.md\n"
+        "@@ -1 +1 @@\n-old\n+new\n"
+    )
+    raw = {
+        **_RAW,
+        "candidate_actions": [{
+            **_RAW["candidate_actions"][0],
+            "expected_files": ["docs/readme.md", "docs/release notes.md"],
+            "proposed_patch": patch,
+        }],
+    }
+
+    rv.validate(cp.parse(raw))
+
+
 def test_validate_rejects_nonempty_malformed_proposed_patch() -> None:
     raw = {
         **_RAW,

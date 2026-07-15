@@ -118,6 +118,13 @@ If graph or Git HEAD evidence is unavailable, an installed gate remains fail-ope
 non-blocking system message. Repository-local and user-level `disableAllHooks` settings also degrade
 the reported posture. This is observable configuration, not proof that a host or managed policy invoked
 every event.
+
+`trusted_actor_required` is a protocol boundary, not OS-level identity authentication. PEBRA does
+not expose risk acceptance through MCP, and interactive acceptance requires a terminal. A process
+with arbitrary shell access under the same OS account can still invoke local trusted-host surfaces
+or simulate a terminal. Use a separately privileged host or operator account when resistance to an
+adversarial agent is required.
+
 For a candidate that changes multiple files, enforcement requires one complete `apply_patch` event containing
 the complete assessed candidate. Structured single-file edits must be assessed as separate single-file
 candidates; one file cannot reuse approval for part of a multi-file candidate.

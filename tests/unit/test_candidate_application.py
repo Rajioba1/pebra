@@ -58,6 +58,29 @@ def test_application_normalizes_validated_envelope_paths(tmp_path: Path) -> None
     assert changed == ("src/a.py", "src/b.py")
 
 
+def test_application_accepts_later_file_with_unquoted_spaces(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    spaced = repo / "src/user guide.py"
+    spaced.write_text("old-guide\n", encoding="utf-8")
+    patch = (
+        "diff --git a/src/a.py b/src/a.py\n"
+        "--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-old-a\n+new-a\n"
+        "diff --git a/src/user guide.py b/src/user guide.py\n"
+        "--- a/src/user guide.py\n+++ b/src/user guide.py\n"
+        "@@ -1 +1 @@\n-old-guide\n+new-guide\n"
+    )
+
+    changed = CandidateApplicationAdapter().apply(
+        repo,
+        patch,
+        expected_files=("src/a.py", "src/user guide.py"),
+    )
+
+    assert changed == ("src/a.py", "src/user guide.py")
+    assert (repo / "src/a.py").read_text(encoding="utf-8") == "new-a\n"
+    assert spaced.read_text(encoding="utf-8") == "new-guide\n"
+
+
 def test_application_rolls_back_all_files_when_replace_fails(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     real_replace = os.replace

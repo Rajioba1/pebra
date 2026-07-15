@@ -127,6 +127,49 @@ def test_touched_files_multiple_files_deduped_and_sorted():
     assert "src/config.py" in touched_files(patch)
 
 
+def test_touched_files_accepts_multifile_git_diff_with_unquoted_spaces():
+    patch = (
+        "diff --git a/docs/readme.md b/docs/readme.md\n"
+        "index 3367afd..3e75765 100644\n"
+        "--- a/docs/readme.md\n+++ b/docs/readme.md\n"
+        "@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/docs/x b/y.md b/docs/x b/y.md\n"
+        "index 3367afd..3e75765 100644\n"
+        "--- a/docs/x b/y.md\n+++ b/docs/x b/y.md\n"
+        "@@ -1 +1 @@\n-old\n+new\n"
+    )
+
+    assert touched_files(patch) == ("docs/readme.md", "docs/x b/y.md")
+
+
+def test_touched_files_accepts_unquoted_rename_paths_with_spaces():
+    patch = (
+        "diff --git a/docs/old guide.md b/docs/new guide.md\n"
+        "similarity index 100%\n"
+        "rename from docs/old guide.md\n"
+        "rename to docs/new guide.md\n"
+    )
+
+    assert touched_files(patch) == ("docs/new guide.md", "docs/old guide.md")
+
+
+def test_touched_files_rejects_unparseable_diff_header_without_stale_state():
+    patch = (
+        "diff --git a/src/a.py b/src/a.py\n"
+        "--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git malformed header\n"
+        "--- a/src/b.py\n+++ b/src/b.py\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+
+    assert touched_files(patch) == ()
+
+
+def test_touched_files_rejects_ambiguous_unquoted_space_header():
+    patch = "diff --git a/a b/b b/c\n"
+
+    assert touched_files(patch) == ()
+
+
 def test_touched_files_empty_patch_is_empty():
     assert touched_files("") == ()
 
