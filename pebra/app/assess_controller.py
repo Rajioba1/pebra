@@ -50,6 +50,7 @@ from pebra.core.models import (
 )
 from pebra.ports.blast_radius_port import BlastRadiusProvider
 from pebra.ports.candidate_binding_port import CandidateBindingProvider
+from pebra.ports.candidate_replay_port import CandidateReplayPort
 from pebra.ports.graph_risk_refinement_port import GraphRiskRefinementProvider
 from pebra.ports.fanin_port import FanInProvider
 from pebra.ports.file_fanin_port import FileFanInProvider
@@ -100,6 +101,9 @@ class AssessmentOutcome:
     repo_id: str
     repo_root: str
     scored_actions: list[ScoredAction] = field(default_factory=list)
+    candidate_replay: dict[str, Any] = field(
+        default_factory=lambda: {"status": "not_applicable"}
+    )
 
 
 def _capability_for_fanin(
@@ -1024,6 +1028,7 @@ def assess(
     trusted_task_obligations: dict[str, Any] | None = None,
     candidate_binding_provider: CandidateBindingProvider | None = None,
     graph_risk_refinement_provider: GraphRiskRefinementProvider | None = None,
+    candidate_replay_cache: CandidateReplayPort | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
     _validate_trusted_task_obligations(
@@ -1252,6 +1257,34 @@ def assess(
             ),
         ),
     }
+    if recommended.action.proposed_patch and candidate_replay_cache is not None:
+        replay_request = asdict(request)
+        replay_request["candidate_actions"] = [asdict(recommended.action)]
+        replay_request["thresholds"] = dict(thresholds)
+        replay_bundle = {
+            "request": replay_request,
+            "trusted_candidate_verification": (
+                asdict(recommended_verification)
+                if recommended_verification is not None
+                else None
+            ),
+            "trusted_task_obligations": {
+                "required_files": list(recommended_obligations.required_files),
+                "required_symbols": list(recommended_obligations.required_symbols),
+                "required_checks": list(recommended_obligations.required_checks),
+            },
+        }
+        try:
+            request_payload["candidate_replay"] = candidate_replay_cache.store(
+                replay_bundle
+            )
+        except Exception:  # noqa: BLE001 - replay failure must not change the risk decision
+            request_payload["candidate_replay"] = {
+                "status": "unavailable",
+                "reason": "cache_write_failed",
+            }
+    else:
+        request_payload["candidate_replay"] = {"status": "not_applicable"}
     if recommended.refinement_enabled:
         request_payload["graph_refinement"] = {
              "eligible": recommended.refinement_eligible,
@@ -1291,4 +1324,5 @@ def assess(
         repo_id=repo.repo_id,
         repo_root=repo.repo_root,
         scored_actions=scored,
+        candidate_replay=dict(request_payload["candidate_replay"]),
     )

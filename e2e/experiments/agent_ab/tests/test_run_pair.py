@@ -1749,6 +1749,38 @@ def test_structured_candidate_patch_handoff_is_identical_across_real_and_sham_ar
     assert real["detail"] == sham["detail"] == {"candidate_patch_id": patch_id}
 
 
+def test_real_advisory_binds_candidate_handle_to_host_assessment(monkeypatch, tmp_path):
+    patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n"
+    registry = {}
+    assessments = {}
+    monkeypatch.setattr(
+        run_pair.advisory_check_real,
+        "advise",
+        lambda *_args, **_kwargs: run_pair.advisory_check_real.AdvisoryOutput(
+            {
+                "recommended_decision": "proceed", "risk_level": "low",
+                "advisory": "ok", "detail": {},
+            },
+            assessment_id="asm_7",
+        ),
+    )
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA,
+        tmp_path,
+        tmp_path / "pebra.db",
+        candidate_patches=registry,
+        candidate_assessments=assessments,
+    )
+
+    result = backend({
+        "target_file": "a.ts", "change_summary": "change", "proposed_patch": patch,
+    })
+
+    patch_id = result["detail"]["candidate_patch_id"]
+    assert registry[patch_id] == patch
+    assert assessments[patch_id] == "asm_7"
+
+
 def test_repair_feedback_never_exposes_raw_verification_reason(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_pair,

@@ -78,16 +78,25 @@ def _binding(after: dict[str, str | None]) -> dict[str, Any]:
 
 
 def _codex_blocks(patch: str) -> list[tuple[str, str, list[str]]] | None:
+    lines = patch.splitlines()
+    if (
+        not lines
+        or lines[0] != "*** Begin Patch"
+        or lines[-1] != "*** End Patch"
+        or lines.count("*** Begin Patch") != 1
+        or lines.count("*** End Patch") != 1
+    ):
+        return None
     blocks: list[tuple[str, str, list[str]]] = []
     current: tuple[str, str, list[str]] | None = None
-    for line in patch.splitlines():
+    for line in lines[1:-1]:
         match = _CODEX_FILE.match(line)
         if match:
             if current is not None:
                 blocks.append(current)
             current = (match.group(1).lower(), match.group(2), [])
-        elif line in {"*** Begin Patch", "*** End Patch"}:
-            continue
+        elif line.startswith("*** ") or current is None:
+            return None
         elif current is not None:
             current[2].append(line)
     if current is not None:
@@ -168,17 +177,15 @@ def _materialize_codex(
     return after
 
 
-def _binding_for_patch(
+def _materialize_candidate_patch(
     repo_root: str | Path, patch: str | None, *, base_dir: Path | None = None
-) -> dict[str, Any] | None:
+) -> dict[str, str | None] | None:
     if not isinstance(patch, str) or not patch.strip() or _has_unsupported_metadata(patch):
         return None
     root = Path(repo_root).resolve()
-    codex_after = (
-        _materialize_codex(root, patch, base_dir=base_dir) if "*** Begin Patch" in patch else None
-    )
-    if codex_after is not None:
-        return _binding(codex_after)
+    has_codex_syntax = any(line.startswith("*** ") for line in patch.splitlines())
+    if has_codex_syntax:
+        return _materialize_codex(root, patch, base_dir=base_dir)
     raw_paths = touched_files(patch)
     if not raw_paths:
         return None
@@ -198,6 +205,23 @@ def _binding_for_patch(
         except (OSError, ValueError):
             return None
     after = materialize_patch(before, _normal(patch), apply_dir=apply_dir)
+    return after
+
+
+def materialize_candidate_patch(
+    repo_root: str | Path, patch: str | None
+) -> dict[str, str | None] | None:
+    """Return the exact normalized after-content used by candidate binding."""
+    try:
+        return _materialize_candidate_patch(repo_root, patch)
+    except (OSError, RuntimeError, TypeError, UnicodeError, ValueError):
+        return None
+
+
+def _binding_for_patch(
+    repo_root: str | Path, patch: str | None, *, base_dir: Path | None = None
+) -> dict[str, Any] | None:
+    after = _materialize_candidate_patch(repo_root, patch, base_dir=base_dir)
     return _binding(after) if after is not None else None
 
 
@@ -223,9 +247,6 @@ def _binding_for_event(event: dict[str, Any], repo_root: str | Path) -> dict[str
         command = tool_input.get("command")
         if not isinstance(command, str) or _has_unsupported_metadata(command):
             return None
-        if isinstance(command, str) and "*** Begin Patch" in command:
-            after = _materialize_codex(root, command, base_dir=event_cwd)
-            return _binding(after) if after is not None else None
         return _binding_for_patch(root, command, base_dir=event_cwd)
 
     rel = _safe_rel(root, tool_input.get("file_path", ""), base_dir=event_cwd)

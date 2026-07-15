@@ -234,6 +234,24 @@ def _gated_patch(
         patch = setup.candidate_patches.get(patch_id_arg)
         if patch is None:
             return {"ok": False, "blocked": False, "reason": "unknown candidate patch id"}
+        assessment_id = getattr(setup, "candidate_assessments", {}).get(patch_id_arg)
+        production_apply = getattr(setup, "apply_candidate_backend", None)
+        if isinstance(assessment_id, str) and callable(production_apply):
+            try:
+                kwargs = {}
+                if timeout_seconds is not None:
+                    kwargs["timeout_seconds"] = timeout_seconds
+                production_apply(assessment_id, **kwargs)
+            except Exception:  # noqa: BLE001 - production refusal is a blocked write, never fail-open
+                return {
+                    "ok": False,
+                    "blocked": True,
+                    "reason": "The exact assessed candidate was not authorized for application.",
+                }
+            write_applied = getattr(setup, "write_applied_backend", None)
+            if callable(write_applied):
+                write_applied({"_matched_assessment_id": assessment_id})
+            return {"ok": True, "blocked": False, "reason": None}
     else:
         patch = patch_arg
     event = {

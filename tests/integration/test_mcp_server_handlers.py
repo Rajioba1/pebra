@@ -3,7 +3,7 @@
 The `mcp` SDK is lazy-imported only inside ``serve()``, so ``pebra.mcp_server.server`` imports (and
 every handler) work in the dep-light nox env without the SDK. These tests call the handler functions
 directly (no stdio) and exercise the real composition wiring against a temp repo, mirroring the CLI
-surfaces — the parity guard for assess/compare/verify/accept-risk/record-outcome.
+surfaces — the parity guard for assess/compare/verify/record-outcome.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from pebra.adapters.candidate_binding import binding_for_patch
 from pebra.adapters.store.db import SqliteStore
 from pebra.core import outcome_labels
 from pebra.mcp_server import server
@@ -22,16 +21,6 @@ from pebra.mcp_server import server
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "examples" / "login_patch.json"
 REQUIRED_CHECK = "run targeted tests for the touched scope before commit"
-_BOUND_PATCH = """diff --git a/src/auth.py b/src/auth.py
---- a/src/auth.py
-+++ b/src/auth.py
-@@ -1,2 +1,2 @@
- def validate_login(u, p):
--    return True
-+    return bool(u and p)
-"""
-
-
 def _git(cwd, *args) -> None:
     subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
 
@@ -73,9 +62,11 @@ def _assess_args(repo) -> dict:
 
 def test_module_imports_without_mcp_sdk() -> None:
     assert callable(server.serve)
+    assert "pebra_accept_risk" not in server._TOOL_SCHEMAS
+    assert "pebra_accept_risk" not in server._HANDLERS
     assert set(server._HANDLERS) == {
         "pebra_assess", "pebra_compare", "pebra_verify",
-        "pebra_accept_risk", "pebra_record_outcome",
+        "pebra_record_outcome",
     }
 
 
@@ -133,36 +124,6 @@ def test_compare_returns_all_scored_actions(tmp_path) -> None:
     assert len(payload["scored_actions"]) == 1
     assert payload["scored_actions"][0]["action_id"] == "a1"
     assert payload["recommended"]["recommended_decision"] == "proceed"
-
-
-# --- accept_risk --------------------------------------------------------------
-
-
-def test_accept_risk_returns_sanction_id(tmp_path) -> None:
-    repo = _init_repo(tmp_path)
-    action = _request()["candidate_actions"][0]
-    binding = binding_for_patch(repo, _BOUND_PATCH)
-    payload = server._handle_accept_risk(
-        {
-            "sanction_spec": {
-                "assessment_id": "asm_1",
-                "action_id": action["id"],
-                "risk_profile": {
-                    "assessment_id": "asm_1",
-                    "action_id": action["id"],
-                    "candidate_binding": binding,
-                },
-            },
-            **_common(repo),
-        }
-    )
-    assert payload["sanction_id"]
-    assert payload["repo_id"]
-
-
-def test_accept_risk_without_profile_raises(tmp_path) -> None:
-    with pytest.raises(ValueError):
-        server._handle_accept_risk({"sanction_spec": {}, **_common(tmp_path)})
 
 
 # --- record_outcome -----------------------------------------------------------

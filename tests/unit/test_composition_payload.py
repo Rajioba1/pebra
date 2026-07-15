@@ -328,6 +328,7 @@ def test_ask_human_payload_exposes_bound_approval_request_without_self_authorizi
         repo_id="r",
         repo_root="/repo",
         scored_actions=[ScoredAction(action=action, result=result, explanation=explanation)],
+        candidate_replay={"status": "available"},
     )
 
     payload = composition.assess_payload(outcome)
@@ -348,8 +349,73 @@ def test_ask_human_payload_exposes_bound_approval_request_without_self_authorizi
         "reason": result.decision_reason,
         "required_controls": ["human_review", "targeted_tests"],
         "trusted_actor_required": True,
+        "command": "pebra accept-risk --apply",
     }
     assert "sanction_spec" not in payload["next_action"]
+
+
+def test_proceed_payload_names_exact_dynamic_apply_command() -> None:
+    result = AssessmentResult(
+        recommended_decision=Decision.PROCEED,
+        requires_confirmation=False,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.NORMAL,
+        scores={"symbol_scope_evidence": {}},
+        repo_id="r",
+        repo_root="/repo",
+        decision_reason="Candidate is authorized.",
+    )
+    outcome = AssessmentOutcome(
+        recommended_result=result,
+        recommended_explanation=Explanation(
+            risk_level_band="Low", value_after_risk_band="Positive", confidence_band="high",
+            confidence_percent=90, code_sensitivity_label="Low",
+            code_sensitivity_descriptor="code", expected_damage=0.01,
+            risk_budget_percent=5, affected_area="local",
+        ),
+        assessment_id="asm_99", repo_id="r", repo_root="/repo",
+        candidate_replay={"status": "available"},
+    )
+
+    assert composition.assess_payload(outcome)["next_action"] == {
+        "type": "apply_exact_candidate_then_verify",
+        "reason": "Candidate is authorized.",
+        "assessment_id": "asm_99",
+        "command": "pebra apply-candidate --assessment-id asm_99",
+    }
+
+
+def test_candidate_commands_are_not_advertised_without_replay_data() -> None:
+    explanation = Explanation(
+        risk_level_band="Moderate", value_after_risk_band="Borderline",
+        confidence_band="medium", confidence_percent=60,
+        code_sensitivity_label="Moderate", code_sensitivity_descriptor="code",
+        expected_damage=0.1, risk_budget_percent=50, affected_area="small",
+    )
+
+    def next_action(decision: Decision) -> dict:
+        result = AssessmentResult(
+            recommended_decision=decision,
+            requires_confirmation=decision is Decision.ASK_HUMAN,
+            action_status=ActionStatus.PENDING,
+            risk_mode=RiskMode.NORMAL,
+            scores={"symbol_scope_evidence": {}},
+            repo_id="r", repo_root="/repo", decision_reason="reason",
+        )
+        outcome = AssessmentOutcome(
+            recommended_result=result, recommended_explanation=explanation,
+            assessment_id="asm_legacy", repo_id="r", repo_root="/repo",
+        )
+        return composition.assess_payload(outcome)["next_action"]
+
+    ask_action = next_action(Decision.ASK_HUMAN)
+    proceed_action = next_action(Decision.PROCEED)
+
+    assert ask_action["type"] == "request_human_approval"
+    assert proceed_action["type"] == "apply_exact_candidate_then_verify"
+    assert "command" not in ask_action
+    assert "command" not in proceed_action
+    assert "assessment_id" not in proceed_action
 
 
 def test_non_review_payload_does_not_claim_human_approval_is_required() -> None:

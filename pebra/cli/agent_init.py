@@ -49,12 +49,16 @@ obligation, not optional. Do not skip these steps:
    its own; if it will not, escalate as in step 3.
 3. **Escalate when asked.** Treat the assess JSON `next_action` as authoritative. If the decision is
    `ask_human`, present its reason, risk/benefit values, remaining uncertainty, required controls, and
-   exact candidate to the user. Ask for explicit approval; silence is not approval. A trusted human or host
-   must create the sanction with `pebra accept-risk`; do not create or claim the sanction yourself. After
-   the sanction exists, reassess the exact candidate and edit only if PEBRA returns `proceed` with
-   `risk_mode=controlled_high_risk`. If the decision is `reject`, stop and ask for a different route.
+   exact candidate to the user. Launch `pebra accept-risk --apply`; a trusted human or host operator must review the
+   displayed risk/benefit evidence and type the approval in its interactive terminal. Do not answer the
+   approval prompt yourself. Do not create or claim the sanction yourself. PEBRA creates the bound
+   sanction, then will reassess the exact candidate
+   and apply it only after a
+   `proceed` with `risk_mode=controlled_high_risk`. If the decision is `reject`, stop and ask for a different route.
    Never treat either decision as permission to edit.
-4. **Edit** within the safe scope PEBRA reports; keep to the smallest sufficient change.
+4. **Edit.** When `next_action.type` is `apply_exact_candidate_then_verify`, run its returned command
+   (`pebra apply-candidate --assessment-id <returned-id>`). Do not manually retype or reconstruct the
+   patch. Keep all later edits within the safe scope PEBRA reports.
 5. **Verify.** After editing, run `pebra verify --assessment-id <id> --scope staged` and resolve any
    scope drift or build failures it reports.
 6. **Record.** Run `pebra record-outcome --assessment-id <id> --status completed`.

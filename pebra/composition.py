@@ -24,6 +24,9 @@ from pebra.adapters.contract_surface import ContractSurfaceScanner
 from pebra.adapters.codegraph_candidate_refinement import CodeGraphCandidateRefinementAdapter
 from pebra.adapters.git_change_verifier import GitChangeVerifier
 from pebra.adapters.candidate_binding import CandidateBindingAdapter
+from pebra.adapters.candidate_application import CandidateApplicationAdapter
+from pebra.adapters.candidate_gate import CandidateGateAdapter
+from pebra.adapters.candidate_replay_cache import CandidateReplayCache
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
 from pebra.adapters.codegraph_materialized_diff import CodeGraphMaterializedDiffAdapter
 from pebra.adapters.import_graph_cache import GraphProvider
@@ -150,6 +153,9 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         # Deployment dark gate: request thresholds alone cannot turn the expensive semantic tier on.
         "semantic_diff_enabled": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF") == "1",
         "candidate_binding_provider": CandidateBindingAdapter(),
+        "candidate_replay_cache": CandidateReplayCache(
+            Path(ctx.repo.repo_root) / ".pebra" / "candidates"
+        ),
         # Revision-only bounded after-graph refinement. Ordinary candidates stay on the existing graph;
         # the controller cheap-ranks all alternatives before spending this provider's assess budget.
         "graph_risk_refinement_provider": (
@@ -191,6 +197,17 @@ def build_sanction_port(ctx: RepoContext) -> SanctionPort:
     return SanctionStore(ctx.store)
 
 
+def build_candidate_apply_ports(ctx: RepoContext) -> dict[str, Any]:
+    """Adapters for exact, gate-authorized working-tree candidate application."""
+    return {
+        "replay_cache": CandidateReplayCache(
+            Path(ctx.repo.repo_root) / ".pebra" / "candidates"
+        ),
+        "gate": CandidateGateAdapter(),
+        "applier": CandidateApplicationAdapter(),
+    }
+
+
 # --- canonical surface payloads (shared by CLI --json and MCP tool results) ----
 
 
@@ -210,7 +227,7 @@ def _next_action(outcome: AssessmentOutcome) -> dict[str, Any]:
         packet = result.model_guidance_packet or {}
         binding = packet.get("binding") or {}
         scores = result.scores or {}
-        return {
+        approval = {
             "type": "request_human_approval",
             "status": "pending",
             "assessment_id": outcome.assessment_id,
@@ -226,6 +243,9 @@ def _next_action(outcome: AssessmentOutcome) -> dict[str, Any]:
             # cross a trusted host/operator boundary; request JSON is not approval evidence.
             "trusted_actor_required": True,
         }
+        if outcome.candidate_replay.get("status") == "available":
+            approval["command"] = "pebra accept-risk --apply"
+        return approval
     if decision == "revise_safer":
         return {"type": "resubmit_safer_candidate", "reason": reason}
     if decision == "inspect_first":
@@ -233,7 +253,16 @@ def _next_action(outcome: AssessmentOutcome) -> dict[str, Any]:
     if decision == "test_first":
         return {"type": "run_checks_then_reassess", "reason": reason}
     if decision == "proceed":
-        return {"type": "apply_exact_candidate_then_verify", "reason": reason}
+        application = {
+            "type": "apply_exact_candidate_then_verify",
+            "reason": reason,
+        }
+        if outcome.candidate_replay.get("status") == "available":
+            application.update({
+                "assessment_id": outcome.assessment_id,
+                "command": "pebra apply-candidate --assessment-id " + outcome.assessment_id,
+            })
+        return application
     return {"type": "stop", "reason": reason}
 
 

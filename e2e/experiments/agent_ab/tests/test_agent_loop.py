@@ -506,6 +506,29 @@ def test_apply_patch_handle_uses_registered_exact_patch(tmp_path):
     assert (tmp_path / "a.ts").read_text(encoding="utf-8") == "const a = 2;\n"
 
 
+def test_apply_patch_handle_delegates_to_production_candidate_application(tmp_path):
+    patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n"
+    patch_id = advisory_contract.candidate_patch_id(patch)
+    setup = _setup(tmp_path)
+    setup.candidate_patches[patch_id] = patch
+    setup.candidate_assessments = {}
+    setup.candidate_assessments[patch_id] = "asm_7"
+    calls = []
+    setup.apply_candidate_backend = lambda assessment_id, **kwargs: calls.append(
+        (assessment_id, kwargs)
+    ) or {"status": "applied", "changed_files": ["a.ts"]}
+    setup.gate_check_backend = lambda _event: pytest.fail(
+        "production apply-candidate owns exact authorization"
+    )
+
+    result = agent_loop._dispatch(
+        "apply_patch", {"candidate_patch_id": patch_id}, setup, timeout_seconds=12.0
+    )
+
+    assert result == {"ok": True, "blocked": False, "reason": None}
+    assert calls == [("asm_7", {"timeout_seconds": 12.0})]
+
+
 def test_agent_applies_advisory_candidate_by_handle_end_to_end(tmp_path, monkeypatch):
     _no_git(monkeypatch, files=("a.ts",))
     (tmp_path / "a.ts").write_text("const a = 1;\n", encoding="utf-8")

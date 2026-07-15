@@ -76,6 +76,10 @@ def parse_diff_header(line: str) -> tuple[str, str] | None:
 
 def touched_files(patch: str) -> tuple[str, ...]:
     """Return validated old/new paths from every ``diff --git`` block, or () if malformed."""
+    # Codex apply-patch commands are a distinct wire format. A unified diff
+    # containing either marker is ambiguous and must not be partially parsed.
+    if any(line.startswith("*** ") for line in patch.splitlines()):
+        return ()
     paths: set[str] = set()
     current: tuple[str, str] | None = None
     old_seen = new_seen = False

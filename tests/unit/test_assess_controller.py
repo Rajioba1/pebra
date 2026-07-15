@@ -6,9 +6,12 @@ It must reproduce the spec §10 worked example end-to-end.
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 import pytest
 
 from pebra.app import assess_controller as ac
+from pebra.core import decision_engine
 from pebra.core.apply_snapshot import SnapshotBundle, SnapshotFact
 from pebra.core import models as m
 from pebra.core.constants import Decision, RiskMode
@@ -148,6 +151,19 @@ class FakeStore:
 
     def validate_chain(self):
         return True
+
+
+class FakeCandidateReplayCache:
+    def __init__(self):
+        self.bundles = []
+
+    def store(self, bundle):
+        self.bundles.append(bundle)
+        return {
+            "status": "available",
+            "algorithm": "sha256-candidate-replay-v1",
+            "digest": "b" * 64,
+        }
 
 
 class FakeSnapshotRead:
@@ -378,6 +394,80 @@ def test_trusted_candidate_verification_sidecar_selected_by_action_id() -> None:
     assert verification.required_checks == ["targeted_tests"]
     assert verification.verified_patch_hash == "a" * 64
     assert verification.retryable_infrastructure is True
+
+
+def test_assess_caches_exact_selected_candidate_replay_inputs() -> None:
+    store = FakeStore()
+    cache = FakeCandidateReplayCache()
+    patch_hash = decision_engine.candidate_patch_hash(
+        _request_with_patch().candidate_actions[0].proposed_patch or ""
+    )
+
+    outcome = ac.assess(
+        _request_with_patch(),
+        thresholds={**_THRESHOLDS, "custom_threshold": 0.123},
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        candidate_replay_cache=cache,
+        trusted_candidate_verification={
+            "status": "failed",
+            "checks": {"covering_tests": "failed"},
+            "required_checks": ["covering_tests"],
+            "domain": "covering_tests",
+            "verified_patch_hash": patch_hash,
+        },
+        trusted_task_obligations={
+            "required_files": ["src/auth.py"],
+            "required_symbols": ["validate_login"],
+            "required_checks": ["covering_tests"],
+        },
+    )
+
+    assert outcome.assessment_id == "asm_1"
+    assert len(cache.bundles) == 1
+    bundle = cache.bundles[0]
+    assert bundle["request"]["task"] == "Fix failing login validation"
+    assert bundle["request"]["thresholds"]["custom_threshold"] == pytest.approx(0.123)
+    assert bundle["request"]["candidate_actions"] == [
+        asdict(_request_with_patch().candidate_actions[0])
+    ]
+    assert bundle["trusted_candidate_verification"]["status"] == "failed"
+    assert bundle["trusted_task_obligations"] == {
+        "required_files": ["src/auth.py"],
+        "required_symbols": ["validate_login"],
+        "required_checks": ["covering_tests"],
+    }
+    assert store.persisted[0][1]["candidate_replay"] == {
+        "status": "available",
+        "algorithm": "sha256-candidate-replay-v1",
+        "digest": "b" * 64,
+    }
+
+
+def test_assess_does_not_cache_action_without_a_patch() -> None:
+    store = FakeStore()
+    cache = FakeCandidateReplayCache()
+
+    ac.assess(
+        _request(),
+        thresholds=_THRESHOLDS,
+        start_path="/abs/path/to/example-repo/src",
+        evidence_provider=FakeEvidence(),
+        symbol_diff_provider=FakeSymbolDiff(),
+        blast_provider=FakeBlast(),
+        sanction_port=FakeSanction(),
+        repository_registry=FakeRegistry(),
+        store=store,
+        candidate_replay_cache=cache,
+    )
+
+    assert cache.bundles == []
+    assert store.persisted[0][1]["candidate_replay"] == {"status": "not_applicable"}
 
 
 def test_revision_uses_ranked_graph_refinement_and_controller_binds_patch_hash() -> None:

@@ -12,17 +12,44 @@ from pebra.core.constants import ActionStatus, Decision, RiskMode
 from pebra.core.models import AssessmentResult
 
 
-def _result(rau: float) -> AssessmentResult:
+def _result(
+    rau: float,
+    *,
+    decision: Decision = Decision.PROCEED,
+    assessed_commit: str | None = None,
+) -> AssessmentResult:
     return AssessmentResult(
-        recommended_decision=Decision.PROCEED,
+        recommended_decision=decision,
         requires_confirmation=True,
         action_status=ActionStatus.PENDING,
         risk_mode=RiskMode.SENSITIVE_CONTEXT,
         scores={"rau": rau, "expected_loss": 0.10},
         repo_id="repo_local_example",
         repo_root="/abs/path",
+        assessed_commit=assessed_commit,
         model_guidance_packet={"guidance_packet_id": "gp_a1", "decision": "proceed"},
     )
+
+
+def test_pending_review_assessments_are_scoped_to_repo_and_head(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    expected = store.persist_assessment(
+        _result(0.1, decision=Decision.ASK_HUMAN, assessed_commit="head-1"),
+        {"task": "current", "candidate_replay": {"status": "available"}},
+    )
+    store.persist_assessment(
+        _result(0.1, decision=Decision.ASK_HUMAN, assessed_commit="old-head"),
+        {"task": "old", "candidate_replay": {"status": "available"}},
+    )
+    store.persist_assessment(
+        _result(0.1, decision=Decision.PROCEED, assessed_commit="head-1"),
+        {"task": "allowed", "candidate_replay": {"status": "available"}},
+    )
+
+    rows = store.pending_review_assessments("repo_local_example", "head-1")
+
+    assert [row["assessment_id"] for row in rows] == [expected]
+    assert rows[0]["request"]["task"] == "current"
 
 
 def test_two_inserts_validate(tmp_path) -> None:

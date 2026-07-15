@@ -29,6 +29,12 @@ class StorePort(Protocol):
         """Return the stored assessment content (decision, scores, guidance packet, assessed_commit)."""
         ...
 
+    def pending_review_assessments(
+        self, repo_id: str, assessed_commit: str
+    ) -> list[dict[str, Any]]:
+        """Current-HEAD ask-human assessments, newest first."""
+        ...
+
     def revise_safer_attempt_count(
         self,
         repo_id: str,

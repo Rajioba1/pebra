@@ -126,6 +126,25 @@ def test_validate_rejects_nonempty_malformed_proposed_patch() -> None:
         rv.validate(cp.parse(raw))
 
 
+def test_validate_rejects_mixed_unified_and_codex_patch_formats() -> None:
+    patch = (
+        "diff --git a/src/auth.py b/src/auth.py\n"
+        "--- a/src/auth.py\n+++ b/src/auth.py\n@@ -1 +1 @@\n-old\n+new\n"
+        "*** Begin Patch\n*** Add File: src/extra.py\n+payload\n*** End Patch\n"
+    )
+    raw = {
+        **_RAW,
+        "candidate_actions": [{
+            **_RAW["candidate_actions"][0],
+            "expected_files": ["src/auth.py"],
+            "proposed_patch": patch,
+        }],
+    }
+
+    with pytest.raises(rv.RequestValidationError, match="well-formed unified diff"):
+        rv.validate(cp.parse(raw))
+
+
 def test_validate_rejects_patch_path_escape() -> None:
     patch = (
         "diff --git a/../outside.ts b/../outside.ts\n"

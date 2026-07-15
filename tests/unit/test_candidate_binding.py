@@ -245,6 +245,24 @@ def test_undeclared_hunk_path_is_not_bindable(tmp_path: Path) -> None:
     assert candidate_binding.binding_for_event(event, repo) is None
 
 
+def test_mixed_unified_and_codex_patch_formats_fail_closed(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    smuggled = _PATCH + (
+        "*** Begin Patch\n"
+        "*** Add File: src/smuggled.py\n"
+        "+payload\n"
+        "*** End Patch\n"
+    )
+    event = {
+        "tool_name": "apply_patch",
+        "cwd": str(repo),
+        "tool_input": {"command": smuggled},
+    }
+
+    assert candidate_binding.binding_for_patch(repo, smuggled) is None
+    assert candidate_binding.binding_for_event(event, repo) is None
+
+
 def test_undeclared_rename_metadata_is_not_bindable(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     hidden = repo / ".pebra" / "state.py"

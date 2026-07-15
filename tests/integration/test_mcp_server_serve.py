@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 FIXTURE = Path(__file__).resolve().parents[2] / "examples" / "login_patch.json"
 
 
-def test_build_server_registers_the_five_tools() -> None:
+def test_build_server_registers_only_declared_tools() -> None:
     srv = server._build_server()
     assert srv.create_initialization_options() is not None
     tools = server._tool_definitions()
@@ -38,6 +38,12 @@ def test_dispatch_unknown_tool_returns_structured_error() -> None:
     (content,) = server._dispatch("nope", {})
     assert content.type == "text"
     assert json.loads(content.text)["error"].startswith("unknown tool")
+
+
+def test_dispatch_cannot_create_a_risk_sanction() -> None:
+    (content,) = server._dispatch("pebra_accept_risk", {"sanction_spec": {}})
+
+    assert json.loads(content.text) == {"error": "unknown tool: pebra_accept_risk"}
 
 
 def test_dispatch_assess_wraps_payload_as_textcontent(tmp_path) -> None:

@@ -16,7 +16,6 @@ from typing import Any
 
 from pebra import composition
 from pebra.app import (
-    accept_risk_controller,
     assess_controller,
     record_outcome_controller,
     verify_controller,
@@ -91,20 +90,6 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 **_COMMON_PROPS,
             },
             "required": ["assessment_id"],
-        },
-    },
-    "pebra_accept_risk": {
-        "description": "Create a controlled-high-risk sanction bound to a risk profile (AD-26).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "sanction_spec": {
-                    "type": "object",
-                    "description": "Sanction spec; must include a risk_profile.",
-                },
-                **_COMMON_PROPS,
-            },
-            "required": ["sanction_spec"],
         },
     },
     "pebra_record_outcome": {
@@ -209,19 +194,6 @@ def _handle_verify(arguments: dict[str, Any]) -> dict[str, Any]:
         ctx.store.close()
 
 
-def _handle_accept_risk(arguments: dict[str, Any]) -> dict[str, Any]:
-    ctx = composition.resolve_repo_and_db(arguments.get("repo_root") or ".", arguments.get("db"))
-    try:
-        sid = accept_risk_controller.accept_risk(
-            ctx.repo.repo_id,
-            dict(arguments.get("sanction_spec") or {}),
-            sanction_port=composition.build_sanction_port(ctx),
-        )
-        return {"sanction_id": sid, "repo_id": ctx.repo.repo_id}
-    finally:
-        ctx.store.close()
-
-
 def _handle_record_outcome(arguments: dict[str, Any]) -> dict[str, Any]:
     ctx = composition.resolve_repo_and_db(arguments.get("repo_root") or ".", arguments.get("db"))
     try:
@@ -245,7 +217,6 @@ _HANDLERS = {
     "pebra_assess": _handle_assess,
     "pebra_compare": _handle_compare,
     "pebra_verify": _handle_verify,
-    "pebra_accept_risk": _handle_accept_risk,
     "pebra_record_outcome": _handle_record_outcome,
 }
 

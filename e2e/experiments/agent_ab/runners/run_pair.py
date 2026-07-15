@@ -177,6 +177,8 @@ class ArmSetup:
     oracle_modified_files: tuple[str, ...] = ()
     telemetry: ArmTelemetry = dataclasses.field(default_factory=ArmTelemetry)
     candidate_patches: dict[str, str] = dataclasses.field(default_factory=dict)
+    candidate_assessments: dict[str, str] = dataclasses.field(default_factory=dict)
+    apply_candidate_backend: Callable[..., dict[str, Any]] | None = None
     approval_backend: Callable[..., dict[str, Any]] = lambda payload: {
         "status": "unavailable", "approval_id": None,
         "message": "No exact candidate is pending approval.",
@@ -774,6 +776,7 @@ def _advisory_backend(
     arm: str, repo_path: Path, db_path: Path, *, covering_hint: str = "",
     spec: TaskSpec | None = None, telemetry: ArmTelemetry | None = None,
     candidate_patches: dict[str, str] | None = None,
+    candidate_assessments: dict[str, str] | None = None,
 ) -> Callable[..., dict[str, Any]]:
     """Return the callable backing the SAME 'advisory_check' tool. Only the CONTENT differs by arm:
     pebra/treatment -> real PEBRA; blast_radius -> dependent-file list (no verdict); everyone else
@@ -783,6 +786,9 @@ def _advisory_backend(
     so the repair arm = plain PEBRA + covering-tests repair context. It is inert for every other arm
     and for non-revise verdicts, so the output shape stays identical and no arm is unblinded."""
     patch_registry = candidate_patches if candidate_patches is not None else {}
+    assessment_registry = (
+        candidate_assessments if candidate_assessments is not None else {}
+    )
     if arm in _REAL_ADVISORY_ARMS:
         revise_attempt = 0
 
@@ -936,9 +942,15 @@ def _advisory_backend(
                 feedback = _VERIFICATION_FEEDBACK.get(str(category))
                 if feedback:
                     result = {**result, "advisory": f"{result.get('advisory') or ''} {feedback}"}
-            return advisory_contract.with_candidate_patch(
-                result, _candidate_patch_from_payload(payload), patch_registry
+            candidate_patch = _candidate_patch_from_payload(payload)
+            shaped = advisory_contract.with_candidate_patch(
+                result, candidate_patch, patch_registry
             )
+            if isinstance(assessment_id, str) and isinstance(candidate_patch, str):
+                assessment_registry[
+                    advisory_contract.candidate_patch_id(candidate_patch)
+                ] = assessment_id
+            return shaped
 
         return _real
     if arm in _BLAST_ADVISORY_ARMS:
@@ -1222,6 +1234,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
     db_path = dest.parent / "pebra.db"
     telemetry = ArmTelemetry()
     candidate_patches: dict[str, str] = {}
+    candidate_assessments: dict[str, str] = {}
     build_backend = backends.backend_for_spec(spec)
     baseline = build_backend.run_build_delta(repo_path, spec)
     _validate_baseline(repo_path, baseline)
@@ -1238,6 +1251,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
             spec=spec,
             telemetry=telemetry,
             candidate_patches=candidate_patches,
+            candidate_assessments=candidate_assessments,
         ),
         baseline_build=baseline,
         subject_prompt=_build_subject_prompt(spec, repo_path, arm),
@@ -1247,6 +1261,21 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         oracle_modified_files=oracle_modified_files,
         telemetry=telemetry,
         candidate_patches=candidate_patches,
+        candidate_assessments=candidate_assessments,
+        apply_candidate_backend=(
+            lambda assessment_id, timeout_seconds=None: cli_harness.apply_candidate(
+                assessment_id,
+                repo_root=repo_path,
+                db=db_path,
+                timeout=(
+                    max(1, int(timeout_seconds))
+                    if timeout_seconds is not None
+                    else cli_harness.DEFAULT_TIMEOUT_SECONDS
+                ),
+            )
+            if arm in _REAL_ADVISORY_ARMS
+            else None
+        ),
         approval_backend=_approval_backend(arm, repo_path, db_path, telemetry),
         gate_check_backend=_gate_check_backend(arm, db_path, telemetry=telemetry),
         write_applied_backend=_write_applied_backend(telemetry),

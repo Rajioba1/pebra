@@ -101,6 +101,17 @@ def candidate_patch(
         request_path.unlink(missing_ok=True)
 
 
+def apply_candidate(
+    assessment_id: str, *, repo_root: Path | str, db: Path | str,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> dict:
+    """Apply an exact assessed candidate through the production CLI boundary."""
+    return _run_json([
+        "apply-candidate", "--assessment-id", assessment_id,
+        "--repo-root", str(repo_root), "--db", str(db),
+    ], timeout=timeout)
+
+
 def record_outcome(
     assessment_id: str, status: str, *, repo_root: Path | str, db: Path | str,
     detail: dict | None = None,

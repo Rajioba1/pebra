@@ -1945,6 +1945,22 @@ class SqliteStore:
             raise KeyError(f"no assessment {assessment_id!r}")
         return json.loads(row[0])
 
+    def pending_review_assessments(
+        self, repo_id: str, assessed_commit: str
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row_id, content_json in self._con.execute(
+            "SELECT id, content_json FROM assessments "
+            "WHERE repo_id = ? AND decision = 'ask_human' ORDER BY id DESC LIMIT 200",
+            (repo_id,),
+        ):
+            content = json.loads(content_json)
+            if content.get("assessed_commit") != assessed_commit:
+                continue
+            content["assessment_id"] = f"asm_{row_id}"
+            rows.append(content)
+        return rows
+
     def latest_guardrails(self, assessment_id: str) -> dict[str, Any] | None:
         row_id = self._row_id(assessment_id)
         if self._con.execute("SELECT 1 FROM assessments WHERE id = ?", (row_id,)).fetchone() is None:

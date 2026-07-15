@@ -77,6 +77,8 @@ def test_skill_protocol_uses_json_driven_trusted_human_approval_cycle(tmp_path):
     assert "next_action" in body
     assert "trusted human or host" in body
     assert "pebra accept-risk" in body
+    assert "pebra accept-risk --apply" in body
+    assert "pebra apply-candidate --assessment-id" in body
     assert "reassess the exact candidate" in body
     assert "do not create or claim the sanction yourself" in body
     assert "pebra verify" in body
