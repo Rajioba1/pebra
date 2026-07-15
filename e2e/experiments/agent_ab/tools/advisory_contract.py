@@ -17,6 +17,7 @@ arm and the trial is unblinded. Keep this module the single source of that shape
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 TOOL_NAME = "advisory_check"
@@ -69,3 +70,28 @@ def normalize_output(raw: dict[str, Any]) -> dict[str, Any]:
         "advisory": raw.get("advisory", ""),
         "detail": raw.get("detail", {}),
     }
+
+
+def candidate_patch_id(patch: str) -> str:
+    """Return the opaque, content-bound handle used for an assessed candidate patch."""
+    return f"patch_{hashlib.sha256(patch.encode('utf-8')).hexdigest()}"
+
+
+def with_candidate_patch(
+    raw: dict[str, Any],
+    patch: str | None,
+    registry: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Register a host-rendered candidate and expose only its arm-neutral handle."""
+    output = normalize_output(raw)
+    detail = output["detail"] if isinstance(output["detail"], dict) else {}
+    detail = {
+        key: value
+        for key, value in detail.items()
+        if key not in {"candidate_patch", "candidate_patch_id"}
+    }
+    patch_id = candidate_patch_id(patch) if patch else None
+    if patch_id is not None and registry is not None:
+        registry[patch_id] = patch
+    output["detail"] = {**detail, "candidate_patch_id": patch_id}
+    return output

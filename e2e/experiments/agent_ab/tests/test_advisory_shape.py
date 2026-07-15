@@ -126,6 +126,36 @@ def test_advisory_contract_accepts_patch_or_structured_candidate_edits():
         real._build_request({"target_file": "x.cs", "change_summary": "change x"})
 
 
+def test_candidate_patch_detail_is_a_fixed_arm_neutral_field():
+    patch = "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n"
+    registry = {}
+
+    real_output = advisory_contract.with_candidate_patch(
+        real._shape_output(_LEAKY_PEBRA_RESULT), patch, registry
+    )
+    sham_output = advisory_contract.with_candidate_patch(sham.advise({}), patch)
+    patch_id = advisory_contract.candidate_patch_id(patch)
+
+    assert tuple(real_output) == tuple(sham_output) == advisory_contract.OUTPUT_KEYS
+    assert real_output["detail"] == sham_output["detail"] == {"candidate_patch_id": patch_id}
+    assert registry == {patch_id: patch}
+    assert patch not in json.dumps(real_output)
+
+
+def test_candidate_patch_detail_scrubs_legacy_patch_body():
+    patch = "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n"
+
+    output = advisory_contract.with_candidate_patch(
+        {"detail": {"candidate_patch": patch, "other": "kept"}}, patch, {}
+    )
+
+    assert output["detail"] == {
+        "other": "kept",
+        "candidate_patch_id": advisory_contract.candidate_patch_id(patch),
+    }
+    assert patch not in json.dumps(output)
+
+
 def test_build_request_carries_revise_safer_attempt():
     req = real._build_request({
         "target_file": "x.cs",

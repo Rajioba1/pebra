@@ -17,6 +17,7 @@ from e2e.experiments.agent_ab.runners import (
     agent_loop, arm_prep, evaluator, model_client, run_control, run_gate, run_pair,
     subject_protocol,
 )
+from e2e.experiments.agent_ab.tools import advisory_contract
 
 _SPEC = TaskSpec("T1", "d", ("a.cs",), "risky", ("a.cs",), "build_failure", True)
 
@@ -1697,11 +1698,55 @@ def test_real_backend_materializes_structured_edits_before_assess_and_verify(mon
         "candidate_edits": [{"path": "a.ts", "old_string": "old", "new_string": "new"}],
     }
 
-    backend(payload)
-    backend(payload)
+    first = backend(payload)
+    second = backend(payload)
 
     assert assessed == [canonical, canonical]
     assert verified == [canonical]
+    patch_id = advisory_contract.candidate_patch_id(canonical)
+    assert first["detail"] == {"candidate_patch_id": patch_id}
+    assert second["detail"] == {"candidate_patch_id": patch_id}
+
+
+def test_structured_candidate_patch_handoff_is_identical_across_real_and_sham_arms(
+    monkeypatch, tmp_path
+):
+    canonical = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n"
+    payload = {
+        "target_file": "a.ts",
+        "change_summary": "rename helper",
+        "candidate_edits": [
+            {"path": "a.ts", "old_string": "old", "new_string": "new"}
+        ],
+    }
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "candidate_patch",
+        lambda edits, *, repo_root, timeout=120: {
+            "proposed_patch": canonical,
+            "expected_files": ["a.ts"],
+        },
+    )
+    monkeypatch.setattr(
+        run_pair.advisory_check_real,
+        "advise",
+        lambda payload, **_kwargs: {
+            "recommended_decision": "proceed",
+            "risk_level": "low",
+            "advisory": "ok",
+            "detail": {},
+        },
+    )
+
+    real = run_pair._advisory_backend(
+        models.ARM_PEBRA, tmp_path, tmp_path / "real.db"
+    )(payload)
+    sham = run_pair._advisory_backend(
+        models.ARM_SHAM, tmp_path, tmp_path / "sham.db"
+    )(payload)
+
+    patch_id = advisory_contract.candidate_patch_id(canonical)
+    assert real["detail"] == sham["detail"] == {"candidate_patch_id": patch_id}
 
 
 def test_repair_feedback_never_exposes_raw_verification_reason(monkeypatch, tmp_path):

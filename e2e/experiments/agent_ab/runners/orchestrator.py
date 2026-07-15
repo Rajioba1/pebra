@@ -16,6 +16,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -45,7 +46,11 @@ _RCA_IDENTITY_KEYS = (
 _RUN_DESIGN_KEYS = ("experiment_design_sha256",)
 _EVAL_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "evaluator_tests"
 _ALLOW_UNVERIFIED_ENV = "E2E_AB_ALLOW_UNVERIFIED"
-_TERMINAL_PHASES = frozenset({"finished", "failed", "insufficient_data", "no_headroom"})
+_TERMINAL_PHASES = frozenset(
+    {"finished", "failed", "interrupted", "insufficient_data", "no_headroom"}
+)
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_MAX_RUN_ID_LENGTH = 32
 
 
 class ExperimentRunError(RuntimeError):
@@ -62,6 +67,17 @@ class ShamAdmissionError(ExperimentRunError):
         super().__init__(message)
         self.phase = phase
         self.failure_kind = failure_kind
+
+
+def _validate_run_id(run_id: str) -> None:
+    if (
+        not _RUN_ID_RE.fullmatch(run_id)
+        or run_id in {".", ".."}
+        or len(run_id) > _MAX_RUN_ID_LENGTH
+    ):
+        raise ExperimentRunError(
+            "run-id must be 1-32 characters using only letters, numbers, '.', '_', or '-'"
+        )
 
 
 def load_corpus() -> list[TaskSpec]:
@@ -549,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-oracle-preflight", action="store_true")
     parser.add_argument("--skip-graph-preflight", action="store_true")
     args = parser.parse_args(argv)
+    _validate_run_id(args.run_id)
     harness_commit = _assert_harness_clean()
 
     if not args.preflight_only:
@@ -613,6 +630,16 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 preflight_status["revise_safer"] = "passed"
         active_preflight = None
+    except KeyboardInterrupt:
+        if active_preflight is not None:
+            preflight_status[active_preflight] = "interrupted"
+        _write_run_status(
+            out_dir, args.mode, "interrupted",
+            preflight_status=preflight_status, scoring_mode=scoring_mode,
+            run_metadata=run_metadata,
+            error="KeyboardInterrupt: interrupted by operator",
+        )
+        raise
     except Exception as exc:
         if active_preflight is not None:
             preflight_status[active_preflight] = "failed"
@@ -731,6 +758,14 @@ def main(argv: list[str] | None = None) -> int:
         _write_run_status(out_dir, args.mode, "finished",
                           preflight_status=preflight_status, scoring_mode=scoring_mode,
                           served_models=served_models, run_metadata=run_metadata)
+    except KeyboardInterrupt:
+        _write_run_status(
+            out_dir, args.mode, "interrupted",
+            preflight_status=preflight_status, scoring_mode=scoring_mode,
+            run_metadata=run_metadata,
+            error="KeyboardInterrupt: interrupted by operator",
+        )
+        raise
     except Exception as exc:
         phase = exc.phase if isinstance(exc, ShamAdmissionError) else "failed"
         failure_kind = exc.failure_kind if isinstance(exc, ShamAdmissionError) else None

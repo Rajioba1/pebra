@@ -176,6 +176,7 @@ class ArmSetup:
     build_backend: Any | None = None
     oracle_modified_files: tuple[str, ...] = ()
     telemetry: ArmTelemetry = dataclasses.field(default_factory=ArmTelemetry)
+    candidate_patches: dict[str, str] = dataclasses.field(default_factory=dict)
     approval_backend: Callable[..., dict[str, Any]] = lambda payload: {
         "status": "unavailable", "approval_id": None,
         "message": "No exact candidate is pending approval.",
@@ -746,9 +747,33 @@ def _required_checks_from_result(result: Any) -> tuple[str, ...]:
     return tuple(str(check) for check in checks or () if isinstance(check, str))
 
 
+def _candidate_patch_from_payload(payload: dict[str, Any]) -> str | None:
+    patch = payload.get("proposed_patch")
+    return patch if isinstance(patch, str) and patch else None
+
+
+def _materialize_candidate_payload(
+    payload: dict[str, Any], *, repo_path: Path, timeout_seconds: float | None
+) -> dict[str, Any]:
+    candidate_edits = payload.get("candidate_edits")
+    if not isinstance(candidate_edits, list) or not candidate_edits:
+        return payload
+    generated = cli_harness.candidate_patch(
+        candidate_edits,
+        repo_root=repo_path,
+        timeout=(
+            max(1, int(timeout_seconds))
+            if timeout_seconds is not None
+            else cli_harness.DEFAULT_TIMEOUT_SECONDS
+        ),
+    )
+    return {**payload, "proposed_patch": generated["proposed_patch"]}
+
+
 def _advisory_backend(
     arm: str, repo_path: Path, db_path: Path, *, covering_hint: str = "",
     spec: TaskSpec | None = None, telemetry: ArmTelemetry | None = None,
+    candidate_patches: dict[str, str] | None = None,
 ) -> Callable[..., dict[str, Any]]:
     """Return the callable backing the SAME 'advisory_check' tool. Only the CONTENT differs by arm:
     pebra/treatment -> real PEBRA; blast_radius -> dependent-file list (no verdict); everyone else
@@ -757,6 +782,7 @@ def _advisory_backend(
     ``covering_hint`` (repair arm only) is appended to the advisory text on a ``revise_safer`` verdict,
     so the repair arm = plain PEBRA + covering-tests repair context. It is inert for every other arm
     and for non-revise verdicts, so the output shape stays identical and no arm is unblinded."""
+    patch_registry = candidate_patches if candidate_patches is not None else {}
     if arm in _REAL_ADVISORY_ARMS:
         revise_attempt = 0
 
@@ -786,18 +812,9 @@ def _advisory_backend(
                     profile = approved.get("risk_profile")
                     if isinstance(profile, dict):
                         approved_candidate_binding = profile.get("candidate_binding")
-            candidate_edits = payload.get("candidate_edits")
-            if isinstance(candidate_edits, list) and candidate_edits:
-                generated = cli_harness.candidate_patch(
-                    candidate_edits,
-                    repo_root=repo_path,
-                    timeout=(
-                        max(1, int(timeout_seconds))
-                        if timeout_seconds is not None
-                        else cli_harness.DEFAULT_TIMEOUT_SECONDS
-                    ),
-                )
-                payload = {**payload, "proposed_patch": generated["proposed_patch"]}
+            payload = _materialize_candidate_payload(
+                payload, repo_path=repo_path, timeout_seconds=timeout_seconds
+            )
             # NEVER trust a subject-supplied candidate_verification. The hash-binding in the decision
             # engine only stops REPLAY against a different patch; it is NOT an authenticity check
             # (verified_patch_hash = sha256(the subject's own patch) is secret-free, so a subject could
@@ -919,15 +936,41 @@ def _advisory_backend(
                 feedback = _VERIFICATION_FEEDBACK.get(str(category))
                 if feedback:
                     result = {**result, "advisory": f"{result.get('advisory') or ''} {feedback}"}
-            return result
+            return advisory_contract.with_candidate_patch(
+                result, _candidate_patch_from_payload(payload), patch_registry
+            )
 
         return _real
     if arm in _BLAST_ADVISORY_ARMS:
-        return lambda payload, **kwargs: advisory_blast_radius.advise(
-            payload, repo_root=repo_path, db=db_path,
+        def _blast(payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            prepared = _materialize_candidate_payload(
+                payload,
+                repo_path=repo_path,
+                timeout_seconds=kwargs.get("timeout_seconds"),
+            )
+            result = advisory_blast_radius.advise(
+                prepared, repo_root=repo_path, db=db_path,
+                timeout_seconds=kwargs.get("timeout_seconds"),
+            )
+            return advisory_contract.with_candidate_patch(
+                result, _candidate_patch_from_payload(prepared), patch_registry
+            )
+
+        return _blast
+
+    def _sham(payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        prepared = _materialize_candidate_payload(
+            payload,
+            repo_path=repo_path,
             timeout_seconds=kwargs.get("timeout_seconds"),
         )
-    return lambda payload, **_kwargs: advisory_check_sham.advise(payload)
+        return advisory_contract.with_candidate_patch(
+            advisory_check_sham.advise(prepared),
+            _candidate_patch_from_payload(prepared),
+            patch_registry,
+        )
+
+    return _sham
 
 
 def _approval_backend(
@@ -1178,6 +1221,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         oracle_modified_files = _patch_touched_files(patch.read_text(encoding="utf-8"))
     db_path = dest.parent / "pebra.db"
     telemetry = ArmTelemetry()
+    candidate_patches: dict[str, str] = {}
     build_backend = backends.backend_for_spec(spec)
     baseline = build_backend.run_build_delta(repo_path, spec)
     _validate_baseline(repo_path, baseline)
@@ -1193,6 +1237,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
             ),
             spec=spec,
             telemetry=telemetry,
+            candidate_patches=candidate_patches,
         ),
         baseline_build=baseline,
         subject_prompt=_build_subject_prompt(spec, repo_path, arm),
@@ -1201,6 +1246,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         build_backend=build_backend,
         oracle_modified_files=oracle_modified_files,
         telemetry=telemetry,
+        candidate_patches=candidate_patches,
         approval_backend=_approval_backend(arm, repo_path, db_path, telemetry),
         gate_check_backend=_gate_check_backend(arm, db_path, telemetry=telemetry),
         write_applied_backend=_write_applied_backend(telemetry),

@@ -218,12 +218,32 @@ def _default_runner(argv: list[str], *, cwd: str, timeout: int, env: dict[str, s
     )
 
 
+def _dependencies_installed(root: Path, pm: str) -> bool:
+    node_modules = root / "node_modules"
+    markers = {
+        "pnpm": (node_modules / ".modules.yaml",),
+        "npm": (node_modules / ".package-lock.json",),
+        "yarn": (
+            node_modules / ".yarn-state.yml",
+            node_modules / ".yarn-integrity",
+            root / ".pnp.cjs",
+        ),
+    }[pm]
+    return any(marker.is_file() for marker in markers)
+
+
 def _ensure_installed(root: Path, pm: str, runner: RunnerFn, timeout: int) -> Any | None:
-    """Frozen install if node_modules is absent. Returns the failed proc, or None on success/skip."""
-    if (root / "node_modules").is_dir():
+    """Frozen install unless the package manager's completion marker is present."""
+    if _dependencies_installed(root, pm):
         return None
     proc = _run_fixed(runner, _install_argv(pm), root=root, timeout=timeout)
     return proc if proc.returncode != 0 else None
+
+
+def _install_error_summary(proc: Any) -> str:
+    output = (getattr(proc, "stdout", "") or "") + "\n" + (getattr(proc, "stderr", "") or "")
+    detail = _build_error_summary(output)
+    return f"dependency install failed: {detail}" if detail else "dependency install failed"
 
 
 def _run_fixed(runner: RunnerFn, argv: list[str], *, root: Path, timeout: int) -> Any:
@@ -293,7 +313,7 @@ def run_build(
     failed_install = _ensure_installed(root, pm, runner, install_timeout)
     if failed_install is not None:
         return NodeBuildResult(
-            True, False, False, failed_install.returncode, "dependency install failed",
+            True, False, False, failed_install.returncode, _install_error_summary(failed_install),
             round(time.time() - start, 2),
         )
     baseline_diff = _git_diff(root) if profile == "zshy" else None
@@ -333,7 +353,7 @@ def run_tests(
     failed_install = _ensure_installed(root, pm, runner, install_timeout)
     if failed_install is not None:
         return NodeTestResult(
-            True, False, False, failed_install.returncode, "dependency install failed",
+            True, False, False, failed_install.returncode, _install_error_summary(failed_install),
             round(time.time() - start, 2),
         )
     argv = _test_argv(pm, test_path=str(test_path) if test_path else None, test_filter=test_filter)

@@ -11,6 +11,7 @@ import pytest
 from e2e.experiments.agent_ab.models import TaskSpec
 from e2e.experiments.agent_ab.runners import agent_loop, subject_protocol
 from e2e.experiments.agent_ab.runners.model_client import ModelTurn, ScriptedClient
+from e2e.experiments.agent_ab.tools import advisory_contract
 
 _SPEC = TaskSpec("T1", "add a param", ("a.cs",), "risky", ("a.cs",), "build_failure", True)
 _CFG = agent_loop.RunConfig(model="m", max_tool_calls_per_run=5, max_wall_seconds_per_run=600,
@@ -26,6 +27,7 @@ def _setup(tmp_path, *, prompt="Do the task.", backend=None, approval_backend=No
     return SimpleNamespace(
         arm="control", repo_path=tmp_path, advisory_backend=backend,
         approval_backend=approval_backend, subject_prompt=prompt,
+        candidate_patches={},
     )
 
 
@@ -60,6 +62,15 @@ def test_write_capability_exposes_companion_edit_file_schema():
     edit_input = schemas["edit_file"]["input_schema"]
     assert edit_input["required"] == ["path", "old_string", "new_string"]
     assert edit_input["properties"]["replace_all"]["type"] == "boolean"
+
+
+def test_apply_patch_schema_accepts_manual_patch_or_registered_handle():
+    cfg = agent_loop.RunConfig(model="m", tools=("apply_patch",))
+    schemas = {item["name"]: item for item in agent_loop._build_tools_schema(cfg.tools)}
+
+    patch_input = schemas["apply_patch"]["input_schema"]
+    assert set(patch_input["properties"]) == {"patch", "candidate_patch_id"}
+    assert patch_input["required"] == []
 
 
 def test_human_approval_tool_is_arm_neutral_and_dispatches_to_host_backend(tmp_path):
@@ -209,6 +220,39 @@ def test_advisory_output_leak_aborts(tmp_path, monkeypatch):
                              ModelTurn(stop_reason="end_turn")])
     with pytest.raises(agent_loop.BlindingViolationError):
         agent_loop.run(_setup(tmp_path, backend=leaky), _SPEC, 0, client=client, config=_CFG)
+
+
+def test_advisory_candidate_patch_body_is_never_sent_to_model(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    patch = "diff --git a/PEBRA.ts b/PEBRA.ts\n--- a/PEBRA.ts\n+++ b/PEBRA.ts\n"
+    registry = {}
+
+    def advisory(_payload):
+        return advisory_contract.with_candidate_patch({
+            "recommended_decision": "proceed", "risk_level": "low",
+            "advisory": "No significant concerns were detected for this change.", "detail": {},
+        }, patch, registry)
+
+    client = ScriptedClient(
+        [
+            _tool(
+                "advisory_check",
+                {
+                    "target_file": "graph.ts",
+                    "change_summary": "edit file",
+                    "proposed_patch": patch,
+                },
+            ),
+            ModelTurn(stop_reason="end_turn"),
+        ]
+    )
+
+    result = agent_loop.run(
+        _setup(tmp_path, backend=advisory), _SPEC, 0, client=client, config=_CFG
+    )
+
+    assert result.error is None
+    assert registry[advisory_contract.candidate_patch_id(patch)] == patch
 
 
 def test_blinding_abort_message_contains_redacted_diagnostic(tmp_path, monkeypatch):
@@ -435,6 +479,114 @@ diff --git a/b.ts b/b.ts
     assert result == {"ok": True, "blocked": False, "reason": None}
     assert (tmp_path / "a.ts").read_text(encoding="utf-8") == "const a = 2;\n"
     assert (tmp_path / "b.ts").read_text(encoding="utf-8") == "const b = 2;\n"
+
+
+def test_apply_patch_handle_uses_registered_exact_patch(tmp_path):
+    (tmp_path / "a.ts").write_text("const a = 1;\n", encoding="utf-8")
+    patch = """diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-const a = 1;
++const a = 2;
+"""
+    patch_id = advisory_contract.candidate_patch_id(patch)
+    setup = _setup(tmp_path)
+    setup.candidate_patches[patch_id] = patch
+    seen = {}
+    def gate(event):
+        seen["event"] = event
+        return {"permission": "allow"}
+    setup.gate_check_backend = gate
+
+    result = agent_loop._dispatch("apply_patch", {"candidate_patch_id": patch_id}, setup)
+
+    assert seen["event"]["tool_input"] == {"command": patch}
+    assert result == {"ok": True, "blocked": False, "reason": None}
+    assert (tmp_path / "a.ts").read_text(encoding="utf-8") == "const a = 2;\n"
+
+
+def test_agent_applies_advisory_candidate_by_handle_end_to_end(tmp_path, monkeypatch):
+    _no_git(monkeypatch, files=("a.ts",))
+    (tmp_path / "a.ts").write_text("const a = 1;\n", encoding="utf-8")
+    patch = """diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-const a = 1;
++const a = 2;
+"""
+    registry = {}
+    patch_id = advisory_contract.candidate_patch_id(patch)
+    setup = _setup(
+        tmp_path,
+        backend=lambda _payload: advisory_contract.with_candidate_patch(
+            {
+                "recommended_decision": "proceed",
+                "risk_level": "low",
+                "advisory": "Apply the assessed candidate.",
+                "detail": {},
+            },
+            patch,
+            registry,
+        ),
+    )
+    setup.candidate_patches = registry
+    setup.gate_check_backend = lambda _event: {"permission": "allow"}
+    client = ScriptedClient(
+        [
+            _tool(
+                "advisory_check",
+                {
+                    "target_file": "a.ts",
+                    "change_summary": "update",
+                    "proposed_patch": patch,
+                },
+            ),
+            _tool("apply_patch", {"candidate_patch_id": patch_id}),
+            ModelTurn(text="done", stop_reason="end_turn"),
+        ]
+    )
+    cfg = agent_loop.RunConfig(
+        model="m", tools=("advisory_check", "apply_patch"), max_tool_calls_per_run=5
+    )
+
+    result = agent_loop.run(setup, _SPEC, 0, client=client, config=cfg)
+
+    assert result.error is None
+    assert [call.name for call in result.tool_calls] == ["advisory_check", "apply_patch"]
+    assert result.tool_calls[1].arguments == {"candidate_patch_id": patch_id}
+    assert result.tool_calls[1].result == {"ok": True, "blocked": False, "reason": None}
+    assert (tmp_path / "a.ts").read_text(encoding="utf-8") == "const a = 2;\n"
+
+
+def test_apply_patch_unknown_handle_fails_before_gate(tmp_path):
+    setup = _setup(tmp_path)
+    setup.gate_check_backend = lambda _event: pytest.fail("gate must not see an unknown patch handle")
+
+    result = agent_loop._dispatch("apply_patch", {"candidate_patch_id": "patch_missing"}, setup)
+
+    assert result == {"ok": False, "blocked": False, "reason": "unknown candidate patch id"}
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {},
+        {"patch": "patch", "candidate_patch_id": "patch_id"},
+    ],
+)
+def test_apply_patch_requires_exactly_one_patch_source_before_gate(tmp_path, args):
+    setup = _setup(tmp_path)
+    setup.gate_check_backend = lambda _event: pytest.fail("ambiguous patch must not reach gate")
+
+    result = agent_loop._dispatch("apply_patch", args, setup)
+
+    assert result == {
+        "ok": False,
+        "blocked": False,
+        "reason": "provide exactly one of patch or candidate_patch_id",
+    }
 
 
 def test_edit_file_reason_is_scanned_for_blinding_leaks(tmp_path, monkeypatch):

@@ -33,7 +33,12 @@ def test_arms_for_risky_and_safe():
 
 
 def _mark(name):
-    return lambda *a, **k: {"backend": name}
+    return lambda *a, **k: {
+        "recommended_decision": None,
+        "risk_level": "unknown",
+        "advisory": name,
+        "detail": {},
+    }
 
 
 def test_advisory_backend_dispatch(monkeypatch):
@@ -42,7 +47,7 @@ def test_advisory_backend_dispatch(monkeypatch):
     monkeypatch.setattr(advisory_blast_radius, "advise", _mark("blast"))
 
     def which(arm):
-        return run_pair._advisory_backend(arm, Path("/r"), Path("/d"))({"x": 1})["backend"]
+        return run_pair._advisory_backend(arm, Path("/r"), Path("/d"))({"x": 1})["advisory"]
 
     assert which(models.ARM_PEBRA) == "real"
     assert which(models.ARM_TREATMENT) == "real"          # legacy treatment maps to real

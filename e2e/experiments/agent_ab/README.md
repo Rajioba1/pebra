@@ -364,7 +364,8 @@ Run this before any paid JS assay. It runs repo identity, oracle labels, fresh g
 tier, measured candidate-specific RCA benefit, semantic-diff request wiring, and `revise_safer`
 repair-route calibration (including JS4's graph-native continuity proof), then exits before the
 subject/model loop. It does **not** require a provider key or the live run gate. Do not combine it with
-preflight skip flags.
+preflight skip flags. Run IDs are limited to 32 portable filename characters: letters, numbers,
+periods, underscores, and hyphens.
 
 PowerShell:
 
@@ -372,7 +373,7 @@ PowerShell:
 $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PRIOR_MODE="shipped"
 python -m e2e.experiments.agent_ab.runners.orchestrator `
-  --run-id js_zod_shipped_prior_preflight_001 `
+  --run-id js_zod_prior_pf_001 `
   --mode assay_js `
   --preflight-only
 ```
@@ -383,7 +384,7 @@ Bash:
 E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
 E2E_AB_PRIOR_MODE=shipped \
 python -m e2e.experiments.agent_ab.runners.orchestrator \
-  --run-id js_zod_shipped_prior_preflight_001 \
+  --run-id js_zod_prior_pf_001 \
   --mode assay_js \
   --preflight-only
 ```
@@ -418,7 +419,7 @@ $env:E2E_AB_MODE="assay_js"
 $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="10"
-$env:E2E_AB_RUN_ID="js4_v4pro_nothinking_shipped_prior_3seed_001"
+$env:E2E_AB_RUN_ID="js4_v4pro_sp_3seed_001"
 nox -s e2e-ab
 ```
 
@@ -467,7 +468,7 @@ E2E_AB_MODE=assay_js \
 E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
 E2E_AB_PARALLEL_ARMS=1 \
 E2E_AB_MAX_WORKERS=10 \
-E2E_AB_RUN_ID=js4_v4pro_nothinking_shipped_prior_3seed_001 \
+E2E_AB_RUN_ID=js4_v4pro_sp_3seed_001 \
 nox -s e2e-ab
 ```
 

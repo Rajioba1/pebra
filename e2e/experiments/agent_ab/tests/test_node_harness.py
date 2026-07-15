@@ -33,6 +33,12 @@ def _pin_node(root):
     (root / "package.json").write_text('{"engines":{"node":">=20"}}', encoding="utf-8")
 
 
+def _mark_installed(root):
+    node_modules = root / "node_modules"
+    node_modules.mkdir(exist_ok=True)
+    (node_modules / ".modules.yaml").write_text("", encoding="utf-8")
+
+
 # ---- package-manager detection (fixed, lockfile-driven, fail-closed) ----
 
 def test_detect_pnpm_yarn_npm(tmp_path):
@@ -100,7 +106,7 @@ def test_run_build_rejects_unknown_profile_before_build(tmp_path, monkeypatch):
     monkeypatch.setattr(nh, "node_available", lambda: True)
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     r = nh.run_build(tmp_path, profile="typo", runner=_fake_runner([]))
     assert r.available is False and r.ran is False
     assert "profile" in r.error_summary
@@ -110,7 +116,7 @@ def test_run_build_zshy_dispatches_the_typecheck(tmp_path, monkeypatch):
     monkeypatch.setattr(nh, "node_available", lambda: True)
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     (tmp_path / "package.json").write_text('{"engines":{"node":">=20"}}', encoding="utf-8")
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     runner = _fake_runner([_proc(0)])
     r = nh.run_build(tmp_path, profile="zshy", selector="zod:tsconfig.build.json", runner=runner)
     assert r.passed is True
@@ -127,7 +133,7 @@ def test_run_build_uses_corepack_for_declared_package_manager(tmp_path, monkeypa
         '{"packageManager":"pnpm@10.12.1","engines":{"node":">=20"}}',
         encoding="utf-8",
     )
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     runner = _fake_runner([_proc(0)])
 
     r = nh.run_build(tmp_path, profile="zshy", selector="zod:tsconfig.build.json", runner=runner)
@@ -144,7 +150,7 @@ def test_run_build_zshy_fails_if_build_mutates_worktree(tmp_path, monkeypatch):
     monkeypatch.setattr(nh.shutil, "which", lambda name: f"/bin/{name}")
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     (tmp_path / "src.ts").write_text("before\n", encoding="utf-8")
     nh.subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, text=True)
     nh.subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, text=True)
@@ -169,7 +175,7 @@ def test_run_build_zshy_allows_preexisting_patch_when_build_does_not_mutate(tmp_
     monkeypatch.setattr(nh.shutil, "which", lambda name: f"/bin/{name}")
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     source = tmp_path / "src.ts"
     source.write_text("before\n", encoding="utf-8")
     nh.subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, text=True)
@@ -239,7 +245,7 @@ def test_run_build_missing_package_manager_returns_failed_result(tmp_path, monke
     monkeypatch.setattr(nh.shutil, "which", lambda name: None if name == "pnpm" else f"/bin/{name}")
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     r = nh.run_build(tmp_path)
     assert r.available is True and r.ran is True
     assert r.passed is False and r.exit_code == 127
@@ -257,11 +263,36 @@ def test_run_build_installs_then_builds_and_passes(tmp_path, monkeypatch):
     assert runner.calls[1] == ["pnpm", "run", "build"]     # then the fixed build script
 
 
+def test_run_build_reinstalls_incomplete_pnpm_node_modules(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    _pin_node(tmp_path)
+    (tmp_path / "node_modules" / ".pnpm").mkdir(parents=True)
+    runner = _fake_runner([_proc(0), _proc(0)])
+
+    result = nh.run_build(tmp_path, runner=runner)
+
+    assert result.passed is True
+    assert runner.calls == [["pnpm", "install", "--frozen-lockfile"], ["pnpm", "run", "build"]]
+
+
+def test_run_build_surfaces_dependency_install_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(nh, "node_available", lambda: True)
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    _pin_node(tmp_path)
+    runner = _fake_runner([_proc(1, stderr="ERR_PNPM_DISK_FULL install failed")])
+
+    result = nh.run_build(tmp_path, runner=runner)
+
+    assert result.passed is False
+    assert "ERR_PNPM_DISK_FULL" in result.error_summary
+
+
 def test_run_build_surfaces_ts_errors_on_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(nh, "node_available", lambda: True)
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()  # deps present -> skip install
+    _mark_installed(tmp_path)
     runner = _fake_runner([_proc(2, stdout="src/z.ts(1,1): error TS2739: missing members")])
     r = nh.run_build(tmp_path, runner=runner)
     assert r.passed is False and r.exit_code == 2
@@ -273,7 +304,7 @@ def test_run_tests_targets_file_and_reports_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(nh, "node_available", lambda: True)
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     runner = _fake_runner([_proc(0, stdout=json.dumps({"numTotalTests": 5, "numFailedTests": 0}))])
     r = nh.run_tests(tmp_path, test_path="src/a.test.ts", runner=runner)
     assert r.ran is True and r.passed is True and r.tests_selected == 5
@@ -284,7 +315,7 @@ def test_run_tests_untargeted_zero_selected_is_not_a_pass(tmp_path, monkeypatch)
     monkeypatch.setattr(nh, "node_available", lambda: True)
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     runner = _fake_runner([
         _proc(0, stdout=json.dumps({"numTotalTests": 0, "numFailedTests": 0}))
     ])
@@ -301,7 +332,7 @@ def test_run_tests_zero_selected_targeted_is_not_a_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(nh, "node_available", lambda: True)
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     runner = _fake_runner([_proc(0, stdout=json.dumps({"numTotalTests": 0, "numFailedTests": 0}))])
     r = nh.run_tests(tmp_path, test_path="src/a.test.ts", runner=runner)
     assert r.passed is False
@@ -311,7 +342,7 @@ def test_run_tests_targeted_malformed_json_is_not_a_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(nh, "node_available", lambda: True)
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
     runner = _fake_runner([_proc(0, stdout="not json")])
     r = nh.run_tests(tmp_path, test_path="src/a.test.ts", runner=runner)
     assert r.passed is False and r.tests_selected is None
@@ -321,7 +352,7 @@ def test_run_tests_untargeted_malformed_json_is_not_a_pass(tmp_path, monkeypatch
     monkeypatch.setattr(nh, "node_available", lambda: True)
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     _pin_node(tmp_path)
-    (tmp_path / "node_modules").mkdir()
+    _mark_installed(tmp_path)
 
     r = nh.run_tests(tmp_path, runner=_fake_runner([_proc(0, stdout="not json")]))
 

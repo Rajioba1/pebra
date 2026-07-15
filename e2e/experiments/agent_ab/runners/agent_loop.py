@@ -68,10 +68,16 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                                                    "new_string": {"type": "string"},
                                                    "replace_all": {"type": "boolean"}},
                                     "required": ["path", "old_string", "new_string"]}},
-    "apply_patch": {"description": "Atomically apply a git-style unified patch to one or more files.",
+    "apply_patch": {"description": (
+                        "Atomically apply a git-style unified patch to one or more files. Provide "
+                        "exactly one of patch or a candidate_patch_id returned by advisory_check."
+                    ),
                     "input_schema": {"type": "object",
-                                     "properties": {"patch": {"type": "string"}},
-                                     "required": ["patch"]}},
+                                     "properties": {
+                                         "patch": {"type": "string"},
+                                         "candidate_patch_id": {"type": "string"},
+                                     },
+                                     "required": []}},
     "list_dir": {"description": "List entries of a repo directory.",
                  "input_schema": {"type": "object",
                                   "properties": {"path": {"type": "string"}}, "required": []}},
@@ -214,7 +220,22 @@ def _gated_edit(
 def _gated_patch(
     args: dict[str, Any], setup: "ArmSetup", *, timeout_seconds: float | None = None
 ) -> dict[str, Any]:
-    patch = args.get("patch", "")
+    patch_arg = args.get("patch")
+    patch_id_arg = args.get("candidate_patch_id")
+    has_patch = isinstance(patch_arg, str) and bool(patch_arg)
+    has_patch_id = isinstance(patch_id_arg, str) and bool(patch_id_arg)
+    if has_patch == has_patch_id:
+        return {
+            "ok": False,
+            "blocked": False,
+            "reason": "provide exactly one of patch or candidate_patch_id",
+        }
+    if has_patch_id:
+        patch = setup.candidate_patches.get(patch_id_arg)
+        if patch is None:
+            return {"ok": False, "blocked": False, "reason": "unknown candidate patch id"}
+    else:
+        patch = patch_arg
     event = {
         "tool_name": "apply_patch",
         "tool_input": {"command": patch},
@@ -405,7 +426,9 @@ def run(
                 tool_ended = time.monotonic()
                 # Blinding: scan harness-authored outputs (advisory result AND any write reason — a gate
                 # deny or a write error), never file reads/content. Any reason text reaches the model.
-                if name in {advisory_contract.TOOL_NAME, approval_contract.TOOL_NAME} or (
+                if name == advisory_contract.TOOL_NAME:
+                    blinding_presend_check([json.dumps(result)])
+                elif name == approval_contract.TOOL_NAME or (
                     name in MUTATING_TOOLS and result.get("reason")
                 ):
                     blinding_presend_check([json.dumps(result)])

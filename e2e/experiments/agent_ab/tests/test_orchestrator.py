@@ -498,6 +498,33 @@ def test_main_writes_finished_run_status(monkeypatch, tmp_path):
     assert set(status["run_metadata"]["protocol_hashes"]) >= {"sham", "pebra"}
 
 
+def test_main_marks_interrupted_run_terminal_before_reraising(monkeypatch, tmp_path):
+    def _interrupted_pair(spec, seed, run_id):
+        raise KeyboardInterrupt
+
+    _wire(monkeypatch, tmp_path, [_T1], _interrupted_pair)
+    monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
+
+    with pytest.raises(KeyboardInterrupt):
+        orchestrator.main(
+            ["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"]
+        )
+
+    status = json.loads((tmp_path / "t1" / "run_status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "interrupted"
+    assert status["error"] == "KeyboardInterrupt: interrupted by operator"
+
+
+def test_main_rejects_long_run_id_before_creating_artifacts(monkeypatch, tmp_path):
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    run_id = "x" * (orchestrator._MAX_RUN_ID_LENGTH + 1)
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run-id"):
+        orchestrator.main(["--run-id", run_id])
+
+    assert not (tmp_path / run_id).exists()
+
+
 def test_main_run_status_records_parallel_arms_when_enabled(monkeypatch, tmp_path):
     def _fake_pair(spec, seed, run_id):
         return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
