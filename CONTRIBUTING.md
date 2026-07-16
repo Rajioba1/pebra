@@ -15,8 +15,7 @@ license. Identify copied or adapted third-party material and preserve its requir
 
 ## Development Setup
 
-Use Python 3.11 or newer. The full setup and command runbook is in [DEVELOPMENT.md](DEVELOPMENT.md).
-A minimal Windows setup is:
+Use Python 3.11 or newer. A minimal Windows setup is:
 
 ```powershell
 python -m venv .venv
@@ -26,6 +25,10 @@ python -m venv .venv
 ```
 
 Use the equivalent activation and executable paths on macOS or Linux.
+
+Run `nox -s tests lint e2e-fast` for the normal source checkout. Before release, run
+`nox -s dev-package` to build and verify the tracked source as a clean wheel and source distribution;
+use `nox -s dev-package -- --open` to open the installed wheel's dashboard.
 
 ## Engineering Rules
 

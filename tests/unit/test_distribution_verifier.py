@@ -54,7 +54,6 @@ def _write_sdist(
         "LICENSE",
         "SECURITY.md",
         "CONTRIBUTING.md",
-        "DEVELOPMENT.md",
         "RELEASING.md",
         "README.md",
         "pyproject.toml",

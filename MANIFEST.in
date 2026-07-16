@@ -1,7 +1,6 @@
 include LICENSE
 include SECURITY.md
 include CONTRIBUTING.md
-include DEVELOPMENT.md
 include RELEASING.md
 include requirements-release.in
 include requirements-release.txt

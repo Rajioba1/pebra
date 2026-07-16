@@ -33,7 +33,6 @@ _SDIST_ROOT_FILES = (
     "LICENSE",
     "SECURITY.md",
     "CONTRIBUTING.md",
-    "DEVELOPMENT.md",
     "RELEASING.md",
     "README.md",
     "pyproject.toml",

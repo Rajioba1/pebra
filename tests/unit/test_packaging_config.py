@@ -11,6 +11,7 @@ def test_setuptools_discovery_prunes_non_distribution_trees() -> None:
 
     assert discovery["include"] == ["pebra*"]
     assert set(discovery["exclude"]) >= {"benchmarks*", "docs*", "e2e*", "tests*"}
+    assert discovery["namespaces"] is False
 
 
 def test_dashboard_runtime_assets_are_explicit_package_data() -> None:
@@ -35,7 +36,6 @@ def test_source_distribution_manifest_includes_release_documents() -> None:
         "include LICENSE",
         "include SECURITY.md",
         "include CONTRIBUTING.md",
-        "include DEVELOPMENT.md",
         "include RELEASING.md",
         "include requirements-release.in",
         "include requirements-release.txt",
@@ -59,3 +59,10 @@ def test_release_frontend_versions_are_pinned() -> None:
     for requirement in direct:
         assert requirement in lock
     assert "--hash=sha256:" in lock
+
+
+def test_public_documents_do_not_link_to_private_development_runbook() -> None:
+    root = Path(__file__).resolve().parents[2]
+
+    for name in ("README.md", "CONTRIBUTING.md"):
+        assert "DEVELOPMENT.md" not in (root / name).read_text(encoding="utf-8")

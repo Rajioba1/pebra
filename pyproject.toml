@@ -90,6 +90,7 @@ agent-ab = ["anthropic>=0.30"]
 [tool.setuptools.packages.find]
 include = ["pebra*"]
 exclude = ["benchmarks*", "docs*", "e2e*", "tests*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 "pebra.dashboard" = [

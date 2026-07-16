@@ -183,7 +183,7 @@ Benchmark lanes:
 
 ## More Docs
 
-- [Development runbook](DEVELOPMENT.md)
+- [Contributing and development setup](CONTRIBUTING.md)
 - [True e2e suite](e2e/README.md)
 - [Benchmarks](benchmarks/README.md)
 - [Learning-loop wiring benchmark](benchmarks/flow/wiring/README.md)

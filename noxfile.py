@@ -18,6 +18,13 @@ DEV = [
 ]
 
 
+@nox.session(name="dev-package")
+def dev_package(session: nox.Session) -> None:
+    """Build, install, and smoke-test the exact local wheel; pass --open for manual dashboard use."""
+    session.install("build==1.4.0")
+    session.run("python", "-m", "scripts.dev_package", *session.posargs)
+
+
 @nox.session
 def tests(session: nox.Session) -> None:
     session.install("-e", ".", "--no-deps")
