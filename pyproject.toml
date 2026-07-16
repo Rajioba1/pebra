@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools==83.0.0", "wheel==0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,25 @@ version = "0.1.0"
 description = "Pre-Edit Benefit-Risk Assessment for coding agents — a deterministic, hexagonal decision controller."
 requires-python = ">=3.11"
 readme = "README.md"
+authors = [
+    { name = "PEBRA contributors" },
+]
+license = "Apache-2.0 AND MIT"
+license-files = [
+    "LICENSE",
+    "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+]
 
 # Python runtime deps per Architecture §12. NOTE: core/ uses none of these (stdlib-only, enforced).
 # Required external runtime graph engine: @colbymchenry/codegraph (npm/binary), checked at runtime
@@ -31,6 +50,12 @@ dependencies = [
 [project.scripts]
 pebra = "pebra.cli.main:main"
 pebra-mcp = "pebra.mcp_server.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/Rajioba1/pebra"
+Repository = "https://github.com/Rajioba1/pebra"
+Issues = "https://github.com/Rajioba1/pebra/issues"
+Releases = "https://github.com/Rajioba1/pebra/releases"
 
 [dependency-groups]
 dev = [
@@ -65,6 +90,16 @@ agent-ab = ["anthropic>=0.30"]
 [tool.setuptools.packages.find]
 include = ["pebra*"]
 exclude = ["benchmarks*", "docs*", "e2e*", "tests*"]
+
+[tool.setuptools.package-data]
+"pebra.dashboard" = [
+    "templates/*.html",
+    "static/*.js",
+    "static/*.css",
+    "static/vendor/*.js",
+    "static/vendor/*.css",
+    "static/vendor/*.txt",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

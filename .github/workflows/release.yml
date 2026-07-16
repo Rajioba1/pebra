@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Annotated tag on main to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-candidate:
+    name: Build release candidate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      candidate-sha: ${{ steps.candidate.outputs.sha }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install checksum-pinned GitHub CLI
+        env:
+          GH_VERSION: "2.96.0"
+          GH_SHA256: 83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60
+        run: |
+          curl --fail --location --silent --show-error "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" --output "$RUNNER_TEMP/gh.tar.gz"
+          echo "$GH_SHA256  $RUNNER_TEMP/gh.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gh_${GH_VERSION}_linux_amd64/bin" >> "$GITHUB_PATH"
+      - name: Validate candidate tag and main ancestry
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor HEAD origin/main
+          python scripts/verify_distribution.py release-tag "$RELEASE_TAG"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release already exists for $RELEASE_TAG" >&2
+            exit 1
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build and validate candidate distributions
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          python -m pip install --require-hashes -r requirements-release.txt
+          python -m build --no-isolation
+          python -m twine check dist/*
+          python scripts/verify_distribution.py archives dist
+          python scripts/verify_distribution.py checksums dist
+          mkdir release
+          mv dist/SHA256SUMS release/SHA256SUMS
+          python scripts/verify_distribution.py candidate-manifest dist release/CANDIDATE.json --tag "$RELEASE_TAG" --commit "$CANDIDATE_SHA"
+      - name: Attest public candidate artifacts
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@f6bf1532d7d6793fce74eac584813a8eee607999 # v4
+        with:
+          subject-path: dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate
+          path: |
+            dist/*
+            release/SHA256SUMS
+            release/CANDIDATE.json
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-testpypi:
+    name: Publish candidate to TestPyPI
+    needs: build-candidate
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-candidate
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+
+  publish-pypi:
+    name: Verify and publish tested bytes to PyPI
+    needs: [build-candidate, publish-testpypi]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.build-candidate.outputs.candidate-sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-candidate
+      - name: Verify candidate identity, checksums, and distributions
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_SHA: ${{ needs.build-candidate.outputs.candidate-sha }}
+        run: |
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/release-check" --force
+          test "$(git rev-parse refs/tags/release-check^{commit})" = "$CANDIDATE_SHA" || { echo "remote tag moved after candidate build" >&2; exit 1; }
+          python -m pip install --require-hashes -r requirements-release.txt
+          python scripts/verify_distribution.py verify-candidate dist release/CANDIDATE.json --tag "$RELEASE_TAG" --commit "$CANDIDATE_SHA"
+          python scripts/verify_distribution.py verify-checksums dist release/SHA256SUMS
+          python scripts/verify_distribution.py archives dist
+          python -m twine check dist/*
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          packages-dir: dist
+
+  create-github-release:
+    name: Create GitHub release
+    needs: [build-candidate, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.build-candidate.outputs.candidate-sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-candidate
+      - name: Install checksum-pinned GitHub CLI
+        env:
+          GH_VERSION: "2.96.0"
+          GH_SHA256: 83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60
+        run: |
+          curl --fail --location --silent --show-error "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" --output "$RUNNER_TEMP/gh.tar.gz"
+          echo "$GH_SHA256  $RUNNER_TEMP/gh.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gh_${GH_VERSION}_linux_amd64/bin" >> "$GITHUB_PATH"
+      - name: Create release from the published candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_SHA: ${{ needs.build-candidate.outputs.candidate-sha }}
+        run: |
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/release-check" --force
+          test "$(git rev-parse refs/tags/release-check^{commit})" = "$CANDIDATE_SHA" || { echo "remote tag moved after candidate build" >&2; exit 1; }
+          gh release create "$RELEASE_TAG" dist/*.whl dist/*.tar.gz release/SHA256SUMS release/CANDIDATE.json --verify-tag --generate-notes --title "$RELEASE_TAG"
