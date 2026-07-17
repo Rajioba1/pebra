@@ -1391,8 +1391,8 @@ class SqliteStore:
             )
         ]
 
-    # --- read-only API for the Risk Observatory dashboard (Phase 3b/5c-A). Pure SELECTs; the
-    # dashboard surface calls these directly (it may import adapters, never app/core). ---
+    # --- read-only API for Observatory surfaces (Phase 3b/5c-A). Pure SELECTs; presentation
+    # surfaces reach the shared subset through the Observatory query controller/read port. ---
 
     def list_assessments(
         self, repo_id: str, limit: int = 50, offset: int = 0

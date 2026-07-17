@@ -38,6 +38,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         limit: int = Query(50, ge=0, le=500),  # route-level guard; the store also clamps
         offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
             return {"items": oqc.list_assessments(repo_id, limit, offset, port=store)}
@@ -46,6 +47,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
 
     @router.get("/repos/{repo_id}/overview")
     def overview(repo_id: str, request: Request) -> dict[str, Any]:
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
             return oqc.overview(repo_id, port=store)
@@ -60,6 +62,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:
         """Lean per-assessment score projection for the risk/benefit-over-time chart."""
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
             return {"items": oqc.scores_series(repo_id, limit, offset, port=store)}
@@ -74,6 +77,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         scope: str = Query("production"),
     ) -> dict[str, Any]:
         """Reliability diagram (binary targets) or a predicted-vs-actual scatter (continuous)."""
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
             rows = store.list_prediction_errors(repo_id, target_type=target_type, scope=scope)
@@ -105,6 +109,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
     def learning_snapshots(
         repo_id: str, request: Request, limit: int = Query(50, ge=0, le=500)
     ) -> dict[str, Any]:
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
             return {"items": store.list_risk_snapshots(repo_id, limit)}
@@ -118,6 +123,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         snapshot_id: str | None = Query(None),
         limit: int = Query(200, ge=0, le=1000),
     ) -> dict[str, Any]:
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
             return {"items": store.list_learned_risk_facts(repo_id, snapshot_id, limit)}

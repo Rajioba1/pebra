@@ -89,23 +89,25 @@ forbidden_modules =
     pebra.composition
     pebra.observatory_context
 
-# The dashboard surface may read through the shared Observatory query controller (app), but must never
-# reach a mutation/lifecycle controller. New mutation controllers MUST be added to this list.
-[importlinter:contract:dashboard-no-mutation-app]
-name = dashboard imports only the observatory query controller from app (never mutation controllers)
+# The dashboard surface may import exactly one app module: the shared read-only Observatory query
+# controller. Any other app import, including a controller added later, must break this contract.
+[importlinter:contract:dashboard-only-observatory-query-app]
+name = dashboard imports only the observatory query controller from app
 type = forbidden
 source_modules =
     pebra.dashboard
 forbidden_modules =
-    pebra.app.accept_risk_controller
-    pebra.app.assess_controller
-    pebra.app.candidate_apply_controller
-    pebra.app.finalize_outcome_controller
-    pebra.app.human_approval_controller
-    pebra.app.learning_controller
-    pebra.app.promotion_controller
-    pebra.app.record_outcome_controller
-    pebra.app.verify_controller
+    pebra.app
+ignore_imports =
+    pebra.dashboard.api -> pebra.app.observatory_query_controller
+
+[importlinter:contract:observatory-query-controller-isolated]
+name = observatory query controller never reaches app siblings
+type = forbidden
+source_modules =
+    pebra.app.observatory_query_controller
+forbidden_modules =
+    pebra.app.*
 
 [importlinter:contract:assess-no-learning]
 name = assess never imports learning (Hard Rule — Milestone 4: measure, never reapply)

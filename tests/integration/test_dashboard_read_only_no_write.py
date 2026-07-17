@@ -40,8 +40,8 @@ def test_read_only_dashboard_api_never_modifies_the_db_file(tmp_path):
 
 
 def test_every_store_open_under_read_only_is_actually_read_only(tmp_path, monkeypatch):
-    # The detail routes open their OWN SqliteStore (a second open path, distinct from _open). Under
-    # read_only=True EVERY store open must be ro — else `pebra dashboard --read-only` opens read-write
+    # Every route opens its own SqliteStore through _open. Under read_only=True EVERY store open must
+    # be ro — else `pebra dashboard --read-only` opens read-write
     # (WAL sidecars + any schema migration) the first time an assessment detail is fetched. A file-mtime
     # check misses this on a current-schema db (the RW re-open is idempotent), so spy the opens directly.
     import pebra.dashboard.api as api_mod
@@ -59,7 +59,7 @@ def test_every_store_open_under_read_only_is_actually_read_only(tmp_path, monkey
     app = create_app(str(db), None, repo_id="repo_x", repo_root=None, read_only=True, allowed_hosts=_HOSTS)
     with TestClient(app) as client:
         assert client.get("/api/chain-status").status_code == 200
-        assert client.get("/api/repos/repo_x/assessments/nope").status_code == 404  # hits _assessment_detail
+        assert client.get("/api/repos/repo_x/assessments/nope").status_code == 404
 
     assert seen  # both routes opened a store
     assert all(seen), "every store open under read_only=True must pass read_only=True"
