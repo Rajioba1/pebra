@@ -53,7 +53,9 @@ def test_read_only_skips_repo_resolution_and_serves_read_only(monkeypatch, tmp_p
         def resolve(self, *a, **k):
             raise AssertionError("RepositoryRegistry.resolve() must NOT run for --read-only (inits .pebra)")
 
-    monkeypatch.setattr(cli_dash, "RepositoryRegistry", lambda: _NoResolve())
+    import pebra.observatory_context as octx
+
+    monkeypatch.setattr(octx, "RepositoryRegistry", lambda: _NoResolve())
 
     rc = cli_dash.run(_args(read_only=True, db=str(db), repo_id="repo_abc"))
     assert rc == 0

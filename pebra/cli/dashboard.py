@@ -7,10 +7,9 @@ command (and the dep-light golden CLI) stays importable without the web stack in
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from typing import Any
 
-from pebra.adapters.repository_registry import RepositoryRegistry
+from pebra.observatory_context import ObservatoryContextError, resolve_observatory_context
 
 
 def register(subparsers: Any) -> None:
@@ -53,25 +52,13 @@ def register(subparsers: Any) -> None:
 
 
 def run(args: Any) -> int:
-    if args.read_only:
-        # Read-only viewer: skip RepositoryRegistry.resolve() entirely so NO .pebra/ is initialized
-        # anywhere (resolve() would create one under --repo-root or the cwd). The caller supplies the
-        # identity directly; --repo-root, if supplied, is graph context and is not resolved/initialized.
-        if not args.db or not args.repo_id:
-            print("error: --read-only requires --db and --repo-id", file=sys.stderr)
-            return 1
-        if not Path(args.db).is_file():
-            print(f"error: --read-only db does not exist: {args.db}", file=sys.stderr)
-            return 1
-        db_path = args.db
-        repo_id = args.repo_id
-        repo_root = args.repo_root
-    else:
-        registry = RepositoryRegistry()
-        repo = registry.resolve(args.repo_root or ".")
-        db_path = args.db or str(Path(repo.repo_root) / ".pebra" / "pebra.db")
-        repo_id = args.repo_id or repo.repo_id
-        repo_root = repo.repo_root
+    try:
+        ctx = resolve_observatory_context(
+            read_only=args.read_only, db=args.db, repo_id=args.repo_id, repo_root=args.repo_root
+        )
+    except ObservatoryContextError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     # lazy: FastAPI/uvicorn are only needed to actually serve — never at CLI import time.
     from pebra.dashboard.server import resolve_dashboard_token, serve
 
@@ -83,14 +70,14 @@ def run(args: Any) -> int:
         return 1
 
     serve(
-        db_path,
+        ctx.db_path,
         host=args.host,
         requested_port=args.port,
         instance=args.instance,
         token=token,
-        repo_id=repo_id,
-        repo_root=repo_root,
-        read_only=args.read_only,
+        repo_id=ctx.repo_id,
+        repo_root=ctx.repo_root,
+        read_only=ctx.read_only,
         open_browser=args.open,
     )
     return 0

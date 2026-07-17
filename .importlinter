@@ -17,6 +17,7 @@ forbidden_modules =
     pebra.mcp_server
     pebra.dashboard
     pebra.composition
+    pebra.observatory_context
 
 [importlinter:contract:core-no-impure-libs]
 name = core forbidden from impure stdlib + heavy libs (Architecture §12)
@@ -73,6 +74,7 @@ source_modules =
 forbidden_modules =
     pebra.adapters
     pebra.composition
+    pebra.observatory_context
 
 [importlinter:contract:adapters-only-core-ports]
 name = adapters import only core + ports (no app/surfaces)
@@ -85,14 +87,25 @@ forbidden_modules =
     pebra.mcp_server
     pebra.dashboard
     pebra.composition
+    pebra.observatory_context
 
-[importlinter:contract:dashboard-no-app]
-name = dashboard is a surface and never imports app (reads via store/api)
+# The dashboard surface may read through the shared Observatory query controller (app), but must never
+# reach a mutation/lifecycle controller. New mutation controllers MUST be added to this list.
+[importlinter:contract:dashboard-no-mutation-app]
+name = dashboard imports only the observatory query controller from app (never mutation controllers)
 type = forbidden
 source_modules =
     pebra.dashboard
 forbidden_modules =
-    pebra.app
+    pebra.app.accept_risk_controller
+    pebra.app.assess_controller
+    pebra.app.candidate_apply_controller
+    pebra.app.finalize_outcome_controller
+    pebra.app.human_approval_controller
+    pebra.app.learning_controller
+    pebra.app.promotion_controller
+    pebra.app.record_outcome_controller
+    pebra.app.verify_controller
 
 [importlinter:contract:assess-no-learning]
 name = assess never imports learning (Hard Rule — Milestone 4: measure, never reapply)
