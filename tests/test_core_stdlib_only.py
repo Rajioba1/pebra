@@ -46,6 +46,7 @@ FORBIDDEN_ROOTS = {
     "bandit",
     "cryptography",
     "mapie",
+    "textual",
     # §4 defense-in-depth add-on
     "numpy",
     "sklearn",

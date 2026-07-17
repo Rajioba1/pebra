@@ -28,6 +28,7 @@ _PACKAGE_ASSETS = (
     "pebra/dashboard/static/vendor/uplot.iife.min.js",
     "pebra/dashboard/static/vendor/uplot.min.css",
     "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+    "pebra/tui/theme.tcss",
 )
 _SDIST_ROOT_FILES = (
     "LICENSE",
@@ -120,6 +121,9 @@ def verify_installed() -> None:
         if not dashboard.joinpath(relative).is_file():
             raise DistributionVerificationError(f"installed package missing {relative}")
 
+    if not importlib.resources.files("pebra.tui").joinpath("theme.tcss").is_file():
+        raise DistributionVerificationError("installed package missing pebra/tui/theme.tcss")
+
     metadata_files = {str(path).replace("\\", "/") for path in importlib.metadata.files("pebra") or ()}
     for suffix in ("licenses/LICENSE", "licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt"):
         if not any(path.endswith(suffix) for path in metadata_files):
@@ -127,7 +131,7 @@ def verify_installed() -> None:
 
     with tempfile.TemporaryDirectory(prefix="pebra-wheel-smoke-") as raw:
         cwd = Path(raw)
-        for args in (("--help",), ("help", "dashboard")):
+        for args in (("--help",), ("help", "dashboard"), ("help", "tui")):
             result = _run_cli(*args, cwd=cwd)
             if result.returncode != 0 or "pebra" not in result.stdout.lower():
                 raise DistributionVerificationError(

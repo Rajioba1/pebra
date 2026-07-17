@@ -28,6 +28,19 @@ def test_dashboard_runtime_assets_are_explicit_package_data() -> None:
     ]
 
 
+def test_tui_theme_asset_is_explicit_package_data() -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert config["tool"]["setuptools"]["package-data"]["pebra.tui"] == ["*.tcss"]
+
+
+def test_textual_is_a_pinned_runtime_dependency() -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    deps = [d.replace(" ", "") for d in config["project"]["dependencies"]]
+    assert "textual>=8.2,<9" in deps, deps
+
+
 def test_source_distribution_manifest_includes_release_documents() -> None:
     root = Path(__file__).resolve().parents[2]
     manifest = (root / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
@@ -42,6 +55,7 @@ def test_source_distribution_manifest_includes_release_documents() -> None:
         "include README.md",
         "recursive-include pebra/dashboard/templates *.html",
         "recursive-include pebra/dashboard/static *.js *.css *.txt",
+        "recursive-include pebra/tui *.tcss",
     ]
 
 

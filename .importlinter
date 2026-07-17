@@ -45,6 +45,7 @@ forbidden_modules =
     numpy
     sklearn
     mcp
+    textual
 
 # --- Benchmark wall (Phase 5b): production never imports the benchmark harness ---
 

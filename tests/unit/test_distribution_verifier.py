@@ -24,6 +24,7 @@ _ASSETS = (
     "pebra/dashboard/static/vendor/uplot.iife.min.js",
     "pebra/dashboard/static/vendor/uplot.min.css",
     "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+    "pebra/tui/theme.tcss",
 )
 
 
