@@ -39,8 +39,13 @@ def render_rau_lane(rau: float | None, *, width: int = 13) -> str:
         cells[-1 if rau > 0 else 0] = _OVERFLOW_RIGHT if rau > 0 else _OVERFLOW_LEFT
         return "".join(cells)
 
-    index = round((rau + 1.0) / 2.0 * (width - 1))
-    cells[max(0, min(width - 1, index))] = _MARKER
+    index = max(0, min(width - 1, round((rau + 1.0) / 2.0 * (width - 1))))
+    # Only an exactly-zero RAU sits on the gate cell. A small nonzero RAU that rounds onto center is
+    # nudged one cell toward its sign, so the lane never hides which side of the gate an edit fell —
+    # the near-boundary region is the most important to read. The number (format_rau) stays exact.
+    if index == center and rau != 0.0:
+        index = max(0, min(width - 1, center + (1 if rau > 0 else -1)))
+    cells[index] = _MARKER
     return "".join(cells)
 
 

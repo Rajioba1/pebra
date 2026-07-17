@@ -27,7 +27,12 @@ class ObservatoryStoreUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class ObservatorySnapshot:
-    """One consistent read of the ledger, produced by a single store session."""
+    """One refresh's reads of the ledger, taken through a single short-lived read-only session.
+
+    The reads are NOT one transactional snapshot: each is a point-in-time read of the latest committed
+    state, so if the engine commits an assessment mid-refresh the header count can momentarily differ
+    from the rendered rows. This self-corrects on the next refresh; it is not a torn write.
+    """
 
     overview: dict[str, Any]
     assessments: list[dict[str, Any]]
@@ -60,7 +65,8 @@ class ObservatoryData:
             raise ObservatoryStoreUnavailable(str(exc)) from exc
 
     def refresh_snapshot(self) -> ObservatorySnapshot:
-        """Overview, assessment rows, score series, and store-chain status — from ONE store session."""
+        """Overview, assessment rows, score series, and store-chain status through one short-lived
+        read-only session (point-in-time reads, not a single transaction — see ObservatorySnapshot)."""
         store = self._open()
         try:
             return ObservatorySnapshot(

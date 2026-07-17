@@ -35,6 +35,14 @@ def test_in_range_marker_sits_correctly_relative_to_the_gate() -> None:
     assert render_rau_lane(0.0, width=_WIDTH).index(_MARKER) == center
 
 
+def test_small_nonzero_rau_never_hides_its_sign_on_the_gate() -> None:
+    center = _WIDTH // 2
+    # tiny values that would otherwise round onto the gate cell must still show their side
+    assert render_rau_lane(0.03, width=_WIDTH).index(_MARKER) > center
+    assert render_rau_lane(-0.03, width=_WIDTH).index(_MARKER) < center
+    assert render_rau_lane(0.0, width=_WIDTH).index(_MARKER) == center  # only exact zero on the gate
+
+
 def test_overflow_shows_an_arrow_not_the_marker() -> None:
     low = render_rau_lane(-1.5, width=_WIDTH)
     high = render_rau_lane(1.5, width=_WIDTH)
