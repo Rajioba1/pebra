@@ -69,3 +69,100 @@ def test_uses_packaged_tcss_asset() -> None:
     path = Path(ObservatoryApp.CSS_PATH)
     assert path.name == "theme.tcss"
     assert path.is_file()
+
+
+# --- M3: the ledger screen over a real store ---
+
+
+def _seed(tmp_path, *, rows: int = 2) -> str:
+    from pebra.adapters.store.db import SqliteStore
+    from pebra.core.constants import ActionStatus, Decision, RiskMode
+    from pebra.core.models import AssessmentResult
+
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    specs = [
+        (Decision.PROCEED, "aaaa111", {"rau": 0.14, "expected_loss": 0.05, "benefit": 0.52}),
+        (Decision.ASK_HUMAN, "bbbb222", {"rau": -0.14, "expected_loss": 0.15, "benefit": 0.53}),
+    ]
+    for decision, commit, scores in specs[:rows]:
+        store.persist_assessment(
+            AssessmentResult(
+                recommended_decision=decision,
+                requires_confirmation=decision is not Decision.PROCEED,
+                action_status=ActionStatus.PENDING,
+                risk_mode=RiskMode.NORMAL,
+                scores=scores,
+                repo_id="r",
+                repo_root="/x",
+                model_guidance_packet={"decision": decision.value},
+                assessed_commit=commit,
+            ),
+            {"task": "t"},
+        )
+    store.close()
+    return db
+
+
+def _ctx_for(db: str) -> ObservatoryContext:
+    return ObservatoryContext(db_path=db, repo_id="r", repo_root=None, read_only=True)
+
+
+def test_screen_renders_seeded_ledger_and_status(tmp_path) -> None:
+    from textual.widgets import DataTable
+
+    from pebra.tui.widgets.status_header import StatusHeader
+
+    db = _seed(tmp_path, rows=2)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test():
+            table = app.query_one("#ledger", DataTable)
+            assert table.row_count == 2
+            status = app.query_one("#status", StatusHeader).status_text
+            assert "store chain ok" in status
+            assert "2 assessments" in status
+            message = app.query_one("#ledger-message")
+            assert message.display is False  # no empty-state message when rows exist
+
+    asyncio.run(scenario())
+
+
+def test_empty_repo_shows_empty_state(tmp_path) -> None:
+    from textual.widgets import DataTable, Static
+
+    db = _seed(tmp_path, rows=0)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test():
+            assert app.query_one("#ledger", DataTable).row_count == 0
+            message = app.query_one("#ledger-message", Static)
+            assert message.display is True
+            assert "No assessments" in app.screen.message_text
+
+    asyncio.run(scenario())
+
+
+def test_unavailable_store_shows_durable_error(tmp_path) -> None:
+    from textual.widgets import Static
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(str(tmp_path / "does-not-exist.db")))
+        async with app.run_test():
+            message = app.query_one("#ledger-message", Static)
+            assert message.display is True
+            assert "store unavailable" in app.screen.message_text.lower()
+
+    asyncio.run(scenario())
+
+
+def test_status_line_is_store_scoped_and_pure() -> None:
+    from pebra.tui.widgets.status_header import format_status
+
+    line = format_status(repo_id="r", latest_commit="abcdef123456", chain_valid=True, total=1)
+    assert "repo r" in line
+    assert "HEAD abcdef1" in line  # short commit
+    assert "store chain ok" in line
+    assert "1 assessment" in line and "assessments" not in line  # singular
