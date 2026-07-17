@@ -21,10 +21,10 @@ _CSS_PATH = Path(__file__).parent / "theme.tcss"
 class ObservatoryApp(App[None]):
     CSS_PATH = _CSS_PATH
     TITLE = "PEBRA Observatory"
-    BINDINGS = [
-        ("q", "quit", "Quit"),
-        ("ctrl+q", "quit", "Quit"),
-    ]
+    # `q` is our convenience quit. `ctrl+q` is inherited from Textual's base App (priority=True,
+    # hidden) — do NOT redeclare it here: the tuple form would drop its priority, letting a focused
+    # widget (e.g. the ledger DataTable added later) intercept ctrl+q before the app-level quit.
+    BINDINGS = [("q", "quit", "Quit")]
 
     def __init__(self, context: ObservatoryContext) -> None:
         super().__init__()
