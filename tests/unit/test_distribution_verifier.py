@@ -176,6 +176,15 @@ def test_installed_verifier_exercises_console_script() -> None:
     assert "installed console script" in source
 
 
+def test_installed_verifier_constructs_tui_app() -> None:
+    source = (Path(__file__).resolve().parents[2] / "scripts" / "verify_distribution.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from pebra.tui.app import ObservatoryApp" in source
+    assert "ObservatoryApp(ObservatoryContext(" in source
+
+
 def test_checksums_detect_artifact_tampering(tmp_path: Path) -> None:
     wheel = tmp_path / "pebra-0.1.0-py3-none-any.whl"
     sdist = tmp_path / "pebra-0.1.0.tar.gz"

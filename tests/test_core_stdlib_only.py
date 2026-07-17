@@ -61,6 +61,7 @@ FORBIDDEN_PEBRA_SUBPACKAGES = {
     "cli",
     "mcp_server",
     "dashboard",
+    "tui",
 }
 
 

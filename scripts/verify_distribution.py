@@ -124,6 +124,18 @@ def verify_installed() -> None:
     if not importlib.resources.files("pebra.tui").joinpath("theme.tcss").is_file():
         raise DistributionVerificationError("installed package missing pebra/tui/theme.tcss")
 
+    from pebra.observatory_context import ObservatoryContext
+    from pebra.tui.app import ObservatoryApp
+
+    app = ObservatoryApp(ObservatoryContext(
+        db_path="installed-wheel-smoke.db",
+        repo_id="installed-wheel-smoke",
+        repo_root=None,
+        read_only=True,
+    ))
+    if app.observatory_context.repo_id != "installed-wheel-smoke":
+        raise DistributionVerificationError("installed TUI app construction failed")
+
     metadata_files = {str(path).replace("\\", "/") for path in importlib.metadata.files("pebra") or ()}
     for suffix in ("licenses/LICENSE", "licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt"):
         if not any(path.endswith(suffix) for path in metadata_files):

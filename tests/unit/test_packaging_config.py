@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import tomllib
 
@@ -39,6 +40,21 @@ def test_textual_is_a_pinned_runtime_dependency() -> None:
     config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     deps = [d.replace(" ", "") for d in config["project"]["dependencies"]]
     assert "textual>=8.2,<9" in deps, deps
+
+
+def test_nox_tests_use_the_supported_textual_range() -> None:
+    root = Path(__file__).resolve().parents[2]
+    tree = ast.parse((root / "noxfile.py").read_text(encoding="utf-8"))
+    dev_assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "DEV" for target in node.targets)
+    )
+    dev = ast.literal_eval(dev_assignment.value)
+
+    assert "textual>=8.2,<9" in dev
+    assert "textual" not in dev
 
 
 def test_source_distribution_manifest_includes_release_documents() -> None:

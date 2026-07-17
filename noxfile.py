@@ -14,7 +14,7 @@ DEV = [
     "pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema",
     "pyyaml", "bandit",
     "fastapi", "uvicorn", "jinja2", "httpx",  # Risk Observatory dashboard surface + test client
-    "textual", "pytest-textual-snapshot",  # Observatory TUI surface + snapshot tests (textual is a
+    "textual>=8.2,<9", "pytest-textual-snapshot",  # TUI surface + snapshots (textual is a
     # runtime dep, but `tests` installs `-e . --no-deps`, so it must be listed here too).
     "numpy", "scikit-learn>=1.2", "scipy",  # Oracle math references for tests/oracles.
 ]

@@ -48,9 +48,17 @@ def test_tui_exposes_only_read_flags_no_http() -> None:
     # read flags accepted
     parser.parse_args(["tui", "--repo-root", ".", "--db", "x.db", "--repo-id", "r", "--read-only"])
     # HTTP/serving flags rejected (they belong to `pebra dashboard`, never the TUI)
-    for flag in ("--host", "--port", "--token", "--auth", "--open"):
+    forbidden = {
+        "--host": ["127.0.0.1"],
+        "--port": ["9473"],
+        "--instance": ["0"],
+        "--token": [],
+        "--auth": ["none"],
+        "--open": [],
+    }
+    for flag, value in forbidden.items():
         with pytest.raises(SystemExit):
-            parser.parse_args(["tui", flag, "127.0.0.1"])
+            parser.parse_args(["tui", flag, *value])
 
 
 def test_read_only_requires_db_and_repo_id() -> None:

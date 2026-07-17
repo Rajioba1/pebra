@@ -7,17 +7,14 @@ yet. Driven via App.run_test()/Pilot, wrapped in asyncio.run so no pytest-asynci
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    importlib.util.find_spec("textual") is None, reason="requires textual (run via nox)"
-)
+pytest.importorskip("textual", reason="requires textual (run via nox)")
 
-from pebra.observatory_context import ObservatoryContext  # noqa: E402
-from pebra.tui.app import ObservatoryApp  # noqa: E402
+from pebra.observatory_context import ObservatoryContext
+from pebra.tui.app import ObservatoryApp
 
 
 def _ctx() -> ObservatoryContext:
@@ -47,6 +44,14 @@ def test_ctrl_q_also_quits() -> None:
         assert app.return_code == 0
 
     asyncio.run(scenario())
+
+
+def test_ctrl_q_remains_the_inherited_priority_binding() -> None:
+    from textual.app import App
+
+    assert all(binding[0] != "ctrl+q" for binding in ObservatoryApp.BINDINGS)
+    inherited = next(binding for binding in App.BINDINGS if binding.key == "ctrl+q")
+    assert inherited.priority is True
 
 
 def test_get_css_variables_merges_custom_without_dropping_builtins() -> None:
