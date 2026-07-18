@@ -119,6 +119,65 @@ def test_codex_preserves_existing_agents_md(tmp_path):
     assert after_first.count("BEGIN pebra-safe-edit") == 1  # single managed block
 
 
+def test_codex_append_preserves_trailing_blank_lines_as_exact_prefix(tmp_path):
+    agents = tmp_path / "AGENTS.md"
+    original = b"# My Project\n\nCustom house rules here.\n\n\n"
+    agents.write_bytes(original)
+
+    assert _run("codex", tmp_path) == 0
+
+    after = agents.read_bytes()
+    assert after.startswith(original)
+    assert after.count(agent_init._MARK_BEGIN.encode()) == 1
+
+
+def test_codex_replaces_lf_managed_block_without_changing_user_bytes(tmp_path):
+    agents = tmp_path / "AGENTS.md"
+    prefix = b"# My Project\n\nUser prefix.\n"
+    suffix = b"\nUser suffix.\n\n"
+    old_block = (
+        agent_init._MARK_BEGIN.encode()
+        + b"\nold managed content\n"
+        + agent_init._MARK_END.encode()
+    )
+    agents.write_bytes(prefix + old_block + suffix)
+
+    assert _run("codex", tmp_path) == 0
+
+    after = agents.read_bytes()
+    assert after.startswith(prefix)
+    assert after.endswith(suffix)
+    inserted = after[len(prefix):-len(suffix)]
+    assert b"old managed content" not in inserted
+    assert inserted.startswith(agent_init._MARK_BEGIN.encode())
+    assert inserted.endswith(agent_init._MARK_END.encode())
+    assert b"\r\n" not in inserted
+
+
+def test_codex_replaces_crlf_managed_block_without_changing_user_bytes(tmp_path):
+    agents = tmp_path / "AGENTS.md"
+    prefix = b"# My Project\r\n\r\nUser prefix.\r\n"
+    suffix = b"\r\nUser suffix with a lone LF.\nFinal line.\r\n"
+    old_block = (
+        agent_init._MARK_BEGIN.encode()
+        + b"\r\nold managed content\r\n"
+        + agent_init._MARK_END.encode()
+    )
+    agents.write_bytes(prefix + old_block + suffix)
+
+    assert _run("codex", tmp_path) == 0
+
+    after = agents.read_bytes()
+    assert after.startswith(prefix)
+    assert after.endswith(suffix)
+    inserted = after[len(prefix):-len(suffix)]
+    assert b"old managed content" not in inserted
+    assert inserted.startswith(agent_init._MARK_BEGIN.encode())
+    assert inserted.endswith(agent_init._MARK_END.encode())
+    assert b"\r\n" in inserted
+    assert b"\n" not in inserted.replace(b"\r\n", b"")
+
+
 def test_codex_is_idempotent(tmp_path):
     _run("codex", tmp_path)
     first = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")

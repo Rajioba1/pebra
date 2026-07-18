@@ -87,6 +87,7 @@ _AGENTS_HEADING = "## PEBRA safe-edit protocol"
 class PlannedWrite:
     path: Path
     content: str
+    newline: str | None = None
 
 
 class AgentInitConfigError(ValueError):
@@ -122,7 +123,8 @@ def run_agent_init(args: Any) -> int:
         return 2
     for write in planned:
         write.path.parent.mkdir(parents=True, exist_ok=True)
-        write.path.write_text(write.content, encoding="utf-8")
+        with write.path.open("w", encoding="utf-8", newline=write.newline) as destination:
+            destination.write(write.content)
         print(f"wrote {write.path}")
     if args.target == "codex":
         print("note: AGENTS.md is the reliable Codex surface; .agents/skills is best-effort per Codex docs.")
@@ -184,31 +186,45 @@ def _render_hook_config(path: Path, matcher: str) -> str:
     return json.dumps(data, indent=2) + "\n"
 
 
-def _managed_block() -> str:
-    return f"{_MARK_BEGIN}\n{_AGENTS_HEADING}\n\n{_PROTOCOL_BODY.rstrip()}\n{_MARK_END}"
+def _managed_block(newline: str = "\n") -> str:
+    block = f"{_MARK_BEGIN}\n{_AGENTS_HEADING}\n\n{_PROTOCOL_BODY.rstrip()}\n{_MARK_END}"
+    return block.replace("\n", newline)
 
 
-def _without_managed_block(text: str, path: Path) -> str:
+def _managed_block_span(text: str, path: Path) -> tuple[int, int] | None:
     begin_count = text.count(_MARK_BEGIN)
     end_count = text.count(_MARK_END)
     if begin_count == 0 and end_count == 0:
-        return text
+        return None
     if begin_count != 1 or end_count != 1:
         raise AgentInitConfigError(f"{path}: expected zero or one PEBRA managed block")
     start = text.index(_MARK_BEGIN)
     end = text.index(_MARK_END)
     if end < start:
         raise AgentInitConfigError(f"{path}: PEBRA managed block markers are reversed")
-    return text[:start] + text[end + len(_MARK_END):]
+    return start, end + len(_MARK_END)
 
 
 def _render_agents_md(repo_root: Path) -> PlannedWrite:
     path = repo_root / "AGENTS.md"
     try:
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        existing = path.read_bytes().decode("utf-8") if path.exists() else ""
     except OSError as exc:
         raise AgentInitConfigError(f"{path}: expected a readable AGENTS.md") from exc
-    base = _without_managed_block(existing, path).rstrip("\n")
-    block = _managed_block()
-    content = f"{base}\n\n{block}\n" if base else f"{block}\n"
-    return PlannedWrite(path, content)
+    newline = "\r\n" if "\r\n" in existing else "\n"
+    block = _managed_block(newline)
+    span = _managed_block_span(existing, path)
+    if span is not None:
+        start, end = span
+        content = existing[:start] + block + existing[end:]
+    elif not existing:
+        content = block + newline
+    else:
+        if existing.endswith(newline * 2):
+            separator = ""
+        elif existing.endswith(newline):
+            separator = newline
+        else:
+            separator = newline * 2
+        content = existing + separator + block + newline
+    return PlannedWrite(path, content, newline="")
