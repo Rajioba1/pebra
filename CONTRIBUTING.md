@@ -30,6 +30,22 @@ Run `nox -s tests lint e2e-fast` for the normal source checkout. Before release,
 `nox -s dev-package` to build and verify the tracked source as a clean wheel and source distribution;
 use `nox -s dev-package -- --open` to open the installed wheel's dashboard.
 
+### Developing the Observatory TUI
+
+`pebra tui` is a Textual surface. To iterate with the Textual devtools, run the console in one terminal
+and the app in another:
+
+```powershell
+.\.venv\Scripts\textual.exe console
+.\.venv\Scripts\textual.exe run --dev -c "pebra tui --read-only --db path\to\pebra.db --repo-id <id>"
+```
+
+The `--dev` run hot-reloads `pebra/tui/theme.tcss`, and `self.log(...)` output routes to the console
+instead of corrupting the TUI. TUI diagnostics log identifiers, counts, timing, and error categories
+only — never source, tokens, candidate payloads, or sanction data (the TUI never handles those). After a
+deliberate visual change, regenerate the SVG baselines with `pytest tests/snapshots --snapshot-update`
+and review them before committing.
+
 ## Engineering Rules
 
 - Keep `pebra.core` deterministic and standard-library-only.

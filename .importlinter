@@ -47,6 +47,7 @@ forbidden_modules =
     sklearn
     mcp
     textual
+    rich
 
 # --- Benchmark wall (Phase 5b): production never imports the benchmark harness ---
 
@@ -77,6 +78,7 @@ forbidden_modules =
     pebra.adapters
     pebra.composition
     pebra.observatory_context
+    pebra.tui
 
 [importlinter:contract:adapters-only-core-ports]
 name = adapters import only core + ports (no app/surfaces)
@@ -90,6 +92,7 @@ forbidden_modules =
     pebra.dashboard
     pebra.composition
     pebra.observatory_context
+    pebra.tui
 
 # The dashboard surface may import exactly one app module: the shared read-only Observatory query
 # controller. Any other app import, including a controller added later, must break this contract.
@@ -110,6 +113,19 @@ source_modules =
     pebra.app.observatory_query_controller
 forbidden_modules =
     pebra.app.*
+
+# The TUI surface, like the dashboard, may import exactly one app module: the shared read-only
+# Observatory query controller. Any other app import (a mutation/lifecycle controller) must break this.
+[importlinter:contract:tui-only-observatory-query-app]
+name = tui imports only the observatory query controller from app
+type = forbidden
+source_modules =
+    pebra.tui
+forbidden_modules =
+    pebra.app
+ignore_imports =
+    pebra.tui.data -> pebra.app.observatory_query_controller
+    pebra.tui.screens.observatory -> pebra.app.observatory_query_controller
 
 [importlinter:contract:assess-no-learning]
 name = assess never imports learning (Hard Rule — Milestone 4: measure, never reapply)

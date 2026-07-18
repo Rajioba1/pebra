@@ -8,6 +8,7 @@ logic here).
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from textual import work
@@ -44,6 +45,7 @@ class ObservatoryScreen(Screen):
         self._overview: dict[str, Any] = {}
         self.message_text = ""  # current empty-state / error text ("" when the ledger has rows)
         self._refreshing = False  # single-flight guard, only read/written on the UI thread
+        self._refresh_started_at = 0.0  # monotonic clock, for dev-console refresh-duration logging
 
     def overview_summary(self) -> str:
         total = int(self._overview.get("total", 0))
@@ -84,6 +86,12 @@ class ObservatoryScreen(Screen):
     def action_refresh(self) -> bool:
         return self._start_refresh()
 
+    def _dev_log(self, message: str) -> None:
+        # Safe dev-console logging (routes to `textual console`, never stdout). No-op when unmounted so
+        # unit tests that call refresh callbacks directly don't need a running app.
+        if self.is_mounted:
+            self.log(message)
+
     def _try_begin_refresh(self) -> bool:
         """Single-flight guard (UI thread only): claim the in-flight slot, or refuse if already busy.
         We SKIP overlapping refreshes — we never cancel the running worker to gate it."""
@@ -94,7 +102,9 @@ class ObservatoryScreen(Screen):
 
     def _start_refresh(self) -> bool:
         if not self._try_begin_refresh():
+            self._dev_log("observatory refresh skipped: busy")
             return False
+        self._refresh_started_at = time.monotonic()
         self._refresh_worker()
         return True
 
@@ -110,12 +120,19 @@ class ObservatoryScreen(Screen):
 
     def _finish_ok(self, snapshot: ObservatorySnapshot) -> None:
         self._refreshing = False
+        # Safe dev-console log: counts + timing only — the TUI never handles source/tokens/candidates.
+        self._dev_log(
+            f"observatory refresh ok repo={self._data.repo_id} "
+            f"rows={len(snapshot.assessments)} duration={time.monotonic() - self._refresh_started_at:.3f}s"
+        )
         if not self.is_mounted:  # a late result must never touch a screen that's gone
             return
         self._apply_snapshot(snapshot)
 
     def _finish_error(self, message: str) -> None:
         self._refreshing = False
+        # Log the error CATEGORY, not the message contents.
+        self._dev_log(f"observatory refresh failed repo={self._data.repo_id} category=store_unavailable")
         if not self.is_mounted:
             return
         # Preserve the last good render (do not clear the table); just surface the error.

@@ -32,7 +32,10 @@ _SPECS = [
     (Decision.REJECT, "dddd444", {"rau": -0.31, "expected_loss": 0.36, "benefit": 0.20}),
 ]
 
-_ORIGINAL_NORMALIZE_SVG = pytest_textual_snapshot.normalize_svg
+# normalize_svg is a private plugin internal, absent before pytest-textual-snapshot 1.1. The dep is
+# pinned to >=1.1 (noxfile DEV + dev group), but guard the reference with getattr so an unexpected
+# older resolution degrades to the default normalizer instead of failing COLLECTION with AttributeError.
+_ORIGINAL_NORMALIZE_SVG = getattr(pytest_textual_snapshot, "normalize_svg", None)
 
 
 def _normalize_snapshot_svg(svg: str) -> str:
@@ -49,7 +52,8 @@ def _normalize_snapshot_svg(svg: str) -> str:
 def _color_snapshots_are_environment_independent(monkeypatch) -> None:
     """Color is part of these baselines, even when the invoking shell sets NO_COLOR."""
     monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setattr(pytest_textual_snapshot, "normalize_svg", _normalize_snapshot_svg)
+    if _ORIGINAL_NORMALIZE_SVG is not None:
+        monkeypatch.setattr(pytest_textual_snapshot, "normalize_svg", _normalize_snapshot_svg)
 
 
 def test_snapshot_normalizer_strips_trailing_space_and_rich_terminal_ids() -> None:

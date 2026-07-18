@@ -14,8 +14,9 @@ DEV = [
     "pytest", "pytest-cov", "hypothesis", "syrupy", "jsonschema",
     "pyyaml", "bandit",
     "fastapi", "uvicorn", "jinja2", "httpx",  # Risk Observatory dashboard surface + test client
-    "textual>=8.2,<9", "pytest-textual-snapshot",  # TUI surface + snapshots (textual is a
-    # runtime dep, but `tests` installs `-e . --no-deps`, so it must be listed here too).
+    "textual>=8.2,<9", "pytest-textual-snapshot>=1.1,<2",  # TUI surface + snapshots (textual is a
+    # runtime dep, but `tests` installs `-e . --no-deps`, so it must be listed here too; the snapshot
+    # plugin is pinned >=1.1 because the tests use its normalize_svg hook, added in 1.1).
     "numpy", "scikit-learn>=1.2", "scipy",  # Oracle math references for tests/oracles.
 ]
 
