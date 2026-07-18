@@ -20,6 +20,8 @@
 - Keep `positive_control` as an experiment-local synthetic label; never add it to the production `GateTier` enum or present it as a versioned production gate response.
 - Before each review stop, run the milestone's focused subprocess E2E acceptance tests. Defer the complete deterministic A/B suite and `nox -s e2e-fast` to the final experiment milestone because they are the expensive aggregate proof.
 - Never overwrite malformed user configuration or delete a lookalike user hook.
+- Treat `pebra gate-hook` as an installed compatibility invariant. Do not change it without an explicit
+  legacy-signature allowlist and one-legacy-entry-to-one-current-entry migration tests for both hosts.
 - Never modify user content outside PEBRA's existing managed block.
 - Materialize complete skill/rule content; no symlinks, pointer files, external imports, or self-updater.
 - Do not add a third agent runtime in this plan.
@@ -72,7 +74,7 @@ all production integration milestones, in Task 12.
 - Create: `e2e/features/agent/test_agent_init_safety.py`
 
 **Interfaces:**
-- Produces: `HOOK_COMMAND: str`, `managed_hook_entry(matcher: str) -> dict[str, object]`, and `is_managed_hook_entry(value: object, matcher: str) -> bool`.
+- Produces: `HOOK_COMMAND: Final[str]`, `managed_hook_entry(matcher: str) -> dict[str, object]`, and `is_managed_hook_entry(value: object, matcher: str) -> bool`.
 - Produces: an internal validation-first `PlannedWrite(path: Path, content: str)` list consumed by `run_agent_init`.
 - Preserves: `run_agent_init(args) -> int` and the current CLI syntax.
 
@@ -111,6 +113,21 @@ def test_hook_probe_rejects_lookalike_command(tmp_path):
 
     assert enforcement_capability._hook_installed(settings, "Edit|Write|MultiEdit") is False
 ```
+
+Lock the installed command identity so a future rename cannot silently strand old entries:
+
+```python
+from pebra.core import agent_hook_contract
+
+
+def test_hook_command_is_the_installed_v2_compatibility_contract():
+    assert agent_hook_contract.HOOK_COMMAND == "pebra gate-hook"
+```
+
+This is intentionally a hardcoded compatibility regression. A future command change must update this
+test only alongside an explicit allowlist of the prior complete owned signatures and parameterized tests
+proving each legacy entry is replaced by exactly one current entry for Claude and Codex. Do not introduce
+an ownership metadata key without first verifying both host schemas accept it.
 
 - [ ] **Step 2: Write failing malformed/no-partial-write regressions**
 
@@ -246,9 +263,10 @@ Create `pebra/core/agent_hook_contract.py`:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
-HOOK_COMMAND = "pebra gate-hook"
+# Installed compatibility contract. A change requires an explicit legacy-signature migration.
+HOOK_COMMAND: Final[str] = "pebra gate-hook"
 
 
 def managed_hook_entry(matcher: str) -> dict[str, Any]:
@@ -1505,7 +1523,9 @@ wins over an exact entry; otherwise exact wins over unrelated entries; otherwise
 A PEBRA-shaped conflicting candidate is either an entry containing the exact command
 `pebra gate-hook` but not matching the complete owned structure, or an expected-matcher entry whose
 `hooks` value is structurally malformed. A different command—including a substring lookalike—is
-unrelated even when it uses the same matcher.
+unrelated even when it uses the same matcher. This rule depends on Task 1's compatibility invariant:
+`HOOK_COMMAND` cannot change until known legacy PEBRA commands are explicitly added to a tested migration
+predicate. Never infer legacy ownership from a substring.
 
 - [ ] **Step 4: Reuse measured capability reporting without making it authorization**
 
@@ -1520,8 +1540,10 @@ Set `PROTOCOL_VERSION = 1` beside the canonical generated protocol and include
 
 Human output lists each path/state, hook state, declared support, and effective mode. JSON uses sorted,
 indented output. Both paths return `0` even for `modified`, `conflicting`, or `malformed`; those are
-inspection results, not CLI crashes. README documentation must state that check mode never repairs and
-normal `agent-init` is the explicit repair action.
+inspection results, not CLI crashes. README documentation must state that check mode never repairs;
+normal `agent-init` refreshes fully managed instruction content and installs a missing current hook, but
+does not claim to repair a conflicting or legacy hook. Conflict resolution requires a deliberate tested
+migration or user action.
 
 - [ ] **Step 6: Prove materialization and non-mutation over the process boundary**
 
@@ -1602,7 +1624,7 @@ or modifies no files. Do not proceed without maintainer approval.
 
 ## Milestone 5 — Two-host Registry And Conformance
 
-### Task 11: Single-source stable host facts
+### Task 11: Single-source minimal host facts
 
 **Files:**
 - Create: `pebra/core/agent_hosts.py`
@@ -1619,7 +1641,7 @@ or modifies no files. Do not proceed without maintainer approval.
 - Modify: `README.md`
 
 **Interfaces:**
-- Produces: `HostSpec` and ordered `AGENT_HOSTS` for exactly `claude` and `codex`.
+- Produces: minimal `HostSpec` and ordered `AGENT_HOSTS` for exactly `claude` and `codex`.
 - Preserves: explicit host renderers; the registry stores facts, not executable plugins.
 
 - [ ] **Step 1: Write failing registry/conformance tests**
@@ -1660,9 +1682,10 @@ def test_readme_support_rows_match_registry():
 ```
 
 Do not stop at marker coverage. Parse the table row following each marker and assert that it contains
-the registry's exact `display_name` and machine-readable `declared_support` value. This makes both a
-missing host and a stale guarantee tier fail CI; marker-only equality would still allow the README to
-claim enforcement while the registry says `best_effort`.
+the registry's exact machine-readable `declared_support` value. This makes both a missing host and a
+stale guarantee tier fail CI; marker-only equality would still allow the README to claim enforcement
+while the registry says `best_effort`. Human-facing display labels remain README content rather than
+registry data.
 
 - [ ] **Step 2: Run tests and confirm the registry is absent**
 
@@ -1684,39 +1707,34 @@ from typing import Final, Mapping
 
 @dataclass(frozen=True)
 class HostSpec:
-    display_name: str
     skill_path: str
     instruction_paths: tuple[str, ...]
     hook_path: str
     hook_matcher: str
     declared_support: str
-    interactive_invocation: str
-    headless_invocation: str | None
 
 
 AGENT_HOSTS: Final[Mapping[str, HostSpec]] = MappingProxyType({
     "claude": HostSpec(
-        display_name="Claude Code",
         skill_path=".claude/skills/pebra-safe-edit/SKILL.md",
         instruction_paths=(".claude/rules/pebra-safe-edit.md",),
         hook_path=".claude/settings.json",
         hook_matcher="Edit|Write|MultiEdit",
         declared_support="configured_enforcing",
-        interactive_invocation="claude",
-        headless_invocation='claude -p "<prompt>"',
     ),
     "codex": HostSpec(
-        display_name="Codex",
         skill_path=".agents/skills/pebra-safe-edit/SKILL.md",
         instruction_paths=("AGENTS.md",),
         hook_path=".codex/hooks.json",
         hook_matcher="apply_patch",
         declared_support="best_effort",
-        interactive_invocation="codex",
-        headless_invocation='codex exec "<prompt>"',
     ),
 })
 ```
+
+Do not add display names, invocation commands, callbacks, or future-host metadata to `HostSpec`. Those
+values have no production consumer in this implementation. The five fields above are the complete
+registry surface.
 
 - [ ] **Step 4: Replace duplicated stable facts without hiding host behavior**
 
@@ -2196,3 +2214,9 @@ Report every milestone commit, each milestone's focused subprocess E2E evidence,
 - the live provider-backed assay was not launched without separate authorization.
 
 Runtime expansion requires a new approved spec based on a real host-loading experiment.
+
+## Deferred And Non-goals
+
+- Changing `HOOK_COMMAND` or automatically migrating a legacy PEBRA hook signature. Any future change
+  requires a separate approved migration spec with known legacy signatures and deduplication tests.
+- Adding another agent runtime, an agent plugin registry, dynamic host callbacks, or invocation metadata.

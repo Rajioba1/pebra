@@ -61,6 +61,12 @@ hook with `type == "command"`, and `command == "pebra gate-hook"`. It is shared 
 capability observation. Lookalike commands and conflicting structures are preserved and later reported by
 the inspection surface.
 
+`pebra gate-hook` is an installed compatibility invariant for this design, not an implementation detail.
+Agent Integration V2 does not change it. A future command change must first define an explicit allowlist
+of legacy PEBRA-owned hook signatures and prove, for each supported host, that initialization replaces one
+legacy entry with exactly one current entry while preserving unrelated hooks. Do not add an unverified
+metadata field to host hook JSON merely to anticipate that migration.
+
 This guarantees atomicity with respect to validation. It does not promise an operating-system transaction
 across multiple files if an unrelated write fails after successful preflight.
 
@@ -121,20 +127,23 @@ skills remain byte-identical.
 - protocol and gate schema versions.
 
 Human-readable `--check` output renders the same payload. `--json` is valid only with `--check`.
-Inspection never repairs state; rerunning normal `agent-init` is the explicit repair action.
+Inspection never repairs state. Rerunning normal `agent-init` repairs fully managed instruction content
+and installs a missing current hook, but it does not claim to repair a conflicting or legacy hook. Such a
+hook remains visible as a conflict until a deliberate, tested migration or user resolution handles it.
 
 ### 6. Minimal host registry and conformance matrix
 
-Before a third runtime is introduced, create one immutable registry that declares only stable host facts:
+Create one small immutable registry that declares only stable facts consumed by current production code:
 
-- target name and display name;
+- target key;
 - instruction and skill destinations;
-- verified hook path and matcher, when one exists;
-- declared guarantee tier;
-- interactive and headless invocation notes.
+- verified hook path and matcher;
+- declared guarantee tier.
 
 Host-specific rendering functions stay explicit; the registry is not a plugin framework. Parser choices,
 installation inspection, capability reporting, CLI ordering, and support-matrix tests read the registry.
+Display labels and interactive/headless invocation examples remain ordinary documentation; they are not
+registry fields until production code actually consumes them.
 
 Registry-parameterized tests prove every declared target receives the same semantic protocol obligations,
 full skills are materialized byte-identically, installation and capability observation agree on hook
@@ -214,6 +223,8 @@ claims remain forbidden.
 ## Verification requirements
 
 - TDD regressions for malformed JSON and every invalid hook shape.
+- A regression locks `HOOK_COMMAND == "pebra gate-hook"` as the current installed compatibility contract;
+  changing it requires legacy-signature migration tests in the same change.
 - Byte-for-byte no-write assertions on validation and check paths.
 - Complete enum and allowed-pair coverage.
 - Documentation rows derived from live contract values.
@@ -238,6 +249,8 @@ claims remain forbidden.
 
 ## Non-goals
 
+- Changing `HOOK_COMMAND` or automatically migrating a legacy PEBRA hook signature; either requires a
+  separate approved migration design with known legacy signatures and deduplication evidence.
 - Changing decision math, candidate authorization, sanctions, or persistence.
 - Replacing the pre-act gate with CI-after-the-fact enforcement.
 - A multi-agent inbox, work queue, or coordinator.
