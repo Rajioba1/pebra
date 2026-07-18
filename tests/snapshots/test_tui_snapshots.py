@@ -15,6 +15,8 @@ import pytest
 pytest.importorskip("textual", reason="requires textual (run via nox)")
 pytest.importorskip("pytest_textual_snapshot", reason="requires pytest-textual-snapshot (run via nox)")
 
+import pytest_textual_snapshot  # noqa: E402
+
 from pebra.adapters.store.db import SqliteStore  # noqa: E402
 from pebra.core.constants import ActionStatus, Decision, RiskMode  # noqa: E402
 from pebra.core.models import AssessmentResult  # noqa: E402
@@ -30,11 +32,30 @@ _SPECS = [
     (Decision.REJECT, "dddd444", {"rau": -0.31, "expected_loss": 0.36, "benefit": 0.20}),
 ]
 
+_ORIGINAL_NORMALIZE_SVG = pytest_textual_snapshot.normalize_svg
+
+
+def _normalize_snapshot_svg(svg: str) -> str:
+    normalized = _ORIGINAL_NORMALIZE_SVG(svg)
+    lines: list[str] = []
+    for line in normalized.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        newline = line[len(content) :]
+        lines.append(content.rstrip() + newline)
+    return "".join(lines)
+
 
 @pytest.fixture(autouse=True)
 def _color_snapshots_are_environment_independent(monkeypatch) -> None:
     """Color is part of these baselines, even when the invoking shell sets NO_COLOR."""
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(pytest_textual_snapshot, "normalize_svg", _normalize_snapshot_svg)
+
+
+def test_snapshot_normalizer_strips_trailing_space_and_rich_terminal_ids() -> None:
+    svg = '<svg class="terminal-123-matrix">  \n        \n</svg>\t\n'
+
+    assert _normalize_snapshot_svg(svg) == '<svg class="terminal-matrix">\n\n</svg>\n'
 
 
 def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False) -> str:
