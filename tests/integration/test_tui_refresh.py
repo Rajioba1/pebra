@@ -114,6 +114,28 @@ def test_finish_ignores_late_result_on_unmounted_screen() -> None:
     assert screen._refreshing is False
 
 
+@pytest.mark.parametrize("finish", ["ok", "error"])
+def test_finish_ignores_result_while_screen_is_being_pruned(monkeypatch, finish: str) -> None:
+    """Textual keeps is_mounted true briefly after pruning starts and children disappear."""
+    screen = ObservatoryScreen(_FakeData())
+    screen._refreshing = True
+    screen._pruning = True
+    monkeypatch.setattr(ObservatoryScreen, "is_mounted", property(lambda _self: True))
+
+    def fail_if_called(*_args, **_kwargs) -> None:
+        pytest.fail("a pruning screen must not update child widgets")
+
+    monkeypatch.setattr(screen, "_apply_snapshot", fail_if_called)
+    monkeypatch.setattr(screen, "_set_message", fail_if_called)
+
+    if finish == "ok":
+        screen._finish_ok(_snapshot())
+    else:
+        screen._finish_error("boom")
+
+    assert screen._refreshing is False
+
+
 def _capture_dev_logs(monkeypatch, *, mounted: bool = True) -> list[str]:
     messages: list[str] = []
     monkeypatch.setattr(ObservatoryScreen, "is_mounted", property(lambda _self: mounted))
