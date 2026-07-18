@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tarfile
 import zipfile
 from pathlib import Path
@@ -12,6 +13,7 @@ from scripts.verify_distribution import (
     release_version_from_tag,
     verify_candidate_manifest,
     verify_checksums,
+    verify_index_digests,
     verify_archives,
     write_candidate_manifest,
     write_checksums,
@@ -254,3 +256,51 @@ def test_candidate_manifest_binds_tag_commit_and_artifacts(tmp_path: Path) -> No
     wheel.write_bytes(b"tampered")
     with pytest.raises(DistributionVerificationError, match="candidate artifact mismatch"):
         verify_candidate_manifest(tmp_path, manifest, expected_tag="v0.1.0", expected_commit=commit)
+
+
+def test_index_digest_verifier_requires_the_exact_candidate_bytes(tmp_path: Path) -> None:
+    wheel = tmp_path / "pebra-0.1.0-py3-none-any.whl"
+    sdist = tmp_path / "pebra-0.1.0.tar.gz"
+    wheel.write_bytes(b"wheel")
+    sdist.write_bytes(b"sdist")
+    manifest = write_candidate_manifest(
+        tmp_path,
+        tmp_path / "CANDIDATE.json",
+        "v0.1.0",
+        "a" * 40,
+    )
+    candidate = json.loads(manifest.read_text(encoding="utf-8"))["artifacts"]
+    index = tmp_path / "index.json"
+    index.write_text(
+        json.dumps(
+            {
+                "urls": [
+                    {"filename": name, "digests": {"sha256": digest}}
+                    for name, digest in candidate.items()
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    verify_index_digests(tmp_path, index)
+
+    payload = json.loads(index.read_text(encoding="utf-8"))
+    payload["urls"][0]["digests"]["sha256"] = "0" * 64
+    index.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(DistributionVerificationError, match="index artifact mismatch"):
+        verify_index_digests(tmp_path, index)
+
+
+def test_index_digest_verifier_rejects_duplicate_files(tmp_path: Path) -> None:
+    wheel = tmp_path / "pebra-0.1.0-py3-none-any.whl"
+    sdist = tmp_path / "pebra-0.1.0.tar.gz"
+    wheel.write_bytes(b"wheel")
+    sdist.write_bytes(b"sdist")
+    digest = "0" * 64
+    index = tmp_path / "index.json"
+    duplicate = {"filename": wheel.name, "digests": {"sha256": digest}}
+    index.write_text(json.dumps({"urls": [duplicate, duplicate]}), encoding="utf-8")
+
+    with pytest.raises(DistributionVerificationError, match="duplicate index artifact"):
+        verify_index_digests(tmp_path, index)

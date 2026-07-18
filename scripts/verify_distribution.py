@@ -42,6 +42,7 @@ _SDIST_ROOT_FILES = (
 _TAG = re.compile(r"^v?(\d+\.\d+\.\d+(?:[a-zA-Z0-9.-]+)?)$")
 _CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^/\\]+)$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class DistributionVerificationError(RuntimeError):
@@ -298,6 +299,33 @@ def verify_candidate_manifest(
         raise DistributionVerificationError("candidate artifact mismatch")
 
 
+def verify_index_digests(dist_dir: Path, index_json: Path) -> None:
+    """Require an index release to contain exactly the candidate distribution bytes."""
+    try:
+        payload = json.loads(index_json.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise DistributionVerificationError("index response is not valid JSON") from exc
+    urls = payload.get("urls") if isinstance(payload, dict) else None
+    if not isinstance(urls, list):
+        raise DistributionVerificationError("index response has no artifact list")
+
+    indexed: dict[str, str] = {}
+    for entry in urls:
+        if not isinstance(entry, dict):
+            raise DistributionVerificationError("invalid index artifact entry")
+        name = entry.get("filename")
+        digests = entry.get("digests")
+        digest = digests.get("sha256") if isinstance(digests, dict) else None
+        if not isinstance(name, str) or not isinstance(digest, str) or not _SHA256.fullmatch(digest):
+            raise DistributionVerificationError("invalid index artifact digest")
+        if name in indexed:
+            raise DistributionVerificationError(f"duplicate index artifact: {name}")
+        indexed[name] = digest
+
+    if indexed != _artifact_digests(dist_dir):
+        raise DistributionVerificationError("index artifact mismatch")
+
+
 def verify_checksums(dist_dir: Path, manifest: Path) -> None:
     """Verify that the manifest covers exactly the wheel and sdist in ``dist_dir``."""
     expected: dict[str, str] = {}
@@ -357,6 +385,9 @@ def _parser() -> argparse.ArgumentParser:
     verify_candidate.add_argument("manifest", type=Path)
     verify_candidate.add_argument("--tag", required=True)
     verify_candidate.add_argument("--commit", required=True)
+    index_digests = subparsers.add_parser("index-digests")
+    index_digests.add_argument("dist_dir", type=Path)
+    index_digests.add_argument("index_json", type=Path)
     release_tag = subparsers.add_parser("release-tag")
     release_tag.add_argument("tag")
     release_tag.add_argument("--pyproject", type=Path, default=Path("pyproject.toml"))
@@ -385,6 +416,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_tag=args.tag,
                 expected_commit=args.commit,
             )
+        elif args.command == "index-digests":
+            verify_index_digests(args.dist_dir, args.index_json)
         else:
             tag_version = release_version_from_tag(args.tag)
             project = tomllib.loads(args.pyproject.read_text(encoding="utf-8"))["project"]

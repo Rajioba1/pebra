@@ -70,14 +70,19 @@ def test_release_uses_trusted_publishing_checksums_and_attestation() -> None:
     assert "release:\n    types: [published]" not in workflow
     assert "workflow_dispatch:" in workflow
     assert "release_tag:" in workflow
+    assert "candidate_run_id:" in workflow
     assert "verify_distribution.py release-tag" in workflow
     assert "verify_distribution.py checksums" in workflow
     assert "verify_distribution.py verify-checksums" in workflow
     assert "verify_distribution.py candidate-manifest" in workflow
     assert "verify_distribution.py verify-candidate" in workflow
-    assert "git merge-base --is-ancestor HEAD origin/main" in workflow
+    assert 'git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main' in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "needs: [build-candidate, publish-testpypi]" in workflow
+    assert "run-id: ${{ inputs.candidate_run_id }}" in workflow
+    assert "verify_distribution.py index-digests" in workflow
+    assert "inputs.candidate_run_id == ''" in workflow
+    assert "needs.publish-testpypi.result == 'skipped'" in workflow
     assert "ref: ${{ needs.build-candidate.outputs.candidate-sha }}" in workflow
     assert workflow.count("refs/tags/release-check^{commit}") == 2
     assert "release already exists" in workflow
@@ -97,4 +102,6 @@ def test_release_uses_trusted_publishing_checksums_and_attestation() -> None:
     assert "environment: pypi" in workflow
     assert "repository-url: https://test.pypi.org/legacy/" in workflow
     assert workflow.count("id-token: write") == 3
+    publish_pypi = workflow.split("  publish-pypi:", 1)[1].split("  create-github-release:", 1)[0]
+    assert "contents: read" in publish_pypi
     assert "password:" not in workflow
