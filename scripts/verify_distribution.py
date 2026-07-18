@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import hmac
 import importlib.metadata
@@ -18,7 +19,7 @@ import tempfile
 import tomllib
 import zipfile
 from pathlib import Path
-from typing import Sequence
+from typing import AsyncContextManager, Protocol, Sequence
 
 
 _PACKAGE_ASSETS = (
@@ -28,6 +29,7 @@ _PACKAGE_ASSETS = (
     "pebra/dashboard/static/vendor/uplot.iife.min.js",
     "pebra/dashboard/static/vendor/uplot.min.css",
     "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+    "pebra/tui/theme.tcss",
 )
 _SDIST_ROOT_FILES = (
     "LICENSE",
@@ -44,6 +46,10 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 class DistributionVerificationError(RuntimeError):
     """A built or installed distribution does not satisfy the release contract."""
+
+
+class _HeadlessTestApp(Protocol):
+    def run_test(self) -> AsyncContextManager[object]: ...
 
 
 def _missing_exact(members: set[str], required: Sequence[str]) -> list[str]:
@@ -106,6 +112,19 @@ def _run_cli(*args: str, cwd: Path, timeout: int = 120) -> subprocess.CompletedP
     )
 
 
+def _verify_tui_mount(app: _HeadlessTestApp) -> None:
+    """Enter Textual's headless lifecycle so packaged styles are parsed and loaded."""
+
+    async def mount() -> None:
+        async with app.run_test():
+            pass
+
+    try:
+        asyncio.run(mount())
+    except Exception as exc:
+        raise DistributionVerificationError("installed TUI failed to mount") from exc
+
+
 def verify_installed() -> None:
     """Check the installed wheel without importing PEBRA from its source checkout."""
     dashboard = importlib.resources.files("pebra.dashboard")
@@ -120,6 +139,22 @@ def verify_installed() -> None:
         if not dashboard.joinpath(relative).is_file():
             raise DistributionVerificationError(f"installed package missing {relative}")
 
+    if not importlib.resources.files("pebra.tui").joinpath("theme.tcss").is_file():
+        raise DistributionVerificationError("installed package missing pebra/tui/theme.tcss")
+
+    from pebra.observatory_context import ObservatoryContext
+    from pebra.tui.app import ObservatoryApp
+
+    app = ObservatoryApp(ObservatoryContext(
+        db_path="installed-wheel-smoke.db",
+        repo_id="installed-wheel-smoke",
+        repo_root=None,
+        read_only=True,
+    ))
+    if app.observatory_context.repo_id != "installed-wheel-smoke":
+        raise DistributionVerificationError("installed TUI app construction failed")
+    _verify_tui_mount(app)
+
     metadata_files = {str(path).replace("\\", "/") for path in importlib.metadata.files("pebra") or ()}
     for suffix in ("licenses/LICENSE", "licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt"):
         if not any(path.endswith(suffix) for path in metadata_files):
@@ -127,7 +162,7 @@ def verify_installed() -> None:
 
     with tempfile.TemporaryDirectory(prefix="pebra-wheel-smoke-") as raw:
         cwd = Path(raw)
-        for args in (("--help",), ("help", "dashboard")):
+        for args in (("--help",), ("help", "dashboard"), ("help", "tui")):
             result = _run_cli(*args, cwd=cwd)
             if result.returncode != 0 or "pebra" not in result.stdout.lower():
                 raise DistributionVerificationError(

@@ -12,6 +12,7 @@ Implements ``StorePort``.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import datetime
 import hashlib
 import json
@@ -376,9 +377,14 @@ class SqliteStore:
             # a copied db when the surrounding directory must stay untouched. We do NOT pass immutable=1
             # because that would be unsafe if a concurrent writer is modifying the db.
             uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
-            self._con = sqlite3.connect(uri, uri=True, isolation_level=None)
-            self._con.execute("PRAGMA busy_timeout=5000")
-            self._con.execute("PRAGMA foreign_keys=ON")
+            con = sqlite3.connect(uri, uri=True, isolation_level=None)
+            try:
+                con.execute("PRAGMA busy_timeout=5000")
+                con.execute("PRAGMA foreign_keys=ON")
+            except Exception:
+                con.close()
+                raise
+            self._con = con
             return
         # isolation_level=None: disable Python's implicit transaction management so our explicit
         # BEGIN IMMEDIATE / COMMIT fully owns the write transaction (no "transaction within a
@@ -1391,8 +1397,25 @@ class SqliteStore:
             )
         ]
 
-    # --- read-only API for the Risk Observatory dashboard (Phase 3b/5c-A). Pure SELECTs; the
-    # dashboard surface calls these directly (it may import adapters, never app/core). ---
+    # --- read-only API for Observatory surfaces (Phase 3b/5c-A). Pure SELECTs; presentation
+    # surfaces reach the shared subset through the Observatory query controller/read port. ---
+
+    def assessment_facets(self, repo_id: str) -> Iterator[dict[str, Any]]:
+        """Decision/status pairs for exact repo overview counts, from one stable SELECT result.
+
+        Scope and decision come from hash-covered content_json rather than the duplicate query
+        columns. This is one linear, newest-first cursor scan with no OFFSET races, result-list
+        materialization, or optional SQLite JSON dependency.
+        """
+        for content_json, terminal_status in self._con.execute(
+            "SELECT a.content_json, o.terminal_status FROM assessments a "
+            "LEFT JOIN outcomes o ON o.assessment_id = a.id ORDER BY a.id DESC"
+        ):
+            content = json.loads(content_json)
+            if not isinstance(content, dict):
+                raise sqlite3.DatabaseError("assessment content is not a JSON object")
+            if content.get("repo_id") == repo_id:
+                yield {"decision": content.get("decision"), "terminal_status": terminal_status}
 
     def list_assessments(
         self, repo_id: str, limit: int = 50, offset: int = 0
@@ -1402,18 +1425,24 @@ class SqliteStore:
         limit = max(0, min(limit, 500))  # a negative LIMIT is unbounded in SQLite — clamp it
         offset = max(0, offset)
         rows = self._con.execute(
-            "SELECT a.id, a.decision, a.content_json, o.terminal_status, o.recorded_at "
+            "SELECT a.id, a.content_json, o.terminal_status, o.recorded_at "
             "FROM assessments a LEFT JOIN outcomes o ON o.assessment_id = a.id "
             "WHERE a.repo_id = ? ORDER BY a.id DESC LIMIT ? OFFSET ?",
             (repo_id, limit, offset),
         ).fetchall()
         summaries: list[dict[str, Any]] = []
-        for row_id, decision, content_json, terminal_status, recorded_at in rows:
+        for row_id, content_json, terminal_status, recorded_at in rows:
             content = json.loads(content_json)
+            if not isinstance(content, dict):
+                raise sqlite3.DatabaseError("assessment content is not a JSON object")
+            # The duplicate repo_id column is query acceleration, not the trust boundary. A tampered
+            # foreign row must never become visible merely by changing that unhashed duplicate.
+            if content.get("repo_id") != repo_id:
+                continue
             summaries.append(
                 {
                     "assessment_id": f"asm_{row_id}",
-                    "decision": decision,
+                    "decision": content.get("decision"),
                     "risk_mode": content.get("risk_mode"),
                     "scores": content.get("scores", {}),
                     "assessed_commit": content.get("assessed_commit"),
@@ -1769,10 +1798,10 @@ class SqliteStore:
 
     def _validate_assessment_chain(self) -> bool:
         prev_hash = GENESIS
-        for content_json, stored_prev, stored_hash, packet_json in self._con.execute(
+        for repo_id, decision, content_json, stored_prev, stored_hash, packet_json in self._con.execute(
             """
-            SELECT assessments.content_json, assessments.prev_hash, assessments.row_hash,
-                   model_guidance_packets.packet_json
+            SELECT assessments.repo_id, assessments.decision, assessments.content_json,
+                   assessments.prev_hash, assessments.row_hash, model_guidance_packets.packet_json
             FROM assessments
             LEFT JOIN model_guidance_packets
               ON model_guidance_packets.assessment_id = assessments.id
@@ -1782,6 +1811,9 @@ class SqliteStore:
             if stored_prev != prev_hash:
                 return False
             if _row_hash(prev_hash, content_json) != stored_hash:
+                return False
+            content = json.loads(content_json)
+            if repo_id != content.get("repo_id") or decision != content.get("decision"):
                 return False
             if not _guidance_matches_content(content_json, packet_json):
                 return False

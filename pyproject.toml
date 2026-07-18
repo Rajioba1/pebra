@@ -45,6 +45,7 @@ dependencies = [
     "uvicorn",
     "jinja2",
     "mcp>=1.0,<2",
+    "textual>=8.2,<9",
 ]
 
 [project.scripts]
@@ -71,6 +72,10 @@ dev = [
     "build",
     "twine",
     "pre-commit",
+    # Textual TUI dev tooling: the `textual` console/devtools and snapshot-test plugin. `textual` itself
+    # is a runtime dependency (above); these are dev/test-only.
+    "textual-dev",
+    "pytest-textual-snapshot==1.1.0",
     # Oracle backends for tests/oracles/ ONLY: PEBRA's stdlib core math is validated against these
     # reference implementations (numpy/sklearn/scipy) to machine precision. They are NEVER imported
     # by pebra.core (purity contract) — they exist here purely as test ground-truth.
@@ -101,6 +106,7 @@ namespaces = false
     "static/vendor/*.css",
     "static/vendor/*.txt",
 ]
+"pebra.tui" = ["*.tcss"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

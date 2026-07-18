@@ -85,6 +85,87 @@ def test_tampering_breaks_the_chain(tmp_path) -> None:
     assert SqliteStore(db).validate_chain() is False
 
 
+def test_duplicate_repo_tampering_cannot_change_summary_scope(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    store.persist_assessment(
+        _result(0.31, decision=Decision.ASK_HUMAN), {"task": "t1", "action_id": "a1"}
+    )
+    store.close()
+
+    con = sqlite3.connect(db)
+    con.execute("UPDATE assessments SET repo_id = 'other' WHERE id = 1")
+    con.commit()
+    con.close()
+
+    reopened = SqliteStore(db, read_only=True)
+    assert reopened.list_assessments("other") == []
+    assert list(reopened.assessment_facets("other")) == []
+    assert list(reopened.assessment_facets("repo_local_example")) == [
+        {"decision": "ask_human", "terminal_status": None}
+    ]
+    assert reopened.validate_chain() is False
+    reopened.close()
+
+
+def test_duplicate_decision_tampering_cannot_change_summary_decision(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    store.persist_assessment(
+        _result(0.31, decision=Decision.ASK_HUMAN), {"task": "t1", "action_id": "a1"}
+    )
+    store.close()
+
+    con = sqlite3.connect(db)
+    con.execute("UPDATE assessments SET decision = 'proceed' WHERE id = 1")
+    con.commit()
+    con.close()
+
+    reopened = SqliteStore(db, read_only=True)
+    original = reopened.list_assessments("repo_local_example")
+    assert original[0]["decision"] == "ask_human"
+    assert reopened.validate_chain() is False
+    reopened.close()
+
+
+def test_list_assessments_does_not_require_sqlite_json_functions(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    store.persist_assessment(_result(0.31), {"task": "t1", "action_id": "a1"})
+
+    real_connection = store._con
+
+    class _NoJsonSqlConnection:
+        def execute(self, sql, parameters=()):
+            lowered = sql.lower()
+            if "json_" in lowered or "->" in lowered:
+                raise sqlite3.OperationalError("SQLite JSON functions are unavailable")
+            return real_connection.execute(sql, parameters)
+
+        def close(self):
+            real_connection.close()
+
+    store._con = _NoJsonSqlConnection()
+    rows = store.list_assessments("repo_local_example")
+    facets = list(store.assessment_facets("repo_local_example"))
+
+    assert len(rows) == 1
+    assert rows[0]["assessment_id"] == "asm_1"
+    assert facets == [{"decision": "proceed", "terminal_status": None}]
+    store.close()
+
+
+def test_assessment_facets_are_newest_first(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    store.persist_assessment(_result(0.31, decision=Decision.PROCEED), {"task": "older"})
+    store.persist_assessment(_result(0.22, decision=Decision.REJECT), {"task": "newer"})
+
+    facets = list(store.assessment_facets("repo_local_example"))
+
+    assert [facet["decision"] for facet in facets] == ["reject", "proceed"]
+    store.close()
+
+
 def test_tampering_with_guidance_packet_breaks_chain(tmp_path) -> None:
     db = str(tmp_path / "pebra.db")
     store = SqliteStore(db)

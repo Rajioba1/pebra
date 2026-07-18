@@ -1,7 +1,8 @@
 """Risk Observatory read API (Phase 3b/5c-C, extended Phase 5d). Bearer-guarded, read-only JSON.
 
-The dashboard surface reads the store directly (it may import adapters + core; never app). Routes open a
-SqliteStore per request (own connection in the request's thread) and close it. Graph routes additionally
+The dashboard surface reads through the shared Observatory query controller (app) and opens a SqliteStore
+per request (own connection in the request's thread) and closes it; it may import adapters + core and the
+read-only query controller, but never a mutation controller (see .importlinter). Graph routes additionally
 use a CodeGraphReader + the repo_root the dashboard was launched against, both from app.state; they are
 fail-soft (200 with ``available:false`` when the graph or repo binding is missing — never 500).
 """
@@ -9,15 +10,14 @@ fail-soft (200 with ``available:false`` when the graph or repo binding is missin
 from __future__ import annotations
 
 import sqlite3
-from collections import Counter
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from pebra.adapters.store.db import SqliteStore
+from pebra.app import observatory_query_controller as oqc
 from pebra.core.dashboard_metrics import reliability_bins
 
-_SERIES_KEYS = ("expected_loss", "benefit", "expected_utility", "rau", "edit_confidence")
 _BINARY_TARGETS = ("risk_binary", "benefit_binary")
 
 
@@ -38,23 +38,19 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         limit: int = Query(50, ge=0, le=500),  # route-level guard; the store also clamps
         offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
-            return {"items": store.list_assessments(repo_id, limit, offset)}
+            return {"items": oqc.list_assessments(repo_id, limit, offset, port=store)}
         finally:
             store.close()
 
     @router.get("/repos/{repo_id}/overview")
     def overview(repo_id: str, request: Request) -> dict[str, Any]:
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
-            rows = store.list_assessments(repo_id, limit=500)
-            return {
-                "total": len(rows),
-                "by_decision": dict(Counter(r["decision"] for r in rows)),
-                "by_status": dict(Counter((r["terminal_status"] or "pending") for r in rows)),
-                "chain": store.chain_status(),
-            }
+            return oqc.overview(repo_id, port=store)
         finally:
             store.close()
 
@@ -66,19 +62,10 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:
         """Lean per-assessment score projection for the risk/benefit-over-time chart."""
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
-            items = [
-                {
-                    "assessment_id": r["assessment_id"],
-                    "decision": r["decision"],
-                    "assessed_commit": r["assessed_commit"],
-                    "terminal_status": r["terminal_status"],
-                    "scores": {k: (r["scores"] or {}).get(k) for k in _SERIES_KEYS},
-                }
-                for r in store.list_assessments(repo_id, limit, offset)
-            ]
-            return {"items": items}
+            return {"items": oqc.scores_series(repo_id, limit, offset, port=store)}
         finally:
             store.close()
 
@@ -90,6 +77,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         scope: str = Query("production"),
     ) -> dict[str, Any]:
         """Reliability diagram (binary targets) or a predicted-vs-actual scatter (continuous)."""
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
             rows = store.list_prediction_errors(repo_id, target_type=target_type, scope=scope)
@@ -121,6 +109,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
     def learning_snapshots(
         repo_id: str, request: Request, limit: int = Query(50, ge=0, le=500)
     ) -> dict[str, Any]:
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
             return {"items": store.list_risk_snapshots(repo_id, limit)}
@@ -134,6 +123,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         snapshot_id: str | None = Query(None),
         limit: int = Query(200, ge=0, le=1000),
     ) -> dict[str, Any]:
+        _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
             return {"items": store.list_learned_risk_facts(repo_id, snapshot_id, limit)}
@@ -197,45 +187,36 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
     @router.get("/repos/{repo_id}/assessments/{assessment_id}")
     def repo_detail(repo_id: str, assessment_id: str, request: Request) -> dict[str, Any]:
         _require_bound_repo(request, repo_id)
-        return _assessment_detail_for_repo(request, assessment_id, repo_id)
+        store = _open(request)
+        try:
+            return oqc.assessment_detail_for_repo(assessment_id, repo_id, port=store)
+        except oqc.AssessmentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="assessment not found") from exc
+        finally:
+            store.close()
 
     @router.get("/assessments/{assessment_id}")
     def detail(assessment_id: str, request: Request) -> dict[str, Any]:
         bound_repo = getattr(request.app.state, "repo_id", None)
-        if bound_repo is not None:
-            return _assessment_detail_for_repo(request, assessment_id, bound_repo)
-        return _assessment_detail(request, assessment_id)
+        store = _open(request)
+        try:
+            if bound_repo is not None:
+                return oqc.assessment_detail_for_repo(assessment_id, bound_repo, port=store)
+            return oqc.assessment_detail(assessment_id, port=store)
+        except oqc.AssessmentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="assessment not found") from exc
+        finally:
+            store.close()
 
     @router.get("/chain-status")
     def chain_status(request: Request) -> dict[str, Any]:
         store = _open(request)
         try:
-            return store.chain_status()
+            return oqc.store_chain_status(port=store)
         finally:
             store.close()
 
     return router
-
-
-def _assessment_detail(request: Request, assessment_id: str) -> dict[str, Any]:
-    try:
-        store = SqliteStore(request.app.state.db_path,
-                            read_only=getattr(request.app.state, "read_only", False))
-    except sqlite3.Error as exc:
-        raise HTTPException(status_code=503, detail="assessment store unavailable") from exc
-    try:
-        return store.assessment_detail(assessment_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="assessment not found") from exc
-    finally:
-        store.close()
-
-
-def _assessment_detail_for_repo(request: Request, assessment_id: str, repo_id: str) -> dict[str, Any]:
-    detail = _assessment_detail(request, assessment_id)
-    if (detail.get("content") or {}).get("repo_id") != repo_id:
-        raise HTTPException(status_code=404, detail="assessment not found")
-    return detail
 
 
 def _graph_unavailable(reason: str) -> dict[str, Any]:

@@ -41,3 +41,21 @@ def test_read_only_rejects_writes(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         ro.insert_risk_snapshot("repo_x", {})  # any write -> "readonly database"
     ro.close()
+
+
+def test_read_only_constructor_closes_connection_when_pragma_fails(monkeypatch, tmp_path):
+    class _FailingConnection:
+        closed = False
+
+        def execute(self, _sql):
+            raise sqlite3.OperationalError("pragma failed")
+
+        def close(self):
+            self.closed = True
+
+    connection = _FailingConnection()
+    monkeypatch.setattr(sqlite3, "connect", lambda *_args, **_kwargs: connection)
+
+    with pytest.raises(sqlite3.OperationalError, match="pragma failed"):
+        SqliteStore(str(tmp_path / "pebra.db"), read_only=True)
+    assert connection.closed is True

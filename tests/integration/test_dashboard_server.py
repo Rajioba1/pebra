@@ -142,6 +142,82 @@ def test_bound_global_assessment_detail_rejects_foreign_repo(tmp_path) -> None:
     assert client.get(f"/api/assessments/{other}", headers=_AUTH).status_code == 404
 
 
+_REPO_COLLECTION_PATHS = (
+    "/api/repos/other/assessments",
+    "/api/repos/other/overview",
+    "/api/repos/other/scores-series",
+    "/api/repos/other/calibration",
+    "/api/repos/other/learning/snapshots",
+    "/api/repos/other/learning/facts",
+)
+
+
+@pytest.mark.parametrize("path", _REPO_COLLECTION_PATHS)
+def test_bound_dashboard_rejects_foreign_repo_collection_routes(tmp_path, path: str) -> None:
+    db, _ = _seed(tmp_path)
+
+    from fastapi.testclient import TestClient
+
+    from pebra.dashboard.server import create_app
+
+    app = create_app(db, "tok", repo_id="r")
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    response = client.get(path, headers=_AUTH)
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "repo not found"}
+
+
+@pytest.mark.parametrize("path", _REPO_COLLECTION_PATHS)
+def test_unbound_dashboard_preserves_multi_repo_collection_access(tmp_path, path: str) -> None:
+    db, _ = _seed(tmp_path)
+    store = SqliteStore(db)
+    foreign = _persist_assessment(store, repo_id="other")
+    store.close()
+
+    response = _client(db).get(path, headers=_AUTH)
+
+    assert response.status_code == 200
+    if path.endswith("/assessments"):
+        assert response.json()["items"][0]["assessment_id"] == foreign
+
+
+# --- M1 characterization: lock the exact JSON shapes of the migrated read routes so the shared
+# query-controller rewire cannot silently drift them. ---
+
+
+def test_overview_shape_is_stable(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    body = _client(db).get("/api/repos/r/overview", headers=_AUTH).json()
+    assert set(body) == {"total", "by_decision", "by_status", "chain"}
+    assert set(body["chain"]) == {"valid", "counts"}
+    assert body["by_status"] == {"pending": 1}  # None terminal_status renders as "pending"
+
+
+def test_scores_series_item_shape_is_stable(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    item = _client(db).get("/api/repos/r/scores-series", headers=_AUTH).json()["items"][0]
+    assert set(item) == {"assessment_id", "decision", "assessed_commit", "terminal_status", "scores"}
+    assert set(item["scores"]) == {
+        "expected_loss", "benefit", "expected_utility", "rau", "edit_confidence",
+    }
+
+
+def test_assessments_route_envelope_is_items_list(tmp_path) -> None:
+    db, asm = _seed(tmp_path)
+    body = _client(db).get("/api/repos/r/assessments", headers=_AUTH).json()
+    assert set(body) == {"items"}
+    assert isinstance(body["items"], list) and body["items"][0]["assessment_id"] == asm
+
+
+def test_chain_status_route_shape_is_stable(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    body = _client(db).get("/api/chain-status", headers=_AUTH).json()
+    assert set(body) == {"valid", "counts"}
+    assert body["valid"] is True
+
+
 def test_forbidden_host_is_rejected(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db, base="http://evil.attacker.com").get("/")

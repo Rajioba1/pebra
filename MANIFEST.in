@@ -7,3 +7,4 @@ include requirements-release.txt
 include README.md
 recursive-include pebra/dashboard/templates *.html
 recursive-include pebra/dashboard/static *.js *.css *.txt
+recursive-include pebra/tui *.tcss

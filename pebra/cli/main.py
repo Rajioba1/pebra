@@ -23,6 +23,7 @@ from pebra.cli import promote as promote_cmd
 from pebra.cli import record_outcome as record_outcome_cmd
 from pebra.cli import scorecard as scorecard_cmd
 from pebra.cli import setup_graph as setup_graph_cmd
+from pebra.cli import tui as tui_cmd
 from pebra.cli import verify as verify_cmd
 
 
@@ -66,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     promote_cmd.register(subparsers)
     scorecard_cmd.register(subparsers)
     dashboard_cmd.register(subparsers)
+    tui_cmd.register(subparsers)
     setup_graph_cmd.register(subparsers)
     graph_stats_cmd.register(subparsers)
     capabilities_cmd.register(subparsers)

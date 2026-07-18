@@ -1,0 +1,1 @@
+"""Observatory TUI widgets."""

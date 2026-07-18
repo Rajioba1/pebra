@@ -16,7 +16,9 @@ forbidden_modules =
     pebra.cli
     pebra.mcp_server
     pebra.dashboard
+    pebra.tui
     pebra.composition
+    pebra.observatory_context
 
 [importlinter:contract:core-no-impure-libs]
 name = core forbidden from impure stdlib + heavy libs (Architecture §12)
@@ -44,6 +46,8 @@ forbidden_modules =
     numpy
     sklearn
     mcp
+    textual
+    rich
 
 # --- Benchmark wall (Phase 5b): production never imports the benchmark harness ---
 
@@ -65,6 +69,14 @@ forbidden_modules =
 
 # --- Layer discipline ---
 
+[importlinter:contract:ports-no-tui]
+name = ports never import the TUI surface
+type = forbidden
+source_modules =
+    pebra.ports
+forbidden_modules =
+    pebra.tui
+
 [importlinter:contract:app-no-adapters]
 name = app reaches I/O only through ports, never adapters
 type = forbidden
@@ -73,6 +85,8 @@ source_modules =
 forbidden_modules =
     pebra.adapters
     pebra.composition
+    pebra.observatory_context
+    pebra.tui
 
 [importlinter:contract:adapters-only-core-ports]
 name = adapters import only core + ports (no app/surfaces)
@@ -85,14 +99,41 @@ forbidden_modules =
     pebra.mcp_server
     pebra.dashboard
     pebra.composition
+    pebra.observatory_context
+    pebra.tui
 
-[importlinter:contract:dashboard-no-app]
-name = dashboard is a surface and never imports app (reads via store/api)
+# The dashboard surface may import exactly one app module: the shared read-only Observatory query
+# controller. Any other app import, including a controller added later, must break this contract.
+[importlinter:contract:dashboard-only-observatory-query-app]
+name = dashboard imports only the observatory query controller from app
 type = forbidden
 source_modules =
     pebra.dashboard
 forbidden_modules =
     pebra.app
+ignore_imports =
+    pebra.dashboard.api -> pebra.app.observatory_query_controller
+
+[importlinter:contract:observatory-query-controller-isolated]
+name = observatory query controller never reaches app siblings
+type = forbidden
+source_modules =
+    pebra.app.observatory_query_controller
+forbidden_modules =
+    pebra.app.*
+
+# The TUI surface, like the dashboard, may import exactly one app module: the shared read-only
+# Observatory query controller. Any other app import (a mutation/lifecycle controller) must break this.
+[importlinter:contract:tui-only-observatory-query-app]
+name = tui imports only the observatory query controller from app
+type = forbidden
+source_modules =
+    pebra.tui
+forbidden_modules =
+    pebra.app
+ignore_imports =
+    pebra.tui.data -> pebra.app.observatory_query_controller
+    pebra.tui.screens.observatory -> pebra.app.observatory_query_controller
 
 [importlinter:contract:assess-no-learning]
 name = assess never imports learning (Hard Rule — Milestone 4: measure, never reapply)

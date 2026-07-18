@@ -8,6 +8,7 @@ import pytest
 
 from scripts.verify_distribution import (
     DistributionVerificationError,
+    _verify_tui_mount,
     release_version_from_tag,
     verify_candidate_manifest,
     verify_checksums,
@@ -24,6 +25,7 @@ _ASSETS = (
     "pebra/dashboard/static/vendor/uplot.iife.min.js",
     "pebra/dashboard/static/vendor/uplot.min.css",
     "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+    "pebra/tui/theme.tcss",
 )
 
 
@@ -173,6 +175,46 @@ def test_installed_verifier_exercises_console_script() -> None:
 
     assert "shutil.which(\"pebra\")" in source
     assert "installed console script" in source
+
+
+def test_installed_verifier_mounts_tui_headlessly() -> None:
+    class RunTestContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    class FakeApp:
+        mounted = False
+
+        def run_test(self) -> RunTestContext:
+            self.mounted = True
+            return RunTestContext()
+
+    app = FakeApp()
+
+    _verify_tui_mount(app)
+
+    assert app.mounted is True
+
+
+def test_installed_verifier_reports_tui_mount_failure() -> None:
+    class BrokenApp:
+        def run_test(self) -> object:
+            raise ValueError("invalid packaged theme")
+
+    with pytest.raises(DistributionVerificationError, match="installed TUI failed to mount"):
+        _verify_tui_mount(BrokenApp())
+
+
+def test_installed_verifier_constructs_tui_app() -> None:
+    source = (Path(__file__).resolve().parents[2] / "scripts" / "verify_distribution.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from pebra.tui.app import ObservatoryApp" in source
+    assert "ObservatoryApp(ObservatoryContext(" in source
 
 
 def test_checksums_detect_artifact_tampering(tmp_path: Path) -> None:
