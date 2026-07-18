@@ -31,6 +31,22 @@ def test_provenance_line_without_prefix_omits_the_pebra_word() -> None:
     assert ("editable" in line) or ("installed" in line)
 
 
+def test_is_editable_degrades_to_false_on_malformed_direct_url(monkeypatch) -> None:
+    import importlib.metadata
+
+    class _Dist:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def read_text(self, name: str) -> str:
+            return self._text
+
+    # valid JSON that isn't an object, and a non-dict dir_info — must return False, never raise
+    for raw in ("null", "[]", "42", '"x"', '{"dir_info": 42}', '{"url": "file:///x"}'):
+        monkeypatch.setattr(importlib.metadata, "distribution", lambda _d, raw=raw: _Dist(raw))
+        assert provenance.is_editable() is False
+
+
 def test_editable_checkout_reports_editable_and_a_hash() -> None:
     # The test env installs pebra with `pip install -e .`, so provenance must reflect the checkout.
     if not provenance.is_editable():

@@ -35,7 +35,12 @@ def is_editable() -> bool:
         info = json.loads(raw)
     except json.JSONDecodeError:
         return False
-    return bool(info.get("dir_info", {}).get("editable"))
+    # Valid JSON need not be an object (a corrupt/foreign direct_url.json could be null/list/number);
+    # degrade to False rather than raising AttributeError on .get().
+    if not isinstance(info, dict):
+        return False
+    dir_info = info.get("dir_info")
+    return bool(isinstance(dir_info, dict) and dir_info.get("editable"))
 
 
 def git_short_hash() -> str | None:
