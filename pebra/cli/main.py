@@ -51,9 +51,46 @@ def _run_help(args: argparse.Namespace) -> int:
     return 0
 
 
+class _LazyVersionAction(argparse.Action):
+    """Render provenance only when argparse selects a version flag."""
+
+    def __init__(
+        self,
+        option_strings: Sequence[str],
+        dest: str = argparse.SUPPRESS,
+        default: object = argparse.SUPPRESS,
+        help: str | None = None,
+    ) -> None:
+        super().__init__(
+            option_strings=option_strings,
+            dest=dest,
+            nargs=0,
+            default=default,
+            help=help,
+        )
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        from pebra.provenance import provenance_line
+
+        print(provenance_line())
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pebra", description="PEBRA - pre-edit benefit-risk assessment."
+    )
+    parser.add_argument(
+        "--version",
+        "-V",
+        action=_LazyVersionAction,
+        help="Show version, install mode, and source revision, then exit.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     assess_cmd.register(subparsers)
@@ -120,14 +157,6 @@ def _configure_output_streams() -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_output_streams()
-    raw_args = list(sys.argv[1:] if argv is None else argv)
-    if raw_args and raw_args[0] in ("--version", "-V"):
-        # Handled before build_parser so it works without a subcommand and never runs git for other
-        # commands (provenance shells out to git at most once, only here).
-        from pebra.provenance import provenance_line
-
-        print(provenance_line())
-        return 0
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

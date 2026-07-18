@@ -20,6 +20,8 @@ def test_help_lists_every_live_command_with_discovery_syntax(capsys) -> None:
     output = capsys.readouterr().out
     for command in _commands():
         assert command in output
+    assert "--version" in output
+    assert "-V" in output
     assert "pebra help <command>" in output
     assert "pebra help --all" in output
 

@@ -125,8 +125,9 @@ def test_version_flag_prints_provenance_without_a_subcommand() -> None:
     for flag in ("--version", "-V"):
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            rc = main([flag])
-        assert rc == 0
+            with pytest.raises(SystemExit) as stopped:
+                main([flag])
+        assert stopped.value.code == 0
         out = buffer.getvalue()
         assert "PEBRA" in out and (("editable" in out) or ("installed" in out))
 
