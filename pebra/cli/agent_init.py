@@ -209,8 +209,8 @@ def _render_agents_md(repo_root: Path) -> PlannedWrite:
     path = repo_root / "AGENTS.md"
     try:
         existing = path.read_bytes().decode("utf-8") if path.exists() else ""
-    except OSError as exc:
-        raise AgentInitConfigError(f"{path}: expected a readable AGENTS.md") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise AgentInitConfigError(f"{path}: expected a readable UTF-8 AGENTS.md") from exc
     newline = "\r\n" if "\r\n" in existing else "\n"
     block = _managed_block(newline)
     span = _managed_block_span(existing, path)

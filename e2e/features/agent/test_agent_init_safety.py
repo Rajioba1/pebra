@@ -46,6 +46,28 @@ def test_agent_init_malformed_hook_is_failure_atomic(
     assert not (tmp_path / "AGENTS.md").exists()
 
 
+def test_codex_non_utf8_agents_md_is_failure_atomic(tmp_path):
+    agents = tmp_path / "AGENTS.md"
+    original = b"# \x80\n"
+    agents.write_bytes(original)
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "pebra", "agent-init", "--target", "codex",
+            "--repo-root", str(tmp_path), "--with-hook",
+        ],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+
+    assert result.returncode == 2
+    assert "agent-init:" in result.stderr
+    assert str(agents) in result.stderr
+    assert "utf-8" in result.stderr.lower()
+    assert agents.read_bytes() == original
+    assert not (tmp_path / ".agents/skills/pebra-safe-edit/SKILL.md").exists()
+    assert not (tmp_path / ".codex/hooks.json").exists()
+
+
 @pytest.mark.parametrize(
     ("target", "config_rel", "skill_rel", "matcher"),
     (
