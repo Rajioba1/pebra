@@ -75,3 +75,16 @@ def test_pyproject_points_to_the_public_github_surfaces() -> None:
         "Issues": "https://github.com/Rajioba1/pebra/issues",
         "Releases": "https://github.com/Rajioba1/pebra/releases",
     }
+
+
+def test_readme_documents_cli_and_tui_discovery_commands() -> None:
+    body = (ROOT / "README.md").read_text(encoding="utf-8")
+    for command in (
+        "pebra tui --repo-root .",
+        r".\.venv\Scripts\python.exe -m pebra tui --repo-root .",
+        "pebra --version",
+        "pebra --help",
+        "pebra help tui",
+        "pebra help --all",
+    ):
+        assert command in body

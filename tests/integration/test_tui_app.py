@@ -54,6 +54,23 @@ def test_ctrl_q_remains_the_inherited_priority_binding() -> None:
     assert inherited.priority is True
 
 
+def test_question_mark_footer_binding_opens_textual_help_panel() -> None:
+    from textual.widgets import HelpPanel
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx())
+        async with app.run_test() as pilot:
+            binding = app.active_bindings["question_mark"].binding
+            assert binding.action == "show_help_panel"
+            assert binding.description == "pebra --help"
+            assert len(app.query(HelpPanel)) == 0
+            await pilot.press("?")
+            await pilot.pause()
+            assert app.query_one(HelpPanel) is not None
+
+    asyncio.run(scenario())
+
+
 def test_get_css_variables_merges_custom_without_dropping_builtins() -> None:
     async def scenario() -> None:
         app = ObservatoryApp(_ctx())

@@ -45,6 +45,24 @@ pebra doctor
 
 `assess` never silently installs external binaries.
 
+## Terminal Dashboard and Help
+
+Launch the terminal dashboard from an installed or editable checkout:
+
+```powershell
+pebra tui --repo-root .
+.\.venv\Scripts\python.exe -m pebra tui --repo-root .
+```
+
+Discover the installed version, root help, command help, and complete help:
+
+```powershell
+pebra --version
+pebra --help
+pebra help tui
+pebra help --all
+```
+
 The **benefit signal** (multi-language complexity + maintainability index) is likewise an explicit
 external binary — [`rust-code-analysis`](https://github.com/mozilla/rust-code-analysis) (MPL-2.0),
 invoked as a subprocess. Build it from git (crates.io's release does not compile against current

@@ -32,7 +32,10 @@ class ObservatoryApp(App[None]):
     # `q` is our convenience quit. `ctrl+q` is inherited from Textual's base App (priority=True,
     # hidden) — do NOT redeclare it here: the tuple form would drop its priority, letting a focused
     # widget (the ledger DataTable) intercept ctrl+q before the app-level quit.
-    BINDINGS = [("q", "quit", "Quit")]
+    BINDINGS = [
+        ("q", "quit", "Quit"),
+        ("?", "show_help_panel", "pebra --help"),
+    ]
 
     def __init__(self, context: ObservatoryContext) -> None:
         super().__init__()
