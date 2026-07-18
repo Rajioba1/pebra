@@ -32,12 +32,25 @@ use `nox -s dev-package -- --open` to open the installed wheel's dashboard.
 
 ### Developing the Observatory TUI
 
-`pebra tui` is a Textual surface. To iterate with the Textual devtools, run the console in one terminal
-and the app in another:
+`pebra tui` is a Textual surface. Launch the editable checkout directly from the repository root:
 
 ```powershell
+.\.venv\Scripts\pebra.exe tui --repo-root .
+```
+
+The equivalent module form is
+`.\.venv\Scripts\python.exe -m pebra tui --repo-root .`. For an explicitly bound read-only store, use
+`--read-only --db path\to\pebra.db --repo-id <id>` instead of `--repo-root .`.
+
+For hot reload and the Textual dev console, run these in two terminals from the repository root:
+
+```powershell
+# Terminal 1: Textual events and self.log(...) output
 .\.venv\Scripts\textual.exe console
-.\.venv\Scripts\textual.exe run --dev -c "pebra tui --read-only --db path\to\pebra.db --repo-id <id>"
+
+# Terminal 2: make the editable console script visible to Textual's child process
+$env:PATH = "$PWD\.venv\Scripts;$env:PATH"
+.\.venv\Scripts\textual.exe run --dev -c "pebra tui --repo-root ."
 ```
 
 The `--dev` run hot-reloads `pebra/tui/theme.tcss`, and `self.log(...)` output routes to the console

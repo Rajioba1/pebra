@@ -144,6 +144,7 @@
   }
 
   // ---- History ----
+  const historyState = { assessment_id: null };
   async function renderHistory(view) {
     const [data, series] = await Promise.all([
       getJSON(rp("/assessments?limit=100")), getJSON(rp("/scores-series?limit=200")),
@@ -182,7 +183,10 @@
         tr.appendChild(cell(fmt(s.rau), "num"));
         tr.appendChild(cell(fmt(s.edit_confidence, 2), "num"));
         tr.appendChild(cell(it.terminal_status || "pending", "mono"));
-        tr.addEventListener("click", function () { showMeasuredBenefit(it.assessment_id, bbody); });
+        tr.addEventListener("click", function () {
+          historyState.assessment_id = it.assessment_id;
+          showMeasuredBenefit(it.assessment_id, bbody);
+        });
         tb.appendChild(tr);
       });
       table.appendChild(tb);
@@ -190,6 +194,7 @@
     }
     view.appendChild(hcard);
     view.appendChild(bcard);
+    if (historyState.assessment_id) showMeasuredBenefit(historyState.assessment_id, bbody);
   }
 
   // Fetch one assessment's detail and render its measured (verify-time) RCA benefit. The measured signal
@@ -563,6 +568,15 @@
     }
   }
 
+  async function refreshLiveView() {
+    const view = document.getElementById("view-" + currentTab());
+    if (view.contains(document.activeElement)) return;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    await route();
+    window.scrollTo(scrollX, scrollY);
+  }
+
   window.addEventListener("hashchange", route);
 
   async function start() {
@@ -572,7 +586,7 @@
     await refreshChain();
     await route();
     if (LIVE) {
-      setInterval(() => { refreshChain(); route(); }, LIVE_MS);
+      setInterval(() => { refreshChain(); refreshLiveView(); }, LIVE_MS);
     }
   }
   start();

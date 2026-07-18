@@ -17,6 +17,7 @@ from textual.coordinate import Coordinate
 from textual.screen import Screen
 from textual.theme import Theme
 from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets.data_table import RowDoesNotExist
 
 from pebra.app.observatory_query_controller import AssessmentNotFoundError
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot, ObservatoryStoreUnavailable
@@ -175,6 +176,14 @@ class ObservatoryScreen(Screen):
             total=int(snapshot.overview.get("total", 0)),
         )
         table = self.query_one("#ledger", DataTable)
+        old_row = table.cursor_coordinate.row
+        old_column = table.cursor_coordinate.column
+        old_row_key: str | None = None
+        if table.row_count and old_row < table.row_count:
+            old_row_key = table.coordinate_to_cell_key(Coordinate(old_row, 0)).row_key.value
+        old_scroll_x = table.scroll_x
+        old_scroll_y = table.scroll_y
+        had_focus = table.has_focus
         table.clear()
         dark = self._is_dark()
         for row in rows:
@@ -183,6 +192,25 @@ class ObservatoryScreen(Screen):
                 *ledger_row(row, dark=dark),
                 key=str(assessment_id) if assessment_id else None,
             )
+        if table.row_count:
+            try:
+                restored_row = table.get_row_index(old_row_key) if old_row_key else old_row
+            except RowDoesNotExist:
+                restored_row = old_row
+            table.move_cursor(
+                row=min(restored_row, table.row_count - 1),
+                column=min(old_column, len(LEDGER_COLUMNS) - 1),
+                scroll=False,
+            )
+        if had_focus:
+            table.focus(scroll_visible=False)
+        table.scroll_to(
+            x=old_scroll_x,
+            y=old_scroll_y,
+            animate=False,
+            force=True,
+            immediate=True,
+        )
         self.query_one("#trends", ScoreSparklines).update_series(snapshot.scores_series)
         self._set_message("" if rows else _EMPTY)
 

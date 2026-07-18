@@ -39,6 +39,24 @@ def _snapshot() -> ObservatorySnapshot:
     )
 
 
+def _snapshot_with_rows(*assessment_ids: str) -> ObservatorySnapshot:
+    return ObservatorySnapshot(
+        overview={"total": len(assessment_ids)},
+        assessments=[
+            {
+                "assessment_id": assessment_id,
+                "decision": "proceed",
+                "assessed_commit": assessment_id,
+                "terminal_status": None,
+                "scores": {"rau": index / 100},
+            }
+            for index, assessment_id in enumerate(assessment_ids)
+        ],
+        scores_series=[],
+        chain={"valid": True},
+    )
+
+
 class _FakeData:
     repo_id = "r"
 
@@ -251,5 +269,40 @@ def test_manual_refresh_runs_when_idle(tmp_path) -> None:
             await _wait_until(pilot, lambda: data.calls == 1)
             screen.action_refresh()
             assert await _wait_until(pilot, lambda: data.calls == 2 and not screen._refreshing)
+
+    asyncio.run(scenario())
+
+
+def test_successful_refresh_preserves_ledger_interaction_state() -> None:
+    async def scenario() -> None:
+        original_ids = tuple(f"asm_{index}" for index in range(30))
+
+        class _ManyRowsData(_FakeData):
+            def refresh_snapshot(self) -> ObservatorySnapshot:
+                return _snapshot_with_rows(*original_ids)
+
+        app = _Harness(ObservatoryScreen(_ManyRowsData()))
+        async with app.run_test(size=(100, 18)) as pilot:
+            screen = app.screen
+            table = app.query_one("#ledger", DataTable)
+            table.focus()
+            table.move_cursor(row=20, column=3, scroll=False)
+            table.scroll_to(y=12, animate=False, force=True, immediate=True)
+            await pilot.pause()
+
+            selected_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+            old_scroll_y = table.scroll_y
+            assert selected_key == "asm_20"
+            assert old_scroll_y > 0
+            assert table.has_focus
+
+            screen._apply_snapshot(_snapshot_with_rows("asm_new", *original_ids))
+            await pilot.pause()
+
+            refreshed_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+            assert refreshed_key == selected_key
+            assert table.cursor_coordinate.column == 3
+            assert table.scroll_y == old_scroll_y
+            assert table.has_focus
 
     asyncio.run(scenario())
