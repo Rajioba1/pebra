@@ -38,6 +38,26 @@ publish the post-`v0.1.0` fixes as `0.1.1` through the existing verified release
 - Run the full local test, lint, fast E2E, and distribution lanes before commit and push.
 - Require successful Ubuntu, Windows, and macOS GitHub CI for the release commit before tagging.
 
+## Pre-release agent-init safety gate
+
+`0.1.1` must not ship the current destructive edge cases in `pebra agent-init --with-hook`:
+
+- Build and validate the complete write plan before changing any destination. Malformed JSON, a
+  non-object document root, a non-object `hooks` member, or a non-list `PreToolUse` member must return a
+  non-zero error naming the invalid file and leave all existing files byte-identical. Validation failure
+  must not create a skill file, `AGENTS.md`, or a hook file. This is validation-atomicity; the design does
+  not claim a multi-file filesystem transaction for an unrelated I/O failure during the later write step.
+- Replace the broad `"gate-hook" in command` ownership check with one exact structural predicate shared
+  by hook installation and capability observation. PEBRA may replace only the entry whose matcher, hook
+  type, and command exactly equal the entry it owns. A similar user command or a conflicting entry is
+  preserved.
+- Add regression tests for malformed content and shapes, no-partial-write behavior, exact idempotency,
+  preservation of unrelated hooks, and preservation of lookalike `gate-hook` commands.
+
+These two fixes are release blockers. The typed gate contract, always-loaded Claude guidance,
+`agent-init --check --json`, host registry, and additional runtime work belong to the separate
+agent-integration-v2 design and do not expand the `0.1.1` release scope.
+
 ## Release safeguards and sequence
 
 Before publication, align repository settings with `RELEASING.md`: require a reviewer for the `pypi`
