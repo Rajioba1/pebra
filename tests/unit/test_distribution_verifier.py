@@ -8,6 +8,7 @@ import pytest
 
 from scripts.verify_distribution import (
     DistributionVerificationError,
+    _verify_tui_mount,
     release_version_from_tag,
     verify_candidate_manifest,
     verify_checksums,
@@ -174,6 +175,37 @@ def test_installed_verifier_exercises_console_script() -> None:
 
     assert "shutil.which(\"pebra\")" in source
     assert "installed console script" in source
+
+
+def test_installed_verifier_mounts_tui_headlessly() -> None:
+    class RunTestContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    class FakeApp:
+        mounted = False
+
+        def run_test(self) -> RunTestContext:
+            self.mounted = True
+            return RunTestContext()
+
+    app = FakeApp()
+
+    _verify_tui_mount(app)
+
+    assert app.mounted is True
+
+
+def test_installed_verifier_reports_tui_mount_failure() -> None:
+    class BrokenApp:
+        def run_test(self) -> object:
+            raise ValueError("invalid packaged theme")
+
+    with pytest.raises(DistributionVerificationError, match="installed TUI failed to mount"):
+        _verify_tui_mount(BrokenApp())
 
 
 def test_installed_verifier_constructs_tui_app() -> None:

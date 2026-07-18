@@ -122,8 +122,8 @@ class ObservatoryScreen(Screen):
         self._refreshing = False
         # Safe dev-console log: counts + timing only — the TUI never handles source/tokens/candidates.
         self._dev_log(
-            f"observatory refresh ok repo={self._data.repo_id} "
-            f"rows={len(snapshot.assessments)} duration={time.monotonic() - self._refresh_started_at:.3f}s"
+            f"observatory refresh ok rows={len(snapshot.assessments)} "
+            f"duration={time.monotonic() - self._refresh_started_at:.3f}s"
         )
         if not self.is_mounted:  # a late result must never touch a screen that's gone
             return
@@ -132,7 +132,7 @@ class ObservatoryScreen(Screen):
     def _finish_error(self, message: str) -> None:
         self._refreshing = False
         # Log the error CATEGORY, not the message contents.
-        self._dev_log(f"observatory refresh failed repo={self._data.repo_id} category=store_unavailable")
+        self._dev_log("observatory refresh failed category=store_unavailable")
         if not self.is_mounted:
             return
         # Preserve the last good render (do not clear the table); just surface the error.

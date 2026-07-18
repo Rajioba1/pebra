@@ -21,7 +21,7 @@ Use Python 3.11 or newer. A minimal Windows setup is:
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m pip install pytest pytest-cov hypothesis syrupy jsonschema ruff import-linter nox
+.\.venv\Scripts\python.exe -m pip install pytest pytest-cov hypothesis syrupy jsonschema ruff import-linter nox textual-dev pytest-textual-snapshot==1.1.0
 ```
 
 Use the equivalent activation and executable paths on macOS or Linux.
@@ -43,8 +43,9 @@ and the app in another:
 The `--dev` run hot-reloads `pebra/tui/theme.tcss`, and `self.log(...)` output routes to the console
 instead of corrupting the TUI. TUI diagnostics log identifiers, counts, timing, and error categories
 only — never source, tokens, candidate payloads, or sanction data (the TUI never handles those). After a
-deliberate visual change, regenerate the SVG baselines with `pytest tests/snapshots --snapshot-update`
-and review them before committing.
+deliberate visual change, regenerate the SVG baselines with
+`.\.venv\Scripts\python.exe -m pytest tests\snapshots --snapshot-update` and review them before
+committing.
 
 ## Engineering Rules
 

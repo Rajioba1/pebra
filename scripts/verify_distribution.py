@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import hmac
 import importlib.metadata
@@ -18,7 +19,7 @@ import tempfile
 import tomllib
 import zipfile
 from pathlib import Path
-from typing import Sequence
+from typing import AsyncContextManager, Protocol, Sequence
 
 
 _PACKAGE_ASSETS = (
@@ -45,6 +46,10 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 class DistributionVerificationError(RuntimeError):
     """A built or installed distribution does not satisfy the release contract."""
+
+
+class _HeadlessTestApp(Protocol):
+    def run_test(self) -> AsyncContextManager[object]: ...
 
 
 def _missing_exact(members: set[str], required: Sequence[str]) -> list[str]:
@@ -107,6 +112,19 @@ def _run_cli(*args: str, cwd: Path, timeout: int = 120) -> subprocess.CompletedP
     )
 
 
+def _verify_tui_mount(app: _HeadlessTestApp) -> None:
+    """Enter Textual's headless lifecycle so packaged styles are parsed and loaded."""
+
+    async def mount() -> None:
+        async with app.run_test():
+            pass
+
+    try:
+        asyncio.run(mount())
+    except Exception as exc:
+        raise DistributionVerificationError("installed TUI failed to mount") from exc
+
+
 def verify_installed() -> None:
     """Check the installed wheel without importing PEBRA from its source checkout."""
     dashboard = importlib.resources.files("pebra.dashboard")
@@ -135,6 +153,7 @@ def verify_installed() -> None:
     ))
     if app.observatory_context.repo_id != "installed-wheel-smoke":
         raise DistributionVerificationError("installed TUI app construction failed")
+    _verify_tui_mount(app)
 
     metadata_files = {str(path).replace("\\", "/") for path in importlib.metadata.files("pebra") or ()}
     for suffix in ("licenses/LICENSE", "licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt"):

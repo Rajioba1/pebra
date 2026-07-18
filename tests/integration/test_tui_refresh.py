@@ -49,6 +49,10 @@ class _FakeData:
         return {}
 
 
+class _SensitiveData(_FakeData):
+    repo_id = "repo-token-sk_live_DO_NOT_LOG"
+
+
 class _BlockingData:
     repo_id = "r"
 
@@ -108,6 +112,55 @@ def test_finish_ignores_late_result_on_unmounted_screen() -> None:
     screen._refreshing = True
     screen._finish_error("boom")
     assert screen._refreshing is False
+
+
+def _capture_dev_logs(monkeypatch, *, mounted: bool = True) -> list[str]:
+    messages: list[str] = []
+    monkeypatch.setattr(ObservatoryScreen, "is_mounted", property(lambda _self: mounted))
+    monkeypatch.setattr(ObservatoryScreen, "log", property(lambda _self: messages.append))
+    return messages
+
+
+def test_dev_log_success_omits_sensitive_refresh_payload(monkeypatch) -> None:
+    screen = ObservatoryScreen(_SensitiveData())
+    snapshot = _snapshot()
+    snapshot.assessments[0]["source"] = "source-password-DO_NOT_LOG"
+    screen._refresh_started_at = 1.0
+    monkeypatch.setattr("pebra.tui.screens.observatory.time.monotonic", lambda: 2.5)
+    monkeypatch.setattr(screen, "_apply_snapshot", lambda _snapshot: None)
+    messages = _capture_dev_logs(monkeypatch)
+
+    screen._finish_ok(snapshot)
+
+    assert messages == ["observatory refresh ok rows=1 duration=1.500s"]
+
+
+def test_dev_log_error_omits_sensitive_error_and_token(monkeypatch) -> None:
+    screen = ObservatoryScreen(_SensitiveData())
+    monkeypatch.setattr(screen, "_set_message", lambda _message: None)
+    messages = _capture_dev_logs(monkeypatch)
+
+    screen._finish_error("Authorization: Bearer error-token-DO_NOT_LOG")
+
+    assert messages == ["observatory refresh failed category=store_unavailable"]
+
+
+def test_dev_log_busy_contains_only_safe_status(monkeypatch) -> None:
+    screen = ObservatoryScreen(_SensitiveData())
+    screen._refreshing = True
+    messages = _capture_dev_logs(monkeypatch)
+
+    assert screen.action_refresh() is False
+    assert messages == ["observatory refresh skipped: busy"]
+
+
+def test_dev_log_is_noop_when_unmounted(monkeypatch) -> None:
+    screen = ObservatoryScreen(_SensitiveData())
+    messages = _capture_dev_logs(monkeypatch, mounted=False)
+
+    screen._dev_log("source-and-token-DO_NOT_LOG")
+
+    assert messages == []
 
 
 # --- integration: threaded worker ---

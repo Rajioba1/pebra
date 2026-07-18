@@ -57,6 +57,34 @@ def test_nox_tests_use_the_supported_textual_range() -> None:
     assert "textual" not in dev
 
 
+def test_snapshot_plugin_is_exactly_pinned_in_dev_environments() -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    project_dev = config["dependency-groups"]["dev"]
+    tree = ast.parse((root / "noxfile.py").read_text(encoding="utf-8"))
+    dev_assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "DEV" for target in node.targets)
+    )
+    nox_dev = ast.literal_eval(dev_assignment.value)
+
+    assert "pytest-textual-snapshot==1.1.0" in project_dev
+    assert "pytest-textual-snapshot==1.1.0" in nox_dev
+
+
+def test_tui_contributor_setup_installs_devtools_and_uses_project_venv() -> None:
+    root = Path(__file__).resolve().parents[2]
+    guide = (root / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    assert "textual-dev pytest-textual-snapshot==1.1.0" in guide
+    assert (
+        r".\.venv\Scripts\python.exe -m pytest tests\snapshots --snapshot-update" in guide
+    )
+    assert "`pytest tests/snapshots --snapshot-update`" not in guide
+
+
 def test_source_distribution_manifest_includes_release_documents() -> None:
     root = Path(__file__).resolve().parents[2]
     manifest = (root / "MANIFEST.in").read_text(encoding="utf-8").splitlines()

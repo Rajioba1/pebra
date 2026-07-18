@@ -1,14 +1,16 @@
-"""SVG snapshot tests for the Observatory ledger screen (Observatory TUI M3).
+r"""SVG snapshot tests for the Observatory ledger screen (Observatory TUI M3).
 
 These lock the rendered surface — the RAU-lane, the colored decisions (the color encoding is under visual
 regression here), the status line, the empty state, and the chain-failure banner — across narrow/wide
-terminals and dark/light themes. Regenerate baselines with `pytest --snapshot-update` after an
-intentional visual change, then review the SVGs before committing.
+terminals and dark/light themes. Regenerate baselines with
+`.\.venv\Scripts\python.exe -m pytest tests\snapshots --snapshot-update` after an intentional visual
+change, then review the SVGs before committing.
 """
 
 from __future__ import annotations
 
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,10 +34,17 @@ _SPECS = [
     (Decision.REJECT, "dddd444", {"rau": -0.31, "expected_loss": 0.36, "benefit": 0.20}),
 ]
 
-# normalize_svg is a private plugin internal, absent before pytest-textual-snapshot 1.1. The dep is
-# pinned to >=1.1 (noxfile DEV + dev group), but guard the reference with getattr so an unexpected
-# older resolution degrades to the default normalizer instead of failing COLLECTION with AttributeError.
-_ORIGINAL_NORMALIZE_SVG = getattr(pytest_textual_snapshot, "normalize_svg", None)
+# normalize_svg is a private plugin internal required by these color-sensitive baselines.
+def _require_normalize_svg(plugin):
+    try:
+        return plugin.normalize_svg
+    except AttributeError as exc:
+        raise RuntimeError(
+            "pytest-textual-snapshot==1.1.0 must provide the normalize_svg hook"
+        ) from exc
+
+
+_ORIGINAL_NORMALIZE_SVG = _require_normalize_svg(pytest_textual_snapshot)
 
 
 def _normalize_snapshot_svg(svg: str) -> str:
@@ -52,16 +61,21 @@ def _normalize_snapshot_svg(svg: str) -> str:
 def _color_snapshots_are_environment_independent(monkeypatch) -> None:
     """Color is part of these baselines, even when the invoking shell sets NO_COLOR."""
     monkeypatch.delenv("NO_COLOR", raising=False)
-    if _ORIGINAL_NORMALIZE_SVG is not None:
-        monkeypatch.setattr(pytest_textual_snapshot, "normalize_svg", _normalize_snapshot_svg)
+    monkeypatch.setattr(pytest_textual_snapshot, "normalize_svg", _normalize_snapshot_svg)
 
 
 def test_snapshot_normalizer_strips_trailing_space_and_rich_terminal_ids() -> None:
-    if _ORIGINAL_NORMALIZE_SVG is None:
-        pytest.skip("normalize_svg unavailable (pytest-textual-snapshot < 1.1)")
     svg = '<svg class="terminal-123-matrix">  \n        \n</svg>\t\n'
 
     assert _normalize_snapshot_svg(svg) == '<svg class="terminal-matrix">\n\n</svg>\n'
+
+
+def test_snapshot_normalizer_requires_supported_plugin_hook() -> None:
+    with pytest.raises(
+        RuntimeError,
+        match=r"pytest-textual-snapshot==1\.1\.0.*normalize_svg",
+    ):
+        _require_normalize_svg(SimpleNamespace())
 
 
 def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False) -> str:

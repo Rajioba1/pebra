@@ -69,6 +69,14 @@ forbidden_modules =
 
 # --- Layer discipline ---
 
+[importlinter:contract:ports-no-tui]
+name = ports never import the TUI surface
+type = forbidden
+source_modules =
+    pebra.ports
+forbidden_modules =
+    pebra.tui
+
 [importlinter:contract:app-no-adapters]
 name = app reaches I/O only through ports, never adapters
 type = forbidden
