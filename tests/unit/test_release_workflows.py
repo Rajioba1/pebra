@@ -104,4 +104,6 @@ def test_release_uses_trusted_publishing_checksums_and_attestation() -> None:
     assert workflow.count("id-token: write") == 3
     publish_pypi = workflow.split("  publish-pypi:", 1)[1].split("  create-github-release:", 1)[0]
     assert "contents: read" in publish_pypi
+    create_release = workflow.split("  create-github-release:", 1)[1]
+    assert "needs.publish-pypi.result == 'success'" in create_release
     assert "password:" not in workflow
