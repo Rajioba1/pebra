@@ -232,7 +232,9 @@ claims remain forbidden.
   `nox -s e2e-fast` run in the final experiment milestone.
 - Distribution verification proves all generated templates remain available from an installed wheel.
 - Final Ubuntu, Windows, and macOS CI runs only after experiment alignment and is required before any
-  runtime-support claim or release.
+  Agent Integration V2 runtime-support claim or release. The bounded predecessor `0.1.1` release follows
+  its separately approved release design and does not claim the post-release V2 contract, registry, or
+  experiment alignment.
 
 ## Non-goals
 
