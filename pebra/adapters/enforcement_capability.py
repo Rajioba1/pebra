@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from pebra.core.agent_hook_contract import is_managed_hook_entry
+
 
 def _hook_installed(path: Path, expected_matcher: str) -> bool:
     try:
@@ -22,18 +24,7 @@ def _hook_installed(path: Path, expected_matcher: str) -> bool:
     entries = hooks.get("PreToolUse")
     if not isinstance(entries, list):
         return False
-    return any(
-        isinstance(entry, dict)
-        and entry.get("matcher") == expected_matcher
-        and isinstance(entry.get("hooks"), list)
-        and any(
-            isinstance(hook, dict)
-            and hook.get("type") == "command"
-            and hook.get("command") == "pebra gate-hook"
-            for hook in entry.get("hooks", [])
-        )
-        for entry in entries
-    )
+    return any(is_managed_hook_entry(entry, expected_matcher) for entry in entries)
 
 
 def _git_available(repo_root: Path) -> bool:

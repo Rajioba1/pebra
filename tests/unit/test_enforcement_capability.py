@@ -74,6 +74,18 @@ def test_suggestive_command_or_wrong_matcher_does_not_claim_enforcement(tmp_path
     assert result["claude"]["candidate_bound"] is False
 
 
+def test_hook_probe_rejects_lookalike_command(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({
+        "hooks": {"PreToolUse": [{
+            "matcher": "Edit|Write|MultiEdit",
+            "hooks": [{"type": "command", "command": "echo run-my-gate-hook-check"}],
+        }]},
+    }), encoding="utf-8")
+
+    assert enforcement_capability._hook_installed(settings, "Edit|Write|MultiEdit") is False
+
+
 def test_malformed_valid_json_fails_safe_to_advisory_only(tmp_path: Path) -> None:
     path = tmp_path / ".claude" / "settings.json"
     path.parent.mkdir(parents=True)

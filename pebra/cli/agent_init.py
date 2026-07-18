@@ -16,13 +16,16 @@ Targets:
 from __future__ import annotations
 
 import json
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from pebra.core.agent_hook_contract import is_managed_hook_entry, managed_hook_entry
 
 _SKILL_DIR = "pebra-safe-edit"
 _CLAUDE_HOOK_MATCHER = "Edit|Write|MultiEdit"
 _CODEX_HOOK_MATCHER = "apply_patch"
-_HOOK_COMMAND = "pebra gate-hook"
 _MARK_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MARK_END = "<!-- END pebra-safe-edit -->"
 
@@ -80,6 +83,16 @@ description: Use BEFORE editing, renaming, or deleting any function, class, or f
 _AGENTS_HEADING = "## PEBRA safe-edit protocol"
 
 
+@dataclass(frozen=True)
+class PlannedWrite:
+    path: Path
+    content: str
+
+
+class AgentInitConfigError(ValueError):
+    pass
+
+
 def register(subparsers: Any) -> None:
     p = subparsers.add_parser(
         "agent-init",
@@ -102,16 +115,15 @@ def register(subparsers: Any) -> None:
 def run_agent_init(args: Any) -> int:
     repo_root = Path(args.repo_root)
     with_hook = getattr(args, "with_hook", False)
-    if args.target == "claude":
-        written = [_write_skill(repo_root, ".claude")]
-        if with_hook:
-            written.append(_install_hook(repo_root, Path(".claude") / "settings.json", _CLAUDE_HOOK_MATCHER))
-    else:  # codex
-        written = [_merge_agents_md(repo_root), _write_skill(repo_root, ".agents")]
-        if with_hook:
-            written.append(_install_hook(repo_root, Path(".codex") / "hooks.json", _CODEX_HOOK_MATCHER))
-    for path in written:
-        print(f"wrote {path}")
+    try:
+        planned = _plan_agent_init(repo_root, args.target, with_hook)
+    except AgentInitConfigError as exc:
+        print(f"agent-init: {exc}", file=sys.stderr)
+        return 2
+    for write in planned:
+        write.path.parent.mkdir(parents=True, exist_ok=True)
+        write.path.write_text(write.content, encoding="utf-8")
+        print(f"wrote {write.path}")
     if args.target == "codex":
         print("note: AGENTS.md is the reliable Codex surface; .agents/skills is best-effort per Codex docs.")
     if with_hook:
@@ -124,64 +136,79 @@ def run_agent_init(args: Any) -> int:
     return 0
 
 
-def _write_skill(repo_root: Path, base: str) -> Path:
+def _plan_agent_init(repo_root: Path, target: str, with_hook: bool) -> list[PlannedWrite]:
+    if target == "claude":
+        planned = [_render_skill(repo_root, ".claude")]
+        if with_hook:
+            path = repo_root / ".claude" / "settings.json"
+            planned.append(PlannedWrite(path, _render_hook_config(path, _CLAUDE_HOOK_MATCHER)))
+        return planned
+
+    planned = [_render_agents_md(repo_root), _render_skill(repo_root, ".agents")]
+    if with_hook:
+        path = repo_root / ".codex" / "hooks.json"
+        planned.append(PlannedWrite(path, _render_hook_config(path, _CODEX_HOOK_MATCHER)))
+    return planned
+
+
+def _render_skill(repo_root: Path, base: str) -> PlannedWrite:
     path = repo_root / base / "skills" / _SKILL_DIR / "SKILL.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_SKILL_MD, encoding="utf-8")
-    return path
+    return PlannedWrite(path, _SKILL_MD)
 
 
-def _is_pebra_gate_hook(entry: Any) -> bool:
-    if not isinstance(entry, dict):
-        return False
-    return any(isinstance(h, dict) and "gate-hook" in str(h.get("command", ""))
-               for h in entry.get("hooks", []))
-
-
-def _install_hook(repo_root: Path, rel_path: Path, matcher: str) -> Path:
-    """Merge the PreToolUse gate hook into a host hooks file, preserving unrelated settings and other
-    hooks, and idempotently (re-run never duplicates the entry). Malformed JSON is replaced."""
-    path = repo_root / rel_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data: Any = {}
-    if path.exists():
+def _render_hook_config(path: Path, matcher: str) -> str:
+    if not path.exists():
+        data: dict[str, Any] = {}
+    else:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except ValueError:
-            data = {}
-    if not isinstance(data, dict):
-        data = {}
-    hooks = data.setdefault("hooks", {})
+        except (OSError, ValueError) as exc:
+            raise AgentInitConfigError(f"{path}: expected valid JSON object") from exc
+        if not isinstance(data, dict):
+            raise AgentInitConfigError(f"{path}: expected a JSON object")
+    if "hooks" not in data:
+        hooks = {}
+        data["hooks"] = hooks
+    else:
+        hooks = data["hooks"]
     if not isinstance(hooks, dict):
-        hooks = data["hooks"] = {}
-    pre = hooks.get("PreToolUse")
-    if not isinstance(pre, list):
-        pre = []
-    pre = [e for e in pre if not _is_pebra_gate_hook(e)]  # drop any prior pebra entry -> idempotent
-    pre.append({"matcher": matcher,
-                "hooks": [{"type": "command", "command": _HOOK_COMMAND}]})
-    hooks["PreToolUse"] = pre
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return path
+        raise AgentInitConfigError(f"{path}: hooks must be an object")
+    if "PreToolUse" not in hooks:
+        entries = []
+    else:
+        entries = hooks["PreToolUse"]
+    if not isinstance(entries, list):
+        raise AgentInitConfigError(f"{path}: hooks.PreToolUse must be an array")
+    kept = [entry for entry in entries if not is_managed_hook_entry(entry, matcher)]
+    hooks["PreToolUse"] = [*kept, managed_hook_entry(matcher)]
+    return json.dumps(data, indent=2) + "\n"
 
 
 def _managed_block() -> str:
     return f"{_MARK_BEGIN}\n{_AGENTS_HEADING}\n\n{_PROTOCOL_BODY.rstrip()}\n{_MARK_END}"
 
 
-def _without_managed_block(text: str) -> str:
-    start = text.find(_MARK_BEGIN)
-    end = text.find(_MARK_END)
-    if start == -1 or end == -1:
+def _without_managed_block(text: str, path: Path) -> str:
+    begin_count = text.count(_MARK_BEGIN)
+    end_count = text.count(_MARK_END)
+    if begin_count == 0 and end_count == 0:
         return text
+    if begin_count != 1 or end_count != 1:
+        raise AgentInitConfigError(f"{path}: expected zero or one PEBRA managed block")
+    start = text.index(_MARK_BEGIN)
+    end = text.index(_MARK_END)
+    if end < start:
+        raise AgentInitConfigError(f"{path}: PEBRA managed block markers are reversed")
     return text[:start] + text[end + len(_MARK_END):]
 
 
-def _merge_agents_md(repo_root: Path) -> Path:
+def _render_agents_md(repo_root: Path) -> PlannedWrite:
     path = repo_root / "AGENTS.md"
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    base = _without_managed_block(existing).rstrip("\n")
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError as exc:
+        raise AgentInitConfigError(f"{path}: expected a readable AGENTS.md") from exc
+    base = _without_managed_block(existing, path).rstrip("\n")
     block = _managed_block()
     content = f"{base}\n\n{block}\n" if base else f"{block}\n"
-    path.write_text(content, encoding="utf-8")
-    return path
+    return PlannedWrite(path, content)

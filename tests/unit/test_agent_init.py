@@ -8,8 +8,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from pebra.cli import agent_init
 from pebra.cli.main import build_parser
+from pebra.core import agent_hook_contract
 
 _SKILL_REL = Path(".claude") / "skills" / "pebra-safe-edit" / "SKILL.md"
 _TOKENS = ("pebra assess", "pebra verify", "record-outcome", "pre-edit")
@@ -189,6 +192,143 @@ def test_claude_with_hook_preserves_existing_settings(tmp_path):
     assert data["custom"] is True  # unrelated settings preserved
     cmds = [h.get("command") for e in data["hooks"]["PreToolUse"] for h in e.get("hooks", [])]
     assert "echo hi" in cmds and any("gate-hook" in (c or "") for c in cmds)  # existing hook kept + gate added
+
+
+def test_claude_with_hook_preserves_lookalike_gate_hook_command(tmp_path):
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    lookalike = {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{"type": "command", "command": "echo run-my-gate-hook-check"}],
+    }
+    settings.write_text(json.dumps({"hooks": {"PreToolUse": [lookalike]}}), encoding="utf-8")
+
+    assert _run_with_hook("claude", tmp_path) == 0
+
+    entries = _pre_tool_use(settings)
+    assert lookalike in entries
+    assert sum(
+        entry == agent_init.managed_hook_entry("Edit|Write|MultiEdit") for entry in entries
+    ) == 1
+
+
+def test_codex_with_hook_preserves_lookalike_gate_hook_command(tmp_path):
+    hooks = tmp_path / ".codex" / "hooks.json"
+    hooks.parent.mkdir(parents=True)
+    lookalike = {
+        "matcher": "apply_patch",
+        "hooks": [{"type": "command", "command": "echo run-my-gate-hook-check"}],
+    }
+    hooks.write_text(json.dumps({"hooks": {"PreToolUse": [lookalike]}}), encoding="utf-8")
+
+    assert _run_with_hook("codex", tmp_path) == 0
+
+    entries = _codex_pre_tool_use(tmp_path)
+    assert lookalike in entries
+    assert sum(entry == agent_init.managed_hook_entry("apply_patch") for entry in entries) == 1
+
+
+def test_hook_command_is_the_installed_v2_compatibility_contract():
+    assert agent_hook_contract.HOOK_COMMAND == "pebra gate-hook"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "{broken",
+        "null",
+        "[]",
+        '{"hooks": []}',
+        '{"hooks": null}',
+        '{"hooks": {"PreToolUse": {}}}',
+        '{"hooks": {"PreToolUse": null}}',
+    ),
+)
+def test_agent_init_with_hook_rejects_invalid_config_without_any_write(
+    tmp_path, raw, capsys,
+):
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(raw, encoding="utf-8")
+
+    assert _run_with_hook("claude", tmp_path) == 2
+
+    assert settings.read_text(encoding="utf-8") == raw
+    assert not (tmp_path / _SKILL_REL).exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert str(settings) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "{broken",
+        "null",
+        "[]",
+        '{"hooks": []}',
+        '{"hooks": null}',
+        '{"hooks": {"PreToolUse": {}}}',
+        '{"hooks": {"PreToolUse": null}}',
+    ),
+)
+def test_codex_agent_init_with_hook_rejects_invalid_config_without_any_write(
+    tmp_path, raw, capsys,
+):
+    hooks = tmp_path / ".codex" / "hooks.json"
+    hooks.parent.mkdir(parents=True)
+    hooks.write_text(raw, encoding="utf-8")
+
+    assert _run_with_hook("codex", tmp_path) == 2
+
+    assert hooks.read_text(encoding="utf-8") == raw
+    assert not (tmp_path / ".agents/skills/pebra-safe-edit/SKILL.md").exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert str(hooks) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("target", "config_rel"),
+    (
+        ("claude", ".claude/settings.json"),
+        ("codex", ".codex/hooks.json"),
+    ),
+)
+def test_agent_init_with_hook_preserves_valid_settings(tmp_path, target, config_rel):
+    config = tmp_path / config_rel
+    config.parent.mkdir(parents=True)
+    original = {
+        "custom": {"enabled": True},
+        "hooks": {"PreToolUse": [{"matcher": "Read", "hooks": []}]},
+    }
+    config.write_text(json.dumps(original), encoding="utf-8")
+
+    assert _run_with_hook(target, tmp_path) == 0
+
+    after = json.loads(config.read_text(encoding="utf-8"))
+    assert after["custom"] == original["custom"]
+    assert original["hooks"]["PreToolUse"][0] in after["hooks"]["PreToolUse"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        f"user text\n{agent_init._MARK_BEGIN}\nunterminated\n",
+        f"{agent_init._MARK_END}\nuser text\n{agent_init._MARK_BEGIN}\n",
+        f"{agent_init._MARK_BEGIN}\na\n{agent_init._MARK_END}\n"
+        f"{agent_init._MARK_BEGIN}\nb\n{agent_init._MARK_END}\n",
+        f"user text\n{agent_init._MARK_END}\n",
+        f"{agent_init._MARK_BEGIN}\na\n{agent_init._MARK_BEGIN}\nb\n{agent_init._MARK_END}\n",
+    ),
+)
+def test_codex_rejects_corrupt_managed_markers_without_any_write(tmp_path, raw):
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(raw, encoding="utf-8")
+
+    assert _run_with_hook("codex", tmp_path) == 2
+
+    assert agents.read_text(encoding="utf-8") == raw
+    assert not (tmp_path / ".agents/skills/pebra-safe-edit/SKILL.md").exists()
+    assert not (tmp_path / ".codex/hooks.json").exists()
 
 
 def _codex_pre_tool_use(root: Path) -> list:
