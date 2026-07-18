@@ -29,14 +29,62 @@ async function getJSON(path) {
   return r.json();
 }
 
+function captureViewState(app) {
+  const active = document.activeElement;
+  return {
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+    openDetailKeys: new Set(
+      [...app.querySelectorAll("details[data-state-key]")]
+        .filter((details) => details.open)
+        .map((details) => details.dataset.stateKey),
+    ),
+    tableScrollOffsets: new Map(
+      [...app.querySelectorAll(".table-scroll")]
+        .map((node, index) => [tableScrollKey(node, index), { x: node.scrollLeft, y: node.scrollTop }]),
+    ),
+    focusedControlKey: active && app.contains(active) ? active.dataset.focusKey || null : null,
+  };
+}
+
+function tableScrollKey(node, index) {
+  const headings = [...node.querySelectorAll("th")].map((heading) => heading.textContent).join("|");
+  return headings || String(index);
+}
+
+function restoreViewState(app, state) {
+  app.querySelectorAll("details[data-state-key]").forEach((details) => {
+    details.open = state.openDetailKeys.has(details.dataset.stateKey);
+  });
+  app.querySelectorAll(".table-scroll").forEach((node, index) => {
+    const offset = state.tableScrollOffsets.get(tableScrollKey(node, index));
+    if (offset) { node.scrollLeft = offset.x; node.scrollTop = offset.y; }
+  });
+  if (state.focusedControlKey) {
+    const control = [...app.querySelectorAll("[data-focus-key]")]
+      .find((node) => node.dataset.focusKey === state.focusedControlKey);
+    if (control) control.focus({ preventScroll: true });
+  }
+  window.scrollTo(state.scrollX, state.scrollY);
+}
+
+function replaceApp(app, children) {
+  const state = captureViewState(app);
+  app.replaceChildren(...children);
+  restoreViewState(app, state);
+}
+
 // ---- run index ----
 async function renderIndex() {
   const app = document.getElementById("app");
   let data;
   try { data = await getJSON("/api/runs"); setPoll("live"); } catch (e) { setPoll("err"); return; }
-  app.replaceChildren();
-  app.appendChild(el("h1", { text: "Runs" }));
-  if (!data.runs.length) { app.appendChild(el("p", { class: "dim", text: "No runs under e2e/out/ab/ yet. Start one, then refresh." })); return; }
+  const children = [el("h1", { text: "Runs" })];
+  if (!data.runs.length) {
+    children.push(el("p", { class: "dim", text: "No runs under e2e/out/ab/ yet. Start one, then refresh." }));
+    replaceApp(app, children);
+    return;
+  }
   const list = el("div", { class: "run-list" });
   for (const r of data.runs) {
     list.appendChild(el("a", { class: "run-row", href: "#/run/" + encodeURIComponent(r.run_id) }, [
@@ -47,7 +95,8 @@ async function renderIndex() {
       el("span", { class: "dim mono", text: r.last_activity_iso ? r.last_activity_iso.replace("T", " ").slice(0, 19) : "" }),
     ]));
   }
-  app.appendChild(list);
+  children.push(list);
+  replaceApp(app, children);
 }
 
 // ---- one run ----
@@ -79,7 +128,10 @@ function findPebraVsSham(pairwise) {
 
 function tableScroll(table) { return el("div", { class: "table-scroll" }, [table]); }
 function detailSection(label, child, open = false) {
-  const details = el("details", { class: "metric-detail" }, [el("summary", { text: label }), child]);
+  const summary = el("summary", { text: label });
+  summary.dataset.focusKey = "details:" + label;
+  const details = el("details", { class: "metric-detail" }, [summary, child]);
+  details.dataset.stateKey = label;
   if (open) details.open = true;
   return details;
 }
@@ -350,11 +402,29 @@ function renderCoverage(cov) {
 }
 
 function launchKey(runId, clone) { return runId + "|" + clone; }
-function setLaunchState(key, state, text) { launchState.set(key, { state, text }); }
-function applyLaunchState(key, openBtn, status) {
+function setLaunchState(key, state, text) {
+  launchState.set(key, { ...(launchState.get(key) || {}), state, text });
+}
+function setCopyText(key, copyText) {
+  launchState.set(key, { ...(launchState.get(key) || {}), copyText });
+  document.querySelectorAll("button[data-launch-key]").forEach((button) => {
+    if (button.dataset.launchKey === key) button.textContent = copyText;
+  });
+}
+function applyLaunchState(key, openBtn, copyBtn, status) {
   const current = launchState.get(key);
   openBtn.disabled = current && current.state === "launching";
+  copyBtn.textContent = current && current.copyText ? current.copyText : "copy";
   status.textContent = current ? current.text : "";
+}
+function applyCurrentLaunchState(key) {
+  document.querySelectorAll(".dash-cmd").forEach((row) => {
+    if (row.dataset.launchKey !== key) return;
+    const openBtn = row.querySelector('[data-launch-role="open"]');
+    const copyBtn = row.querySelector('[data-launch-role="copy"]');
+    const status = row.querySelector(".launch-status");
+    if (openBtn && copyBtn && status) applyLaunchState(key, openBtn, copyBtn, status);
+  });
 }
 
 function renderDashboards(runId, dashboards) {
@@ -369,13 +439,19 @@ function renderDashboards(runId, dashboards) {
     const copyBtn = el("button", { class: "btn ghost", text: "copy" });
     const status = el("span", { class: "dim launch-status" });
     const key = launchKey(runId, d.clone);
-    applyLaunchState(key, openBtn, status);
+    openBtn.dataset.focusKey = "open:" + key;
+    openBtn.dataset.launchRole = "open";
+    copyBtn.dataset.focusKey = "copy:" + key;
+    copyBtn.dataset.launchKey = key;
+    copyBtn.dataset.launchRole = "copy";
+    cmd.dataset.focusKey = "command:" + key;
+    applyLaunchState(key, openBtn, copyBtn, status);
     openBtn.addEventListener("click", async () => {
       if (!d.repo) { status.textContent = "no repo/ dir"; return; }
       if (launchState.get(key)?.state === "launching") return;
       const tab = window.open("about:blank", "_blank", "noopener");
       setLaunchState(key, "launching", "launching…");
-      applyLaunchState(key, openBtn, status);
+      applyLaunchState(key, openBtn, copyBtn, status);
       try {
         const r = await fetch("/api/launch", { method: "POST", headers: { "Content-Type": "application/json", "X-PEBRA-Observatory": "1" }, body: JSON.stringify({ run_id: runId, clone: d.clone }) });
         const j = await r.json();
@@ -390,20 +466,23 @@ function renderDashboards(runId, dashboards) {
         if (tab) tab.close();
         setLaunchState(key, "failed", "launch error — use copy");
       }
-      applyLaunchState(key, openBtn, status);
+      applyLaunchState(key, openBtn, copyBtn, status);
+      applyCurrentLaunchState(key);
     });
     copyBtn.addEventListener("click", async () => {
       cmd.select();
       try {
         if (!navigator.clipboard) throw new Error("clipboard unavailable");
         await navigator.clipboard.writeText(cmd.value);
-        copyBtn.textContent = "copied";
+        setCopyText(key, "copied");
       } catch (e) {
-        copyBtn.textContent = "copy failed";
+        setCopyText(key, "copy failed");
       }
-      setTimeout(() => (copyBtn.textContent = "copy"), 1200);
+      setTimeout(() => setCopyText(key, "copy"), 1200);
     });
-    panel.appendChild(el("div", { class: "dash-cmd" }, [armTag, openBtn, copyBtn, cmd, status]));
+    const row = el("div", { class: "dash-cmd" }, [armTag, openBtn, copyBtn, cmd, status]);
+    row.dataset.launchKey = key;
+    panel.appendChild(row);
   }
   panel.appendChild(el("p", { class: "dim", text: "Open serves a validated temp copy on its own port. Copy gives a direct read-only fallback command for after-run inspection." }));
   wrap.appendChild(panel);
@@ -415,8 +494,14 @@ async function renderRun(runId, mode) {
   let v;
   const query = mode ? "?mode=" + encodeURIComponent(mode) : "";
   try { v = await getJSON("/api/run/" + encodeURIComponent(runId) + query); setPoll("live"); }
-  catch (e) { setPoll("err"); if (String(e.message) === "404") { app.replaceChildren(el("p", { class: "dim", text: "Run '" + runId + "' not found." }), el("p", {}, [el("a", { href: "#/", text: "← all runs" })])); } return; }
-  app.replaceChildren(
+  catch (e) {
+    setPoll("err");
+    if (String(e.message) === "404") {
+      replaceApp(app, [el("p", { class: "dim", text: "Run '" + runId + "' not found." }), el("p", {}, [el("a", { href: "#/", text: "← all runs" })])]);
+    }
+    return;
+  }
+  replaceApp(app, [
     el("p", {}, [el("a", { href: "#/", text: "← all runs" })]),
     renderHeader(v),
     renderScoreboard(v.scoreboard),
@@ -425,7 +510,7 @@ async function renderRun(runId, mode) {
     renderTraces(v.traces),
     renderCoverage(v.coverage),
     renderDashboards(v.run_id, v.dashboards),
-  );
+  ]);
 }
 
 // ---- router ----

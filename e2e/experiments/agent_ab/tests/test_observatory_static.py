@@ -100,3 +100,20 @@ def test_graph_refined_completion_is_visible_in_scoreboard_and_matrix():
     assert "graph_refinement_origin_expected_utility" in app_js
     assert "graph_refinement_revised_expected_utility" in app_js
     assert "measured_benefit" in app_js
+
+
+def test_live_poll_preserves_open_panels_controls_and_scroll_state():
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "function captureViewState(app)" in app_js
+    assert "function restoreViewState(app, state)" in app_js
+    assert "function replaceApp(app, children)" in app_js
+    assert "focusedControlKey" in app_js
+    assert "data-focus-key" in app_js
+    assert "details.dataset.stateKey = label" in app_js
+    assert "openDetailKeys" in app_js
+    assert "tableScrollOffsets" in app_js
+    assert "copyText" in app_js
+    assert "function applyCurrentLaunchState(key)" in app_js
+    assert "window.scrollTo(state.scrollX, state.scrollY)" in app_js
+    assert "replaceApp(app," in app_js

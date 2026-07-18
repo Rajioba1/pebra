@@ -15,6 +15,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -163,3 +164,116 @@ def test_dashboard_visual_all_views_no_csp_violations(seeded_learning_state, out
     assert csp_errors == [], f"CSP violations in the browser console: {csp_errors}"
     assert page_errors == [], f"uncaught page errors: {page_errors}"
     assert (shots / "dashboard_graph.png").exists()  # human reviews these side-by-side
+
+
+@pytest.mark.skipif(not _E2E_UI, reason="E2E_UI not set (needs pebra[ui-e2e] + playwright install)")
+def test_dashboard_live_refresh_preserves_interaction_state(seeded_learning_state):
+    from playwright.sync_api import sync_playwright
+
+    with dh.running_dashboard(seeded_learning_state.repo_path, seeded_learning_state.db_path) as info:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1100, "height": 600})
+                page.goto(_with_live(info.url))
+
+                page.click('[data-tab="calibration"]')
+                page.wait_for_selector(
+                    '[data-testid="calibration"][data-loaded="true"]', state="visible"
+                )
+                target = page.locator('[aria-label="target"]')
+                target.focus()
+                target.evaluate("node => { node.dataset.refreshIdentity = 'preserved'; }")
+                page.wait_for_timeout(2000)  # one LIVE_MS poll must not replace the focused control
+                assert target.get_attribute("data-refresh-identity") == "preserved"
+                assert target.evaluate("node => document.activeElement === node") is True
+
+                page.click('[data-tab="history"]')
+                page.wait_for_selector('[data-testid="history"][data-loaded="true"]', state="visible")
+                row = page.locator("#view-history tr.clickable").first
+                assessment_id = row.locator("td").first.inner_text()
+                row.click()
+                detail = page.locator('[data-testid="assessment-detail"]')
+                page.wait_for_function(
+                    "([node, id]) => node.textContent.includes(id)",
+                    arg=[detail.element_handle(), assessment_id],
+                )
+                page.evaluate("window.scrollTo(0, 300)")
+                old_scroll = page.evaluate("window.scrollY")
+                assert old_scroll > 0
+
+                page.wait_for_timeout(2000)
+
+                assert assessment_id in detail.inner_text()
+                assert page.evaluate("window.scrollY") == old_scroll
+            finally:
+                browser.close()
+
+
+@pytest.mark.skipif(not _E2E_UI, reason="E2E_UI not set (needs pebra[ui-e2e] + playwright install)")
+def test_agent_ab_observatory_refresh_preserves_interaction_state():
+    from playwright.sync_api import sync_playwright
+
+    app_js = (
+        Path(__file__).resolve().parents[2]
+        / "experiments"
+        / "agent_ab"
+        / "runners"
+        / "observatory"
+        / "static"
+        / "app.js"
+    ).read_text(encoding="utf-8")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(viewport={"width": 600, "height": 300})
+            page.set_content(
+                '<span id="poll"></span><main id="app"><button id="active">copy</button></main>'
+            )
+            page.add_script_tag(content=app_js)
+
+            active = page.locator("#active")
+            active.evaluate("node => { node.dataset.focusKey = 'copy:run|clone'; }")
+            active.focus()
+            page.evaluate(
+                """() => {
+                    const replacement = document.createElement("button");
+                    replacement.id = "replacement";
+                    replacement.dataset.focusKey = "copy:run|clone";
+                    replaceApp(document.getElementById("app"), [replacement]);
+                }"""
+            )
+            replacement = page.locator("#replacement")
+            assert replacement.evaluate("node => document.activeElement === node") is True
+
+            page.evaluate(
+                """() => {
+                    const app = document.getElementById("app");
+                    const details = document.createElement("details");
+                    details.dataset.stateKey = "diagnostics";
+                    details.open = true;
+                    const scroller = document.createElement("div");
+                    scroller.className = "table-scroll";
+                    scroller.style.width = "100px";
+                    scroller.style.overflow = "auto";
+                    const wide = document.createElement("div");
+                    wide.style.width = "500px";
+                    wide.style.height = "700px";
+                    scroller.appendChild(wide);
+                    app.replaceChildren(details, scroller);
+                    scroller.scrollLeft = 70;
+                    window.scrollTo(0, 120);
+
+                    const nextDetails = details.cloneNode(true);
+                    nextDetails.open = false;
+                    const nextScroller = scroller.cloneNode(true);
+                    replaceApp(app, [nextDetails, nextScroller]);
+                }"""
+            )
+
+            assert page.locator('details[data-state-key="diagnostics"]').get_attribute("open") == ""
+            assert page.locator(".table-scroll").evaluate("node => node.scrollLeft") == 70
+            assert page.evaluate("window.scrollY") == 120
+        finally:
+            browser.close()
