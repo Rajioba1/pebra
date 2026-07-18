@@ -89,8 +89,13 @@ class ObservatoryScreen(Screen):
     def _dev_log(self, message: str) -> None:
         # Safe dev-console logging (routes to `textual console`, never stdout). No-op when unmounted so
         # unit tests that call refresh callbacks directly don't need a running app.
-        if self.is_mounted:
+        if self._can_update_children():
             self.log(message)
+
+    def _can_update_children(self) -> bool:
+        # Textual sets _pruning before detaching a screen's children, while is_mounted can remain true.
+        # A worker callback queued in that interval must not query widgets that are already gone.
+        return self.is_mounted and not self._pruning
 
     def _try_begin_refresh(self) -> bool:
         """Single-flight guard (UI thread only): claim the in-flight slot, or refuse if already busy.
@@ -125,7 +130,7 @@ class ObservatoryScreen(Screen):
             f"observatory refresh ok rows={len(snapshot.assessments)} "
             f"duration={time.monotonic() - self._refresh_started_at:.3f}s"
         )
-        if not self.is_mounted:  # a late result must never touch a screen that's gone
+        if not self._can_update_children():  # a late result must never touch a screen that's going/gone
             return
         self._apply_snapshot(snapshot)
 
@@ -133,7 +138,7 @@ class ObservatoryScreen(Screen):
         self._refreshing = False
         # Log the error CATEGORY, not the message contents.
         self._dev_log("observatory refresh failed category=store_unavailable")
-        if not self.is_mounted:
+        if not self._can_update_children():
             return
         # Preserve the last good render (do not clear the table); just surface the error.
         self._set_message(f"Assessment store unavailable — {message}")
