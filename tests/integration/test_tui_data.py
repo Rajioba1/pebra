@@ -93,6 +93,26 @@ def test_unavailable_store_raises(tmp_path) -> None:
         data.refresh_snapshot()
 
 
+def test_query_failure_is_translated_and_session_is_closed(monkeypatch, tmp_path) -> None:
+    db = tmp_path / "schema-less.db"
+    db.touch()  # Opens read-only, then fails on the first assessment query.
+    import pebra.tui.data as data_mod
+
+    real = data_mod.SqliteStore
+    closes: list[bool] = []
+
+    class _Spy(real):  # type: ignore[valid-type,misc]
+        def close(self):
+            closes.append(True)
+            super().close()
+
+    monkeypatch.setattr(data_mod, "SqliteStore", _Spy)
+
+    with pytest.raises(ObservatoryStoreUnavailable):
+        ObservatoryData(_ctx(str(db))).refresh_snapshot()
+    assert closes == [True]
+
+
 def test_refresh_opens_exactly_one_readonly_session(monkeypatch, tmp_path) -> None:
     db, _, _ = _seed(tmp_path)
     import pebra.tui.data as data_mod

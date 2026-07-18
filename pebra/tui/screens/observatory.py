@@ -8,21 +8,32 @@ logic here).
 
 from __future__ import annotations
 
+from typing import Any
+
 from textual.app import ComposeResult
+from textual.coordinate import Coordinate
 from textual.screen import Screen
+from textual.theme import Theme
 from textual.widgets import DataTable, Footer, Header, Static
 
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot, ObservatoryStoreUnavailable
-from pebra.tui.widgets.ledger_table import LEDGER_COLUMNS, ledger_row
+from pebra.tui.widgets.ledger_table import (
+    LEDGER_COLUMNS,
+    LEDGER_COLUMN_WIDTHS,
+    decision_cell,
+    ledger_row,
+)
 from pebra.tui.widgets.status_header import StatusHeader
 
 _EMPTY = "No assessments recorded for this repository yet."
+_DECISION_COLUMN_INDEX = LEDGER_COLUMNS.index("decision")
 
 
 class ObservatoryScreen(Screen):
     def __init__(self, data: ObservatoryData) -> None:
         super().__init__()
         self._data = data
+        self._rows: list[dict[str, Any]] = []
         self.message_text = ""  # current empty-state / error text ("" when the ledger has rows)
 
     def compose(self) -> ComposeResult:
@@ -33,7 +44,10 @@ class ObservatoryScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#ledger", DataTable).add_columns(*LEDGER_COLUMNS)
+        table = self.query_one("#ledger", DataTable)
+        for label in LEDGER_COLUMNS:
+            table.add_column(label, width=LEDGER_COLUMN_WIDTHS.get(label))
+        self.app.theme_changed_signal.subscribe(self, self._on_theme_changed)
         self.reload()
 
     def reload(self) -> None:
@@ -47,6 +61,7 @@ class ObservatoryScreen(Screen):
 
     def _apply_snapshot(self, snapshot: ObservatorySnapshot) -> None:  # not `_render`: Textual internal
         rows = snapshot.assessments
+        self._rows = rows
         latest_commit = rows[0].get("assessed_commit") if rows else None
         self.query_one("#status", StatusHeader).update_status(
             repo_id=self._data.repo_id,
@@ -60,6 +75,14 @@ class ObservatoryScreen(Screen):
         for row in rows:
             table.add_row(*ledger_row(row, dark=dark))
         self._set_message("" if rows else _EMPTY)
+
+    def _on_theme_changed(self, theme: Theme) -> None:
+        table = self.query_one("#ledger", DataTable)
+        for row_index, row in enumerate(self._rows):
+            table.update_cell_at(
+                Coordinate(row_index, _DECISION_COLUMN_INDEX),
+                decision_cell(str(row.get("decision", "")), dark=theme.dark),
+            )
 
     def _is_dark(self) -> bool:
         theme = getattr(self.app, "current_theme", None)

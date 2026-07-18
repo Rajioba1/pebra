@@ -9,6 +9,7 @@ the screen can show a durable load error while keeping the last good snapshot.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
@@ -67,22 +68,32 @@ class ObservatoryData:
     def refresh_snapshot(self) -> ObservatorySnapshot:
         """Overview, assessment rows, score series, and store-chain status through one short-lived
         read-only session (point-in-time reads, not a single transaction — see ObservatorySnapshot)."""
-        store = self._open()
         try:
-            return ObservatorySnapshot(
-                overview=oqc.overview(self._repo_id, port=store),
-                assessments=oqc.list_assessments(self._repo_id, self._assessments_limit, 0, port=store),
-                scores_series=oqc.scores_series(self._repo_id, self._series_limit, 0, port=store),
-                chain=oqc.store_chain_status(port=store),
-            )
-        finally:
-            store.close()
+            store = self._open()
+            try:
+                return ObservatorySnapshot(
+                    overview=oqc.overview(self._repo_id, port=store),
+                    assessments=oqc.list_assessments(
+                        self._repo_id, self._assessments_limit, 0, port=store
+                    ),
+                    scores_series=oqc.scores_series(
+                        self._repo_id, self._series_limit, 0, port=store
+                    ),
+                    chain=oqc.store_chain_status(port=store),
+                )
+            finally:
+                store.close()
+        except (sqlite3.Error, json.JSONDecodeError) as exc:
+            raise ObservatoryStoreUnavailable(str(exc)) from exc
 
     def detail(self, assessment_id: str) -> dict[str, Any]:
         """Repo-scoped detail for one assessment, from its own short-lived session. Raises the
         controller's AssessmentNotFoundError for a missing or foreign-repo assessment."""
-        store = self._open()
         try:
-            return oqc.assessment_detail_for_repo(assessment_id, self._repo_id, port=store)
-        finally:
-            store.close()
+            store = self._open()
+            try:
+                return oqc.assessment_detail_for_repo(assessment_id, self._repo_id, port=store)
+            finally:
+                store.close()
+        except (sqlite3.Error, json.JSONDecodeError) as exc:
+            raise ObservatoryStoreUnavailable(str(exc)) from exc

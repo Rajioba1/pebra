@@ -37,11 +37,17 @@ def list_assessments(
 
 def overview(repo_id: str, *, port: ObservatoryReadPort) -> dict[str, Any]:
     """Counts by decision and by terminal status (None -> "pending") plus the store-wide chain verdict."""
-    rows = port.list_assessments(repo_id, limit=500)
+    total = 0
+    by_decision: Counter[str] = Counter()
+    by_status: Counter[str] = Counter()
+    for row in port.assessment_facets(repo_id):
+        total += 1
+        by_decision[row["decision"]] += 1
+        by_status[row["terminal_status"] or "pending"] += 1
     return {
-        "total": len(rows),
-        "by_decision": dict(Counter(r["decision"] for r in rows)),
-        "by_status": dict(Counter((r["terminal_status"] or "pending") for r in rows)),
+        "total": total,
+        "by_decision": dict(by_decision),
+        "by_status": dict(by_status),
         "chain": port.chain_status(),
     }
 

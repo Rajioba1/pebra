@@ -1,5 +1,5 @@
 /* PEBRA Observatory TUI theme (Textual TCSS).
-   Minimal shell styling for M2; the ledger / RAU-lane / detail styling arrives in later milestones.
+   Minimal shell and ledger styling; detail styling arrives in a later milestone.
    Solid hairline borders only (never `round`): an assessment ledger is an append-only, hash-chained
    record, and the form reflects that. */
 

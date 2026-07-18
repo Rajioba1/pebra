@@ -129,6 +129,26 @@ def test_screen_renders_seeded_ledger_and_status(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_content_columns_preserve_the_full_lane_and_decision_label(tmp_path) -> None:
+    from textual.widgets import DataTable
+
+    from pebra.tui.widgets.ledger_table import render_rau_lane
+
+    db = _seed(tmp_path, rows=2)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test():
+            columns = list(app.query_one("#ledger", DataTable).columns.values())
+            lane, decision = columns[2], columns[3]
+            assert lane.auto_width is False
+            assert lane.width >= len(render_rau_lane(0.0))
+            assert decision.auto_width is False
+            assert decision.width >= len("◇ Inspect first")
+
+    asyncio.run(scenario())
+
+
 def test_empty_repo_shows_empty_state(tmp_path) -> None:
     from textual.widgets import DataTable, Static
 
@@ -166,3 +186,25 @@ def test_status_line_is_store_scoped_and_pure() -> None:
     assert "HEAD abcdef1" in line  # short commit
     assert "store chain ok" in line
     assert "1 assessment" in line and "assessments" not in line  # singular
+
+
+def test_theme_change_recolors_existing_decision_cells_without_reloading(tmp_path) -> None:
+    from textual.coordinate import Coordinate
+    from textual.widgets import DataTable
+
+    from pebra.tui.widgets.ledger_table import decision_cell
+
+    db = _seed(tmp_path, rows=1)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test() as pilot:
+            table = app.query_one("#ledger", DataTable)
+            dark_cell = table.get_cell_at(Coordinate(0, 3))
+            assert dark_cell.spans[0].style == decision_cell("proceed", dark=True).spans[0].style
+            app.theme = "textual-light"
+            await pilot.pause()
+            light_cell = table.get_cell_at(Coordinate(0, 3))
+            assert light_cell.spans[0].style == decision_cell("proceed", dark=False).spans[0].style
+
+    asyncio.run(scenario())

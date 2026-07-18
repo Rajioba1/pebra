@@ -21,7 +21,7 @@ from pebra.core.models import AssessmentResult  # noqa: E402
 from pebra.observatory_context import ObservatoryContext  # noqa: E402
 from pebra.tui.app import ObservatoryApp  # noqa: E402
 
-# A fixed, decision-diverse ledger. The inspect_first row has a POSITIVE rau (+0.08) yet is held — the
+# A fixed, decision-diverse ledger. The inspect_first row has a POSITIVE rau (+0.15) yet is held — the
 # case that proves the RAU lane (position) and the decision (color/glyph) are independent channels.
 _SPECS = [
     (Decision.PROCEED, "aaaa111", {"rau": 0.21, "expected_loss": 0.05, "benefit": 0.55}),
@@ -29,6 +29,12 @@ _SPECS = [
     (Decision.ASK_HUMAN, "cccc333", {"rau": -0.14, "expected_loss": 0.15, "benefit": 0.53}),
     (Decision.REJECT, "dddd444", {"rau": -0.31, "expected_loss": 0.36, "benefit": 0.20}),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _color_snapshots_are_environment_independent(monkeypatch) -> None:
+    """Color is part of these baselines, even when the invoking shell sets NO_COLOR."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
 
 
 def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False) -> str:

@@ -5,7 +5,7 @@ Two parts:
   * the base "instrument" chrome tokens (deep slate-ink), exposed as Textual CSS variables; and
   * VERDICT_PALETTE — one entry per Decision, pairing a color with a glyph AND a full text label so the
     encoding never depends on color alone (colorblind-safe by construction). DataTable cells render the
-    glyph/label as Rich Text using these hexes directly; TCSS chrome uses css_variables().
+    glyph/label as Textual Content using these hexes directly; TCSS chrome uses css_variables().
 
 Token names are namespaced (``observatory-*``) so merging them into App.get_css_variables() never clobbers
 Textual's built-in design-system variables.

@@ -34,6 +34,13 @@ class _FakePort:
         self.calls.append(("list_assessments", (repo_id, limit, offset)))
         return self._rows[offset : offset + limit if limit else 0]
 
+    def assessment_facets(self, repo_id: str):
+        self.calls.append(("assessment_facets", (repo_id,)))
+        return (
+            {"decision": row["decision"], "terminal_status": row["terminal_status"]}
+            for row in self._rows
+        )
+
     def assessment_detail(self, assessment_id: str) -> dict[str, Any]:
         self.calls.append(("assessment_detail", (assessment_id,)))
         try:
@@ -80,8 +87,22 @@ def test_overview_counts_decisions_status_and_includes_chain() -> None:
 
     assert out["total"] == 3
     assert out["by_decision"] == {"proceed": 2, "ask_human": 1}
+    assert list(out["by_decision"]) == ["proceed", "ask_human"]
     assert out["by_status"] == {"pending": 2, "completed": 1}  # None -> "pending"
     assert out["chain"] == {"valid": True, "counts": {"assessments": 3}}
+
+
+def test_overview_counts_beyond_one_store_page() -> None:
+    rows = [_row(assessment_id=f"asm_{i}") for i in range(501)]
+    port = _FakePort(rows)
+
+    out = oqc.overview("r", port=port)
+
+    assert out["total"] == 501
+    assert out["by_decision"] == {"proceed": 501}
+    assert out["by_status"] == {"pending": 501}
+    assert port.calls.count(("assessment_facets", ("r",))) == 1
+    assert not any(name == "list_assessments" for name, _args in port.calls)
 
 
 def test_scores_series_projects_only_series_keys_with_none_fill() -> None:

@@ -13,7 +13,7 @@ from typing import Any
 
 from textual.content import Content
 
-from pebra.tui.theme import verdict_for
+from pebra.tui.theme import VERDICT_PALETTE, verdict_for
 
 # The ledger's columns. The RAU value is the hero number; the gate-lane is the signature visual; the
 # decision is a separate colored glyph+label so the verdict never depends on the lane's position alone.
@@ -24,6 +24,13 @@ _GATE = "│"             # the gate axis at RAU = 0
 _TRACK = "·"
 _OVERFLOW_LEFT = "«"    # RAU below the -1.0 window (marker clamps; the number does not)
 _OVERFLOW_RIGHT = "»"   # RAU above the +1.0 window
+
+# Textual 8 cannot measure native Content cells for DataTable auto-width (it reports one cell), so
+# these two semantic columns must be explicit or the lane and full verdict labels are clipped.
+LEDGER_COLUMN_WIDTHS = {
+    "gate-lane": 13,
+    "decision": max(Content(f"{v.glyph} {v.label}").cell_length for v in VERDICT_PALETTE.values()),
+}
 
 
 def render_rau_lane(rau: float | None, *, width: int = 13) -> str:
