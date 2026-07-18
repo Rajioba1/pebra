@@ -88,3 +88,39 @@ def test_sparklines_blank_on_empty_history(tmp_path) -> None:
             assert not app.query_one("#spark-rau", Sparkline).data  # None or empty, no crash
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("size", [(80, 24), (110, 30)])
+def test_populated_ledger_keeps_three_trend_rows_in_viewport(tmp_path, size) -> None:
+    from textual.widgets import DataTable, Label, Sparkline
+
+    db = _seed(tmp_path, rows=100)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(
+            ObservatoryContext(db_path=db, repo_id="r", repo_root=None, read_only=True)
+        )
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            table = app.query_one("#ledger", DataTable)
+            trends = app.query_one("#trends")
+
+            assert table.row_count == 100
+            assert table.virtual_size.height > table.region.height > 0
+            assert trends.region.height == 3
+            assert screen.region.contains_region(trends.region)
+
+            for key in ("rau", "expected_loss", "benefit"):
+                label = app.query_one(f"#spark-{key}").parent.query_one(".trend-label", Label)
+                spark = app.query_one(f"#spark-{key}", Sparkline)
+                summary = app.query_one(f"#summary-{key}", Label)
+                row = spark.parent
+                assert row.region.height == 1
+                assert screen.region.contains_region(label.region)
+                assert screen.region.contains_region(summary.region)
+                assert spark.region.width > 0
+                assert label.region.right == spark.region.x
+                assert spark.region.right == summary.region.x
+
+    asyncio.run(scenario())

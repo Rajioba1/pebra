@@ -92,6 +92,14 @@ def test_single_flight_guard_skips_while_busy() -> None:
     assert screen._try_begin_refresh() is True
 
 
+def test_manual_refresh_reports_started_or_skipped(monkeypatch) -> None:
+    screen = ObservatoryScreen(_FakeData())
+    monkeypatch.setattr(screen, "_refresh_worker", lambda: None)
+
+    assert screen.action_refresh() is True
+    assert screen.action_refresh() is False
+
+
 def test_finish_ignores_late_result_on_unmounted_screen() -> None:
     screen = ObservatoryScreen(_FakeData())
     screen._refreshing = True

@@ -9,6 +9,7 @@ import pytest
 pytest.importorskip("textual", reason="requires textual (run via nox)")
 
 from textual.app import App  # noqa: E402
+from textual.coordinate import Coordinate  # noqa: E402
 from textual.screen import Screen  # noqa: E402
 from textual.widgets import DataTable, Pretty  # noqa: E402
 
@@ -156,6 +157,16 @@ class _Harness(App):
         return self._screen
 
 
+class _RecordingData(_FakeData):
+    def __init__(self) -> None:
+        super().__init__()
+        self.detail_ids: list[str] = []
+
+    def detail(self, assessment_id: str) -> dict:
+        self.detail_ids.append(assessment_id)
+        return _detail()
+
+
 def test_not_found_detail_does_not_push_or_leak(tmp_path) -> None:
     async def scenario() -> None:
         screen = ObservatoryScreen(_FakeData(detail_error=AssessmentNotFoundError("asm_1")))
@@ -166,5 +177,26 @@ def test_not_found_detail_does_not_push_or_leak(tmp_path) -> None:
             await pilot.pause()
             # guard held: still on the ledger, no detail screen pushed
             assert isinstance(app.screen, ObservatoryScreen)
+
+    asyncio.run(scenario())
+
+
+def test_row_selection_event_keeps_assessment_identity_across_refresh() -> None:
+    async def scenario() -> None:
+        data = _RecordingData()
+        screen = ObservatoryScreen(data)
+        app = _Harness(screen)
+        async with app.run_test():
+            table = app.query_one("#ledger", DataTable)
+            old_row_key = table.coordinate_to_cell_key(Coordinate(0, 0)).row_key
+            old_event = DataTable.RowSelected(table, 0, old_row_key)
+
+            refreshed = data.refresh_snapshot()
+            refreshed.assessments[0]["assessment_id"] = "asm_2"
+            screen._apply_snapshot(refreshed)
+            app.push_screen = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+            screen.on_data_table_row_selected(old_event)
+
+            assert data.detail_ids == ["asm_1"]
 
     asyncio.run(scenario())

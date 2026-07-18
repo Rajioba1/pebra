@@ -10,6 +10,7 @@ pytest.importorskip("textual", reason="requires textual (run via nox)")
 
 from pebra.observatory_context import ObservatoryContext  # noqa: E402
 from pebra.tui.app import ObservatoryApp  # noqa: E402
+from pebra.tui.screens.detail import AssessmentDetailScreen  # noqa: E402
 
 
 def _seed(tmp_path) -> str:
@@ -58,6 +59,19 @@ def test_system_commands_include_read_only_observatory_commands(tmp_path) -> Non
     asyncio.run(scenario())
 
 
+def test_detail_system_commands_keep_help_but_hide_observatory_commands(tmp_path) -> None:
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx(_seed(tmp_path)))
+        async with app.run_test():
+            await app.push_screen(AssessmentDetailScreen({}))
+            titles = {command.title for command in app.get_system_commands(app.screen)}
+            assert "Help" in titles
+            assert "Refresh" not in titles
+            assert "Overview" not in titles
+
+    asyncio.run(scenario())
+
+
 def test_overview_summary_reports_counts(tmp_path) -> None:
     async def scenario() -> None:
         app = ObservatoryApp(_ctx(_seed(tmp_path)))
@@ -79,5 +93,18 @@ def test_refresh_and_overview_commands_notify(tmp_path) -> None:
             app._command_refresh()
             assert any("assessments" in n for n in notes)
             assert any("Refreshing" in n for n in notes)
+
+    asyncio.run(scenario())
+
+
+def test_busy_refresh_command_does_not_notify_started(tmp_path) -> None:
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx(_seed(tmp_path)))
+        notes: list[str] = []
+        async with app.run_test():
+            app.notify = lambda message, **_kw: notes.append(message)  # type: ignore[assignment]
+            app.screen._refreshing = True
+            app._command_refresh()
+            assert not any("Refreshing" in note for note in notes)
 
     asyncio.run(scenario())

@@ -81,8 +81,8 @@ class ObservatoryScreen(Screen):
     def _tick(self) -> None:
         self._start_refresh()
 
-    def action_refresh(self) -> None:
-        self._start_refresh()
+    def action_refresh(self) -> bool:
+        return self._start_refresh()
 
     def _try_begin_refresh(self) -> bool:
         """Single-flight guard (UI thread only): claim the in-flight slot, or refuse if already busy.
@@ -92,9 +92,11 @@ class ObservatoryScreen(Screen):
         self._refreshing = True
         return True
 
-    def _start_refresh(self) -> None:
-        if self._try_begin_refresh():
-            self._refresh_worker()
+    def _start_refresh(self) -> bool:
+        if not self._try_begin_refresh():
+            return False
+        self._refresh_worker()
+        return True
 
     @work(thread=True)
     def _refresh_worker(self) -> None:
@@ -134,15 +136,16 @@ class ObservatoryScreen(Screen):
         table.clear()
         dark = self._is_dark()
         for row in rows:
-            table.add_row(*ledger_row(row, dark=dark))
+            assessment_id = row.get("assessment_id")
+            table.add_row(
+                *ledger_row(row, dark=dark),
+                key=str(assessment_id) if assessment_id else None,
+            )
         self.query_one("#trends", ScoreSparklines).update_series(snapshot.scores_series)
         self._set_message("" if rows else _EMPTY)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        index = event.cursor_row
-        if index is None or not (0 <= index < len(self._rows)):
-            return
-        assessment_id = self._rows[index].get("assessment_id")
+        assessment_id = event.row_key.value
         if not assessment_id:
             return
         try:

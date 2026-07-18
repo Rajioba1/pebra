@@ -6,3 +6,28 @@
 Screen {
     background: $background;
 }
+
+#ledger {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+#trends {
+    height: 3;
+}
+
+.trend-row {
+    height: 1;
+}
+
+.trend-label {
+    width: 14;
+}
+
+.trend-spark {
+    width: 1fr;
+}
+
+.trend-summary {
+    width: 36;
+}

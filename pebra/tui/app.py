@@ -46,15 +46,18 @@ class ObservatoryApp(App[None]):
         # Built-ins (Change theme, Quit, ...) plus the Observatory's read-only commands. There is
         # deliberately NO mutating command here — this surface only reads.
         yield from super().get_system_commands(screen)
-        yield SystemCommand("Refresh", "Reload the ledger from the store now", self._command_refresh)
-        yield SystemCommand("Overview", "Show decision/status counts", self._command_overview)
+        if isinstance(screen, ObservatoryScreen):
+            yield SystemCommand(
+                "Refresh", "Reload the ledger from the store now", self._command_refresh
+            )
+            yield SystemCommand("Overview", "Show decision/status counts", self._command_overview)
         yield SystemCommand("Help", "Show the key bindings", self.action_show_help_panel)
 
     def _command_refresh(self) -> None:
         screen = self.screen
         if isinstance(screen, ObservatoryScreen):
-            screen.action_refresh()
-            self.notify("Refreshing the ledger…", timeout=3)  # transient success toast
+            if screen.action_refresh():
+                self.notify("Refreshing the ledger…", timeout=3)  # transient success toast
 
     def _command_overview(self) -> None:
         screen = self.screen
