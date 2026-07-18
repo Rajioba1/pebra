@@ -40,6 +40,12 @@ defines the contract and portability work that follows.
    instruction or hook contract is identified and verified.
 7. **No new runtime in the first implementation plan.** Build the safety, contract, inspection, and
    conformance foundation first. Runtime expansion receives a separate experiment and review.
+8. **The agent A/B experiment is a versioned gate-contract consumer.** Its treatment continues to call
+   the real `pebra gate-check --consult-only` subprocess and act only on permission. It must reject an
+   unsupported gate schema before running a trial, keep the model-facing write result fixed at
+   `{ok, blocked, reason}`, and preserve the current intervention, blinding, telemetry attribution, and
+   conservative no-human behavior. `positive_control` remains an experiment-local synthetic tier and is
+   not added to the production `GateTier` enum.
 
 ## Architecture
 
@@ -134,6 +140,26 @@ Registry-parameterized tests prove every declared target receives the same seman
 full skills are materialized byte-identically, installation and capability observation agree on hook
 ownership, and advisory targets never claim enforcement.
 
+### 7. Final agent A/B contract alignment
+
+Only after the production contracts, generated guidance, inspection, and registry pass their review gates
+does the experiment align with the finished behavior. Treat the experiment as an external consumer of the
+gate wire protocol, not as an internal user of `GateDecision`. The subprocess-only CLI harness declares
+the single schema version it supports and validates the returned JSON envelope before the experiment uses
+it. It deliberately does not import PEBRA internals: this preserves the process boundary and makes an
+incompatible schema change fail loudly instead of silently changing experimental treatment.
+
+The treatment arm continues to use `consult_only=True`. Because the assay has no trusted human approver,
+an unresolved `ask` or review outcome remains a conservative block. The experiment may retain
+`schema_version`, tier, warning, and host-only attribution internally, but the coding agent sees exactly
+the existing normalized `{ok, blocked, reason}` result in every arm. Assessment attribution still occurs
+only after a successful write.
+
+The enforced positive control is not a production gate response. Its `positive_control` tier remains a
+local experimental label, is documented as such in the runner, and must not be accepted by the production
+permission/tier matrix. Deterministic experiment tests lock these boundaries. The live provider-backed
+assay remains separately gated and is not run merely to implement this alignment.
+
 ## Error handling and trust boundaries
 
 - Malformed user configuration is reported with its path and expected shape; it is never replaced.
@@ -156,8 +182,9 @@ Stop for review before continuing or publishing `0.1.1`.
 ### Milestone 1 — Gate contract and binding constant
 
 Add typed permissions/tiers, schema version, allowed-pair validation, contract documentation, and the
-single candidate-binding constant. Stop for review after focused tests, full tests, lint, and import
-contracts pass.
+single candidate-binding constant. Prove the versioned envelope through a real subprocess E2E test, but
+do not update or run the complete A/B suite yet. Stop for review after focused tests, full tests, lint,
+import contracts, and the milestone's gate-contract E2E acceptance pass.
 
 ### Milestone 2 — Always-loaded Claude rule and inspection
 
@@ -167,7 +194,15 @@ Stop for review after proving check mode performs no writes for every state.
 ### Milestone 3 — Registry and cross-host conformance
 
 Replace duplicated two-host facts with the minimal registry and parameterized conformance matrix. Do not
-add a third runtime. Stop for review after installed-wheel and Windows/Ubuntu/macOS CI evidence.
+add a third runtime. Stop for review after focused host E2E and installed-wheel evidence.
+
+### Milestone 4 — Experiment alignment and aggregate proof
+
+Align the existing A/B runner and its production-shaped test doubles with the completed schema-1 behavior.
+Preserve the intervention, consult-only mode, blinding, model-facing schema, telemetry, arm definitions,
+prompts, corpus, oracle, and scoring. Run the full deterministic A/B suite and aggregate `e2e-fast` only
+at this final milestone, then require Windows/Ubuntu/macOS CI evidence. Do not launch the separately gated
+provider-backed live assay without explicit authorization.
 
 ### Deferred runtime expansion
 
@@ -182,13 +217,22 @@ claims remain forbidden.
 - Byte-for-byte no-write assertions on validation and check paths.
 - Complete enum and allowed-pair coverage.
 - Documentation rows derived from live contract values.
+- A focused production subprocess E2E proves the schema-1 envelope before the Milestone 1 review.
+- In the final milestone, the A/B subprocess harness rejects unsupported or malformed envelopes without
+  importing PEBRA.
+- The A/B treatment still forwards `consult_only=True`, preserves post-write-only assessment attribution,
+  and exposes only `{ok, blocked, reason}` to the model when gate metadata is present.
+- `positive_control` remains experiment-local and absent from the production `GateTier` contract.
 - Candidate-binding consumers use the single core constant.
 - Claude always-loaded rule and full skills contain the required semantic obligations.
 - Full Claude and Codex skills are byte-identical.
 - Registry, parser choices, capability order, inspection, and README support declarations cannot drift.
-- `nox -s tests lint e2e-fast` passes at every milestone.
+- Each milestone passes focused subprocess E2E acceptance for the behavior it introduces before review.
+- `nox -s tests lint` passes at every milestone; the complete deterministic A/B suite and
+  `nox -s e2e-fast` run in the final experiment milestone.
 - Distribution verification proves all generated templates remain available from an installed wheel.
-- Final Ubuntu, Windows, and macOS CI is required before any runtime-support claim or release.
+- Final Ubuntu, Windows, and macOS CI runs only after experiment alignment and is required before any
+  runtime-support claim or release.
 
 ## Non-goals
 

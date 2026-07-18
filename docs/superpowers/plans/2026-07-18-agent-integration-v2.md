@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make PEBRA agent initialization validation-safe, give the gate a typed and documented wire contract, add always-loaded Claude non-negotiables and non-mutating installation inspection, and prevent Claude/Codex support facts from drifting.
+**Goal:** Make PEBRA agent initialization validation-safe, give the gate a typed and documented wire contract, add always-loaded Claude non-negotiables and non-mutating installation inspection, prevent Claude/Codex support facts from drifting, then align the existing agent A/B experiment with the completed production behavior.
 
-**Architecture:** Preserve the existing gate and generated protocol, adding small dependency-free core contracts for hook ownership, candidate binding, gate permissions/tiers, and host facts. `pebra agent-init` renders and validates a complete write plan before touching disk; CLI/adapters consume the same core declarations. This plan adds no third runtime and does not change decision math, sanctions, persistence, or fail-open infrastructure policy.
+**Architecture:** Preserve the existing gate and generated protocol, adding small dependency-free core contracts for hook ownership, candidate binding, gate permissions/tiers, and host facts. `pebra agent-init` renders and validates a complete write plan before touching disk; CLI/adapters consume the same core declarations. The agent A/B subprocess harness becomes an explicit consumer of gate schema version 1 and fails before a trial on an incompatible envelope while its treatment, blinding, and model-facing result remain unchanged. This plan adds no third runtime and does not change decision math, sanctions, persistence, or fail-open infrastructure policy.
 
 **Tech Stack:** Python 3.11+, `argparse`, frozen dataclasses, `enum.StrEnum`, JSON, pytest, Ruff, import-linter, nox, GitHub Actions.
 
@@ -14,6 +14,9 @@
 - Use test-first development for every behavior change.
 - Preserve `allow/fail_open` for graph, Git, store, parse, and unexpected hook-runtime failures.
 - Host wrappers branch on `GatePermission`; `GateTier` is diagnostic and cannot independently authorize an edit.
+- Preserve the A/B treatment: call the real gate subprocess with `consult_only=True`, attribute an assessment only after a successful write, and expose exactly `{ok, blocked, reason}` to the model in every arm.
+- Keep `positive_control` as an experiment-local synthetic label; never add it to the production `GateTier` enum or present it as a versioned production gate response.
+- Before each review stop, run the milestone's focused subprocess E2E acceptance tests. Defer the complete deterministic A/B suite and `nox -s e2e-fast` to the final experiment milestone because they are the expensive aggregate proof.
 - Never overwrite malformed user configuration or delete a lookalike user hook.
 - Never modify user content outside PEBRA's existing managed block.
 - Materialize complete skill/rule content; no symlinks, pointer files, external imports, or self-updater.
@@ -32,6 +35,7 @@
 - Modify: `pebra/adapters/enforcement_capability.py:1-41`
 - Modify: `tests/unit/test_agent_init.py:14-257`
 - Modify: `tests/unit/test_enforcement_capability.py`
+- Create: `e2e/features/agent/test_agent_init_safety.py`
 
 **Interfaces:**
 - Produces: `HOOK_COMMAND: str`, `managed_hook_entry(matcher: str) -> dict[str, object]`, and `is_managed_hook_entry(value: object, matcher: str) -> bool`.
@@ -105,12 +109,55 @@ def test_agent_init_with_hook_rejects_invalid_config_without_any_write(tmp_path,
 Add the Codex variant and a valid-settings preservation test. Validation failure must not create either
 instruction files or hook files.
 
+Add a process-boundary regression in `e2e/features/agent/test_agent_init_safety.py` so the milestone is
+not accepted solely from in-process unit tests:
+
+```python
+from __future__ import annotations
+
+import subprocess
+import sys
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    ("target", "config_rel", "skill_rel"),
+    (
+        ("claude", ".claude/settings.json", ".claude/skills/pebra-safe-edit/SKILL.md"),
+        ("codex", ".codex/hooks.json", ".agents/skills/pebra-safe-edit/SKILL.md"),
+    ),
+)
+def test_agent_init_malformed_hook_is_failure_atomic(tmp_path, target, config_rel, skill_rel):
+    config = tmp_path / config_rel
+    config.parent.mkdir(parents=True)
+    raw = "{broken"
+    config.write_text(raw, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "pebra", "agent-init", "--target", target,
+            "--repo-root", str(tmp_path), "--with-hook",
+        ],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+
+    assert result.returncode == 2
+    assert config.read_text(encoding="utf-8") == raw
+    assert not (tmp_path / skill_rel).exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+```
+
+Add a second parameterized process test starting from a valid config containing a lookalike command. It
+must exit `0`, preserve that complete entry, and add exactly one structurally exact `pebra gate-hook`
+entry with the target's matcher.
+
 - [ ] **Step 3: Run focused tests and confirm both bugs reproduce**
 
 Run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py -q
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py e2e/features/agent/test_agent_init_safety.py -q
 ```
 
 Expected: the lookalike is deleted and malformed input is overwritten or partially installs files.
@@ -204,17 +251,18 @@ Expected: all tests pass, including byte-identical preservation and lookalike ow
 Run:
 
 ```powershell
+.\.venv\Scripts\python.exe -m pytest e2e/features/agent/test_agent_init_safety.py e2e/test_boundary_discipline.py -q
 .\.venv\Scripts\nox.exe -s tests lint
 git diff --check
 ```
 
-Expected: the full test session passes, Ruff passes, all import contracts are kept, and the diff check is
-clean.
+Expected: the focused subprocess acceptance tests prove failure atomicity and exact ownership, Ruff
+passes, all import contracts are kept, and the diff check is clean.
 
 - [ ] **Step 8: Commit Milestone 0**
 
 ```powershell
-git add pebra/core/agent_hook_contract.py pebra/cli/agent_init.py pebra/adapters/enforcement_capability.py tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py
+git add pebra/core/agent_hook_contract.py pebra/cli/agent_init.py pebra/adapters/enforcement_capability.py tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py e2e/features/agent/test_agent_init_safety.py
 git commit -m "fix: make agent hook installation validation-safe"
 ```
 
@@ -362,6 +410,10 @@ def test_declared_pairs_construct(permission, tier):
 def test_undeclared_pair_is_rejected():
     with pytest.raises(ValueError, match="undeclared gate permission/tier pair"):
         GateDecision(GatePermission.ALLOW, GateTier.MUST_CONSULT)
+
+
+def test_experiment_positive_control_is_not_a_production_tier():
+    assert "positive_control" not in {tier.value for tier in GateTier}
 ```
 
 Add a documentation test that asserts one Markdown row for every allowed pair:
@@ -497,7 +549,7 @@ Do not describe tiers as independent host commands and do not add `gate-check --
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_gate_contract.py tests/unit/test_gate_check.py tests/unit/test_gate_hook.py tests/unit/test_candidate_apply_controller.py -q
-.\.venv\Scripts\nox.exe -s tests lint e2e-fast
+.\.venv\Scripts\nox.exe -s tests lint
 git diff --check
 ```
 
@@ -512,16 +564,65 @@ git add -f docs/GATE_CONTRACT.md
 git commit -m "feat: define the gate decision contract"
 ```
 
+### Task 4: Prove the production gate envelope over the E2E process boundary
+
+**Files:**
+- Create: `e2e/utils/tests/test_gate_contract_cli.py`
+
+**Interfaces:**
+- Consumes: the existing subprocess-only `cli_harness.gate_check()` without changing experiment
+  infrastructure.
+- Proves: production emits schema 1 with the existing permission/tier behavior.
+- Defers: consumer-side schema rejection and every A/B runner/test change to Milestone 4.
+
+- [ ] **Step 1: Write the failing real-CLI envelope test**
+
+Create `e2e/utils/tests/test_gate_contract_cli.py`:
+
+```python
+from __future__ import annotations
+
+from e2e.utils import cli_harness
+
+
+def test_gate_check_real_cli_emits_schema_one_envelope(tmp_path):
+    payload = cli_harness.gate_check({}, db=tmp_path / "missing.db", consult_only=True)
+
+    assert payload["schema_version"] == 1
+    assert payload["permission"] == "allow"
+    assert payload["tier"] == "pass"
+```
+
+- [ ] **Step 2: Run Milestone 1 E2E acceptance**
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest e2e/utils/tests/test_gate_contract_cli.py e2e/test_boundary_discipline.py -q
+.\.venv\Scripts\nox.exe -s tests lint
+git diff --check
+```
+
+Expected: the real production subprocess emits schema 1 with the unchanged `allow/pass` missing-store
+behavior, and no E2E module imports PEBRA.
+
+- [ ] **Step 3: Commit the process-boundary acceptance test**
+
+```powershell
+git add e2e/utils/tests/test_gate_contract_cli.py
+git commit -m "test: verify gate schema over cli boundary"
+```
+
 ### STOP FOR REVIEW 1
 
-Report both commits, the complete enum/matrix, JSON compatibility evidence, documentation coverage, and
-full verification. Confirm that no decision math or fail-open path changed.
+Report all three commits, the complete enum/matrix, real subprocess envelope evidence, documentation
+coverage, and focused gate-contract E2E verification. Confirm that no decision math or fail-open path
+changed. The full A/B alignment and experiment suite remain intentionally deferred to the final
+milestone.
 
 ---
 
 ## Milestone 2 — Always-loaded Claude Guidance And Inspection
 
-### Task 4: Add the concise Claude rule and semantic projection tests
+### Task 5: Add the concise Claude rule and semantic projection tests
 
 **Files:**
 - Modify: `pebra/cli/agent_init.py`
@@ -614,12 +715,13 @@ git add pebra/cli/agent_init.py tests/unit/test_agent_init.py README.md
 git commit -m "feat: add always-loaded Claude safety rules"
 ```
 
-### Task 5: Add `agent-init --check --json`
+### Task 6: Add `agent-init --check --json`
 
 **Files:**
 - Modify: `pebra/cli/agent_init.py`
 - Modify: `tests/unit/test_agent_init.py`
 - Modify: `README.md`
+- Create: `e2e/features/agent/test_agent_init_inspection.py`
 
 **Interfaces:**
 - Produces: `pebra agent-init --target {claude,codex} --check [--json]`.
@@ -710,13 +812,67 @@ Human output lists each path/state, hook state, declared support, and effective 
 indented output. Both paths return `0` even for `modified`, `conflicting`, or `malformed`; those are
 inspection results, not CLI crashes.
 
-- [ ] **Step 6: Verify and commit inspection**
+- [ ] **Step 6: Prove materialization and non-mutation over the process boundary**
+
+Create `e2e/features/agent/test_agent_init_inspection.py`:
+
+```python
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _agent_init(root: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable, "-m", "pebra", "agent-init", "--target", "claude",
+            "--repo-root", str(root), *extra,
+        ],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+
+
+def test_claude_rule_and_check_are_real_cli_non_mutating(tmp_path):
+    installed = _agent_init(tmp_path, "--with-hook")
+    assert installed.returncode == 0
+    rule = tmp_path / ".claude/rules/pebra-safe-edit.md"
+    body = rule.read_text(encoding="utf-8")
+    for obligation in ("assess", "mismatched", "deny", "trusted human", "verify"):
+        assert obligation in body.lower()
+
+    before = _snapshot(tmp_path)
+    checked = _agent_init(tmp_path, "--check", "--json")
+    assert checked.returncode == 0
+    payload = json.loads(checked.stdout)
+    assert payload["protocol_version"] == 1
+    assert payload["gate_schema_version"] == 1
+    assert {item["state"] for item in payload["files"]} == {"current"}
+    assert payload["hook"]["state"] == "exact"
+    assert _snapshot(tmp_path) == before
+```
+
+Add a second test with malformed existing hook JSON. `--check --json` must return `0`, report
+`hook.state == "malformed"`, and leave the recursive byte snapshot unchanged.
+
+- [ ] **Step 7: Run Milestone 2 E2E acceptance and commit inspection**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py -q
+.\.venv\Scripts\python.exe -m pytest e2e/features/agent/test_agent_init_safety.py e2e/features/agent/test_agent_init_inspection.py e2e/test_boundary_discipline.py -q
 .\.venv\Scripts\nox.exe -s tests lint
 git diff --check
-git add pebra/cli/agent_init.py tests/unit/test_agent_init.py README.md
+git add pebra/cli/agent_init.py tests/unit/test_agent_init.py README.md e2e/features/agent/test_agent_init_inspection.py
 git commit -m "feat: inspect agent integration state"
 ```
 
@@ -729,7 +885,7 @@ or modifies no files. Do not proceed without maintainer approval.
 
 ## Milestone 3 — Two-host Registry And Conformance
 
-### Task 6: Single-source stable host facts
+### Task 7: Single-source stable host facts
 
 **Files:**
 - Create: `pebra/core/agent_hosts.py`
@@ -740,6 +896,9 @@ or modifies no files. Do not proceed without maintainer approval.
 - Modify: `tests/unit/test_enforcement_capability.py`
 - Modify: `tests/unit/test_capabilities_cli.py`
 - Create: `tests/unit/test_agent_host_conformance.py`
+- Modify: `tests/unit/test_distribution_verifier.py`
+- Create: `e2e/features/agent/test_agent_host_conformance.py`
+- Modify: `scripts/verify_distribution.py`
 - Modify: `README.md`
 
 **Interfaces:**
@@ -890,41 +1049,302 @@ def test_installed_hook_matches_registry_and_probe(target, tmp_path):
     assert enforcement_capability._hook_installed(hook_path, spec.hook_matcher)
 ```
 
-- [ ] **Step 6: Run full local and distribution verification**
+- [ ] **Step 6: Prove both registry targets over the E2E process boundary**
+
+Create `e2e/features/agent/test_agent_host_conformance.py`. Parameterize `claude` and `codex`, launch
+`python -m pebra agent-init --target <target> --repo-root <tmp> --with-hook`, then launch the same target
+with `--check --json`. Assert:
+
+```python
+assert installed.returncode == 0
+assert checked.returncode == 0
+payload = json.loads(checked.stdout)
+assert payload["target"] == target
+assert {item["state"] for item in payload["files"]} == {"current"}
+assert payload["hook"]["state"] == "exact"
+assert payload["declared_support"] == expected_support
+```
+
+For each materialized full skill, assert the six semantic tokens from Task 7 are present. For Claude,
+also assert `.claude/rules/pebra-safe-edit.md` exists; for Codex, assert the PEBRA managed block appears
+inside `AGENTS.md` without deleting pre-existing sentinel content.
+
+- [ ] **Step 7: Extend installed-wheel verification to agent integration**
+
+In `scripts/verify_distribution.py::verify_installed`, use `_run_cli` inside its existing temporary
+directory to initialize and inspect both targets from the installed wheel:
+
+```python
+for target in ("claude", "codex"):
+    repo_root = cwd / f"agent-{target}"
+    installed = _run_cli(
+        "agent-init", "--target", target, "--repo-root", str(repo_root), "--with-hook", cwd=cwd,
+    )
+    if installed.returncode != 0:
+        raise DistributionVerificationError(
+            f"installed agent-init failed for {target}: {installed.stderr.strip()}"
+        )
+    before = {
+        path.relative_to(repo_root).as_posix(): path.read_bytes()
+        for path in repo_root.rglob("*")
+        if path.is_file()
+    }
+    checked = _run_cli(
+        "agent-init", "--target", target, "--repo-root", str(repo_root),
+        "--check", "--json", cwd=cwd,
+    )
+    if checked.returncode != 0:
+        raise DistributionVerificationError(
+            f"installed agent-init check failed for {target}: {checked.stderr.strip()}"
+        )
+    payload = json.loads(checked.stdout)
+    if payload["target"] != target or payload["hook"]["state"] != "exact":
+        raise DistributionVerificationError(f"installed agent-init state mismatch for {target}")
+    after = {
+        path.relative_to(repo_root).as_posix(): path.read_bytes()
+        for path in repo_root.rglob("*")
+        if path.is_file()
+    }
+    if after != before:
+        raise DistributionVerificationError("installed agent-init check mutated repository state")
+```
+
+Extend `test_installed_verifier_exercises_console_script` to assert the verifier source contains both
+`"agent-init"` and `"--check"`; the real fresh-venv `verify_distribution installed` run remains the
+authoritative behavioral proof.
+
+- [ ] **Step 8: Run Milestone 3 E2E, local, and distribution verification**
 
 ```powershell
-.\.venv\Scripts\nox.exe -s tests lint e2e-fast dev-package
+.\.venv\Scripts\python.exe -m pytest e2e/features/agent/test_agent_init_safety.py e2e/features/agent/test_agent_init_inspection.py e2e/features/agent/test_agent_host_conformance.py e2e/test_boundary_discipline.py -q
+.\.venv\Scripts\nox.exe -s tests lint dev-package
 .\.venv\Scripts\python.exe -m build
 .\.venv\Scripts\twine.exe check dist\*
 .\.venv\Scripts\python.exe scripts/verify_distribution.py archives dist
 git diff --check
 ```
 
-Expected: every lane passes, generated instruction behavior works from the installed wheel, and no new
-runtime dependency or package data is required.
+Expected: every target passes through the subprocess boundary, generated instruction and inspection
+behavior work from the installed wheel, check mode stays byte-for-byte non-mutating, and no new runtime
+dependency or package data is required.
 
-- [ ] **Step 7: Commit the registry and conformance matrix**
+- [ ] **Step 9: Commit the registry and conformance matrix**
 
 ```powershell
-git add pebra/core/agent_hosts.py pebra/cli/agent_init.py pebra/adapters/enforcement_capability.py pebra/cli/capabilities.py tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py tests/unit/test_capabilities_cli.py tests/unit/test_agent_host_conformance.py README.md
+git add pebra/core/agent_hosts.py pebra/cli/agent_init.py pebra/adapters/enforcement_capability.py pebra/cli/capabilities.py tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py tests/unit/test_capabilities_cli.py tests/unit/test_agent_host_conformance.py tests/unit/test_distribution_verifier.py e2e/features/agent/test_agent_host_conformance.py scripts/verify_distribution.py README.md
 git commit -m "refactor: single-source agent host support"
 ```
 
-- [ ] **Step 8: Run hosted cross-platform proof after explicit push approval**
+### STOP FOR REVIEW 3 — Production integration checkpoint
 
-After the maintainer authorizes pushing, push `main` and require the installed-wheel/test matrix to pass on
-Ubuntu, Windows, and macOS. Record workflow run URLs and job conclusions. Do not add a runtime-support
-claim, tag, or publish while any required job is missing or failing.
-
-### STOP FOR REVIEW 3 — Final checkpoint
-
-Report all milestone commits, registry contents, conformance coverage, distribution evidence, and hosted
-three-OS results. Explicitly confirm:
+Report the Milestone 3 commit, registry contents, focused subprocess E2E, conformance coverage, and
+installed-wheel evidence. Explicitly confirm:
 
 - only Claude and Codex are declared;
 - fail-open behavior and decision math are unchanged;
 - check mode is non-mutating;
 - malformed user configuration is preserved;
 - no plugin engine, updater, inbox, queue, symlink projection, or provider-branded target was added.
+
+Do not push or begin the full experiment alignment until the maintainer approves this production
+checkpoint.
+
+---
+
+## Milestone 4 — Agent A/B Alignment And Aggregate E2E
+
+### Task 8: Align the existing experiment with the completed production contracts
+
+**Files:**
+- Modify: `e2e/utils/cli_harness.py:1-207`
+- Modify: `e2e/utils/tests/test_gate_contract_cli.py`
+- Modify: `e2e/experiments/agent_ab/runners/run_pair.py:1056-1096`
+- Modify: `e2e/experiments/agent_ab/tests/test_run_pair.py`
+- Modify: `e2e/experiments/agent_ab/tests/test_preflight.py`
+- Modify: `e2e/experiments/agent_ab/tests/test_blinding.py`
+- Modify: `e2e/experiments/agent_ab/tests/test_run_trial.py`
+- Modify: `e2e/experiments/agent_ab/tests/test_agent_loop.py`
+- Modify: `e2e/experiments/agent_ab/README.md`
+
+**Interfaces:**
+- Consumes: the schema-1 validation already enforced by `e2e.utils.cli_harness.gate_check` in Milestone 1.
+- Changes: test doubles that represent the real CLI response use the complete production-shaped gate
+  envelope; the runner names and documents its experiment-only positive-control tier.
+- Preserves: arm definitions, randomization, task corpus, prompts, model calls, consult-only treatment,
+  blinding, oracle/scoring rules, telemetry semantics, and the exact model-facing write result.
+- Does not run: the paid/provider-backed live assay (`nox -s e2e-ab`) without separate maintainer
+  authorization and its existing environment gates.
+
+- [ ] **Step 1: Write failing consumer-side gate-schema tests**
+
+Extend `e2e/utils/tests/test_gate_contract_cli.py`:
+
+```python
+@pytest.mark.parametrize(
+    "payload",
+    (
+        [],
+        {},
+        {"schema_version": 2, "permission": "allow", "tier": "pass"},
+        {"schema_version": 1, "permission": "continue", "tier": "pass"},
+        {"schema_version": 1, "permission": "allow", "tier": None},
+    ),
+)
+def test_gate_envelope_rejects_unsupported_or_malformed_payload(payload):
+    with pytest.raises(cli_harness.CLIError, match="gate contract"):
+        cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"])
+```
+
+Expected initial failure: `_validate_gate_envelope` does not exist. The real schema-one subprocess test
+from Milestone 1 stays unchanged and must continue to pass.
+
+- [ ] **Step 2: Make the experiment harness a schema-1 consumer**
+
+Add this consumer contract to `cli_harness.py`; do not import PEBRA, because the E2E boundary must remain
+an external process boundary:
+
+```python
+SUPPORTED_GATE_SCHEMA_VERSION = 1
+_GATE_PERMISSIONS = frozenset({"allow", "deny", "ask"})
+
+
+def _validate_gate_envelope(payload: object, cmd: list[str]) -> dict:
+    if not isinstance(payload, dict):
+        raise CLIError(f"command {cmd!r} returned a non-object gate contract")
+    if payload.get("schema_version") != SUPPORTED_GATE_SCHEMA_VERSION:
+        raise CLIError(
+            f"command {cmd!r} returned unsupported gate contract schema "
+            f"{payload.get('schema_version')!r}"
+        )
+    if payload.get("permission") not in _GATE_PERMISSIONS:
+        raise CLIError(f"command {cmd!r} returned an invalid gate contract permission")
+    if not isinstance(payload.get("tier"), str):
+        raise CLIError(f"command {cmd!r} returned an invalid gate contract tier")
+    return payload
+```
+
+Change `gate_check()` to return `_validate_gate_envelope(_parse_json_stdout(proc.stdout, cmd), cmd)` and
+update its docstring to name the complete versioned envelope. This single path covers calibration,
+preflight, and trial execution.
+
+- [ ] **Step 3: Write the failing experiment compatibility regressions**
+
+Update every mock of `cli_harness.gate_check` in the files above so a mock representing the production
+subprocess returns at least:
+
+```python
+{
+    "schema_version": 1,
+    "permission": "allow",
+    "tier": "consulted",
+    "reason": None,
+    "warn": None,
+    "matched_assessment_id": None,
+}
+```
+
+Use the test's existing permission, tier, warning, reason, and matched assessment values where they differ.
+Do not require this envelope from fakes injected directly as the already-normalized internal
+`gate_check_backend`; those are unit boundaries rather than CLI responses.
+
+Update `test_treatment_gate_check_backend_uses_consult_only` to prove the real-shaped envelope survives
+the runner boundary and `consult_only` remains true. Update
+`test_allowed_assessment_is_attributed_only_after_write_succeeds` so the internal decision carries
+`schema_version: 1` while retaining:
+
+```python
+assert result == {"ok": True, "blocked": False, "reason": None}
+```
+
+That exact equality is the blinding guarantee: new production metadata never reaches the coding agent.
+Keep the companion failed-write test proving no assessment is credited when mutation fails.
+
+Add this positive-control regression to `test_run_pair.py`:
+
+```python
+def test_enforced_control_uses_unversioned_experiment_only_tier(tmp_path):
+    decision = run_pair._gate_check_backend(
+        models.ARM_ENFORCED_CONTROL, tmp_path / "pebra.db",
+    )({"tool_name": "Write", "tool_input": {"file_path": "a.py"}})
+
+    assert decision["tier"] == run_pair._EXPERIMENT_ONLY_POSITIVE_CONTROL_TIER
+    assert "schema_version" not in decision
+```
+
+- [ ] **Step 4: Mark the positive control as synthetic in the runner**
+
+In `run_pair.py`, add and use:
+
+```python
+_EXPERIMENT_ONLY_POSITIVE_CONTROL_TIER = "positive_control"
+```
+
+Expand `_gate_check_backend`'s docstring to state that the enforced control is deliberately not a
+production gate response and therefore carries no production `schema_version`. Do not add this tier to
+`GateTier`, `ALLOWED_PERMISSION_TIERS`, or `docs/GATE_CONTRACT.md`. Synthetic sham/control decisions must
+not pass through the production-envelope validator.
+
+- [ ] **Step 5: Document the experiment/production boundary**
+
+Update `e2e/experiments/agent_ab/README.md` to state:
+
+- PEBRA treatment calls the real schema-1 gate subprocess with `consult_only=True`;
+- the harness rejects an unsupported gate schema before preflight or a trial;
+- the assay has no trusted human approver, so unresolved review remains conservatively blocked;
+- only `{ok, blocked, reason}` is model-facing in every arm;
+- `positive_control` is a synthetic experiment label, not a production `GateTier`;
+- this alignment changes no arm, prompt, task, outcome metric, or expected treatment effect.
+
+- [ ] **Step 6: Run focused A/B compatibility tests**
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest e2e/utils/tests/test_gate_contract_cli.py e2e/experiments/agent_ab/tests/test_run_pair.py::test_treatment_gate_check_backend_uses_consult_only e2e/experiments/agent_ab/tests/test_run_pair.py::test_exact_allowed_candidate_is_bound_for_post_edit_verify e2e/experiments/agent_ab/tests/test_run_pair.py::test_enforced_control_uses_unversioned_experiment_only_tier e2e/experiments/agent_ab/tests/test_agent_loop.py::test_allowed_assessment_is_attributed_only_after_write_succeeds e2e/experiments/agent_ab/tests/test_agent_loop.py::test_failed_write_never_credits_allowed_assessment e2e/experiments/agent_ab/tests/test_blinding.py e2e/experiments/agent_ab/tests/test_preflight.py e2e/test_boundary_discipline.py -q
+```
+
+Expected: schema-1 data is consumed internally, consult-only and post-write attribution are unchanged,
+the model-facing schema remains fixed, positive control remains synthetic, blinding passes, and no E2E
+module imports PEBRA.
+
+- [ ] **Step 7: Run the deferred aggregate E2E proof**
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest e2e/experiments/agent_ab/tests -q
+.\.venv\Scripts\nox.exe -s tests lint e2e-fast
+git diff --check
+```
+
+Expected: the complete deterministic experiment suite and aggregate fast E2E lane pass. Compare test
+counts and skipped-test reasons with the pre-milestone baseline. Any change to arm definitions, prompts,
+task fixtures, oracle labels, scoring, provider calls, or model-facing tool schemas is a blocker requiring
+a new experiment-design review.
+
+Do not run `nox -s e2e-ab`; it is the live provider-backed assay and remains protected by
+`E2E_AB_RUN=1`, `E2E_EXTERNAL=1`, and the provider key.
+
+- [ ] **Step 8: Commit the experiment alignment**
+
+```powershell
+git add e2e/utils/cli_harness.py e2e/utils/tests/test_gate_contract_cli.py e2e/experiments/agent_ab/runners/run_pair.py e2e/experiments/agent_ab/tests/test_run_pair.py e2e/experiments/agent_ab/tests/test_preflight.py e2e/experiments/agent_ab/tests/test_blinding.py e2e/experiments/agent_ab/tests/test_run_trial.py e2e/experiments/agent_ab/tests/test_agent_loop.py e2e/experiments/agent_ab/README.md
+git commit -m "test: align agent experiment with gate schema"
+```
+
+- [ ] **Step 9: Run hosted cross-platform proof after explicit push approval**
+
+After the maintainer authorizes pushing, push `main` and require the installed-wheel/test matrix to pass
+on Ubuntu, Windows, and macOS. Record workflow run URLs and job conclusions. Do not tag, publish, or add a
+runtime-support claim while any required job is missing or failing.
+
+### STOP FOR REVIEW 4 — Final checkpoint
+
+Report every milestone commit, each milestone's focused subprocess E2E evidence, the aggregate A/B and
+`e2e-fast` results, distribution evidence, and hosted three-OS results. Explicitly confirm:
+
+- production gate schema 1 is consumed by the experiment;
+- treatment still uses the real consult-only gate and only successful writes receive attribution;
+- model-facing results remain exactly `{ok, blocked, reason}` in every arm;
+- `positive_control` remains experiment-local;
+- no decision math, fail-open behavior, arm, prompt, task corpus, oracle, scoring rule, or live model call
+  changed;
+- the live provider-backed assay was not launched without separate authorization.
 
 Runtime expansion requires a new approved spec based on a real host-loading experiment.
