@@ -11,14 +11,21 @@ from textual.widgets import Static
 from pebra.tui.widgets.ledger_table import short_commit
 
 
+def _short_repo(repo_id: str) -> str:
+    # A stable compact slug so the status line fits a ~70-column pane: drop a "repo_" prefix and keep
+    # the leading hash. Display-only — the full repo_id is the bound identity, not this.
+    slug = repo_id[len("repo_") :] if repo_id.startswith("repo_") else repo_id
+    return slug[:8] or repo_id
+
+
 def format_status(*, repo_id: str, latest_commit: str | None, chain_valid: bool, total: int) -> str:
-    # HEAD = the most recent assessment's assessed_commit (the repo HEAD captured at assess time),
-    # derived from the store — never a live git call. Chain integrity is labelled "store chain"
-    # because it is database-global, not repo-scoped.
+    # Permanently compact so it never wraps on a normal terminal (nowrap+ellipsis in TCSS is only a
+    # last-resort safety net). HEAD = the most recent assessment's assessed_commit (the repo HEAD at
+    # assess time), from the store — never a live git call. "store chain" is kept in full because the
+    # chain is database-global, not repo-scoped, and that distinction is load-bearing.
     head = short_commit(latest_commit)
     chain = "ok" if chain_valid else "BROKEN"
-    plural = "assessment" if total == 1 else "assessments"
-    return f"repo {repo_id}   ·   HEAD {head}   ·   store chain {chain}   ·   {total} {plural}"
+    return f"repo {_short_repo(repo_id)} · HEAD {head} · store chain {chain} · {total} asm"
 
 
 class StatusHeader(Static):

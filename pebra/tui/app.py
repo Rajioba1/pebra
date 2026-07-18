@@ -14,6 +14,7 @@ from textual.app import App, SystemCommand
 from textual.screen import Screen
 
 from pebra.observatory_context import ObservatoryContext
+from pebra.provenance import provenance_line
 from pebra.tui.data import ObservatoryData
 from pebra.tui.screens.observatory import ObservatoryScreen
 from pebra.tui.theme import css_variables
@@ -24,6 +25,10 @@ _CSS_PATH = Path(__file__).parent / "theme.tcss"
 class ObservatoryApp(App[None]):
     CSS_PATH = _CSS_PATH
     TITLE = "PEBRA Observatory"
+    # Width/height breakpoint classes on the screen (theme.tcss uses them to keep the banner off
+    # short/narrow terminals and show its tagline only when there's room).
+    HORIZONTAL_BREAKPOINTS = [(0, "-cramped"), (80, "-normal"), (100, "-wide")]
+    VERTICAL_BREAKPOINTS = [(0, "-short"), (28, "-tall")]
     # `q` is our convenience quit. `ctrl+q` is inherited from Textual's base App (priority=True,
     # hidden) — do NOT redeclare it here: the tuple form would drop its priority, letting a focused
     # widget (the ledger DataTable) intercept ctrl+q before the app-level quit.
@@ -33,6 +38,9 @@ class ObservatoryApp(App[None]):
         super().__init__()
         # NOTE: not `self._context` — that name is a Textual App internal (the app-context manager).
         self.observatory_context = context
+        # Source provenance in the header subtitle, so you can tell the checkout from the released wheel.
+        # Computed once here (may shell out to git for an editable install) — never on the 5s refresh.
+        self.sub_title = provenance_line(prefix=False)
 
     def get_default_screen(self) -> Screen:
         return ObservatoryScreen(ObservatoryData(self.observatory_context))

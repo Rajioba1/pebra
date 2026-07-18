@@ -17,7 +17,13 @@ from pebra.tui.theme import VERDICT_PALETTE, verdict_for
 
 # The ledger's columns. The RAU value is the hero number; the gate-lane is the signature visual; the
 # decision is a separate colored glyph+label so the verdict never depends on the lane's position alone.
-LEDGER_COLUMNS = ("assessment", "commit", "gate-lane", "decision", "rau", "e.loss", "benefit", "status")
+# Header is "asm id" (compact) though values stay asm_<n>; total row width fits an 80-column terminal.
+LEDGER_COLUMNS = ("asm id", "commit", "gate-lane", "decision", "rau", "e.loss", "benefit", "status")
+
+# The gate-lane track width in the ledger. Deliberately narrower than render_rau_lane's default (13) so
+# all eight columns fit ~80 cols: the lane is a coarse visual cue and the authoritative value is the
+# separate `rau` column, so fewer track cells lose no real precision.
+LEDGER_LANE_WIDTH = 9
 
 _MARKER = "●"           # RAU position marker — deliberately NOT any decision glyph
 _GATE = "│"             # the gate axis at RAU = 0
@@ -28,7 +34,7 @@ _OVERFLOW_RIGHT = "»"   # RAU above the +1.0 window
 # Textual 8 cannot measure native Content cells for DataTable auto-width (it reports one cell), so
 # these two semantic columns must be explicit or the lane and full verdict labels are clipped.
 LEDGER_COLUMN_WIDTHS = {
-    "gate-lane": 13,
+    "gate-lane": LEDGER_LANE_WIDTH,
     "decision": max(Content(f"{v.glyph} {v.label}").cell_length for v in VERDICT_PALETTE.values()),
 }
 
@@ -94,7 +100,7 @@ def ledger_row(assessment: dict[str, Any], *, dark: bool = True) -> tuple[Any, .
     return (
         assessment.get("assessment_id", "—"),
         short_commit(assessment.get("assessed_commit")),
-        Content(render_rau_lane(rau)),
+        Content(render_rau_lane(rau, width=LEDGER_LANE_WIDTH)),
         decision_cell(str(assessment.get("decision", "")), dark=dark),
         format_rau(rau),
         _fmt_score(scores.get("expected_loss")),

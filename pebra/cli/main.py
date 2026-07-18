@@ -120,6 +120,14 @@ def _configure_output_streams() -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_output_streams()
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args and raw_args[0] in ("--version", "-V"):
+        # Handled before build_parser so it works without a subcommand and never runs git for other
+        # commands (provenance shells out to git at most once, only here).
+        from pebra.provenance import provenance_line
+
+        print(provenance_line())
+        return 0
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

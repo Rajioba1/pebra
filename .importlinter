@@ -19,6 +19,7 @@ forbidden_modules =
     pebra.tui
     pebra.composition
     pebra.observatory_context
+    pebra.provenance
 
 [importlinter:contract:core-no-impure-libs]
 name = core forbidden from impure stdlib + heavy libs (Architecture §12)
@@ -86,6 +87,7 @@ forbidden_modules =
     pebra.adapters
     pebra.composition
     pebra.observatory_context
+    pebra.provenance
     pebra.tui
 
 [importlinter:contract:adapters-only-core-ports]
@@ -100,6 +102,7 @@ forbidden_modules =
     pebra.dashboard
     pebra.composition
     pebra.observatory_context
+    pebra.provenance
     pebra.tui
 
 # The dashboard surface may import exactly one app module: the shared read-only Observatory query

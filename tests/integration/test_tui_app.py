@@ -122,7 +122,7 @@ def test_screen_renders_seeded_ledger_and_status(tmp_path) -> None:
             assert table.row_count == 2
             status = app.query_one("#status", StatusHeader).status_text
             assert "store chain ok" in status
-            assert "2 assessments" in status
+            assert "2 asm" in status
             message = app.query_one("#ledger-message")
             assert message.display is False  # no empty-state message when rows exist
 
@@ -132,7 +132,7 @@ def test_screen_renders_seeded_ledger_and_status(tmp_path) -> None:
 def test_content_columns_preserve_the_full_lane_and_decision_label(tmp_path) -> None:
     from textual.widgets import DataTable
 
-    from pebra.tui.widgets.ledger_table import render_rau_lane
+    from pebra.tui.widgets.ledger_table import LEDGER_LANE_WIDTH, render_rau_lane
 
     db = _seed(tmp_path, rows=2)
 
@@ -142,9 +142,115 @@ def test_content_columns_preserve_the_full_lane_and_decision_label(tmp_path) -> 
             columns = list(app.query_one("#ledger", DataTable).columns.values())
             lane, decision = columns[2], columns[3]
             assert lane.auto_width is False
-            assert lane.width >= len(render_rau_lane(0.0))
+            assert lane.width == LEDGER_LANE_WIDTH == len(render_rau_lane(0.0, width=LEDGER_LANE_WIDTH))
             assert decision.auto_width is False
             assert decision.width >= len("◇ Inspect first")
+
+    asyncio.run(scenario())
+
+
+def test_banner_is_responsive_to_terminal_size(tmp_path) -> None:
+    from pebra.tui.widgets.banner import PebraBanner
+
+    db = _seed(tmp_path, rows=1)
+
+    async def visibility(width: int, height: int) -> tuple[bool, int]:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(width, height)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            banner = app.query_one("#banner", PebraBanner)
+            return banner.display, banner.region.height
+
+    async def scenario() -> None:
+        assert await visibility(110, 30) == (True, 2)  # wide + tall: wordmark + tagline
+        assert await visibility(90, 30) == (True, 1)   # medium: wordmark line only
+        shown, _ = await visibility(80, 24)
+        assert shown is False  # short terminal (incl. common 80x24): hidden
+        shown, _ = await visibility(70, 30)
+        assert shown is False  # narrow terminal: hidden
+
+    asyncio.run(scenario())
+
+
+def test_reduced_motion_settles_the_banner_without_a_reveal(tmp_path) -> None:
+    from pebra.tui.widgets.banner import PebraBanner
+
+    db = _seed(tmp_path, rows=1)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        app.animation_level = "none"  # simulate TEXTUAL_ANIMATIONS=none
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause()
+            banner = app.query_one("#banner", PebraBanner)
+            assert banner._reveal_timer is None  # no sweep scheduled
+            assert "▸" in banner.render().plain  # already at the settled frame
+
+    asyncio.run(scenario())
+
+
+def test_banner_reveal_is_one_pass_and_survives_refresh(tmp_path) -> None:
+    from pebra.tui.widgets.banner import _REST_INDEX, PebraBanner
+
+    db = _seed(tmp_path, rows=1)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(110, 30)) as pilot:
+            banner = app.query_one("#banner", PebraBanner)
+            banner.settle()  # force the reveal to its final frame deterministically
+            await pilot.pause()
+            assert banner._reveal_timer is None
+            assert banner._marker == _REST_INDEX
+            # a refresh must NOT restart the reveal
+            app.screen.reload()
+            await pilot.pause()
+            assert banner._reveal_timer is None
+            assert banner._marker == _REST_INDEX
+
+    asyncio.run(scenario())
+
+
+def test_header_subtitle_shows_source_provenance() -> None:
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx())
+        async with app.run_test():
+            assert app.sub_title
+            assert ("editable" in app.sub_title) or ("installed" in app.sub_title)
+
+    asyncio.run(scenario())
+
+
+def test_ledger_fits_eighty_columns_and_pins_asm_id(tmp_path) -> None:
+    from textual.widgets import DataTable
+
+    db = _seed(tmp_path, rows=2)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            table = app.query_one("#ledger", DataTable)
+            assert table.fixed_columns == 1  # asm-id column pinned across horizontal scroll
+            assert table.max_scroll_x == 0  # all eight columns fit 80 cols — no scroll needed
+            assert app.query_one("#scroll-hint").display is False
+
+    asyncio.run(scenario())
+
+
+def test_narrow_terminal_reveals_scroll_hint(tmp_path) -> None:
+    from textual.widgets import DataTable
+
+    db = _seed(tmp_path, rows=2)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(70, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            assert app.query_one("#ledger", DataTable).max_scroll_x > 0  # overflow at 70 cols
+            assert app.query_one("#scroll-hint").display is True
 
     asyncio.run(scenario())
 
@@ -178,14 +284,20 @@ def test_unavailable_store_shows_durable_error(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_status_line_is_store_scoped_and_pure() -> None:
+def test_status_line_is_store_scoped_compact_and_pure() -> None:
     from pebra.tui.widgets.status_header import format_status
 
     line = format_status(repo_id="r", latest_commit="abcdef123456", chain_valid=True, total=1)
     assert "repo r" in line
     assert "HEAD abcdef1" in line  # short commit
-    assert "store chain ok" in line
-    assert "1 assessment" in line and "assessments" not in line  # singular
+    assert "store chain ok" in line  # "store" kept — the chain is database-global, not repo-scoped
+    assert "1 asm" in line
+    # a real repo_id compacts to a short slug that fits a narrow pane
+    compact = format_status(
+        repo_id="repo_481a73928338", latest_commit="cc5d175abc", chain_valid=True, total=16
+    )
+    assert "repo 481a7392 " in compact  # "repo_" dropped, first 8 hex kept
+    assert len(compact) < 60  # fits a ~70-column pane without wrapping
 
 
 def test_theme_change_recolors_existing_decision_cells_without_reloading(tmp_path) -> None:

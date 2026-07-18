@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from textual import work
+from textual import events, work
 from textual.app import ComposeResult
 from textual.coordinate import Coordinate
 from textual.screen import Screen
@@ -21,6 +21,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from pebra.app.observatory_query_controller import AssessmentNotFoundError
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot, ObservatoryStoreUnavailable
 from pebra.tui.screens.detail import AssessmentDetailScreen
+from pebra.tui.widgets.banner import PebraBanner
 from pebra.tui.widgets.ledger_table import (
     LEDGER_COLUMNS,
     LEDGER_COLUMN_WIDTHS,
@@ -31,6 +32,7 @@ from pebra.tui.widgets.score_sparklines import ScoreSparklines
 from pebra.tui.widgets.status_header import StatusHeader
 
 _EMPTY = "No assessments recorded for this repository yet."
+_SCROLL_HINT = "←/→ more columns · Home/End"
 _DECISION_COLUMN_INDEX = LEDGER_COLUMNS.index("decision")
 _REFRESH_INTERVAL = 5.0  # seconds; SQLite-only poll — never the graph/RCA engines
 
@@ -55,8 +57,11 @@ class ObservatoryScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield PebraBanner(id="banner")
         yield StatusHeader(id="status")
-        yield DataTable(id="ledger", cursor_type="row", zebra_stripes=True)
+        # fixed_columns=1 pins the asm-id column so it stays visible when the table is scrolled right.
+        yield DataTable(id="ledger", cursor_type="row", zebra_stripes=True, fixed_columns=1)
+        yield Static("", id="scroll-hint")
         yield ScoreSparklines(id="trends")
         yield Static("", id="ledger-message")
         yield Footer()
@@ -77,6 +82,21 @@ class ObservatoryScreen(Screen):
             self._set_message(f"Assessment store unavailable — {exc}")
             return
         self._apply_snapshot(snapshot)
+
+    def on_resize(self, event: events.Resize) -> None:
+        # The overflow hint depends on the settled layout, so update it after the next refresh.
+        self.call_after_refresh(self._update_scroll_hint)
+
+    def _update_scroll_hint(self) -> None:
+        # Show the horizontal-scroll affordance only when the ledger actually overflows the pane, so a
+        # normal 80-column terminal (where all eight columns fit) never shows it.
+        if not self._can_update_children():
+            return
+        overflowing = self.query_one("#ledger", DataTable).max_scroll_x > 0
+        hint = self.query_one("#scroll-hint", Static)
+        if overflowing:
+            hint.update(_SCROLL_HINT)
+        hint.display = overflowing
 
     # --- live single-flight refresh (5s poll + manual `r`) ---
 

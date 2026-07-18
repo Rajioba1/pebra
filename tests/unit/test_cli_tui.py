@@ -116,6 +116,21 @@ def test_normal_mode_resolved_context_reaches_launch(monkeypatch, tmp_path) -> N
     assert captured["ctx"].read_only is False
 
 
+def test_version_flag_prints_provenance_without_a_subcommand() -> None:
+    import io
+    from contextlib import redirect_stdout
+
+    from pebra.cli.main import main
+
+    for flag in ("--version", "-V"):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            rc = main([flag])
+        assert rc == 0
+        out = buffer.getvalue()
+        assert "PEBRA" in out and (("editable" in out) or ("installed" in out))
+
+
 def test_building_parser_does_not_import_textual() -> None:
     # A fresh process: registering every CLI subcommand (incl. tui) must not import textual. The TUI's
     # textual import is deferred to launch, so ordinary parsing/help stays cheap.

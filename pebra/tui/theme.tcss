@@ -7,9 +7,43 @@ Screen {
     background: $background;
 }
 
+/* The status line is permanently compact (see status_header.py); nowrap+ellipsis is only a last-resort
+   safety net so it can never wrap onto a second line on an unusually narrow pane. */
+#status {
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* The compact PEBRA wordmark. Two lines when there's room; the tagline is dropped at medium width and
+   the whole mark is hidden on short/narrow terminals so it never crowds the ledger. */
+#banner {
+    height: 2;
+    text-wrap: nowrap;
+    text-overflow: clip;
+}
+.-normal #banner {
+    height: 1;   /* 80-99 cols: wordmark line only, tagline clipped */
+}
+.-cramped #banner {
+    display: none;   /* < 80 cols */
+}
+.-short #banner {
+    display: none;   /* < 28 rows (includes the common 80x24) */
+}
+
 #ledger {
     height: 1fr;
     overflow-y: auto;
+}
+
+/* Horizontal-scroll affordance — shown by the screen only when the ledger overflows the pane. */
+#scroll-hint {
+    display: none;
+    height: 1;
+    color: $observatory-muted;
+    text-wrap: nowrap;
+    text-overflow: clip;
 }
 
 #trends {

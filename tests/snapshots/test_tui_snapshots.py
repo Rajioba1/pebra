@@ -59,9 +59,19 @@ def _normalize_snapshot_svg(svg: str) -> str:
 
 @pytest.fixture(autouse=True)
 def _color_snapshots_are_environment_independent(monkeypatch) -> None:
-    """Color is part of these baselines, even when the invoking shell sets NO_COLOR."""
+    """Color is part of these baselines, even when the invoking shell sets NO_COLOR. The banner's
+    one-time reveal is also settled to its final frame so a mid-sweep frame can never make a baseline
+    non-deterministic (TEXTUAL_ANIMATIONS is read at import time, so settle the reveal directly)."""
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr(pytest_textual_snapshot, "normalize_svg", _normalize_snapshot_svg)
+
+    from pebra.tui.widgets import banner as banner_mod
+
+    monkeypatch.setattr(
+        banner_mod.PebraBanner,
+        "on_mount",
+        lambda self: self.update(banner_mod.banner_content(banner_mod._REST_INDEX)),
+    )
 
 
 def test_snapshot_normalizer_strips_trailing_space_and_rich_terminal_ids() -> None:
