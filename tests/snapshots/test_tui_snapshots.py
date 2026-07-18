@@ -57,6 +57,8 @@ def _color_snapshots_are_environment_independent(monkeypatch) -> None:
 
 
 def test_snapshot_normalizer_strips_trailing_space_and_rich_terminal_ids() -> None:
+    if _ORIGINAL_NORMALIZE_SVG is None:
+        pytest.skip("normalize_svg unavailable (pytest-textual-snapshot < 1.1)")
     svg = '<svg class="terminal-123-matrix">  \n        \n</svg>\t\n'
 
     assert _normalize_snapshot_svg(svg) == '<svg class="terminal-matrix">\n\n</svg>\n'
