@@ -26,21 +26,31 @@ def version() -> str:
 def is_editable() -> bool:
     """True for an editable (`pip install -e`) install, via the PEP 610 direct_url.json marker."""
     try:
-        raw = importlib.metadata.distribution(_DIST).read_text("direct_url.json")
+        distributions = importlib.metadata.distributions(name=_DIST)
     except (importlib.metadata.PackageNotFoundError, OSError):
         return False
-    if not raw:
-        return False
     try:
-        info = json.loads(raw)
-    except json.JSONDecodeError:
+        for distribution in distributions:
+            try:
+                raw = distribution.read_text("direct_url.json")
+            except (OSError, UnicodeError):
+                continue
+            if not raw:
+                continue
+            try:
+                info = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            # Valid JSON need not be an object, and malformed truthy values such as "false" must not
+            # masquerade as the PEP 610 boolean true.
+            if not isinstance(info, dict):
+                continue
+            dir_info = info.get("dir_info")
+            if isinstance(dir_info, dict) and dir_info.get("editable") is True:
+                return True
+    except OSError:
         return False
-    # Valid JSON need not be an object (a corrupt/foreign direct_url.json could be null/list/number);
-    # degrade to False rather than raising AttributeError on .get().
-    if not isinstance(info, dict):
-        return False
-    dir_info = info.get("dir_info")
-    return bool(isinstance(dir_info, dict) and dir_info.get("editable"))
+    return False
 
 
 def git_short_hash() -> str | None:

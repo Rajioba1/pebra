@@ -213,6 +213,9 @@ class ObservatoryScreen(Screen):
         )
         self.query_one("#trends", ScoreSparklines).update_series(snapshot.scores_series)
         self._set_message("" if rows else _EMPTY)
+        # Auto-sized columns may become wider or narrower when new rows arrive, even though the
+        # terminal itself did not resize. Recompute the overflow affordance after layout settles.
+        self.call_after_refresh(self._update_scroll_hint)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         assessment_id = event.row_key.value

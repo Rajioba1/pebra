@@ -177,6 +177,7 @@ def test_installed_verifier_exercises_console_script() -> None:
 
     assert "shutil.which(\"pebra\")" in source
     assert "installed console script" in source
+    assert '("--version",)' in source
 
 
 def test_installed_verifier_mounts_tui_headlessly() -> None:

@@ -163,7 +163,7 @@ def verify_installed() -> None:
 
     with tempfile.TemporaryDirectory(prefix="pebra-wheel-smoke-") as raw:
         cwd = Path(raw)
-        for args in (("--help",), ("help", "dashboard"), ("help", "tui")):
+        for args in (("--help",), ("--version",), ("help", "dashboard"), ("help", "tui")):
             result = _run_cli(*args, cwd=cwd)
             if result.returncode != 0 or "pebra" not in result.stdout.lower():
                 raise DistributionVerificationError(

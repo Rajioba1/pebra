@@ -185,7 +185,7 @@ def test_reduced_motion_settles_the_banner_without_a_reveal(tmp_path) -> None:
             await pilot.pause()
             banner = app.query_one("#banner", PebraBanner)
             assert banner._reveal_timer is None  # no sweep scheduled
-            assert "▸" in banner.render().plain  # already at the settled frame
+            assert "*" not in banner.render().plain  # already at the settled, marker-free frame
 
     asyncio.run(scenario())
 
@@ -250,6 +250,37 @@ def test_narrow_terminal_reveals_scroll_hint(tmp_path) -> None:
             await pilot.pause()
             await pilot.pause()
             assert app.query_one("#ledger", DataTable).max_scroll_x > 0  # overflow at 70 cols
+            assert app.query_one("#scroll-hint").display is True
+
+    asyncio.run(scenario())
+
+
+def test_snapshot_width_growth_reveals_scroll_hint_without_a_resize(tmp_path) -> None:
+    from dataclasses import replace
+
+    from textual.widgets import DataTable
+
+    db = _seed(tmp_path, rows=2)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(80, 24)) as pilot:
+            # Drain the initial resize/layout callbacks so a pending startup update cannot mask the
+            # behavior under test.
+            for _ in range(5):
+                await pilot.pause()
+            table = app.query_one("#ledger", DataTable)
+            assert table.max_scroll_x == 0
+            assert app.query_one("#scroll-hint").display is False
+
+            snapshot = app.screen._data.refresh_snapshot()
+            long_id = "asm_" + ("9" * 24)
+            wider_rows = [{**snapshot.assessments[0], "assessment_id": long_id}]
+            app.screen._apply_snapshot(replace(snapshot, assessments=wider_rows))
+            for _ in range(3):
+                await pilot.pause()
+
+            assert table.max_scroll_x > 0
             assert app.query_one("#scroll-hint").display is True
 
     asyncio.run(scenario())

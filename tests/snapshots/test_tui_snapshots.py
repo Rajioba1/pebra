@@ -65,8 +65,12 @@ def _color_snapshots_are_environment_independent(monkeypatch) -> None:
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr(pytest_textual_snapshot, "normalize_svg", _normalize_snapshot_svg)
 
+    from pebra.tui import app as app_mod
     from pebra.tui.widgets import banner as banner_mod
 
+    # Provenance is intentionally environment-specific (installed/editable + git hash); keep the
+    # visual baseline stable across local checkouts, CI, and future commits.
+    monkeypatch.setattr(app_mod, "provenance_line", lambda *, prefix=True: "0.1.0 · test")
     monkeypatch.setattr(
         banner_mod.PebraBanner,
         "on_mount",

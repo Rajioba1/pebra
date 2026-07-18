@@ -42,9 +42,57 @@ def test_is_editable_degrades_to_false_on_malformed_direct_url(monkeypatch) -> N
             return self._text
 
     # valid JSON that isn't an object, and a non-dict dir_info — must return False, never raise
-    for raw in ("null", "[]", "42", '"x"', '{"dir_info": 42}', '{"url": "file:///x"}'):
-        monkeypatch.setattr(importlib.metadata, "distribution", lambda _d, raw=raw: _Dist(raw))
+    for raw in (
+        "null",
+        "[]",
+        "42",
+        '"x"',
+        '{"dir_info": 42}',
+        '{"dir_info": {"editable": "false"}}',
+        '{"dir_info": {"editable": 1}}',
+        '{"url": "file:///x"}',
+    ):
+        monkeypatch.setattr(
+            importlib.metadata,
+            "distributions",
+            lambda **_kwargs: iter([_Dist(raw)]),
+        )
         assert provenance.is_editable() is False
+
+
+def test_is_editable_checks_all_matching_distribution_metadata(monkeypatch) -> None:
+    import importlib.metadata
+
+    class _Dist:
+        def __init__(self, text: str | None) -> None:
+            self._text = text
+
+        def read_text(self, name: str) -> str | None:
+            return self._text
+
+    # A source-tree pebra.egg-info without direct_url.json may be discovered before the editable
+    # environment's dist-info. The latter must still win.
+    monkeypatch.setattr(
+        importlib.metadata,
+        "distributions",
+        lambda **_kwargs: iter(
+            [_Dist(None), _Dist('{"dir_info": {"editable": true}, "url": "file:///checkout"}')]
+        ),
+    )
+
+    assert provenance.is_editable() is True
+
+
+def test_is_editable_degrades_on_unreadable_direct_url(monkeypatch) -> None:
+    import importlib.metadata
+
+    class _Dist:
+        def read_text(self, name: str) -> str | None:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda **_kwargs: iter([_Dist()]))
+
+    assert provenance.is_editable() is False
 
 
 def test_editable_checkout_reports_editable_and_a_hash() -> None:
