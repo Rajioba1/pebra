@@ -10,36 +10,52 @@ from __future__ import annotations
 
 from typing import Any
 
+from textual import work
 from textual.app import ComposeResult
 from textual.coordinate import Coordinate
 from textual.screen import Screen
 from textual.theme import Theme
 from textual.widgets import DataTable, Footer, Header, Static
 
+from pebra.app.observatory_query_controller import AssessmentNotFoundError
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot, ObservatoryStoreUnavailable
+from pebra.tui.screens.detail import AssessmentDetailScreen
 from pebra.tui.widgets.ledger_table import (
     LEDGER_COLUMNS,
     LEDGER_COLUMN_WIDTHS,
     decision_cell,
     ledger_row,
 )
+from pebra.tui.widgets.score_sparklines import ScoreSparklines
 from pebra.tui.widgets.status_header import StatusHeader
 
 _EMPTY = "No assessments recorded for this repository yet."
 _DECISION_COLUMN_INDEX = LEDGER_COLUMNS.index("decision")
+_REFRESH_INTERVAL = 5.0  # seconds; SQLite-only poll — never the graph/RCA engines
 
 
 class ObservatoryScreen(Screen):
+    BINDINGS = [("r", "refresh", "Refresh")]
+
     def __init__(self, data: ObservatoryData) -> None:
         super().__init__()
         self._data = data
         self._rows: list[dict[str, Any]] = []
+        self._overview: dict[str, Any] = {}
         self.message_text = ""  # current empty-state / error text ("" when the ledger has rows)
+        self._refreshing = False  # single-flight guard, only read/written on the UI thread
+
+    def overview_summary(self) -> str:
+        total = int(self._overview.get("total", 0))
+        by_decision = self._overview.get("by_decision") or {}
+        parts = "   ".join(f"{name} {count}" for name, count in by_decision.items()) or "none"
+        return f"{total} assessments — {parts}"
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield StatusHeader(id="status")
         yield DataTable(id="ledger", cursor_type="row", zebra_stripes=True)
+        yield ScoreSparklines(id="trends")
         yield Static("", id="ledger-message")
         yield Footer()
 
@@ -48,7 +64,8 @@ class ObservatoryScreen(Screen):
         for label in LEDGER_COLUMNS:
             table.add_column(label, width=LEDGER_COLUMN_WIDTHS.get(label))
         self.app.theme_changed_signal.subscribe(self, self._on_theme_changed)
-        self.reload()
+        self.reload()  # initial load is synchronous so the first paint has data
+        self.set_interval(_REFRESH_INTERVAL, self._tick)
 
     def reload(self) -> None:
         try:
@@ -59,9 +76,53 @@ class ObservatoryScreen(Screen):
             return
         self._apply_snapshot(snapshot)
 
+    # --- live single-flight refresh (5s poll + manual `r`) ---
+
+    def _tick(self) -> None:
+        self._start_refresh()
+
+    def action_refresh(self) -> None:
+        self._start_refresh()
+
+    def _try_begin_refresh(self) -> bool:
+        """Single-flight guard (UI thread only): claim the in-flight slot, or refuse if already busy.
+        We SKIP overlapping refreshes — we never cancel the running worker to gate it."""
+        if self._refreshing:
+            return False
+        self._refreshing = True
+        return True
+
+    def _start_refresh(self) -> None:
+        if self._try_begin_refresh():
+            self._refresh_worker()
+
+    @work(thread=True)
+    def _refresh_worker(self) -> None:
+        # Blocking SQLite read off the UI thread; results marshalled back via call_from_thread.
+        try:
+            snapshot = self._data.refresh_snapshot()
+        except ObservatoryStoreUnavailable as exc:
+            self.app.call_from_thread(self._finish_error, str(exc))
+            return
+        self.app.call_from_thread(self._finish_ok, snapshot)
+
+    def _finish_ok(self, snapshot: ObservatorySnapshot) -> None:
+        self._refreshing = False
+        if not self.is_mounted:  # a late result must never touch a screen that's gone
+            return
+        self._apply_snapshot(snapshot)
+
+    def _finish_error(self, message: str) -> None:
+        self._refreshing = False
+        if not self.is_mounted:
+            return
+        # Preserve the last good render (do not clear the table); just surface the error.
+        self._set_message(f"Assessment store unavailable — {message}")
+
     def _apply_snapshot(self, snapshot: ObservatorySnapshot) -> None:  # not `_render`: Textual internal
         rows = snapshot.assessments
         self._rows = rows
+        self._overview = snapshot.overview
         latest_commit = rows[0].get("assessed_commit") if rows else None
         self.query_one("#status", StatusHeader).update_status(
             repo_id=self._data.repo_id,
@@ -74,7 +135,26 @@ class ObservatoryScreen(Screen):
         dark = self._is_dark()
         for row in rows:
             table.add_row(*ledger_row(row, dark=dark))
+        self.query_one("#trends", ScoreSparklines).update_series(snapshot.scores_series)
         self._set_message("" if rows else _EMPTY)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        index = event.cursor_row
+        if index is None or not (0 <= index < len(self._rows)):
+            return
+        assessment_id = self._rows[index].get("assessment_id")
+        if not assessment_id:
+            return
+        try:
+            detail = self._data.detail(assessment_id)
+        except AssessmentNotFoundError:
+            # Missing or belongs to another repo — say so, never leak or reconstruct it.
+            self.notify("Assessment not available.", severity="warning")
+            return
+        except ObservatoryStoreUnavailable as exc:
+            self.notify(f"Assessment store unavailable — {exc}", severity="error")
+            return
+        self.app.push_screen(AssessmentDetailScreen(detail))
 
     def _on_theme_changed(self, theme: Theme) -> None:
         table = self.query_one("#ledger", DataTable)

@@ -92,3 +92,17 @@ def test_snapshot_empty_history(snap_compare, tmp_path) -> None:
 
 def test_snapshot_chain_failure(snap_compare, tmp_path) -> None:
     assert snap_compare(_app(_seed(tmp_path, break_chain=True)), terminal_size=(100, 24))
+
+
+async def _open_first_detail(pilot) -> None:
+    from textual.widgets import DataTable
+
+    pilot.app.query_one("#ledger", DataTable).focus()
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+def test_snapshot_detail_screen(snap_compare, tmp_path) -> None:
+    assert snap_compare(
+        _app(_seed(tmp_path)), terminal_size=(110, 36), run_before=_open_first_detail
+    )

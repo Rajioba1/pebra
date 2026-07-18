@@ -7,9 +7,10 @@ screen via ObservatoryData; all store reads happen there, through the M1 shared 
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
-from textual.app import App
+from textual.app import App, SystemCommand
 from textual.screen import Screen
 
 from pebra.observatory_context import ObservatoryContext
@@ -40,6 +41,25 @@ class ObservatoryApp(App[None]):
         variables = super().get_css_variables()
         variables.update(css_variables())
         return variables
+
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        # Built-ins (Change theme, Quit, ...) plus the Observatory's read-only commands. There is
+        # deliberately NO mutating command here — this surface only reads.
+        yield from super().get_system_commands(screen)
+        yield SystemCommand("Refresh", "Reload the ledger from the store now", self._command_refresh)
+        yield SystemCommand("Overview", "Show decision/status counts", self._command_overview)
+        yield SystemCommand("Help", "Show the key bindings", self.action_show_help_panel)
+
+    def _command_refresh(self) -> None:
+        screen = self.screen
+        if isinstance(screen, ObservatoryScreen):
+            screen.action_refresh()
+            self.notify("Refreshing the ledger…", timeout=3)  # transient success toast
+
+    def _command_overview(self) -> None:
+        screen = self.screen
+        if isinstance(screen, ObservatoryScreen):
+            self.notify(screen.overview_summary(), title="Overview", timeout=6)
 
 
 def run_observatory(context: ObservatoryContext) -> None:
