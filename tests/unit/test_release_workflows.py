@@ -60,6 +60,7 @@ def test_security_workflow_has_recurring_full_history_scan_and_no_write_permissi
     assert "schedule:" in workflow
     assert "workflow_dispatch:" in workflow
     assert "permissions:\n  contents: read" in workflow
+    assert "pull-requests: read" in workflow
     assert "id-token: write" not in workflow
 
 
