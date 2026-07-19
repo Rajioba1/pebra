@@ -4,6 +4,13 @@ This runbook covers the first public `0.1.x` releases. A release is built once i
 published from that exact artifact through PyPI Trusted Publishing. Do not upload a locally-built
 wheel to PyPI.
 
+## Maintainer Authorization Gate
+
+Do not create or push a release tag, dispatch or rerun the release workflow, approve a publishing
+environment, upload to TestPyPI or PyPI, or create a GitHub release without explicit maintainer
+authorization for that specific release. Passing tests, a clean release candidate, or approval of an
+implementation milestone is not release authorization.
+
 ## One-Time Repository Setup
 
 1. Make the repository public only after a manually dispatched or scheduled full-history secret scan
