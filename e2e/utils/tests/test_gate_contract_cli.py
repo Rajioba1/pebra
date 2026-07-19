@@ -1,0 +1,314 @@
+"""Process-boundary acceptance tests for the versioned pre-edit gate envelope."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+import re
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+from typing import Callable
+
+import pytest
+
+from e2e.utils import cli_harness
+
+
+_MISSING = object()
+_BINDING_ALGORITHM = "sha256-normalized-content-v1"
+_SCORES = {"expected_loss": 0.75, "benefit": 0.2, "rau": -0.55}
+_ENVELOPE_KEYS = {
+    "schema_version",
+    "permission",
+    "tier",
+    "reason",
+    "warn",
+    "risk_summary",
+    "matched_assessment_id",
+}
+_FORBIDDEN_BLINDING_TERMS = (
+    "pebra",
+    "codegraph",
+    "experiment",
+    "oracle",
+    "permission denied",
+    "goal rejected",
+)
+
+
+@dataclass(frozen=True)
+class GateCase:
+    repo: Path
+    db: Path
+    claude_event: dict
+    codex_event: dict
+    mismatch_event: dict
+
+
+def _run(command: list[str], *, cwd: Path) -> str:
+    result = subprocess.run(
+        command,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def _digest(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(b"\x01text\x00" + normalized.encode("utf-8")).hexdigest()
+
+
+def _repo_id(repo: Path) -> str:
+    return "repo_" + hashlib.sha1(str(repo.resolve()).encode("utf-8")).hexdigest()[:12]
+
+
+def _seed_case(
+    root: Path,
+    *,
+    decision: str,
+    scores: object = _SCORES,
+    replay: object = _MISSING,
+) -> GateCase:
+    repo = root / "repo"
+    repo.mkdir(parents=True)
+    target = repo / "target.txt"
+    target.write_text("original\n", encoding="utf-8")
+    _run(["git", "init", "-q"], cwd=repo)
+    _run(["git", "config", "user.name", "PEBRA E2E"], cwd=repo)
+    _run(["git", "config", "user.email", "e2e@invalid.example"], cwd=repo)
+    _run(["git", "add", "target.txt"], cwd=repo)
+    _run(["git", "commit", "-qm", "fixture"], cwd=repo)
+    head = _run(["git", "rev-parse", "HEAD"], cwd=repo)
+
+    content: dict = {
+        "assessed_commit": head,
+        "model_guidance_packet": {
+            "binding": {
+                "safe_scope": {"files": ["target.txt"]},
+                "candidate": {
+                    "algorithm": _BINDING_ALGORITHM,
+                    "files": {"target.txt": _digest("changed\n")},
+                },
+            }
+        },
+        "scores": scores,
+    }
+    if replay is not _MISSING:
+        content["request"] = {"candidate_replay": replay}
+
+    db = root / "pebra.db"
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "CREATE TABLE assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "repo_id TEXT, decision TEXT, content_json TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO assessments (repo_id, decision, content_json) VALUES (?, ?, ?)",
+            (_repo_id(repo), decision, json.dumps(content)),
+        )
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: target.txt\n"
+        "@@\n"
+        "-original\n"
+        "+changed\n"
+        "*** End Patch\n"
+    )
+    return GateCase(
+        repo=repo,
+        db=db,
+        claude_event={
+            "tool_name": "Write",
+            "tool_input": {"file_path": "target.txt", "content": "changed\n"},
+            "cwd": str(repo),
+        },
+        codex_event={
+            "tool_name": "apply_patch",
+            "tool_input": {"command": patch},
+            "cwd": str(repo),
+        },
+        mismatch_event={
+            "tool_name": "Write",
+            "tool_input": {"file_path": "target.txt", "content": "changed!\n"},
+            "cwd": str(repo),
+        },
+    )
+
+
+@pytest.fixture
+def gate_case(tmp_path) -> Callable[..., GateCase]:
+    sequence = 0
+
+    def create(**kwargs: object) -> GateCase:
+        nonlocal sequence
+        sequence += 1
+        return _seed_case(tmp_path / f"case-{sequence}", **kwargs)
+
+    return create
+
+
+def _gate_hook(event: dict, *, db: Path) -> dict:
+    result = subprocess.run(
+        [sys.executable, "-m", "pebra", "gate-hook", "--db", str(db)],
+        input=json.dumps(event),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _assert_candidate_hold(payload: dict) -> str:
+    assert set(payload) == _ENVELOPE_KEYS
+    assert payload["schema_version"] == 1
+    assert payload["permission"] == "deny"
+    assert payload["warn"] is None
+    reason = payload["reason"]
+    assert isinstance(reason, str)
+    assert "exact candidate is held" in reason.lower()
+    return reason
+
+
+def test_gate_check_real_cli_emits_schema_one_envelope(tmp_path):
+    payload = cli_harness.gate_check({}, db=tmp_path / "missing.db", consult_only=True)
+
+    assert payload == {
+        "schema_version": 1,
+        "permission": "allow",
+        "tier": "pass",
+        "reason": None,
+        "warn": None,
+        "risk_summary": None,
+        "matched_assessment_id": None,
+    }
+
+
+def test_gate_hook_capabilities_emit_candidate_binding_protocol():
+    result = subprocess.run(
+        [sys.executable, "-m", "pebra", "gate-hook", "--capabilities"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["candidate_binding_protocol"] == _BINDING_ALGORITHM
+
+
+def test_consult_only_holds_an_exact_restrictive_candidate_with_blinded_evidence(gate_case):
+    case = gate_case(decision="ask_human", replay={"status": "available"})
+    payload = cli_harness.gate_check(case.claude_event, db=case.db, consult_only=True)
+
+    reason = _assert_candidate_hold(payload)
+    assert payload["tier"] == "consulted_review_unavailable"
+    assert payload["matched_assessment_id"] == "asm_1"
+    assert payload["risk_summary"] == {"decision": "ask_human", **_SCORES}
+    assert "reassess this candidate" in reason.lower()
+    assert "pebra accept-risk --apply" not in reason
+    lowered = reason.lower()
+    assert all(term not in lowered for term in _FORBIDDEN_BLINDING_TERMS)
+
+
+def test_interactive_gate_asks_only_for_replay_available_ask_human(gate_case):
+    review = gate_case(decision="ask_human", replay={"status": "available"})
+    payload = cli_harness.gate_check(review.claude_event, db=review.db)
+
+    assert set(payload) == _ENVELOPE_KEYS
+    assert payload["schema_version"] == 1
+    assert payload["permission"] == "ask"
+    assert payload["tier"] == "consulted_review"
+    assert payload["risk_summary"] == {"decision": "ask_human", **_SCORES}
+    assert payload["matched_assessment_id"] == "asm_1"
+    assert "exact candidate is held" in payload["reason"].lower()
+    assert "pebra accept-risk --apply" in payload["reason"]
+
+
+def test_reject_returns_candidate_and_requires_a_different_route(gate_case):
+    rejected = gate_case(decision="reject", replay={"status": "available"})
+    payload = cli_harness.gate_check(rejected.claude_event, db=rejected.db)
+
+    reason = _assert_candidate_hold(payload)
+    assert payload["tier"] == "consulted_review"
+    assert payload["risk_summary"] == {"decision": "reject", **_SCORES}
+    assert "different candidate or route" in reason.lower()
+    assert "accept-risk" not in reason.lower()
+
+
+@pytest.mark.parametrize("event_name", ("claude_event", "codex_event"))
+def test_installed_hooks_project_bound_review_to_blocking_deny(gate_case, event_name):
+    review = gate_case(decision="ask_human", replay={"status": "available"})
+    payload = _gate_hook(getattr(review, event_name), db=review.db)["hookSpecificOutput"]
+
+    assert payload["hookEventName"] == "PreToolUse"
+    assert payload["permissionDecision"] == "deny"
+    assert "exact candidate is held" in payload["permissionDecisionReason"].lower()
+    assert "pebra accept-risk --apply" in payload["permissionDecisionReason"]
+    assert "ask" not in payload.values()
+
+
+@pytest.mark.parametrize(
+    "replay",
+    (
+        _MISSING,
+        "malformed",
+        {"status": "unavailable"},
+    ),
+    ids=("missing", "malformed", "unavailable"),
+)
+def test_unavailable_replay_stays_blocking_without_promising_bound_apply(gate_case, replay):
+    case = gate_case(decision="ask_human", replay=replay)
+    payload = cli_harness.gate_check(case.claude_event, db=case.db)
+
+    reason = _assert_candidate_hold(payload)
+    assert payload["tier"] == "consulted_review_unavailable"
+    assert payload["risk_summary"] == {"decision": "ask_human", **_SCORES}
+    assert "reassess this candidate" in reason.lower()
+    assert "pebra accept-risk --apply" not in reason
+
+
+def test_one_byte_candidate_mismatch_never_reuses_stale_risk_math(gate_case):
+    case = gate_case(decision="revise_safer")
+    payload = cli_harness.gate_check(case.mismatch_event, db=case.db)
+
+    assert payload["schema_version"] == 1
+    assert payload["permission"] == "deny"
+    assert payload["tier"] == "candidate_mismatch"
+    assert payload["risk_summary"] is None
+    assert payload["matched_assessment_id"] is None
+    assert "does not match the exact candidate" in payload["reason"].lower()
+    assert "expected loss" not in payload["reason"].lower()
+    assert "benefit" not in payload["reason"].lower()
+    assert "rau" not in payload["reason"].lower()
+    assert all(str(value) not in payload["reason"] for value in _SCORES.values())
+
+
+@pytest.mark.parametrize(
+    "scores",
+    (
+        {"expected_loss": 0.75, "benefit": 0.2},
+        {"expected_loss": float("inf"), "benefit": 0.2, "rau": -0.55},
+        {"expected_loss": True, "benefit": 0.2, "rau": -0.55},
+    ),
+    ids=("partial", "nonfinite", "boolean"),
+)
+def test_malformed_scores_stay_blocking_without_numeric_fragments(gate_case, scores):
+    case = gate_case(decision="revise_safer", scores=scores)
+    payload = cli_harness.gate_check(case.claude_event, db=case.db)
+
+    reason = _assert_candidate_hold(payload)
+    assert payload["tier"] == "consulted_revise"
+    assert payload["risk_summary"] is None
+    assert payload["matched_assessment_id"] == "asm_1"
+    assert "risk summary unavailable" in reason.lower()
+    assert re.search(r"(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?", reason) is None
