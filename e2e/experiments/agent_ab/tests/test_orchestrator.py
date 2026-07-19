@@ -271,6 +271,87 @@ def test_experiment_design_hash_changes_with_provider_model_prompt_tasks_and_arm
     assert base["arm_topology"]["JS1"] == list(orchestrator.run_pair.arms_for("risky"))
 
 
+def test_experiment_design_hash_changes_with_gate_reason_treatment(monkeypatch):
+    cfg = orchestrator._config()
+    args = type("Args", (), {"mode": "assay_js"})()
+    js4 = next(spec for spec in orchestrator.load_corpus() if spec.task_id == "JS4")
+    base = orchestrator._experiment_design(
+        args, cfg, [js4], provider="deepseek", model="deepseek-v4-flash"
+    )
+
+    monkeypatch.setattr(
+        orchestrator,
+        "GATE_REASON_TREATMENT_VERSION",
+        "candidate-risk-summary-v2",
+    )
+    changed = orchestrator._experiment_design(
+        args, cfg, [js4], provider="deepseek", model="deepseek-v4-flash"
+    )
+
+    assert orchestrator._design_sha256(base) != orchestrator._design_sha256(changed)
+
+
+@pytest.mark.parametrize("stored_version", (None, "candidate-risk-summary-v0"))
+def test_resume_rejects_changed_gate_reason_treatment(tmp_path, stored_version):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    prior = _run_meta(mode="assay_js", seeds_per_arm=3)
+    if stored_version is None:
+        prior["experiment_design"].pop("gate_reason_treatment_version")
+    else:
+        prior["experiment_design"]["gate_reason_treatment_version"] = stored_version
+    prior["experiment_design_sha256"] = orchestrator._design_sha256(
+        prior["experiment_design"]
+    )
+    (run_dir / "outcomes.json").write_text(
+        json.dumps({"outcomes": [], "run_metadata": prior}), encoding="utf-8"
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run design changed"):
+        orchestrator._assert_resume_design_compatible(
+            run_dir, _run_meta(mode="assay_js", seeds_per_arm=3)
+        )
+
+
+def test_resume_accepts_identical_gate_reason_treatment(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    metadata = _run_meta(mode="assay_js", seeds_per_arm=3)
+    (run_dir / "outcomes.json").write_text(
+        json.dumps({"outcomes": [], "run_metadata": metadata}), encoding="utf-8"
+    )
+
+    orchestrator._assert_resume_design_compatible(run_dir, metadata)
+
+
+@pytest.mark.parametrize("value", ("true", "false", "1.5", "0", "-1", ""))
+def test_seed_count_override_rejects_non_positive_integers(monkeypatch, value):
+    monkeypatch.setenv("E2E_AB_SEEDS_PER_ARM", value)
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="E2E_AB_SEEDS_PER_ARM"):
+        orchestrator._effective_seeds_per_arm(3)
+
+
+def test_seed_count_override_is_bound_into_metadata_and_design(monkeypatch):
+    monkeypatch.setenv("E2E_AB_SEEDS_PER_ARM", "1")
+    args = type("Args", (), {"mode": "assay_js"})()
+
+    metadata = orchestrator._run_metadata(args, orchestrator._config())
+
+    assert metadata["seeds_per_arm"] == 1
+    assert metadata["experiment_design"]["mode_config"]["seeds_per_arm"] == 1
+    assert metadata["env"]["E2E_AB_SEEDS_PER_ARM"] == "1"
+
+
+def test_aligned_live_run_documentation_uses_fresh_one_seed_run_id():
+    readme = (orchestrator._CONFIG_PATH.parent / "README.md").read_text(encoding="utf-8")
+
+    assert "candidate-risk-summary-v1" in readme
+    assert 'E2E_AB_SEEDS_PER_ARM="1"' in readme
+    assert 'E2E_AB_RUN_ID="js4_schema1_1seed_20260719_001"' in readme
+    assert "js4_v4pro_sp_3seed_001" not in readme
+
+
 def test_resume_rejects_changed_rca_binary_fingerprint(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -475,6 +556,60 @@ def test_main_end_to_end_writes_report(monkeypatch, tmp_path):
     assert (tmp_path / "t1" / "outcomes.json").exists()
     assert (tmp_path / "t1" / "reports" / "ab_t1.md").exists()
     assert (tmp_path / "t1" / "reports" / "ab_t1.json").exists()
+
+
+def test_main_uses_effective_seed_count_override(monkeypatch, tmp_path):
+    observed_seeds = []
+
+    def _fake_pair(spec, seed, run_id):
+        observed_seeds.append(seed)
+        return (
+            SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
+            SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed),
+        )
+
+    _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
+    monkeypatch.setattr(
+        orchestrator,
+        "_config",
+        lambda: {"pilot": {"tasks": ["T1"], "seeds_per_arm": 3}, "bootstrap_seed": 0},
+    )
+    monkeypatch.setenv("E2E_AB_SEEDS_PER_ARM", "1")
+    monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
+
+    assert orchestrator.main([
+        "--run-id", "one-seed", "--skip-oracle-preflight", "--skip-graph-preflight",
+    ]) == 0
+    assert observed_seeds == [0]
+
+
+def test_main_rejects_missing_reason_treatment_before_subject_setup(monkeypatch, tmp_path):
+    _wire(
+        monkeypatch,
+        tmp_path,
+        [_T1],
+        lambda *args, **kwargs: pytest.fail("subject setup must not begin"),
+    )
+    current = _run_meta()
+    prior = json.loads(json.dumps(current))
+    prior["experiment_design"].pop("gate_reason_treatment_version")
+    prior["experiment_design_sha256"] = orchestrator._design_sha256(
+        prior["experiment_design"]
+    )
+    run_dir = tmp_path / "stale-design"
+    run_dir.mkdir()
+    (run_dir / "outcomes.json").write_text(
+        json.dumps({"outcomes": [], "run_metadata": prior}), encoding="utf-8"
+    )
+    monkeypatch.setattr(orchestrator, "_run_metadata", lambda *args, **kwargs: current)
+    monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run design changed"):
+        orchestrator.main([
+            "--run-id", "stale-design",
+            "--skip-oracle-preflight",
+            "--skip-graph-preflight",
+        ])
 
 
 def test_main_writes_finished_run_status(monkeypatch, tmp_path):

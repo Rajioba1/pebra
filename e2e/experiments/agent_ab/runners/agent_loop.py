@@ -27,6 +27,7 @@ from e2e.experiments.agent_ab.models import MUTATING_TOOLS, SubjectResult, ToolC
 from e2e.experiments.agent_ab.runners import run_artifacts, subject_protocol, tool_impl
 from e2e.experiments.agent_ab.runners.model_client import ScriptExhausted
 from e2e.experiments.agent_ab.tools import advisory_contract, approval_contract
+from e2e.utils import cli_harness
 
 if False:  # typing only; avoid importing run_pair at runtime (it imports adapters)
     from e2e.experiments.agent_ab.runners.run_pair import ArmSetup
@@ -283,7 +284,9 @@ def _gated_file_change(
             if accepts_timeout
             else setup.gate_check_backend(event)
         )
-    except Exception:  # noqa: BLE001 - a gate failure must never block the experiment write (fail-open)
+    except cli_harness.GateContractError:
+        raise
+    except Exception:  # noqa: BLE001 - ordinary gate infrastructure failure stays fail-open
         decision = {"permission": "allow"}
     # FIXED schema in every case and BOTH arms: {"ok", "blocked", "reason"}. A per-outcome key set (e.g.
     # a treatment-only "reason") would let the agent infer its arm from the shape alone, so the key set is

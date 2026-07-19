@@ -9,7 +9,9 @@ PEBRA is exercised as an external process (argv in, JSON out). The pure helpers 
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,6 +25,108 @@ DEFAULT_TIMEOUT_SECONDS = 120
 
 class CLIError(RuntimeError):
     """A ``pebra`` CLI invocation failed (non-zero exit) or returned unparseable JSON."""
+
+
+SUPPORTED_GATE_SCHEMA_VERSION = 1
+_GATE_PERMISSION_TIERS = {
+    "allow": frozenset({"pass", "fail_open", "consulted"}),
+    "ask": frozenset({"consulted_review"}),
+    "deny": frozenset({
+        "must_consult",
+        "candidate_unverifiable",
+        "candidate_unbound",
+        "candidate_mismatch",
+        "candidate_incomplete",
+        "consulted_revise",
+        "consulted_prerequisite",
+        "consulted_review",
+        "consulted_review_unavailable",
+    }),
+}
+
+
+class GateContractError(CLIError):
+    """The gate wire payload is incompatible with this experiment consumer."""
+
+
+_DECISIONS = frozenset({
+    "proceed", "inspect_first", "test_first", "revise_safer", "ask_human", "reject",
+})
+_ASSESSMENT_ID_RE = re.compile(r"asm_[1-9][0-9]*")
+_RISK_DECISIONS_BY_PAIR = {
+    ("allow", "consulted"): frozenset({"proceed"}),
+    ("deny", "consulted_revise"): frozenset({"revise_safer"}),
+    ("deny", "consulted_prerequisite"): frozenset({"inspect_first", "test_first"}),
+    ("ask", "consulted_review"): frozenset({"ask_human"}),
+    ("deny", "consulted_review"): frozenset({"reject"}),
+    ("deny", "consulted_review_unavailable"): frozenset({"ask_human"}),
+}
+
+
+def _validate_risk_summary(
+    value: object, permission: str, tier: str, cmd: list[str],
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict) or set(value) != {
+        "decision", "expected_loss", "benefit", "rau",
+    }:
+        raise GateContractError(f"command {cmd!r} returned an invalid gate contract risk summary")
+    decision = value["decision"]
+    if not isinstance(decision, str) or decision not in _DECISIONS:
+        raise GateContractError(f"command {cmd!r} returned an invalid gate contract risk decision")
+    if decision not in _RISK_DECISIONS_BY_PAIR.get(
+        (permission, tier), frozenset()
+    ):
+        raise GateContractError(f"command {cmd!r} returned inconsistent gate contract risk evidence")
+    for field in ("expected_loss", "benefit", "rau"):
+        number = value[field]
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            raise GateContractError(f"command {cmd!r} returned a non-finite gate contract risk value")
+        try:
+            finite = math.isfinite(number)
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise GateContractError(f"command {cmd!r} returned a non-finite gate contract risk value")
+
+
+def _validate_gate_envelope(payload: object, cmd: list[str]) -> dict:
+    if not isinstance(payload, dict):
+        raise GateContractError(f"command {cmd!r} returned a non-object gate contract")
+    schema = payload.get("schema_version")
+    if type(schema) is not int or schema != SUPPORTED_GATE_SCHEMA_VERSION:
+        raise GateContractError(
+            f"command {cmd!r} returned unsupported gate contract schema {schema!r}"
+        )
+    permission = payload.get("permission")
+    tier = payload.get("tier")
+    if not isinstance(permission, str) or permission not in _GATE_PERMISSION_TIERS:
+        raise GateContractError(f"command {cmd!r} returned an invalid gate contract permission")
+    if not isinstance(tier, str) or tier not in _GATE_PERMISSION_TIERS[permission]:
+        raise GateContractError(f"command {cmd!r} returned an invalid gate contract tier pair")
+    reason = payload.get("reason")
+    if permission in {"deny", "ask"} and (
+        not isinstance(reason, str) or not reason.strip()
+    ):
+        raise GateContractError(f"command {cmd!r} returned a restrictive gate contract without a reason")
+    for field in ("reason", "warn", "matched_assessment_id"):
+        value = payload.get(field)
+        if field not in payload or (value is not None and not isinstance(value, str)):
+            raise GateContractError(
+                f"command {cmd!r} returned an invalid gate contract {field}"
+            )
+    assessment_id = payload["matched_assessment_id"]
+    if assessment_id is not None and _ASSESSMENT_ID_RE.fullmatch(assessment_id) is None:
+        raise GateContractError(f"command {cmd!r} returned an invalid gate contract assessment id")
+    if "risk_summary" not in payload:
+        raise GateContractError(f"command {cmd!r} omitted gate contract risk_summary")
+    _validate_risk_summary(payload["risk_summary"], permission, tier, cmd)
+    if payload["risk_summary"] is not None and payload["matched_assessment_id"] is None:
+        raise GateContractError(
+            f"command {cmd!r} returned gate contract risk evidence without an exact assessment"
+        )
+    return payload
 
 
 def _python() -> str:
@@ -189,8 +293,8 @@ def gate_check(
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict:
     """`pebra gate-check` — the pure pre-edit gate DECISION for a proposed edit. The host event
-    (``tool_name``/``tool_input``/``cwd``) goes in on STDIN; a ``{permission, tier, reason, warn}`` JSON
-    comes out. gate-check always exits 0 (allow/deny/ask as data) — the caller enforces. The event
+    (``tool_name``/``tool_input``/``cwd``) goes in on STDIN; a complete versioned schema-1 gate
+    envelope comes out. gate-check always exits 0 (allow/deny/ask as data) — the caller enforces. The event
     carries ``cwd=repo_root``; the store is the shared clone db written by ``pebra assess``.
 
     ``consult_only`` skips the ask verdict tier — the A/B runner has NO human approver, so an ``ask``
@@ -205,7 +309,13 @@ def gate_check(
     proc = subprocess.run(cmd, input=json.dumps(event), capture_output=True, text=True,
                           env=env, timeout=timeout)
     _check_exit(proc.returncode, cmd, proc.stderr)
-    return _parse_json_stdout(proc.stdout, cmd)
+    try:
+        payload = _parse_json_stdout(proc.stdout, cmd)
+    except (CLIError, ValueError, RecursionError) as exc:
+        raise GateContractError(
+            f"command {cmd!r} returned an unparseable gate contract"
+        ) from exc
+    return _validate_gate_envelope(payload, cmd)
 
 
 def _git_output(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:

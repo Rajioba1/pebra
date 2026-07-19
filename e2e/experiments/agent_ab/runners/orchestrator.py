@@ -51,6 +51,7 @@ _TERMINAL_PHASES = frozenset(
 )
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _MAX_RUN_ID_LENGTH = 32
+GATE_REASON_TREATMENT_VERSION = "candidate-risk-summary-v1"
 
 
 class ExperimentRunError(RuntimeError):
@@ -102,6 +103,22 @@ def _config() -> dict[str, Any]:
     if os.environ.get("E2E_AB_MODEL"):
         cfg["subject"]["model"] = os.environ["E2E_AB_MODEL"]
     return cfg
+
+
+def _effective_seeds_per_arm(configured: object) -> int:
+    """Return the validated runtime seed count, preserving the committed config by default."""
+    override = os.environ.get("E2E_AB_SEEDS_PER_ARM")
+    if override is None:
+        if type(configured) is not int or configured <= 0:
+            raise ExperimentRunError("configured seeds_per_arm must be a positive integer")
+        return configured
+    normalized = override.strip()
+    if not re.fullmatch(r"[0-9]+", normalized):
+        raise ExperimentRunError("E2E_AB_SEEDS_PER_ARM must be a positive integer")
+    value = int(normalized)
+    if value <= 0:
+        raise ExperimentRunError("E2E_AB_SEEDS_PER_ARM must be a positive integer")
+    return value
 
 
 def _plan(corpus: list[TaskSpec], task_ids: list[str], seeds: int) -> list[tuple[TaskSpec, int]]:
@@ -284,6 +301,10 @@ def _experiment_design(
 ) -> dict[str, Any]:
     is_assay = args.mode in {"assay", "assay_js"}
     specs = sorted(planned_specs, key=lambda spec: spec.task_id)
+    mode_config = dict(cfg[args.mode])
+    mode_config["seeds_per_arm"] = _effective_seeds_per_arm(
+        mode_config.get("seeds_per_arm")
+    )
     protocol_hashes = {
         arm: _sha256_text(subject_protocol.protocol_for_arm(arm))
         for arm in run_pair.arms_for("risky")
@@ -291,7 +312,8 @@ def _experiment_design(
     return {
         "git_commit": harness_commit if harness_commit is not None else _git_commit(),
         "mode": args.mode,
-        "mode_config": cfg[args.mode],
+        "mode_config": mode_config,
+        "gate_reason_treatment_version": GATE_REASON_TREATMENT_VERSION,
         "subject_config": cfg.get("subject", {}),
         "thresholds": cfg.get("thresholds", {}),
         "bootstrap_seed": cfg.get("bootstrap_seed", 0),
@@ -336,7 +358,7 @@ def _run_metadata(
     if not model:
         model = "deepseek-v4-flash" if provider == "deepseek" else subject_cfg.get("model")
     thinking_enabled = run_pair._subject_thinking_enabled(provider)  # noqa: SLF001 - shared run policy
-    seeds_per_arm = int(cfg[args.mode]["seeds_per_arm"])
+    seeds_per_arm = _effective_seeds_per_arm(cfg[args.mode].get("seeds_per_arm"))
     claim_design = cfg[args.mode].get("claim_design")
     design = _experiment_design(
         args,
@@ -371,6 +393,7 @@ def _run_metadata(
             "E2E_AB_MODEL": os.environ.get("E2E_AB_MODEL"),
             "E2E_AB_PRIOR_MODE": os.environ.get("E2E_AB_PRIOR_MODE"),
             "E2E_AB_PROVIDER": os.environ.get("E2E_AB_PROVIDER"),
+            "E2E_AB_SEEDS_PER_ARM": os.environ.get("E2E_AB_SEEDS_PER_ARM"),
             "E2E_AB_THINKING": os.environ.get("E2E_AB_THINKING"),
             "E2E_AB_HUMAN_APPROVAL_POLICY": os.environ.get(
                 "E2E_AB_HUMAN_APPROVAL_POLICY"
@@ -582,7 +605,8 @@ def main(argv: list[str] | None = None) -> int:
     is_assay = args.mode in {"assay", "assay_js"}
     out_dir = _AB_OUT / args.run_id
     corpus = load_corpus()
-    plan = _plan(corpus, mode["tasks"], mode["seeds_per_arm"])
+    seeds_per_arm = _effective_seeds_per_arm(mode.get("seeds_per_arm"))
+    plan = _plan(corpus, mode["tasks"], seeds_per_arm)
     planned_specs = list({spec.task_id: spec for spec, _seed in plan}.values())
     preflight_status = {
         "oracle": "skipped" if args.skip_oracle_preflight else "pending",

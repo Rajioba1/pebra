@@ -41,6 +41,7 @@ _AB_OUT = Path(__file__).resolve().parents[4] / "e2e" / "out" / "ab"
 _MIN_CSHARP_NODES = 50
 _DIFF_GIT = re.compile(r"^diff --git a/(.*) b/(.*)$")
 _DEFAULT_MAX_ARM_WORKERS = 5
+_EXPERIMENT_ONLY_POSITIVE_CONTROL_TIER = "positive_control"
 
 # ---- assay arm sets (legacy 2-arm control/treatment map onto sham/pebra behavior) ---------------
 _RISKY_ARMS = (
@@ -1060,12 +1061,13 @@ def _gate_check_backend(
 
     PEBRA enforces through the real gate. ``enforced_control`` is the sensitivity positive control:
     it blocks writes by construction so the assay can prove that its ruler detects preventable harm.
+    Its tier is an experiment-only label, deliberately not a versioned production gate response.
     Other arms always allow writes.
     """
     if arm == models.ARM_ENFORCED_CONTROL:
         return lambda event: {
             "permission": "deny",
-            "tier": "positive_control",
+            "tier": _EXPERIMENT_ONLY_POSITIVE_CONTROL_TIER,
             "reason": _positive_control_reason(event),
         }
     if arm in _GATE_ARMS:
@@ -1401,6 +1403,18 @@ def _post_edit_verify(setup: ArmSetup, result: SubjectResult) -> SubjectResult:
     )
 
 
+def _preflight_gate_contract(setup: ArmSetup) -> None:
+    """Probe real gated arms without mutation before provider setup."""
+    if setup.arm not in _GATE_ARMS:
+        return
+    try:
+        setup.gate_check_backend({})
+    except cli_harness.GateContractError:
+        raise
+    except Exception:  # noqa: BLE001 - availability remains deliberately fail-open
+        return
+
+
 def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> SubjectResult:
     """Drive a real, blinded coding subagent through the instrumented tool boundary, then run the
     HIDDEN evaluator (inject tests post-agent, build + test) to fill the build/test outcome fields.
@@ -1413,6 +1427,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
     from e2e.experiments.agent_ab.runners.model_client import AnthropicClient  # noqa: PLC0415
 
     run_gate.check_gate()
+    _preflight_gate_contract(setup)
     cfg = _load_config()["subject"]
     provider = _subject_provider()
     model = _subject_model(cfg, provider)

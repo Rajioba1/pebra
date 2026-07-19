@@ -77,6 +77,33 @@ content differs. If the name/schema/keys ever differ by arm, the
 subject could infer its arm and the trial is unblinded. A transcript **leak scan** flags any run
 mentioning experiment/PEBRA/etc.; leaked runs are excluded from the efficacy analysis.
 
+### Production gate boundary and aligned reason treatment
+
+The PEBRA treatment calls the real schema-1 `gate-check` subprocess with `consult_only=True`; it does
+not import the production implementation. Immediately after the live-run authorization gate, each real
+gated arm performs a read-only empty-event schema probe before provider configuration, key lookup, or
+client construction. An incompatible base schema aborts there. Ordinary gate infrastructure outages
+remain deliberately fail-open, and every later evidence-bearing response is independently validated
+before its candidate can write. The assay has no trusted live human approver, so unresolved review in
+the ordinary PEBRA treatment remains conservatively blocked.
+
+Every arm exposes exactly `{ok, blocked, reason}` to the coding model. Candidate-bound `decision`,
+`expected_loss`, `benefit`, and `rau` may appear neutrally inside a restrictive `reason`; this is the
+intentional `candidate-risk-summary-v1` treatment, not a transparent schema refactor. Its first live
+run must use a fresh run ID. Outcomes or checkpoints from the earlier reason treatment must not be
+resumed or pooled with it; the treatment version and effective seed count are part of the canonical
+experiment design hash.
+
+Held candidates do not write, receive applied/proceeded-edit assessment attribution, or count as edit
+cycles; they remain visible only as intervention/unresolved observations. The `ask_human` review arm
+still requires an explicit model request, exact-candidate sanction, and a new assessment before an
+allowed write. Approval alone cannot credit or apply the original held assessment, and persisted
+`reject` requires a different candidate or route. `positive_control` is a synthetic experiment-only
+tier, not a production `GateTier`.
+
+Arm definitions, prompts, task corpus, model calls, outcome metrics, oracles, and scoring are unchanged.
+Because the reason content changed, the expected treatment effect must nevertheless be re-estimated.
+
 ### Never-mutate-source / isolation
 The source checkout is never touched; `repo_source.clone_at_recorded_head` clones at a pinned SHA into
 gitignored `e2e/out/ab/`. Each subject gets its own clone.
@@ -419,9 +446,15 @@ $env:E2E_AB_MODE="assay_js"
 $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="10"
-$env:E2E_AB_RUN_ID="js4_v4pro_sp_3seed_001"
+$env:E2E_AB_SEEDS_PER_ARM="1"
+$env:E2E_AB_RUN_ID="js4_schema1_1seed_20260719_001"
 nox -s e2e-ab
 ```
+
+`assay_js` remains committed at three seeds per arm. `E2E_AB_SEEDS_PER_ARM` is the explicit runtime
+override for the separately authorized one-seed aligned run; it must be a positive integer (boolean,
+non-integer, zero, and negative values are rejected). Its effective value is recorded in run metadata
+and the experiment design/hash. Unset it after that run to restore the committed three-seed default.
 
 Or store keys in the local ignored file once:
 
@@ -442,6 +475,8 @@ $env:E2E_AB_PRIOR_MODE="shipped"
 $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="10"
+$env:E2E_AB_SEEDS_PER_ARM="1"
+$env:E2E_AB_RUN_ID="js4_schema1_1seed_20260719_001"
 nox -s e2e-ab
 ```
 
@@ -468,7 +503,8 @@ E2E_AB_MODE=assay_js \
 E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
 E2E_AB_PARALLEL_ARMS=1 \
 E2E_AB_MAX_WORKERS=10 \
-E2E_AB_RUN_ID=js4_v4pro_sp_3seed_001 \
+E2E_AB_SEEDS_PER_ARM=1 \
+E2E_AB_RUN_ID=js4_schema1_1seed_20260719_001 \
 nox -s e2e-ab
 ```
 

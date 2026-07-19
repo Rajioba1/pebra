@@ -43,6 +43,15 @@ _FORBIDDEN_BLINDING_TERMS = (
     "permission denied",
     "goal rejected",
 )
+_VALID_GATE = {
+    "schema_version": 1,
+    "permission": "allow",
+    "tier": "pass",
+    "reason": None,
+    "warn": None,
+    "risk_summary": None,
+    "matched_assessment_id": None,
+}
 
 
 @dataclass(frozen=True)
@@ -204,6 +213,156 @@ def test_gate_check_real_cli_emits_schema_one_envelope(tmp_path):
         "risk_summary": None,
         "matched_assessment_id": None,
     }
+
+
+def test_gate_check_parse_limit_failure_is_fatal_contract(monkeypatch, tmp_path):
+    stdout = (
+        '{"schema_version":1,"permission":"allow","tier":"consulted",'
+        '"reason":null,"warn":null,"risk_summary":{"decision":"proceed",'
+        '"expected_loss":' + "9" * 5000 + ',"benefit":0.34,"rau":-0.27},'
+        '"matched_assessment_id":"asm_1"}'
+    )
+    monkeypatch.setattr(
+        cli_harness.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout=stdout, stderr=""
+        ),
+    )
+
+    with pytest.raises(cli_harness.GateContractError, match="gate contract"):
+        cli_harness.gate_check({}, db=tmp_path / "pebra.db", consult_only=True)
+
+
+@pytest.mark.parametrize("stdout", ("", "not-json"), ids=("empty", "invalid"))
+def test_gate_check_conventional_parse_failure_is_fatal_contract(
+    monkeypatch, tmp_path, stdout,
+):
+    monkeypatch.setattr(
+        cli_harness.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout=stdout, stderr=""
+        ),
+    )
+
+    with pytest.raises(cli_harness.GateContractError, match="gate contract"):
+        cli_harness.gate_check({}, db=tmp_path / "pebra.db", consult_only=True)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        [],
+        {},
+        {**_VALID_GATE, "schema_version": 2},
+        {**_VALID_GATE, "permission": "continue"},
+        {**_VALID_GATE, "permission": []},
+        {**_VALID_GATE, "tier": "unknown"},
+        {**_VALID_GATE, "tier": []},
+        {**_VALID_GATE, "permission": "allow", "tier": "must_consult"},
+        {**_VALID_GATE, "permission": "deny", "tier": "positive_control"},
+        {**_VALID_GATE, "permission": "deny", "tier": "must_consult", "reason": None},
+        {**_VALID_GATE, "permission": "ask", "tier": "consulted_review", "reason": " "},
+        {**_VALID_GATE, "reason": 7},
+        {**_VALID_GATE, "warn": []},
+        {**_VALID_GATE, "risk_summary": []},
+        {**_VALID_GATE, "risk_summary": {
+            "decision": "revise_safer", "expected_loss": float("nan"),
+            "benefit": 0.34, "rau": -0.27,
+        }},
+        {**_VALID_GATE, "risk_summary": {
+            "decision": "unknown", "expected_loss": 0.61,
+            "benefit": 0.34, "rau": -0.27,
+        }},
+        {**_VALID_GATE, "risk_summary": {
+            "decision": [], "expected_loss": 0.61,
+            "benefit": 0.34, "rau": -0.27,
+        }},
+        {**_VALID_GATE, "risk_summary": {
+            "decision": "proceed", "expected_loss": 10**1000,
+            "benefit": 0.34, "rau": -0.27,
+        }, "tier": "consulted", "matched_assessment_id": "asm_1"},
+        *(
+            {**_VALID_GATE, "matched_assessment_id": value}
+            for value in ("", "asm_0", "asm_-1", "asm_exact", "garbage")
+        ),
+        {**_VALID_GATE, "tier": "consulted", "risk_summary": {
+            "decision": "reject", "expected_loss": 0.61,
+            "benefit": 0.34, "rau": -0.27,
+        }, "matched_assessment_id": "asm_exact"},
+        {key: value for key, value in _VALID_GATE.items() if key != "matched_assessment_id"},
+    ),
+)
+def test_gate_envelope_rejects_unsupported_or_malformed_payload(payload):
+    with pytest.raises(cli_harness.GateContractError, match="gate contract"):
+        cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"])
+
+
+@pytest.mark.parametrize(
+    ("permission", "tier", "decision"),
+    (
+        ("allow", "consulted", "proceed"),
+        ("deny", "consulted_revise", "revise_safer"),
+        ("deny", "consulted_prerequisite", "inspect_first"),
+        ("deny", "consulted_prerequisite", "test_first"),
+        ("ask", "consulted_review", "ask_human"),
+        ("deny", "consulted_review", "reject"),
+        ("deny", "consulted_review_unavailable", "ask_human"),
+    ),
+)
+def test_gate_envelope_accepts_declared_risk_decision_matrix(permission, tier, decision):
+    payload = {
+        **_VALID_GATE,
+        "permission": permission,
+        "tier": tier,
+        "reason": "Candidate requires a host decision.",
+        "risk_summary": {
+            "decision": decision,
+            "expected_loss": 0.61,
+            "benefit": 0.34,
+            "rau": -0.27,
+        },
+        "matched_assessment_id": "asm_1",
+    }
+
+    assert cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"]) is payload
+
+
+@pytest.mark.parametrize(
+    ("permission", "tier", "decision"),
+    (
+        ("allow", "consulted", "reject"),
+        ("deny", "consulted_revise", "proceed"),
+        ("deny", "consulted_prerequisite", "ask_human"),
+        ("ask", "consulted_review", "reject"),
+        ("deny", "consulted_review", "ask_human"),
+        ("deny", "consulted_review_unavailable", "reject"),
+    ),
+)
+def test_gate_envelope_rejects_undeclared_risk_decision_matrix(permission, tier, decision):
+    payload = {
+        **_VALID_GATE,
+        "permission": permission,
+        "tier": tier,
+        "reason": "Candidate requires a host decision.",
+        "risk_summary": {
+            "decision": decision,
+            "expected_loss": 0.61,
+            "benefit": 0.34,
+            "rau": -0.27,
+        },
+        "matched_assessment_id": "asm_1",
+    }
+
+    with pytest.raises(cli_harness.GateContractError, match="gate contract"):
+        cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"])
+
+
+def test_gate_envelope_allows_unknown_schema_one_top_level_fields():
+    payload = {**_VALID_GATE, "future_host_metadata": {"opaque": True}}
+
+    assert cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"]) is payload
 
 
 def test_gate_hook_capabilities_emit_candidate_binding_protocol():

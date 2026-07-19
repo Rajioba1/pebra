@@ -64,6 +64,67 @@ def test_invoke_subject_agent_gated_fail_closed(monkeypatch, tmp_path):
         run_pair._invoke_subject_agent(_dummy_setup(tmp_path), _SPEC, 0)
 
 
+def test_incompatible_gate_contract_aborts_before_provider_setup(monkeypatch, tmp_path):
+    setup = _dummy_setup(tmp_path)
+    setup.arm = models.ARM_TREATMENT
+    setup.gate_check_backend = lambda _event: (_ for _ in ()).throw(
+        run_pair.cli_harness.GateContractError("unsupported gate contract schema")
+    )
+    monkeypatch.setattr(run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(
+        run_pair,
+        "_load_config",
+        lambda: pytest.fail("provider configuration must not begin"),
+    )
+
+    with pytest.raises(run_pair.cli_harness.GateContractError, match="gate contract"):
+        run_pair._invoke_subject_agent(setup, setup.spec or _SPEC, seed=1)
+
+
+def test_invalid_gate_json_aborts_before_provider_setup(monkeypatch, tmp_path):
+    setup = _dummy_setup(tmp_path)
+    setup.arm = models.ARM_TREATMENT
+    setup.gate_check_backend = run_pair._gate_check_backend(
+        models.ARM_TREATMENT, tmp_path / "pebra.db"
+    )
+    monkeypatch.setattr(
+        run_pair.cli_harness.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="not-json", stderr=""
+        ),
+    )
+    monkeypatch.setattr(run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(
+        run_pair,
+        "_load_config",
+        lambda: pytest.fail("provider configuration must not begin"),
+    )
+
+    with pytest.raises(run_pair.cli_harness.GateContractError, match="gate contract"):
+        run_pair._invoke_subject_agent(setup, setup.spec or _SPEC, seed=1)
+
+
+def test_gate_infrastructure_outage_fails_open_to_provider_setup(monkeypatch, tmp_path):
+    class ProviderSetupReached(Exception):
+        pass
+
+    setup = _dummy_setup(tmp_path)
+    setup.arm = models.ARM_TREATMENT
+    setup.gate_check_backend = lambda _event: (_ for _ in ()).throw(
+        run_pair.cli_harness.CLIError("gate unavailable")
+    )
+    monkeypatch.setattr(run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(
+        run_pair,
+        "_load_config",
+        lambda: (_ for _ in ()).throw(ProviderSetupReached),
+    )
+
+    with pytest.raises(ProviderSetupReached):
+        run_pair._invoke_subject_agent(setup, setup.spec or _SPEC, seed=1)
+
+
 def test_invoke_subject_agent_honors_model_env_override(monkeypatch, tmp_path):
     created: dict[str, str] = {}
 
@@ -193,7 +254,15 @@ def test_treatment_gate_check_backend_uses_consult_only(monkeypatch, tmp_path):
         captured["event"] = event
         captured["db"] = db
         captured["consult_only"] = consult_only
-        return {"permission": "allow", "tier": "consulted"}
+        return {
+            "schema_version": 1,
+            "permission": "allow",
+            "tier": "consulted",
+            "reason": None,
+            "warn": None,
+            "risk_summary": None,
+            "matched_assessment_id": None,
+        }
 
     monkeypatch.setattr(run_pair.cli_harness, "gate_check", _gate_check)
 
@@ -201,12 +270,28 @@ def test_treatment_gate_check_backend_uses_consult_only(monkeypatch, tmp_path):
     backend = run_pair._gate_check_backend("treatment", db)
     result = backend({"tool_name": "Write"})
 
-    assert result == {"permission": "allow", "tier": "consulted"}
+    assert result == {
+        "schema_version": 1,
+        "permission": "allow",
+        "tier": "consulted",
+        "reason": None,
+        "warn": None,
+        "risk_summary": None,
+    }
     assert captured == {
         "event": {"tool_name": "Write"},
         "db": db,
         "consult_only": True,
     }
+
+
+def test_enforced_control_uses_unversioned_experiment_only_tier(tmp_path):
+    decision = run_pair._gate_check_backend(
+        models.ARM_ENFORCED_CONTROL, tmp_path / "pebra.db",
+    )({"tool_name": "Write", "tool_input": {"file_path": "a.py"}})
+
+    assert decision["tier"] == run_pair._EXPERIMENT_ONLY_POSITIVE_CONTROL_TIER
+    assert "schema_version" not in decision
 
 
 def test_exact_allowed_candidate_is_bound_for_post_edit_verify(monkeypatch, tmp_path):
@@ -229,7 +314,11 @@ def test_exact_allowed_candidate_is_bound_for_post_edit_verify(monkeypatch, tmp_
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
-            "permission": "allow", "tier": "consulted", "reason": None,
+            "schema_version": 1,
+            "permission": "allow", "tier": "consulted", "reason": None, "warn": None,
+            "risk_summary": {
+                "decision": "proceed", "expected_loss": 0.08, "benefit": 0.65, "rau": 0.22,
+            },
             "matched_assessment_id": "asm_7",
         },
     )
@@ -322,7 +411,7 @@ def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
                 "advisory": "ok",
                 "detail": {},
             },
-            assessment_id="asm_graph",
+            assessment_id="asm_8",
             raw_payload=raw_payload,
         ),
     )
@@ -330,8 +419,12 @@ def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
-            "permission": "allow", "tier": "consulted", "reason": None,
-            "matched_assessment_id": "asm_graph",
+            "schema_version": 1,
+            "permission": "allow", "tier": "consulted", "reason": None, "warn": None,
+            "risk_summary": {
+                "decision": "proceed", "expected_loss": 0.08, "benefit": 0.65, "rau": 0.22,
+            },
+            "matched_assessment_id": "asm_8",
         },
     )
     advisory = run_pair._advisory_backend(
@@ -347,14 +440,14 @@ def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
     )
 
     advisory({"target_file": "a.ts", "proposed_patch": "diff", "change_summary": "x"})
-    assert telemetry.assessment_calibration_by_id["asm_graph"]["expected_loss"] == 0.08
-    assert telemetry.assessment_calibration_by_id["asm_graph"]["benefit"] == 0.65
+    assert telemetry.assessment_calibration_by_id["asm_8"]["expected_loss"] == 0.08
+    assert telemetry.assessment_calibration_by_id["asm_8"]["benefit"] == 0.65
     decision = gate({"tool_name": "Write", "tool_input": {"file_path": "a.ts"}})
     assert telemetry.applied_graph_refinement is None
     run_pair._write_applied_backend(telemetry)(decision)
 
     assert telemetry.applied_graph_refinement == {
-        "assessment_id": "asm_graph",
+        "assessment_id": "asm_8",
         "status": "available",
         "selected": True,
         "language": "typescript",
@@ -676,8 +769,14 @@ def test_gate_binds_older_exact_assessment_not_latest_assessment(monkeypatch, tm
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
+            "schema_version": 1,
             "permission": "allow",
             "tier": "consulted",
+            "reason": None,
+            "warn": None,
+            "risk_summary": {
+                "decision": "proceed", "expected_loss": 0.08, "benefit": 0.65, "rau": 0.22,
+            },
             "matched_assessment_id": "asm_7",
         },
     )
@@ -758,7 +857,14 @@ def test_denied_candidate_is_not_bound_for_post_edit_verify(monkeypatch, tmp_pat
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
+            "schema_version": 1,
             "permission": "deny", "tier": "consulted_revise", "reason": "revise",
+            "warn": None,
+            "risk_summary": {
+                "decision": "revise_safer", "expected_loss": 0.61,
+                "benefit": 0.34, "rau": -0.27,
+            },
+            "matched_assessment_id": "asm_7",
         },
     )
 
@@ -776,7 +882,10 @@ def test_fail_open_write_is_not_bound_for_post_edit_verify(monkeypatch, tmp_path
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
-            "permission": "allow", "tier": "fail_open", "warn": "graph unavailable",
+            "schema_version": 1,
+            "permission": "allow", "tier": "fail_open", "reason": None,
+            "warn": "graph unavailable", "risk_summary": None,
+            "matched_assessment_id": None,
         },
     )
 
@@ -1244,6 +1353,48 @@ def test_human_review_arm_requires_model_request_before_host_sanction_and_reasse
         lambda spec, **kwargs: approvals.append({"spec": spec, **kwargs}) or {"sanction_id": "sx_1"},
     )
     telemetry = run_pair.ArmTelemetry()
+
+    def _gate_check(_event, **_kwargs):
+        if not telemetry.post_approval_reassessment:
+            return {
+                "schema_version": 1,
+                "permission": "deny",
+                "tier": "consulted_review_unavailable",
+                "reason": "The original exact candidate remains held pending reassessment.",
+                "warn": None,
+                "risk_summary": {
+                    "decision": "ask_human", "expected_loss": 0.36,
+                    "benefit": 0.50, "rau": 0.08,
+                },
+                "matched_assessment_id": "asm_1",
+            }
+        if reassessment_decision == "proceed":
+            return {
+                "schema_version": 1,
+                "permission": "allow",
+                "tier": "consulted",
+                "reason": None,
+                "warn": None,
+                "risk_summary": {
+                    "decision": "proceed", "expected_loss": 0.08,
+                    "benefit": 0.50, "rau": 0.08,
+                },
+                "matched_assessment_id": "asm_2",
+            }
+        return {
+            "schema_version": 1,
+            "permission": "deny",
+            "tier": "consulted_review_unavailable",
+            "reason": "The reassessed exact candidate remains held.",
+            "warn": None,
+            "risk_summary": {
+                "decision": "ask_human", "expected_loss": 0.36,
+                "benefit": 0.50, "rau": 0.08,
+            },
+            "matched_assessment_id": "asm_2",
+        }
+
+    monkeypatch.setattr(run_pair.cli_harness, "gate_check", _gate_check)
     advisory_backend = run_pair._advisory_backend(
         models.ARM_PEBRA_HUMAN_REVIEW,
         tmp_path,
@@ -1281,6 +1432,24 @@ def test_human_review_arm_requires_model_request_before_host_sanction_and_reasse
     assert telemetry.human_approval_requested is True
     assert telemetry.human_approval_granted is True
 
+    gate_backend = run_pair._gate_check_backend(
+        models.ARM_PEBRA_HUMAN_REVIEW,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+    write_setup = SimpleNamespace(
+        repo_path=tmp_path,
+        gate_check_backend=gate_backend,
+        write_applied_backend=run_pair._write_applied_backend(telemetry),
+    )
+    held = agent_loop._gated_write(
+        {"path": "src/api.ts", "content": "before reassessment"}, write_setup
+    )
+
+    assert held["blocked"] is True
+    assert telemetry.applied_assessment_id is None
+    assert not (tmp_path / "src/api.ts").exists()
+
     second = advisory_backend(payload)
 
     assert second["recommended_decision"] == reassessment_decision
@@ -1288,6 +1457,16 @@ def test_human_review_arm_requires_model_request_before_host_sanction_and_reasse
     assert telemetry.post_approval_reassessment is True
     assert telemetry.human_approval_assessment_id == "asm_1"
     assert telemetry.human_approval_source == "pre_registered_host_policy"
+
+    after_reassessment = agent_loop._gated_write(
+        {"path": "src/api.ts", "content": "after reassessment"}, write_setup
+    )
+    if reassessment_decision == "proceed":
+        assert after_reassessment == {"ok": True, "blocked": False, "reason": None}
+        assert telemetry.applied_assessment_id == "asm_2"
+    else:
+        assert after_reassessment["blocked"] is True
+        assert telemetry.applied_assessment_id is None
 
 
 def test_host_approval_policy_fails_closed_without_canonical_bound_request() -> None:
@@ -1389,7 +1568,14 @@ def test_human_review_gate_records_write_attempt_before_approval(monkeypatch, tm
         run_pair.cli_harness,
         "gate_check",
         lambda event, **_kwargs: {
+            "schema_version": 1,
             "permission": "deny", "tier": "consulted_review_unavailable", "reason": "wait",
+            "warn": None,
+            "risk_summary": {
+                "decision": "ask_human", "expected_loss": 0.61,
+                "benefit": 0.34, "rau": -0.27,
+            },
+            "matched_assessment_id": "asm_1",
         },
     )
     gate = run_pair._gate_check_backend(
@@ -1422,7 +1608,12 @@ def test_human_assisted_write_attribution_is_sticky_across_later_candidate(
         run_pair.cli_harness,
         "gate_check",
         lambda event, **_kwargs: {
+            "schema_version": 1,
             "permission": "allow", "tier": "consulted",
+            "reason": None, "warn": None,
+            "risk_summary": {
+                "decision": "proceed", "expected_loss": 0.08, "benefit": 0.65, "rau": 0.22,
+            },
             "matched_assessment_id": "asm_2",
         },
     )

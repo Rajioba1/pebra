@@ -13,9 +13,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from e2e.experiments.agent_ab.metrics import adherence, oracle
 from e2e.experiments.agent_ab.models import ToolCallRecord
 from e2e.experiments.agent_ab.runners import agent_loop
+from e2e.utils import cli_harness
 
 
 def _rec(seq: int, name: str, result: dict) -> ToolCallRecord:
@@ -68,6 +71,59 @@ def test_gated_write_fails_open_on_backend_error(tmp_path):
     r = agent_loop._gated_write({"path": "a.cs", "content": "hi"}, setup)
     assert r == {"ok": True, "blocked": False, "reason": None}  # broken gate must never block the write
     assert (tmp_path / "a.cs").read_text(encoding="utf-8") == "hi"
+
+
+def test_incompatible_gate_contract_aborts_without_writing(tmp_path):
+    def incompatible(_event):
+        raise cli_harness.GateContractError("unsupported gate contract schema")
+
+    setup = SimpleNamespace(repo_path=tmp_path, gate_check_backend=incompatible)
+    with pytest.raises(cli_harness.GateContractError, match="gate contract"):
+        agent_loop._gated_write({"path": "a.cs", "content": "hi"}, setup)
+
+    assert not (tmp_path / "a.cs").exists()
+
+
+def test_invalid_gate_json_aborts_without_writing(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        cli_harness.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        ),
+    )
+    setup = SimpleNamespace(
+        repo_path=tmp_path,
+        gate_check_backend=lambda event: cli_harness.gate_check(
+            event, db=tmp_path / "pebra.db", consult_only=True
+        ),
+    )
+
+    with pytest.raises(cli_harness.GateContractError, match="gate contract"):
+        agent_loop._gated_write({"path": "a.cs", "content": "hi"}, setup)
+
+    assert not (tmp_path / "a.cs").exists()
+
+
+@pytest.mark.parametrize("permission", ("deny", "ask"))
+def test_held_candidate_never_writes_or_attributes_assessment(tmp_path, permission):
+    attributed = []
+    setup = SimpleNamespace(
+        repo_path=tmp_path,
+        gate_check_backend=lambda _event: {
+            "permission": permission,
+            "tier": "consulted_review" if permission == "ask" else "consulted_revise",
+            "reason": "This exact candidate is held—not your requested goal.",
+            "matched_assessment_id": "asm_exact",
+        },
+        write_applied_backend=lambda decision: attributed.append(decision),
+    )
+
+    result = agent_loop._gated_write({"path": "a.cs", "content": "hi"}, setup)
+
+    assert result["blocked"] is True
+    assert not (tmp_path / "a.cs").exists()
+    assert attributed == []
 
 
 # ---- E4: adherence heeded-proxy ignores blocked writes -------------------------------------

@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from e2e.experiments.agent_ab.models import TaskSpec
+from e2e.experiments.agent_ab.metrics import oracle
+from e2e.experiments.agent_ab.models import TaskSpec, ToolCallRecord
 from e2e.experiments.agent_ab.runners import agent_loop, subject_protocol
 from e2e.experiments.agent_ab.runners.model_client import ModelTurn, ScriptedClient
 from e2e.experiments.agent_ab.tools import advisory_contract
@@ -310,6 +311,7 @@ def test_allowed_assessment_is_attributed_only_after_write_succeeds(tmp_path):
     setup = SimpleNamespace(
         repo_path=tmp_path,
         gate_check_backend=lambda _event: {
+            "schema_version": 1,
             "permission": "allow",
             "tier": "consulted",
             "_matched_assessment_id": "asm_7",
@@ -323,6 +325,7 @@ def test_allowed_assessment_is_attributed_only_after_write_succeeds(tmp_path):
 
     assert result == {"ok": True, "blocked": False, "reason": None}
     assert applied == [{
+        "schema_version": 1,
         "permission": "allow",
         "tier": "consulted",
         "_matched_assessment_id": "asm_7",
@@ -334,6 +337,7 @@ def test_failed_write_never_credits_allowed_assessment(tmp_path):
     setup = SimpleNamespace(
         repo_path=tmp_path,
         gate_check_backend=lambda _event: {
+            "schema_version": 1,
             "permission": "allow",
             "tier": "consulted",
             "_matched_assessment_id": "asm_7",
@@ -347,6 +351,62 @@ def test_failed_write_never_credits_allowed_assessment(tmp_path):
 
     assert result == {"ok": False, "blocked": False, "reason": "write failed"}
     assert applied == []
+
+
+def test_restrictive_exact_candidate_returns_only_blinded_reason_without_mutation(tmp_path):
+    attributed: list[dict] = []
+    reason = (
+        "This exact candidate is held—not your requested goal. "
+        "Assessment: revise_safer; expected loss 0.61; benefit 0.34; RAU -0.27. "
+        "Next: revise this candidate and reassess."
+    )
+    setup = SimpleNamespace(
+        repo_path=tmp_path,
+        gate_check_backend=lambda _event: {
+            "schema_version": 1,
+            "permission": "deny",
+            "tier": "consulted_revise",
+            "reason": reason,
+            "warn": None,
+            "risk_summary": {
+                "decision": "revise_safer",
+                "expected_loss": 0.61,
+                "benefit": 0.34,
+                "rau": -0.27,
+            },
+            "matched_assessment_id": "asm_1",
+        },
+        write_applied_backend=attributed.append,
+    )
+
+    result = agent_loop._gated_write({"path": "a.ts", "content": "unsafe"}, setup)
+
+    assert result == {"ok": False, "blocked": True, "reason": reason}
+    assert not (tmp_path / "a.ts").exists()
+    assert attributed == []
+    record = ToolCallRecord(sequence=0, name="write_file", arguments={}, result=result)
+    assert oracle._edit_cycles(SimpleNamespace(tool_calls=[record])) == 0
+
+
+def test_unbound_candidate_reason_does_not_copy_numeric_risk_scores(tmp_path):
+    reason = "The proposed edit is not bound to an exact assessed candidate. Reassess it first."
+    setup = SimpleNamespace(
+        repo_path=tmp_path,
+        gate_check_backend=lambda _event: {
+            "schema_version": 1,
+            "permission": "deny",
+            "tier": "candidate_unbound",
+            "reason": reason,
+            "warn": None,
+            "risk_summary": None,
+            "matched_assessment_id": None,
+        },
+    )
+
+    result = agent_loop._gated_write({"path": "a.ts", "content": "unsafe"}, setup)
+
+    assert result == {"ok": False, "blocked": True, "reason": reason}
+    assert all(fragment not in result["reason"] for fragment in ("0.61", "0.34", "-0.27"))
 
 
 def test_protocol_file_read_defaults_false(tmp_path, monkeypatch):

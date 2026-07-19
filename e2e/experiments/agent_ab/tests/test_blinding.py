@@ -83,8 +83,18 @@ def test_gate_denial_reasons_do_not_leak_arm_identity(arm, tmp_path, monkeypatch
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
+            "schema_version": 1,
             "permission": "deny",
+            "tier": "consulted_revise",
             "reason": "A pre-edit check blocked this write. Revise or stop.",
+            "warn": None,
+            "risk_summary": {
+                "decision": "revise_safer",
+                "expected_loss": 0.61,
+                "benefit": 0.34,
+                "rau": -0.27,
+            },
+            "matched_assessment_id": "asm_1",
         },
     )
     decision = run_pair._gate_check_backend(arm, tmp_path / "pebra.db")({})
