@@ -40,7 +40,7 @@ PROTOCOL_VERSION = 1
 # The protocol body — shared by the SKILL.md (with frontmatter) and the AGENTS.md managed block.
 # Must-consult wording only; no enforcement claim in Phase 1.
 _PROTOCOL_BODY = """\
-Before any significant edit, rename, or delete, you must consult PEBRA first. This is a pre-edit
+Assess before every significant edit, rename, or delete: you must consult PEBRA first. This is a pre-edit
 obligation, not optional. Do not skip these steps:
 
 1. **Assess (pre-edit).** Draft the intended change, then run
@@ -65,15 +65,16 @@ obligation, not optional. Do not skip these steps:
    exact candidate to the user. Launch `pebra accept-risk --apply`; a trusted human or host operator must review the
    displayed risk/benefit evidence and type the approval in its interactive terminal. Do not answer the
    approval prompt yourself. Do not create or claim the sanction yourself. PEBRA creates the bound
-   sanction, then will reassess the exact candidate
-   and apply it only after a
+   sanction, then will reassess the exact candidate. A PEBRA candidate hold or human review overrides
+   an earlier advisory proceed for that exact candidate; it does not cancel the user's requested goal.
+   PEBRA will apply it only after a
    `proceed` with `risk_mode=controlled_high_risk`. If the decision is `reject`, stop and ask for a different route.
    Never treat either decision as permission to edit.
 4. **Edit.** When `next_action.type` is `apply_exact_candidate_then_verify`, run its returned command
-   (`pebra apply-candidate --assessment-id <returned-id>`). Do not manually retype or reconstruct the
-   patch. Keep all later edits within the safe scope PEBRA reports.
-5. **Verify.** After editing, run `pebra verify --assessment-id <id> --scope staged` and resolve any
-   scope drift or build failures it reports.
+   (`pebra apply-candidate --assessment-id <returned-id>`). Apply only the exact assessed candidate;
+   do not manually retype or reconstruct the patch. Keep all later edits within the safe scope PEBRA reports.
+5. **Verify.** After application, verify and record the outcome. Run
+   `pebra verify --assessment-id <id> --scope staged` and resolve any scope drift or build failures it reports.
 6. **Record.** Run `pebra record-outcome --assessment-id <id> --status completed`.
 
 Consulting PEBRA before editing high-impact code is how you avoid breaking dependents you cannot see

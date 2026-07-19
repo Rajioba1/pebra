@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -60,6 +61,26 @@ def test_claude_writes_always_loaded_non_negotiables(tmp_path):
     body = generated.decode("utf-8").lower()
     for obligation in _OBLIGATIONS:
         assert obligation in body
+
+
+def test_claude_non_negotiables_match_detailed_protocol_guarantees():
+    required_relations = (
+        r"\bassess before every significant edit,\s+rename,\s+or delete\b",
+        r"\bapply only (?:the )?exact assessed candidate\b",
+        (
+            r"\bcandidate hold or human review\s+overrides\s+an earlier advisory proceed"
+            r"[^.]*\bdoes not cancel\b[^.]*\buser's requested goal\b"
+        ),
+        (
+            r"\b(?:never|do not)\b(?=[^.]*\b(?:create|claim|answer)\b)"
+            r"(?=[^.]*\bsanction\b)(?=[^.]*\b(?:yourself|own)\b)[^.]*"
+        ),
+        r"\bafter application,\s+verify and record (?:the )?outcome\b",
+    )
+
+    for body in (agent_init._CLAUDE_RULE_MD.lower(), agent_init._PROTOCOL_BODY.lower()):
+        for relation in required_relations:
+            assert re.search(relation, body), relation
 
 
 def test_claude_rule_is_fully_managed_and_idempotent(tmp_path):
@@ -1100,6 +1121,28 @@ def test_is_redirect_honors_junction_api_when_available(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "is_junction", lambda self: self == candidate)
 
     assert path_safety.is_redirect(candidate) is True
+
+
+def test_is_redirect_fails_closed_when_metadata_inspection_errors(tmp_path, monkeypatch):
+    from pebra.adapters import path_safety
+
+    candidate = tmp_path / "unreadable"
+
+    def raise_os_error(self):
+        raise OSError("metadata unavailable")
+
+    monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+    if hasattr(Path, "is_junction"):
+        monkeypatch.setattr(Path, "is_junction", lambda self: False)
+    monkeypatch.setattr(Path, "lstat", raise_os_error)
+
+    assert path_safety.is_redirect(candidate) is True
+
+
+def test_is_redirect_allows_missing_path(tmp_path):
+    from pebra.adapters import path_safety
+
+    assert path_safety.is_redirect(tmp_path / "missing") is False
 
 
 def test_redirected_component_treats_non_descendant_as_unsafe(tmp_path):
