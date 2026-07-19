@@ -1415,6 +1415,21 @@ def _preflight_gate_contract(setup: ArmSetup) -> None:
         return
 
 
+def _preflight_run_gate_contract(run_id: str) -> None:
+    """Authorize and validate schema 1 before any direct runner prepares a clone."""
+    from e2e.experiments.agent_ab.runners import run_gate  # noqa: PLC0415
+
+    run_gate.check_gate()
+    try:
+        cli_harness.gate_check(
+            {}, db=_AB_OUT / run_id / "gate-contract-probe.db", consult_only=True
+        )
+    except cli_harness.GateContractError:
+        raise
+    except Exception:  # noqa: BLE001 - gate availability remains deliberately fail-open
+        return
+
+
 def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> SubjectResult:
     """Drive a real, blinded coding subagent through the instrumented tool boundary, then run the
     HIDDEN evaluator (inject tests post-agent, build + test) to fill the build/test outcome fields.
@@ -1518,6 +1533,7 @@ def _invoke_oracle_positive(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subje
 
 def run_pair(spec: TaskSpec, seed: int, run_id: str) -> tuple[SubjectResult, SubjectResult]:
     """Legacy 2-arm (control/treatment) trial — unchanged; kept for the pilot/smoke/powered modes."""
+    _preflight_run_gate_contract(run_id)
     external = rs.prepare_external_repo()
     control = prepare_arm(external, spec, models.ARM_CONTROL, seed, run_id)
     treatment = prepare_arm(external, spec, models.ARM_TREATMENT, seed, run_id)
@@ -1561,6 +1577,7 @@ def run_trial(spec: TaskSpec, seed: int, run_id: str, *, arms: tuple[str, ...] |
     """Prepare and run the N assay arms for one (task, seed). Arms default by harm_label
     (risky: sham/oracle_positive/blast_radius/pebra; safe: sham/blast_radius/pebra). Each arm is an
     isolated clone under its own opaque token; results carry ``result.arm`` for scoring."""
+    _preflight_run_gate_contract(run_id)
     external = rs.prepare_external_repo()
     arm_list = arms if arms is not None else arms_for(spec.harm_label)
     setups = [prepare_arm(external, spec, arm, seed, run_id) for arm in arm_list]

@@ -8,8 +8,11 @@ observability artifacts (coverage.json, run_status.json) and the crash-survivabl
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
+
+_REPLACE_ATTEMPTS = 5
 
 
 def atomic_write_json(path: Path, payload: Any) -> None:
@@ -18,4 +21,13 @@ def atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            # Windows readers and scanners may briefly hold the destination
+            # without delete sharing, which makes an otherwise atomic replace fail.
+            if attempt + 1 == _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(0.02 * (attempt + 1))

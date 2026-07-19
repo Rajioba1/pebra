@@ -10,10 +10,12 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.metrics import oracle
 from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec, ToolCallRecord
-from e2e.experiments.agent_ab.runners import evaluator, run_pair
+from e2e.experiments.agent_ab.runners import evaluator, run_gate, run_pair
 from e2e.experiments.agent_ab.tools import advisory_blast_radius, advisory_check_real, advisory_check_sham
 from e2e.utils import cli_harness
 
@@ -129,6 +131,7 @@ def test_gate_backend_only_pebra_enforces(monkeypatch):
 
 
 def _stub_runner(monkeypatch):
+    monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
     monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
     monkeypatch.setattr(run_pair, "prepare_arm",
                         lambda external, spec, arm, seed, run_id: SimpleNamespace(arm=arm))
@@ -137,6 +140,75 @@ def _stub_runner(monkeypatch):
     monkeypatch.setattr(run_pair, "_invoke_oracle_positive",
                         lambda setup, spec, seed: SimpleNamespace(arm=setup.arm, error=None),
                         raising=False)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ("legacy-pair", "sequential", "parallel", "sham-only"),
+)
+def test_direct_run_entry_rejects_incompatible_gate_before_clone(
+    monkeypatch, entry,
+):
+    calls = []
+    monkeypatch.setattr(run_gate, "check_gate", lambda: calls.append("authorized"))
+
+    def _incompatible(_event, *, db, consult_only):
+        calls.append((Path(db).name, consult_only))
+        raise cli_harness.GateContractError("unsupported gate contract schema")
+
+    monkeypatch.setattr(cli_harness, "gate_check", _incompatible)
+    monkeypatch.setattr(
+        run_pair.rs,
+        "prepare_external_repo",
+        lambda: pytest.fail("clone preparation must not begin"),
+    )
+    if entry == "parallel":
+        monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1")
+
+    spec = SimpleNamespace(task_id="T1", harm_label="risky")
+    with pytest.raises(cli_harness.GateContractError, match="gate contract"):
+        if entry == "legacy-pair":
+            run_pair.run_pair(spec, 0, "contract-run")
+        else:
+            arms = (models.ARM_SHAM,) if entry == "sham-only" else None
+            run_pair.run_trial(spec, 0, "contract-run", arms=arms)
+
+    assert calls == ["authorized", ("gate-contract-probe.db", True)]
+
+
+def test_direct_run_entry_keeps_gate_infrastructure_failure_fail_open(monkeypatch):
+    calls = []
+    monkeypatch.setattr(run_gate, "check_gate", lambda: calls.append("authorized"))
+    monkeypatch.setattr(
+        cli_harness,
+        "gate_check",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            cli_harness.CLIError("gate executable unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        run_pair.rs,
+        "prepare_external_repo",
+        lambda: calls.append("clone") or object(),
+    )
+    monkeypatch.setattr(
+        run_pair,
+        "prepare_arm",
+        lambda _external, _spec, arm, _seed, _run_id: SimpleNamespace(arm=arm),
+    )
+    monkeypatch.setattr(
+        run_pair,
+        "_invoke_subject_agent",
+        lambda setup, _spec, _seed: SimpleNamespace(arm=setup.arm, error=None),
+    )
+
+    spec = SimpleNamespace(task_id="T1", harm_label="risky")
+    (result,) = run_pair.run_trial(
+        spec, 0, "infra-run", arms=(models.ARM_SHAM,)
+    )
+
+    assert result.arm == models.ARM_SHAM
+    assert calls == ["authorized", "clone"]
 
 
 def test_run_trial_prepares_all_risky_arms(monkeypatch):
@@ -187,6 +259,7 @@ def test_oracle_positive_bypasses_subject_and_scores_clean_endpoint(monkeypatch,
         invoked_subject.append(setup.arm)
         return SubjectResult(task_id=spec.task_id, arm=setup.arm, seed=seed)
 
+    monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
     monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
     monkeypatch.setattr(run_pair, "prepare_arm", _prepare)
     monkeypatch.setattr(run_pair, "_invoke_subject_agent", _invoke_subject)
@@ -227,6 +300,7 @@ def test_oracle_positive_cannot_propagate_subject_write_mutation(monkeypatch, tm
         setup.oracle_modified_files = ("src/A.cs",)
         return setup
 
+    monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
     monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
     monkeypatch.setattr(run_pair, "prepare_arm", _prepare)
     monkeypatch.setattr(run_pair, "_invoke_subject_agent", lambda setup, _spec, seed: SubjectResult(
@@ -251,6 +325,7 @@ def test_oracle_positive_cannot_propagate_subject_write_mutation(monkeypatch, tm
 def test_run_trial_parallel_is_opt_in(monkeypatch):
     calls = []
     monkeypatch.delenv("E2E_AB_PARALLEL_ARMS", raising=False)
+    monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
     monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
     monkeypatch.setattr(run_pair, "prepare_arm",
                         lambda external, spec, arm, seed, run_id: SimpleNamespace(arm=arm))
@@ -269,6 +344,7 @@ def test_run_trial_parallel_is_opt_in(monkeypatch):
 def test_run_trial_parallel_preserves_arm_order(monkeypatch):
     monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1")
     monkeypatch.setenv("E2E_AB_MAX_WORKERS", "2")
+    monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
     monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
     monkeypatch.setattr(run_pair, "prepare_arm",
                         lambda external, spec, arm, seed, run_id: SimpleNamespace(arm=arm))
