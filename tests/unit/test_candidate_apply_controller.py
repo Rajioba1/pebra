@@ -5,6 +5,7 @@ import contextlib
 import pytest
 
 from pebra.app import candidate_apply_controller as controller
+from pebra.core.gate_contract import GatePermission, GateTier
 
 
 _PATCH = "--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-old\n+new\n"
@@ -58,7 +59,12 @@ class FakeReplay:
 
 
 class GateResult:
-    def __init__(self, permission="allow", tier="consulted", matched="asm_7"):
+    def __init__(
+        self,
+        permission=GatePermission.CONTINUE,
+        tier=GateTier.CONSULTED,
+        matched="asm_7",
+    ):
         self.permission = permission
         self.tier = tier
         self.matched_assessment_id = matched
@@ -113,9 +119,9 @@ def test_apply_requires_valid_ledger_and_exact_consulted_assessment() -> None:
         _apply(store=FakeStore(valid=False))
 
     for result in (
-        GateResult(tier="fail_open"),
-        GateResult(tier="pass"),
-        GateResult(permission="deny"),
+        GateResult(tier=GateTier.FAIL_OPEN),
+        GateResult(tier=GateTier.PASS),
+        GateResult(permission=GatePermission.RETURN_CANDIDATE),
         GateResult(matched="asm_8"),
     ):
         with pytest.raises(controller.CandidateApplyError, match="authorize"):

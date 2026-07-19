@@ -1,10 +1,9 @@
-"""`pebra gate-hook` — Claude Code PreToolUse enforcement shim over `gate-check`.
+"""`pebra gate-hook` — installed PreToolUse enforcement shim over `gate-check`.
 
-The shim maps a universal GateDecision to Claude's PreToolUse output: deny/ask -> a
-``hookSpecificOutput.permissionDecision`` JSON (Claude blocks/asks); allow/pass/fail_open -> nothing
-(defer to the normal permission flow). It must ALWAYS exit 0 and NEVER raise — a broken gate must not
-block a session. These tests monkeypatch the decision so they exercise the shim's mapping, not the
-(separately tested) gate logic.
+The shim maps a universal GateDecision to installed-host output: deny/ask -> blocking deny;
+allow/pass/fail_open -> nothing (defer to the normal permission flow). It must ALWAYS exit 0 and NEVER
+raise — a broken gate must not block a session. These tests monkeypatch the decision so they exercise
+the shim's mapping, not the separately tested gate logic.
 """
 
 from __future__ import annotations
@@ -12,10 +11,13 @@ from __future__ import annotations
 import io
 import json
 
+import pytest
+
 from pebra.adapters import gate_check_adapter as gca
 from pebra.cli import gate_hook as gh_cmd
 from pebra.cli.main import build_parser
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
+from pebra.core.gate_contract import GatePermission, GateTier
 
 
 def _run(stdin_text: str, monkeypatch, capsys):
@@ -48,11 +50,51 @@ def test_deny_emits_permission_decision(monkeypatch, capsys):
     assert payload["permissionDecisionReason"] == "run assess first"
 
 
-def test_ask_emits_permission_decision(monkeypatch, capsys):
-    monkeypatch.setattr(gca, "decide",
-                        lambda event, db_path=None: gca.GateDecision("ask", "ask", reason="needs approval"))
-    rc, out = _run(json.dumps({"tool_name": "Edit"}), monkeypatch, capsys)
-    assert rc == 0 and json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "ask"
+@pytest.mark.parametrize("tool_name", ("Write", "apply_patch"))
+def test_installed_hooks_project_ask_to_blocking_deny(tool_name, monkeypatch, capsys):
+    monkeypatch.setattr(
+        gca,
+        "decide",
+        lambda event, db_path=None: gca.GateDecision(
+            GatePermission.REQUEST_HUMAN,
+            GateTier.CONSULTED_REVIEW,
+            reason="This exact candidate is held; run pebra accept-risk --apply.",
+        ),
+    )
+    rc, out = _run(json.dumps({"tool_name": tool_name}), monkeypatch, capsys)
+    payload = json.loads(out)["hookSpecificOutput"]
+    assert rc == 0
+    assert payload["permissionDecision"] == "deny"
+    assert payload["permissionDecisionReason"] == (
+        "This exact candidate is held; run pebra accept-risk --apply."
+    )
+
+
+@pytest.mark.parametrize(
+    "permission,tier,expected_output",
+    [
+        (GatePermission.CONTINUE, GateTier.PASS, ""),
+        (GatePermission.RETURN_CANDIDATE, GateTier.MUST_CONSULT, "deny"),
+    ],
+)
+def test_installed_projection_preserves_allow_and_deny(
+    permission, tier, expected_output, monkeypatch, capsys,
+):
+    monkeypatch.setattr(
+        gca,
+        "decide",
+        lambda event, db_path=None: gca.GateDecision(
+            permission,
+            tier,
+            reason="Assess first." if permission is GatePermission.RETURN_CANDIDATE else None,
+        ),
+    )
+    rc, out = _run(json.dumps({"tool_name": "Write"}), monkeypatch, capsys)
+    assert rc == 0
+    if expected_output:
+        assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == expected_output
+    else:
+        assert out.strip() == ""
 
 
 def test_allow_emits_nothing(monkeypatch, capsys):

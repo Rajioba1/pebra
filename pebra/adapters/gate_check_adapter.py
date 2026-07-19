@@ -7,10 +7,9 @@ experiment can never drift. It answers one question for a proposed edit: allow /
 Phase 2 = MUST-CONSULT: a graph-IMPACTFUL target with no fresh assessment for the current
 (repo_id, HEAD, path) is DENIED once (the agent must run ``pebra assess``, then re-issue).
 
-Phase 6 = ASK-ONLY verdict tier: once a matching assessment exists, ``reject`` / ``ask_human`` become
-host-overridable ASK in interactive hosts. In humanless ``consult_only`` hosts, there is no approver to
-ask, so the conservative fallback is DENY. ``revise_safer`` is different: it blocks the current write
-and asks the agent to resubmit a narrower candidate, so it remains active in both modes.
+Exact restrictive assessments hold only the attempted candidate, not the user's goal. ``reject`` asks
+for another candidate or route. ``ask_human`` uses the bound risk-acceptance workflow only when replay
+is available; consult-only and unavailable-replay paths return the candidate for reassessment.
 
 Hard invariants:
 - **Read-only**: computes repo_id via ``paths.find_repo_root`` + sha1 directly; it must NEVER call
@@ -43,13 +42,22 @@ from pebra.adapters import candidate_binding, paths
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
 from pebra.adapters.patch_header_adapter import touched_files
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
+from pebra.core.gate_contract import (
+    ALLOWED_PERMISSION_TIERS,
+    ALLOWED_RISK_DECISIONS,
+    GATE_SCHEMA_VERSION,
+    _ASSESSMENT_ID_RE,
+    GatePermission,
+    GateRiskSummary,
+    GateTier,
+)
 
 _IMPACT_THRESHOLD = 0.90  # matches modify_risk_model._HIGH_FANIN_THRESHOLD
 _ANCHOR_THRESHOLD = 0.75  # matches destructive_op_model._GOD_NODE_THRESHOLD (import-graph god_node)
 _QUERY_LIMIT = 200
 _IMPORT_GRAPH_REL = Path(".pebra") / "import_graph.json"
 
-# Engine verdicts that, once consulted, escalate to a host-approval ASK (Phase 6 verdict tier).
+# Persisted decision groups used to preserve assessment semantics at the gate.
 _REVIEW_DECISIONS = frozenset({"ask_human", "reject"})
 _REVISE_DECISIONS = frozenset({"revise_safer"})
 _PREREQUISITE_DECISIONS = frozenset({"inspect_first", "test_first"})
@@ -59,15 +67,45 @@ _APPLY_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\
 
 @dataclass(frozen=True)
 class GateDecision:
-    permission: str            # "allow" | "deny" | "ask"
-    tier: str                  # "pass" | "must_consult" | "consulted" | "fail_open"
-    reason: str | None = None  # actionable text for a deny/ask
-    warn: str | None = None    # diagnostic for a fail-open path
-    matched_assessment_id: str | None = None  # host attribution; omitted from model-facing output
+    permission: GatePermission | str
+    tier: GateTier | str
+    reason: str | None = None
+    warn: str | None = None
+    risk_summary: GateRiskSummary | None = None
+    matched_assessment_id: str | None = None
+
+    def __post_init__(self) -> None:
+        permission = GatePermission(self.permission)
+        tier = GateTier(self.tier)
+        if tier not in ALLOWED_PERMISSION_TIERS[permission]:
+            raise ValueError(f"undeclared gate permission/tier pair: {permission}/{tier}")
+        if permission is not GatePermission.CONTINUE and (
+            not isinstance(self.reason, str) or not self.reason.strip()
+        ):
+            raise ValueError("restrictive gate decisions require an actionable reason")
+        if self.risk_summary is not None and self.risk_summary.decision not in (
+            ALLOWED_RISK_DECISIONS.get((permission, tier), frozenset())
+        ):
+            raise ValueError("gate risk summary decision does not match its permission/tier")
+        if self.risk_summary is not None and (
+            not isinstance(self.matched_assessment_id, str)
+            or _ASSESSMENT_ID_RE.fullmatch(self.matched_assessment_id) is None
+        ):
+            raise ValueError("gate risk summary requires an exact matched assessment id")
+        object.__setattr__(self, "permission", permission)
+        object.__setattr__(self, "tier", tier)
 
     def as_dict(self, *, include_host_metadata: bool = False) -> dict[str, Any]:
-        payload = {"permission": self.permission, "tier": self.tier,
-                   "reason": self.reason, "warn": self.warn}
+        payload = {
+            "schema_version": GATE_SCHEMA_VERSION,
+            "permission": self.permission.value,
+            "tier": self.tier.value,
+            "reason": self.reason,
+            "warn": self.warn,
+            "risk_summary": (
+                self.risk_summary.as_dict() if self.risk_summary is not None else None
+            ),
+        }
         if include_host_metadata:
             payload["matched_assessment_id"] = self.matched_assessment_id
         return payload
@@ -139,15 +177,19 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
             and command.strip()
         ):
             return GateDecision(
-                "deny", "candidate_unverifiable",
+                GatePermission.RETURN_CANDIDATE, GateTier.CANDIDATE_UNVERIFIABLE,
                 reason="The attempted patch could not be parsed into a complete, safe file scope. "
                 "Assess and apply a well-formed atomic patch.",
             )
-        return GateDecision("allow", "pass")
+        return GateDecision(GatePermission.CONTINUE, GateTier.PASS)
     try:
         repo_root = str(paths.find_repo_root(event.get("cwd") or "."))
     except Exception as exc:  # noqa: BLE001 - resolution failure must fail open, never crash a host edit
-        return GateDecision("allow", "fail_open", warn=f"gate: repo root unresolved: {exc}")
+        return GateDecision(
+            GatePermission.CONTINUE,
+            GateTier.FAIL_OPEN,
+            warn=f"gate: repo root unresolved: {exc}",
+        )
 
     impact_result = _any_impactful(targets, repo_root)
     # Keep compatibility with simple injected bools in host tests while the real adapter always
@@ -167,32 +209,48 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
             if impactful is None:
                 detail = f": {impact_reason}" if impact_reason else ""
                 return GateDecision(
-                    "allow", "fail_open",
+                    GatePermission.CONTINUE, GateTier.FAIL_OPEN,
                     warn=f"gate: graph unavailable{detail}; skipping consult check",
                 )
-            return GateDecision("allow", "pass")
+            return GateDecision(GatePermission.CONTINUE, GateTier.PASS)
         pending = _query_pending_restriction(db, _repo_id(repo_root), head)
         if pending is None:
-            return GateDecision("allow", "fail_open", warn="gate: assessment store unavailable")
+            return GateDecision(
+                GatePermission.CONTINUE,
+                GateTier.FAIL_OPEN,
+                warn="gate: assessment store unavailable",
+            )
         if not pending:
             if impactful is None:
                 detail = f": {impact_reason}" if impact_reason else ""
                 return GateDecision(
-                    "allow", "fail_open",
+                    GatePermission.CONTINUE, GateTier.FAIL_OPEN,
                     warn=f"gate: graph unavailable{detail}; skipping consult check",
                 )
-            return GateDecision("allow", "pass")
+            return GateDecision(GatePermission.CONTINUE, GateTier.PASS)
         rows = _query_assessments(db, _repo_id(repo_root))
         if rows is None:
-            return GateDecision("allow", "fail_open", warn="gate: assessment store unavailable")
+            return GateDecision(
+                GatePermission.CONTINUE,
+                GateTier.FAIL_OPEN,
+                warn="gate: assessment store unavailable",
+            )
 
     head = head or _head_sha(repo_root)
     if head is None:
-        return GateDecision("allow", "fail_open", warn="gate: git HEAD unavailable; skipping consult check")
+        return GateDecision(
+            GatePermission.CONTINUE,
+            GateTier.FAIL_OPEN,
+            warn="gate: git HEAD unavailable; skipping consult check",
+        )
 
     rows = rows if rows is not None else _query_assessments(db, _repo_id(repo_root))
     if rows is None:
-        return GateDecision("allow", "fail_open", warn="gate: assessment store unavailable")
+        return GateDecision(
+            GatePermission.CONTINUE,
+            GateTier.FAIL_OPEN,
+            warn="gate: assessment store unavailable",
+        )
     attempted_candidate = candidate_binding.binding_for_event(event, repo_root)
     matched = _matched_row(
         rows,
@@ -203,55 +261,103 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
         attempted_candidate=attempted_candidate,
     )
     if matched is None:
-        return GateDecision("deny", "must_consult", reason=_deny_reason(targets, head))
+        return GateDecision(
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.MUST_CONSULT,
+            reason=_deny_reason(targets, head),
+        )
     matched_id = f"asm_{int(matched['id'])}"
     expected_candidate = _candidate_binding(matched)
     if expected_candidate is None:
         return GateDecision(
-            "deny", "candidate_unbound", reason=_candidate_reason(targets, head),
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CANDIDATE_UNBOUND,
+            reason=_candidate_reason(targets, head),
         )
     if attempted_candidate is None:
         return GateDecision(
-            "deny", "candidate_unverifiable", reason=_candidate_reason(targets, head),
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CANDIDATE_UNVERIFIABLE,
+            reason=_candidate_reason(targets, head),
         )
     attempted_files = attempted_candidate.get("files") or {}
     expected_files = expected_candidate.get("files") or {}
     if attempted_candidate.get("algorithm") != expected_candidate.get("algorithm") or not attempted_files:
         return GateDecision(
-            "deny", "candidate_mismatch", reason=_candidate_reason(targets, head),
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CANDIDATE_MISMATCH,
+            reason=_candidate_reason(targets, head),
         )
     if set(attempted_files) != set(expected_files):
         return GateDecision(
-            "deny", "candidate_incomplete", reason=_candidate_incomplete_reason(targets, head),
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CANDIDATE_INCOMPLETE,
+            reason=_candidate_incomplete_reason(targets, head),
         )
     if any(expected_files.get(path) != digest for path, digest in attempted_files.items()):
         return GateDecision(
-            "deny", "candidate_mismatch", reason=_candidate_reason(targets, head),
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CANDIDATE_MISMATCH,
+            reason=_candidate_reason(targets, head),
         )
-    if str(matched.get("decision")) in _REVISE_DECISIONS:
+    assessment_decision = str(matched.get("decision"))
+    risk_summary = _risk_summary(matched)
+    if assessment_decision in _REVISE_DECISIONS:
         return GateDecision(
-            "deny", "consulted_revise", reason=_revise_reason(targets, head),
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CONSULTED_REVISE,
+            reason=_exact_restrictive_reason(assessment_decision, risk_summary),
+            risk_summary=risk_summary,
             matched_assessment_id=matched_id,
         )
-    if str(matched.get("decision")) in _PREREQUISITE_DECISIONS:
+    if assessment_decision in _PREREQUISITE_DECISIONS:
         return GateDecision(
-            "deny", "consulted_prerequisite",
-            reason=_prerequisite_reason(str(matched.get("decision")), targets, head),
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CONSULTED_PREREQUISITE,
+            reason=_exact_restrictive_reason(assessment_decision, risk_summary),
+            risk_summary=risk_summary,
             matched_assessment_id=matched_id,
         )
-    # Phase 6 verdict tier: interactive hosts can ask for approval; consult-only hosts have no
-    # approver, so they must stay conservative instead of silently allowing exhausted review verdicts.
-    if str(matched.get("decision")) in _REVIEW_DECISIONS:
-        if consult_only:
+    if assessment_decision == "reject":
+        return GateDecision(
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CONSULTED_REVIEW,
+            reason=_exact_restrictive_reason(assessment_decision, risk_summary),
+            risk_summary=risk_summary,
+            matched_assessment_id=matched_id,
+        )
+    if assessment_decision == "ask_human":
+        replay_available = _candidate_replay_available(matched)
+        if consult_only or not replay_available:
             return GateDecision(
-                "deny", "consulted_review_unavailable", reason=_review_unavailable_reason(targets, head)
-                , matched_assessment_id=matched_id
+                GatePermission.RETURN_CANDIDATE,
+                GateTier.CONSULTED_REVIEW_UNAVAILABLE,
+                reason=_exact_restrictive_reason(
+                    assessment_decision,
+                    risk_summary,
+                    consult_only=consult_only,
+                    replay_available=replay_available,
+                ),
+                risk_summary=risk_summary,
+                matched_assessment_id=matched_id,
             )
         return GateDecision(
-            "ask", "consulted_review", reason=_review_reason(targets, head),
+            GatePermission.REQUEST_HUMAN,
+            GateTier.CONSULTED_REVIEW,
+            reason=_exact_restrictive_reason(
+                assessment_decision,
+                risk_summary,
+                replay_available=True,
+            ),
+            risk_summary=risk_summary,
             matched_assessment_id=matched_id,
         )
-    return GateDecision("allow", "consulted", matched_assessment_id=matched_id)
+    return GateDecision(
+        GatePermission.CONTINUE,
+        GateTier.CONSULTED,
+        risk_summary=risk_summary,
+        matched_assessment_id=matched_id,
+    )
 
 
 def _deny_reason(targets: list[str], head: str) -> str:
@@ -277,31 +383,67 @@ def _candidate_incomplete_reason(targets: list[str], head: str) -> str:
     )
 
 
-def _prerequisite_reason(decision: str, targets: list[str], head: str) -> str:
-    names = ", ".join(os.path.basename(t) for t in targets[:3])
-    prerequisite = "inspection" if decision == "inspect_first" else "targeted tests"
-    return (
-        f"Complete the required {prerequisite} for {names} at commit {head[:8]}, then reassess "
-        "the exact candidate before editing."
-    )
+def _risk_summary(row: dict[str, Any]) -> GateRiskSummary | None:
+    """Build an all-or-none summary from the already exact-matched persisted row."""
+    try:
+        content = json.loads(row["content_json"])
+        scores = content["scores"]
+        if not isinstance(scores, dict):
+            return None
+        return GateRiskSummary(
+            decision=row["decision"],
+            expected_loss=scores["expected_loss"],
+            benefit=scores["benefit"],
+            rau=scores["rau"],
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
-def _review_reason(targets: list[str], head: str) -> str:
-    names = ", ".join(os.path.basename(t) for t in targets[:3])
-    return (f"A pre-edit check assessed editing {names} as high-risk (commit {head[:8]}). Approve in the host "
-            "prompt to proceed, or reconsider a narrower or safer change.")
+def _candidate_replay_available(row: dict[str, Any]) -> bool:
+    try:
+        content = json.loads(row["content_json"])
+        replay = content["request"]["candidate_replay"]
+        return isinstance(replay, dict) and replay.get("status") == "available"
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
-def _review_unavailable_reason(targets: list[str], head: str) -> str:
-    names = ", ".join(os.path.basename(t) for t in targets[:3])
-    return (f"A pre-edit check assessed editing {names} as high-risk (commit {head[:8]}). "
-            "No approval prompt is available in this host; reconsider a narrower or safer change.")
-
-
-def _revise_reason(targets: list[str], head: str) -> str:
-    names = ", ".join(os.path.basename(t) for t in targets[:3])
-    return (f"Do not apply this patch to {names} at commit {head[:8]}. Submit a narrower or safer "
-            "candidate that preserves the existing public surface, then assess again.")
+def _exact_restrictive_reason(
+    decision: str,
+    summary: GateRiskSummary | None,
+    *,
+    consult_only: bool = False,
+    replay_available: bool = False,
+) -> str:
+    prefix = "This exact candidate is held—not your requested goal. "
+    if summary is None:
+        evidence = f"Assessment decision: {decision}; risk summary unavailable. "
+    else:
+        evidence = (
+            f"Assessment decision: {summary.decision.value}. "
+            f"Expected loss: {summary.expected_loss:.6g}; benefit: {summary.benefit:.6g}; "
+            f"RAU: {summary.rau:+.6g}. "
+        )
+    if decision == "revise_safer":
+        action = "Next action: revise this candidate to be safer, then reassess it."
+    elif decision == "inspect_first":
+        action = "Next action: inspect the affected behavior, then reassess this candidate."
+    elif decision == "test_first":
+        action = "Next action: test the affected behavior, then reassess this candidate."
+    elif decision == "reject":
+        action = "Next action: choose a different candidate or route."
+    elif consult_only:
+        action = (
+            "No trusted human approver is available; reassess this candidate or choose another route."
+        )
+    elif replay_available:
+        action = "Next action: run the bound human-review workflow: pebra accept-risk --apply."
+    else:
+        action = (
+            "Bound application is unavailable; reassess this candidate or choose another route."
+        )
+    return prefix + evidence + action
 
 
 # ---- impact pre-filter ---------------------------------------------------------------------

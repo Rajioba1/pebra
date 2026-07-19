@@ -2,8 +2,8 @@
 
 Reads a PreToolUse event on stdin, asks ``gate_check_adapter.decide`` for a decision, and maps it to
 Claude's PreToolUse output:
-- ``deny`` / ``ask`` -> a ``hookSpecificOutput.permissionDecision`` JSON on stdout, so Claude blocks
-  (or asks before) the edit, with the actionable reason.
+- ``deny`` / ``ask`` -> a blocking ``deny`` output because installed hosts do not implement PEBRA's
+  bound approval callback; the actionable reason is preserved.
 - ``allow`` / ``pass`` / ``fail_open`` -> emit nothing (defer to Claude's normal permission flow).
 
 It ALWAYS exits 0 and NEVER raises: a broken gate must never block a coding session (fail-open). The
@@ -19,6 +19,7 @@ from typing import Any
 
 from pebra.adapters import gate_check_adapter as gca
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
+from pebra.core.gate_contract import GatePermission
 
 
 def register(subparsers: Any) -> None:
@@ -33,6 +34,12 @@ def register(subparsers: Any) -> None:
         help=argparse.SUPPRESS,
     )
     p.set_defaults(func=run_gate_hook)
+
+
+def _installed_hook_permission(permission: GatePermission) -> GatePermission:
+    if permission is GatePermission.REQUEST_HUMAN:
+        return GatePermission.RETURN_CANDIDATE
+    return permission
 
 
 def run_gate_hook(args: Any) -> int:
@@ -50,10 +57,11 @@ def run_gate_hook(args: Any) -> int:
         decision = gca.decide(event, db_path=getattr(args, "db", None))
     except Exception:  # noqa: BLE001 - the hook must never crash a host edit; any failure == silent allow
         return 0
-    if decision.permission in ("deny", "ask"):
+    permission = _installed_hook_permission(decision.permission)
+    if permission is GatePermission.RETURN_CANDIDATE:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "permissionDecision": decision.permission,
+            "permissionDecision": permission.value,
             "permissionDecisionReason": decision.reason or "PEBRA pre-edit gate",
         }}))
     elif decision.warn:

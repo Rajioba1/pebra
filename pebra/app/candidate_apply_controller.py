@@ -7,6 +7,7 @@ from typing import Any
 
 from pebra.core import candidate_parser, request_validator
 from pebra.core.models import AssessmentRequest
+from pebra.core.gate_contract import GatePermission, GateTier
 from pebra.ports.candidate_application_port import (
     CandidateApplicationPort,
     CandidateGatePort,
@@ -97,8 +98,8 @@ def apply_candidate(
     with applier.lock(repo_root):
         decision = gate.decide(event, db_path=db_path, consult_only=True)
         if not (
-            decision.permission == "allow"
-            and decision.tier == "consulted"
+            decision.permission == GatePermission.CONTINUE
+            and decision.tier == GateTier.CONSULTED
             and decision.matched_assessment_id == assessment_id
         ):
             raise CandidateApplyError(

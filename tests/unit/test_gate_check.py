@@ -22,6 +22,8 @@ from pebra.adapters import candidate_binding
 from pebra.adapters import gate_check_adapter as gca
 from pebra.cli import gate_check as gc_cmd
 from pebra.cli.main import build_parser
+from pebra.core.constants import Decision
+from pebra.core.gate_contract import GATE_SCHEMA_VERSION, GatePermission, GateTier
 
 
 def _abs(root: Path, rel: str) -> str:
@@ -139,6 +141,8 @@ def _seed(
     files: list[str],
     decision: str = "inspect_first",
     candidate: dict | None = None,
+    scores: object = None,
+    candidate_replay: object = None,
 ):
     con = sqlite3.connect(db_path)
     con.execute("CREATE TABLE assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -147,6 +151,10 @@ def _seed(
     if candidate is not None:
         binding["candidate"] = candidate
     content = {"assessed_commit": head, "model_guidance_packet": {"binding": binding}}
+    if scores is not None:
+        content["scores"] = scores
+    if candidate_replay is not None:
+        content["request"] = {"candidate_replay": candidate_replay}
     con.execute("INSERT INTO assessments (repo_id, decision, content_json) VALUES (?,?,?)",
                 (repo_id, decision, json.dumps(content)))
     con.commit()
@@ -324,7 +332,8 @@ def test_newest_restrictive_assessment_is_itself_matched(tmp_path, monkeypatch):
 
     decision = gca.decide(event)
 
-    assert decision.permission == "ask"
+    assert decision.permission == "deny"
+    assert decision.tier == "consulted_review_unavailable"
 
 
 def test_decide_fail_open_when_graph_unavailable(tmp_path, monkeypatch):
@@ -345,6 +354,7 @@ def test_decide_deny_when_store_absent_means_unassessed(tmp_path, monkeypatch):
     monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
     d = gca.decide(_edit_event(tmp_path))  # no .pebra/pebra.db
     assert d.permission == "deny" and d.tier == "must_consult"
+    assert d.risk_summary is None
 
 
 def test_decide_fail_open_when_store_is_corrupt(tmp_path, monkeypatch):
@@ -365,6 +375,7 @@ def test_decide_deny_must_consult_when_no_fresh_assessment(tmp_path, monkeypatch
     _seed(db, gca._repo_id(str(tmp_path)), "OTHER_HEAD", ["src/a.py"])
     d = gca.decide(_edit_event(tmp_path))
     assert d.permission == "deny" and d.tier == "must_consult" and d.reason
+    assert d.risk_summary is None
 
 
 def test_decide_deny_for_codex_apply_patch_event(tmp_path, monkeypatch):
@@ -380,7 +391,10 @@ def test_decide_deny_for_codex_apply_patch_event(tmp_path, monkeypatch):
     assert d.permission == "deny" and d.tier == "must_consult"
 
 
-def _consulted(tmp_path, monkeypatch, decision: str):
+def _consulted(
+    tmp_path, monkeypatch, decision: str, *,
+    scores: object = None, candidate_replay: object = None,
+):
     monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: True)
     monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
     db = tmp_path / ".pebra" / "pebra.db"
@@ -397,13 +411,21 @@ def _consulted(tmp_path, monkeypatch, decision: str):
         ["src/a.py"],
         decision=decision,
         candidate=binding,
+        scores=scores,
+        candidate_replay=candidate_replay,
     )
 
 
 def test_decide_allow_consulted_when_decision_is_proceed(tmp_path, monkeypatch):
-    _consulted(tmp_path, monkeypatch, "proceed")
+    _consulted(
+        tmp_path, monkeypatch, "proceed",
+        scores={"expected_loss": 0.12, "benefit": 0.55, "rau": 0.29},
+    )
     d = gca.decide(_edit_event(tmp_path))
     assert d.permission == "allow" and d.tier == "consulted"
+    assert d.risk_summary.as_dict() == {
+        "decision": "proceed", "expected_loss": 0.12, "benefit": 0.55, "rau": 0.29,
+    }
     assert d.matched_assessment_id == "asm_1"
     assert "matched_assessment_id" not in d.as_dict()
     assert d.as_dict(include_host_metadata=True)["matched_assessment_id"] == "asm_1"
@@ -420,6 +442,7 @@ def test_decide_denies_different_candidate_for_same_head_and_path(tmp_path, monk
     assert decision.tier == "candidate_mismatch"
     assert "assess" in decision.reason.lower()
     assert decision.matched_assessment_id is None
+    assert decision.risk_summary is None
 
 
 def test_decide_denies_legacy_assessment_without_candidate_binding(tmp_path, monkeypatch):
@@ -437,6 +460,7 @@ def test_decide_denies_legacy_assessment_without_candidate_binding(tmp_path, mon
     assert decision.permission == "deny"
     assert decision.tier == "candidate_unbound"
     assert decision.matched_assessment_id is None
+    assert decision.risk_summary is None
 
 
 def test_decide_denies_unmaterializable_host_edit(tmp_path, monkeypatch):
@@ -448,6 +472,7 @@ def test_decide_denies_unmaterializable_host_edit(tmp_path, monkeypatch):
 
     assert decision.permission == "deny"
     assert decision.tier == "candidate_unverifiable"
+    assert decision.risk_summary is None
 
 
 def test_decide_denies_unencodable_content_instead_of_raising_to_hook_fail_open(
@@ -498,6 +523,7 @@ def test_decide_requires_assessed_multifile_candidate_in_one_complete_event(
     partial_b = gca.decide(event("b.py", "new-b\n"))
     assert partial_a.permission == partial_b.permission == "deny"
     assert partial_a.tier == partial_b.tier == "candidate_incomplete"
+    assert partial_a.risk_summary is partial_b.risk_summary is None
 
     atomic = gca.decide({
         "tool_name": "apply_patch", "cwd": str(tmp_path),
@@ -509,18 +535,26 @@ def test_decide_requires_assessed_multifile_candidate_in_one_complete_event(
     assert extra.tier == "must_consult"
 
 
-def test_decide_ask_when_matched_assessment_is_reject(tmp_path, monkeypatch):
-    # Phase 6 verdict tier: a fresh assessment whose decision was 'reject' escalates to ASK (overridable
-    # by host approval), NOT a hard deny and NOT a blind allow.
-    _consulted(tmp_path, monkeypatch, "reject")
+def test_decide_returns_exact_candidate_when_assessment_is_reject(tmp_path, monkeypatch):
+    _consulted(
+        tmp_path, monkeypatch, "reject",
+        scores={"expected_loss": 0.61, "benefit": 0.34, "rau": -0.27},
+    )
     d = gca.decide(_edit_event(tmp_path))
-    assert d.permission == "ask" and d.tier == "consulted_review" and d.reason
+    assert d.permission == "deny" and d.tier == "consulted_review" and d.reason
+    assert d.risk_summary.decision is Decision.REJECT
 
 
 def test_decide_ask_when_matched_assessment_is_ask_human(tmp_path, monkeypatch):
-    _consulted(tmp_path, monkeypatch, "ask_human")
+    _consulted(
+        tmp_path, monkeypatch, "ask_human",
+        scores={"expected_loss": 0.61, "benefit": 0.34, "rau": -0.27},
+        candidate_replay={"status": "available"},
+    )
     d = gca.decide(_edit_event(tmp_path))
     assert d.permission == "ask" and d.tier == "consulted_review"
+    assert d.risk_summary.decision is Decision.ASK_HUMAN
+    assert "pebra accept-risk --apply" in d.reason
 
 
 def test_deny_reason_is_blinding_neutral():
@@ -532,12 +566,10 @@ def test_deny_reason_is_blinding_neutral():
         assert term not in reason, f"leak term {term!r} in deny reason"
 
 
-def test_decide_consult_only_blocks_review_verdict_when_no_approver(tmp_path, monkeypatch):
-    # In a humanless consult-only host, ask_human/reject cannot be auto-approved. The conservative
-    # fallback is to block the write; interactive hosts still get an overridable ASK.
+def test_decide_consult_only_keeps_reject_as_consulted_review(tmp_path, monkeypatch):
     _consulted(tmp_path, monkeypatch, "reject")
     d = gca.decide(_edit_event(tmp_path), consult_only=True)
-    assert d.permission == "deny" and d.tier == "consulted_review_unavailable"
+    assert d.permission == "deny" and d.tier == "consulted_review"
     assert d.reason
 
 
@@ -547,7 +579,7 @@ def test_decide_revise_safer_blocks_even_in_consult_only(tmp_path, monkeypatch):
     _consulted(tmp_path, monkeypatch, "revise_safer")
     d = gca.decide(_edit_event(tmp_path), consult_only=True)
     assert d.permission == "deny" and d.tier == "consulted_revise"
-    assert "narrower" in d.reason.lower()
+    assert "revise" in d.reason.lower()
 
 
 @pytest.mark.parametrize("decision", ["inspect_first", "test_first"])
@@ -578,6 +610,186 @@ def test_decide_consult_only_blocks_ask_human(tmp_path, monkeypatch):
     _consulted(tmp_path, monkeypatch, "ask_human")
     d = gca.decide(_edit_event(tmp_path), consult_only=True)
     assert d.permission == "deny" and d.tier == "consulted_review_unavailable"
+
+
+@pytest.mark.parametrize(
+    "decision,tier",
+    [
+        ("proceed", GateTier.CONSULTED),
+        ("revise_safer", GateTier.CONSULTED_REVISE),
+        ("inspect_first", GateTier.CONSULTED_PREREQUISITE),
+        ("test_first", GateTier.CONSULTED_PREREQUISITE),
+        ("reject", GateTier.CONSULTED_REVIEW),
+    ],
+)
+def test_exact_candidate_exposes_live_finite_risk_summary(
+    tmp_path, monkeypatch, decision, tier,
+):
+    _consulted(
+        tmp_path, monkeypatch, decision,
+        scores={"expected_loss": 0.6100004, "benefit": 0.34, "rau": -0.00000027},
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.tier is tier
+    assert result.risk_summary.as_dict() == {
+        "decision": decision,
+        "expected_loss": 0.6100004,
+        "benefit": 0.34,
+        "rau": -0.00000027,
+    }
+
+
+@pytest.mark.parametrize(
+    "decision,action",
+    [
+        ("revise_safer", "revise"),
+        ("inspect_first", "inspect"),
+        ("test_first", "test"),
+        ("reject", "different candidate or route"),
+    ],
+)
+def test_exact_restrictive_reason_is_neutral_numeric_and_actionable(
+    tmp_path, monkeypatch, decision, action,
+):
+    _consulted(
+        tmp_path, monkeypatch, decision,
+        scores={"expected_loss": 0.6100004, "benefit": 0.34, "rau": -0.00000027},
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+    reason = result.reason
+
+    assert reason.startswith("This exact candidate is held—not your requested goal.")
+    assert f"Assessment decision: {decision}." in reason
+    assert "Expected loss: 0.61; benefit: 0.34; RAU: -2.7e-07." in reason
+    assert action in reason.lower()
+    for forbidden in ("permission denied", "goal rejected", "disobey"):
+        assert forbidden not in reason.lower()
+
+
+@pytest.mark.parametrize(
+    "scores",
+    [
+        None,
+        {},
+        {"expected_loss": 0.61},
+        {"expected_loss": 0.61, "benefit": 0.34},
+        {"expected_loss": "0.61", "benefit": 0.34, "rau": -0.27},
+        {"expected_loss": 0.61, "benefit": float("nan"), "rau": -0.27},
+        {"expected_loss": 0.61, "benefit": 0.34, "rau": float("inf")},
+    ],
+)
+def test_malformed_exact_scores_keep_restriction_without_partial_fragments(
+    tmp_path, monkeypatch, scores,
+):
+    _consulted(tmp_path, monkeypatch, "revise_safer", scores=scores)
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.RETURN_CANDIDATE
+    assert result.tier is GateTier.CONSULTED_REVISE
+    assert result.risk_summary is None
+    assert "risk summary unavailable" in result.reason.lower()
+    for fragment in ("0.61", "0.34", "-0.27", "nan", "inf"):
+        assert fragment not in result.reason.lower()
+
+
+@pytest.mark.parametrize(
+    "replay",
+    [None, {}, "bad", {"status": "not_applicable"}, {"status": "consumed"}, {"status": 1}],
+)
+def test_ask_human_without_available_replay_returns_candidate(
+    tmp_path, monkeypatch, replay,
+):
+    _consulted(
+        tmp_path, monkeypatch, "ask_human",
+        scores={"expected_loss": 0.61, "benefit": 0.34, "rau": -0.27},
+        candidate_replay=replay,
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.RETURN_CANDIDATE
+    assert result.tier is GateTier.CONSULTED_REVIEW_UNAVAILABLE
+    assert result.risk_summary.decision is Decision.ASK_HUMAN
+    assert "pebra accept-risk" not in result.reason
+    assert "reassess" in result.reason.lower() or "another route" in result.reason.lower()
+
+
+def test_consult_only_ask_human_never_exposes_product_or_approval_command(tmp_path, monkeypatch):
+    _consulted(
+        tmp_path, monkeypatch, "ask_human",
+        scores={"expected_loss": 0.61, "benefit": 0.34, "rau": -0.27},
+        candidate_replay={"status": "available"},
+    )
+
+    result = gca.decide(_edit_event(tmp_path), consult_only=True)
+
+    assert result.permission is GatePermission.RETURN_CANDIDATE
+    assert result.tier is GateTier.CONSULTED_REVIEW_UNAVAILABLE
+    assert "no trusted human approver is available" in result.reason.lower()
+    assert "pebra" not in result.reason.lower()
+
+
+def test_non_exact_paths_never_expose_a_risk_summary(tmp_path, monkeypatch):
+    _consulted(
+        tmp_path, monkeypatch, "proceed",
+        scores={"expected_loss": 0.12, "benefit": 0.55, "rau": 0.29},
+    )
+    event = _edit_event(tmp_path)
+    event["tool_input"]["new_string"] = "different"
+    assert gca.decide(event).risk_summary is None
+
+
+@pytest.mark.parametrize(
+    "decision,permission,tier,replay",
+    [
+        ("proceed", GatePermission.CONTINUE, GateTier.CONSULTED, None),
+        ("revise_safer", GatePermission.RETURN_CANDIDATE, GateTier.CONSULTED_REVISE, None),
+        (
+            "inspect_first",
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CONSULTED_PREREQUISITE,
+            None,
+        ),
+        (
+            "test_first",
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.CONSULTED_PREREQUISITE,
+            None,
+        ),
+        ("reject", GatePermission.RETURN_CANDIDATE, GateTier.CONSULTED_REVIEW, None),
+        (
+            "ask_human",
+            GatePermission.REQUEST_HUMAN,
+            GateTier.CONSULTED_REVIEW,
+            {"status": "available"},
+        ),
+    ],
+)
+def test_persisted_decision_mapping_survives_unavailable_risk_summary(
+    tmp_path, monkeypatch, decision, permission, tier, replay,
+):
+    _consulted(tmp_path, monkeypatch, decision, candidate_replay=replay)
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is permission
+    assert result.tier is tier
+    assert result.risk_summary is None
+
+
+def test_gate_check_envelope_is_versioned_and_nullable(monkeypatch, capsys):
+    monkeypatch.setattr(gca, "decide", lambda event, **kwargs: gca.GateDecision("allow", "pass"))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "Bash"})))
+
+    gc_cmd.run_gate_check(build_parser().parse_args(["gate-check"]))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == GATE_SCHEMA_VERSION
+    assert payload["risk_summary"] is None
 
 
 def test_older_exact_candidate_is_not_shadowed_by_newer_different_candidate(
@@ -620,11 +832,12 @@ def test_older_exact_candidate_is_not_shadowed_by_newer_different_candidate(
     assert result.matched_assessment_id == "asm_1"
 
 
-def test_review_reason_offers_host_approval_no_false_accept_risk(tmp_path, monkeypatch):
+def test_reject_reason_routes_to_different_candidate_not_risk_acceptance(tmp_path, monkeypatch):
     _consulted(tmp_path, monkeypatch, "reject")
     reason = gca.decide(_edit_event(tmp_path)).reason.lower()
-    assert "approve" in reason  # host-approval override is surfaced
-    assert "accept-risk" not in reason  # not promised while sanction binding is deferred
+    assert "different candidate or route" in reason
+    assert "approve" not in reason
+    assert "accept-risk" not in reason
 
 
 def test_gate_check_cli_passes_consult_only(monkeypatch, capsys):
