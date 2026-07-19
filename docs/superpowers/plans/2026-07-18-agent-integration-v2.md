@@ -4,7 +4,7 @@
 
 **Goal:** Safely ship PEBRA `0.1.1` with complete CLI/TUI discoverability and the `agent-init` release blockers, then build Agent Integration V2 and align the existing agent A/B experiment with the completed production behavior.
 
-**Architecture:** First close the two destructive `agent-init` edge cases, expose the already-wired CLI/TUI help and provenance behavior, and release only that bounded work as `0.1.1` through the existing build-once workflow. After the release checkpoint, preserve the existing gate and generated protocol while adding dependency-free contracts for candidate binding, gate permissions/tiers, and host facts. The final milestone makes the agent A/B subprocess harness an explicit schema-1 consumer without changing treatment, blinding, or model-facing results.
+**Architecture:** First close the two destructive `agent-init` edge cases, expose the already-wired CLI/TUI help and provenance behavior, and release only that bounded work as `0.1.1` through the existing build-once workflow. After the release checkpoint, preserve decision math and the six persisted assessment decisions while adding dependency-free contracts for candidate binding, candidate dispositions/wire permissions, risk evidence, and host facts. Restrictive results hold the exact candidate rather than reject the user's goal. The final milestone makes the agent A/B subprocess harness an explicit schema-1 consumer and deliberately versions its richer reason content as a new treatment.
 
 **Tech Stack:** Python 3.11+, `argparse`, frozen dataclasses, `enum.StrEnum`, JSON, pytest, Ruff, import-linter, nox, GitHub Actions.
 
@@ -15,8 +15,11 @@
 - `0.1.1` contains only the validation-safe hook installation, exact hook ownership, CLI/TUI help discoverability, documentation, and version/release updates defined by `docs/superpowers/specs/2026-07-18-cli-help-and-0.1.1-release-design.md`.
 - Typed gate contracts, Claude always-loaded rules, inspection, the host registry, and experiment alignment remain post-`0.1.1` work even though this is one implementation plan.
 - Preserve `allow/fail_open` for graph, Git, store, parse, and unexpected hook-runtime failures.
-- Host wrappers branch on `GatePermission`; `GateTier` is diagnostic and cannot independently authorize an edit.
-- Preserve the A/B treatment: call the real gate subprocess with `consult_only=True`, attribute an assessment only after a successful write, and expose exactly `{ok, blocked, reason}` to the model in every arm.
+- Host wrappers branch on `GatePermission`; `GateTier` is diagnostic and cannot independently authorize an edit. Internal permission member names are `CONTINUE`, `RETURN_CANDIDATE`, and `REQUEST_HUMAN`; external wire values remain `allow`, `deny`, and `ask`.
+- A restrictive gate result applies only to the exact candidate. It must say the candidate is held or returned, never that the human's goal is rejected or that the agent should disobey the user.
+- Preserve the A/B execution boundary: call the real gate subprocess with `consult_only=True`, attribute an assessment only after a successful write, and expose exactly the `{ok, blocked, reason}` fields to the model in every arm. Because `reason` gains candidate-bound mathematics, require a new experiment design hash/run ID and prohibit resume or pooling with the previous treatment.
+- Emit `risk_summary` only for a fresh assessment bound to the exact candidate and only when `expected_loss`, `benefit`, and `rau` are finite. Never attach stale or partial scores to an unbound, unverifiable, mismatched, or incomplete candidate.
+- Both installed hooks project `REQUEST_HUMAN` to a blocking candidate hold. For `ask_human`, the reason points to PEBRA's bound sanction/reassessment workflow only when candidate replay is available; otherwise it requests reassessment or another route. For `reject`, it always requests a different candidate or route. Native Claude approval must not bypass PEBRA's sanction, and Codex `PreToolUse` must never receive unsupported `ask`.
 - Keep `positive_control` as an experiment-local synthetic label; never add it to the production `GateTier` enum or present it as a versioned production gate response.
 - Before each review stop, run the milestone's focused subprocess E2E acceptance tests. Defer the complete deterministic A/B suite and `nox -s e2e-fast` to the final experiment milestone because they are the expensive aggregate proof.
 - Never overwrite malformed user configuration or delete a lookalike user hook.
@@ -47,12 +50,12 @@
 | `0.1.1` metadata, docs, archive, and installed-wheel proof | Task 4 |
 | Protected build-once TestPyPI → PyPI release | Task 5 |
 | Single candidate-binding algorithm | Task 6 |
-| Typed/versioned gate contract and documentation | Task 7 |
-| Real subprocess gate-envelope acceptance | Task 8 |
+| Typed/versioned candidate disposition, risk summary, and host projection contract | Task 7 |
+| Real subprocess gate-envelope and host-projection acceptance | Task 8 |
 | Always-loaded Claude non-negotiables | Task 9 |
 | Non-mutating `agent-init --check --json` | Task 10 |
 | Two-host registry and conformance matrix | Task 11 |
-| Final A/B schema alignment and aggregate E2E | Task 12 |
+| Final versioned A/B treatment alignment and aggregate E2E | Task 12 |
 
 The maintainer's sequencing decision supersedes the release design's generic instruction to run all fast
 E2E before `0.1.1`: each pre-release milestone runs focused subprocess E2E plus the full normal test/lint
@@ -1066,16 +1069,24 @@ git commit -m "refactor: single-source candidate binding protocol"
 - Modify: `tests/unit/test_candidate_apply_controller.py`
 
 **Interfaces:**
-- Produces: `GatePermission`, `GateTier`, `GATE_SCHEMA_VERSION`, and `ALLOWED_PERMISSION_TIERS`.
-- Changes: `GateDecision.as_dict()` adds `schema_version: 1` while preserving all existing keys.
+- Produces: `GatePermission`, `GateTier`, `GateRiskSummary`, `GATE_SCHEMA_VERSION`, and
+  `ALLOWED_PERMISSION_TIERS`.
+- Changes: `GateDecision.as_dict()` adds `schema_version: 1` and nullable `risk_summary` while preserving
+  all existing keys. Restrictive exact-candidate reasons include neutral risk/benefit mathematics.
 - Preserves: string compatibility because `StrEnum` members compare as strings.
+- Preserves: the six persisted assessment `Decision` values and all decision math. `Decision.REJECT`
+  remains stored as `"reject"`; the gate communicates it as a hold on the exact candidate, not rejection
+  of the user's goal.
+- Host projection: both installed hook paths convert `REQUEST_HUMAN` to blocking `deny`. Claude's native
+  prompt would bypass PEBRA's bound sanction/reassessment; Codex currently fails open on unsupported
+  `ask`.
 
 - [ ] **Step 1: Write failing contract tests**
 
 Create `tests/unit/test_gate_contract.py` with complete coverage:
 
 ```python
-def test_gate_contract_declares_every_tier_once():
+def test_gate_contract_covers_every_tier():
     declared = {tier for tiers in ALLOWED_PERMISSION_TIERS.values() for tier in tiers}
     assert declared == set(GateTier)
 
@@ -1089,7 +1100,11 @@ def test_gate_contract_declares_every_tier_once():
     ],
 )
 def test_declared_pairs_construct(permission, tier):
-    decision = GateDecision(permission, tier)
+    reason = (
+        None if permission is GatePermission.CONTINUE
+        else "This exact candidate is held; follow the required next action."
+    )
+    decision = GateDecision(permission, tier, reason=reason)
     assert decision.as_dict()["schema_version"] == GATE_SCHEMA_VERSION
 
 
@@ -1109,7 +1124,38 @@ def test_every_undeclared_pair_is_rejected(permission, tier):
 
 def test_experiment_positive_control_is_not_a_production_tier():
     assert "positive_control" not in {tier.value for tier in GateTier}
+
+
+@pytest.mark.parametrize("field", ("expected_loss", "benefit", "rau"))
+@pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf"), True))
+def test_risk_summary_rejects_non_finite_or_boolean_numbers(field, value):
+    values = {"expected_loss": 0.61, "benefit": 0.34, "rau": -0.27}
+    values[field] = value
+    with pytest.raises(ValueError, match="finite"):
+        GateRiskSummary(decision=Decision.REVISE_SAFER, **values)
 ```
+
+Parameterize every `(permission, tier, Decision)` combination against `ALLOWED_RISK_DECISIONS`: declared
+combinations must construct with `matched_assessment_id="asm_1"` and a nonblank reason for restrictive
+permissions, and every other combination must raise. Also prove every non-consulted pair
+rejects a non-null summary, every `deny`/`ask` requires a nonblank actionable reason, and
+`deny/consulted_review` accepts only persisted `reject` while `ask/consulted_review` accepts only
+persisted `ask_human`. This closes the semantic gap where finite but unrelated scores could otherwise be
+attached to a valid permission/tier pair.
+
+Directly test that a non-null summary is rejected when `matched_assessment_id` is missing, blank, or does
+not match `asm_<positive-int>`, and that the corresponding valid decision retains `asm_1` internally even
+when `as_dict(include_host_metadata=False)` omits host-only attribution from its serialized envelope.
+
+Add adapter tests proving `risk_summary` is present only for an exact matched candidate, contains the
+live persisted assessment decision and finite `expected_loss` / `benefit` / `rau`, and is absent for
+missing, stale, unbound, unverifiable, mismatched, incomplete, partial-score, or non-finite-score paths.
+For exact restrictive decisions with a complete summary, assert the reason starts with a stable neutral
+candidate-hold sentence, contains the authoritative formatted numbers, names the decision-specific next
+action, and contains none of the phrases `permission denied`, `goal rejected`, or `disobey`. For exact
+restrictive decisions whose persisted scores are partial, malformed, or non-finite, assert the gate stays
+restrictive, emits `risk_summary: null`, says `risk summary unavailable`, contains no score fragments, and
+does not crash into the infrastructure fail-open path.
 
 Add a documentation test that asserts one Markdown row for every allowed pair:
 
@@ -1144,15 +1190,20 @@ Create `pebra/core/gate_contract.py`:
 ```python
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
+import math
+import re
 from types import MappingProxyType
 from typing import Final, Mapping
 
+from pebra.core.constants import Decision
+
 
 class GatePermission(StrEnum):
-    ALLOW = "allow"
-    DENY = "deny"
-    ASK = "ask"
+    CONTINUE = "allow"
+    RETURN_CANDIDATE = "deny"
+    REQUEST_HUMAN = "ask"
 
 
 class GateTier(StrEnum):
@@ -1170,15 +1221,53 @@ class GateTier(StrEnum):
     CONSULTED_REVIEW_UNAVAILABLE = "consulted_review_unavailable"
 
 
+@dataclass(frozen=True)
+class GateRiskSummary:
+    decision: Decision | str
+    expected_loss: float
+    benefit: float
+    rau: float
+
+    def __post_init__(self) -> None:
+        decision = Decision(self.decision)
+        numeric = (self.expected_loss, self.benefit, self.rau)
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not math.isfinite(value) for value in numeric):
+            raise ValueError("gate risk summary values must be finite numbers")
+        object.__setattr__(self, "decision", decision)
+
+    def as_dict(self) -> dict[str, str | float]:
+        return {
+            "decision": self.decision.value,
+            "expected_loss": float(self.expected_loss),
+            "benefit": float(self.benefit),
+            "rau": float(self.rau),
+        }
+
+
 GATE_SCHEMA_VERSION: Final[int] = 1
+_ASSESSMENT_ID_RE: Final[re.Pattern[str]] = re.compile(r"asm_[1-9][0-9]*")
 ALLOWED_PERMISSION_TIERS: Final[Mapping[GatePermission, frozenset[GateTier]]] = MappingProxyType({
-    GatePermission.ALLOW: frozenset({GateTier.PASS, GateTier.FAIL_OPEN, GateTier.CONSULTED}),
-    GatePermission.ASK: frozenset({GateTier.CONSULTED_REVIEW}),
-    GatePermission.DENY: frozenset(set(GateTier) - {
+    GatePermission.CONTINUE: frozenset({GateTier.PASS, GateTier.FAIL_OPEN, GateTier.CONSULTED}),
+    GatePermission.REQUEST_HUMAN: frozenset({GateTier.CONSULTED_REVIEW}),
+    GatePermission.RETURN_CANDIDATE: frozenset(set(GateTier) - {
         GateTier.PASS,
         GateTier.FAIL_OPEN,
         GateTier.CONSULTED,
-        GateTier.CONSULTED_REVIEW,
+    }),
+})
+ALLOWED_RISK_DECISIONS: Final[
+    Mapping[tuple[GatePermission, GateTier], frozenset[Decision]]
+] = MappingProxyType({
+    (GatePermission.CONTINUE, GateTier.CONSULTED): frozenset({Decision.PROCEED}),
+    (GatePermission.RETURN_CANDIDATE, GateTier.CONSULTED_REVISE): frozenset({Decision.REVISE_SAFER}),
+    (GatePermission.RETURN_CANDIDATE, GateTier.CONSULTED_PREREQUISITE): frozenset({
+        Decision.INSPECT_FIRST, Decision.TEST_FIRST,
+    }),
+    (GatePermission.REQUEST_HUMAN, GateTier.CONSULTED_REVIEW): frozenset({Decision.ASK_HUMAN}),
+    (GatePermission.RETURN_CANDIDATE, GateTier.CONSULTED_REVIEW): frozenset({Decision.REJECT}),
+    (GatePermission.RETURN_CANDIDATE, GateTier.CONSULTED_REVIEW_UNAVAILABLE): frozenset({
+        Decision.ASK_HUMAN,
     }),
 })
 ```
@@ -1194,6 +1283,7 @@ class GateDecision:
     tier: GateTier | str
     reason: str | None = None
     warn: str | None = None
+    risk_summary: GateRiskSummary | None = None
     matched_assessment_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -1201,6 +1291,19 @@ class GateDecision:
         tier = GateTier(self.tier)
         if tier not in ALLOWED_PERMISSION_TIERS[permission]:
             raise ValueError(f"undeclared gate permission/tier pair: {permission}/{tier}")
+        if permission is not GatePermission.CONTINUE and (
+            not isinstance(self.reason, str) or not self.reason.strip()
+        ):
+            raise ValueError("restrictive gate decisions require an actionable reason")
+        if self.risk_summary is not None and self.risk_summary.decision not in (
+            ALLOWED_RISK_DECISIONS.get((permission, tier), frozenset())
+        ):
+            raise ValueError("gate risk summary decision does not match its permission/tier")
+        if self.risk_summary is not None and (
+            not isinstance(self.matched_assessment_id, str)
+            or _ASSESSMENT_ID_RE.fullmatch(self.matched_assessment_id) is None
+        ):
+            raise ValueError("gate risk summary requires an exact matched assessment id")
         object.__setattr__(self, "permission", permission)
         object.__setattr__(self, "tier", tier)
 
@@ -1211,15 +1314,62 @@ class GateDecision:
             "tier": self.tier.value,
             "reason": self.reason,
             "warn": self.warn,
+            "risk_summary": (
+                self.risk_summary.as_dict() if self.risk_summary is not None else None
+            ),
         }
         if include_host_metadata:
             payload["matched_assessment_id"] = self.matched_assessment_id
         return payload
 ```
 
-Change production call sites to enum members. Update the one test fake using `ask/ask` to
-`ask/consulted_review`. Candidate application must compare against
-`GatePermission.ALLOW` and `GateTier.CONSULTED`.
+Change production call sites to the semantic enum members. Update the one test fake using `ask/ask` to
+`REQUEST_HUMAN/consulted_review`. Candidate application must compare against
+`GatePermission.CONTINUE` and `GateTier.CONSULTED`.
+
+Split the adapter's current combined `_REVIEW_DECISIONS` branch without changing persisted decisions:
+
+- exact `reject` → `RETURN_CANDIDATE/consulted_review` in every mode, with a different-route reason;
+- exact `ask_human`, interactive query, replay status `available` →
+  `REQUEST_HUMAN/consulted_review` with the bound `pebra accept-risk --apply` route;
+- exact `ask_human` with `consult_only=True`, or with missing/malformed/non-`available`
+  `request.candidate_replay.status` → `RETURN_CANDIDATE/consulted_review_unavailable`, explaining that
+  bound application is unavailable and requesting reassessment or another route.
+
+Inspect replay metadata from the already matched row's persisted `content_json`; do not read the replay
+payload, mutate storage, or add a new port. Test all mappings even when `risk_summary` is null, so malformed
+stored scores cannot erase the `ask_human` versus `reject` sanctionability distinction. Replay metadata
+failure must remain a candidate return and must never reach the infrastructure fail-open catch.
+
+Add one adapter helper that constructs `GateRiskSummary` only after exact candidate binding succeeds and
+all required persisted fields validate. Add one deterministic reason renderer for exact restrictive
+assessments. It must render the assessment decision and the three numbers from that same summary and an
+action chosen from the existing decision: `revise`, `inspect`, `test`, run the bound human-review workflow
+for `ask_human`, or choose a different candidate/route for `reject`. It must not recalculate scores, infer
+missing values, or use experiment/oracle/arm names. For interactive `ask_human`, the next action tells the
+human to run `pebra accept-risk --apply`; for `consult_only`, it states that no trusted human approver is
+available and does not expose the product name. Use locale-independent six-significant-digit formatting
+(`.6g`, with an explicit sign for RAU) so a small non-zero RAU never renders as zero; the structured
+`risk_summary` floats remain authoritative. If summary construction fails validation, catch that
+data-quality error locally, keep the original restrictive disposition, set `risk_summary` to null, and
+render `risk summary unavailable`; never let it reach `gate-hook`'s infrastructure fail-open catch.
+
+In `gate_hook.py`, keep the locked installed command unchanged. Project the universal disposition using
+the installed event path:
+
+```python
+def _installed_hook_permission(permission: GatePermission) -> GatePermission:
+    if permission is GatePermission.REQUEST_HUMAN:
+        return GatePermission.RETURN_CANDIDATE
+    return permission
+```
+
+Both installed shims return the candidate because neither implements PEBRA's bound approval callback:
+Claude's native `ask` can approve the tool without sanction/reassessment, while Codex fails open on
+unsupported `ask`. Add tests proving Claude `Write` and Codex `apply_patch` review events both emit
+blocking `deny`, retain the same actionable evidence, and never alter `CONTINUE` or an existing
+`RETURN_CANDIDATE`. The universal `gate-check` query may still return wire `ask` to a future trusted
+adapter; `gate-hook` must not emit it.
 
 - [ ] **Step 5: Document the stable envelope and diagnostic matrix**
 
@@ -1227,11 +1377,18 @@ Write `docs/GATE_CONTRACT.md` with:
 
 - schema version and JSON fields;
 - the full allowed `(permission, tier)` table;
-- the rule that hosts act only on permission;
-- `deny > ask > allow` within PEBRA's emitted decisions;
+- the internal meanings `CONTINUE`, `RETURN_CANDIDATE`, and `REQUEST_HUMAN` alongside their stable wire
+  values `allow`, `deny`, and `ask`;
+- the rule that hosts act on permission through the documented capability projection;
+- `RETURN_CANDIDATE > REQUEST_HUMAN > CONTINUE` within PEBRA's emitted dispositions;
 - the preserved `allow/fail_open` infrastructure policy;
 - the same-OS-identity threat limitation;
-- the rule that a gate deny/ask for the attempted candidate overrides an earlier advisory proceed.
+- the rule that a candidate hold/review request overrides an earlier advisory proceed only for the exact
+  attempted candidate and never cancels the user's goal;
+- the exact-only, all-or-none, finite-number `risk_summary` rule;
+- the allowed tier/risk-decision matrix, including the rule that non-consulted tiers cannot carry scores;
+- the universal wire `ask` value and the rule that both currently installed shims project it to a
+  candidate hold because neither implements a bound PEBRA approval callback.
 
 Do not describe tiers as independent host commands and do not add `gate-check --self-test`.
 
@@ -1262,7 +1419,8 @@ git commit -m "feat: define the gate decision contract"
 **Interfaces:**
 - Consumes: the existing subprocess-only `cli_harness.gate_check()` without changing experiment
   infrastructure.
-- Proves: production emits schema 1 with the existing permission/tier behavior.
+- Proves: production emits schema 1 with the semantic disposition/wire permission, exact-only risk
+  summary, and host-capability projection.
 - Defers: consumer-side schema rejection and every A/B runner/test change to Milestone 6.
 
 - [ ] **Step 1: Write the failing real-CLI envelope test**
@@ -1284,6 +1442,7 @@ def test_gate_check_real_cli_emits_schema_one_envelope(tmp_path):
         "tier": "pass",
         "reason": None,
         "warn": None,
+        "risk_summary": None,
         "matched_assessment_id": None,
     }
 
@@ -1302,6 +1461,29 @@ def test_gate_hook_capabilities_emit_candidate_binding_protocol():
 Import `json`, `subprocess`, and `sys` in the new test module. The literal binding value here is the
 external consumer's expected wire value; E2E must not import the production constant.
 
+Add seeded exact-candidate subprocess cases that exercise a restrictive assessment with finite scores:
+
+- `pebra gate-check --consult-only` returns wire `deny`, a candidate-hold reason, and the exact
+  `risk_summary`;
+- interactive `pebra gate-check` returns wire `ask` only for `ask_human`, while persisted `reject` returns
+  wire `deny` with a different-route instruction;
+- `pebra gate-hook` with both a Claude `Write` event and the installed Codex `apply_patch` event projects
+  `REQUEST_HUMAN` to blocking `deny`, preserving the bound-review instruction and never emitting `ask`;
+- `ask_human` with replay status `available` names `pebra accept-risk --apply`, while missing,
+  malformed, or `unavailable` replay returns `consulted_review_unavailable`, stays blocking, and requests
+  reassessment without promising that command;
+- a one-byte candidate change produces mismatch with `risk_summary: null` and no numeric values copied
+  into the reason;
+- an exact restrictive assessment with partial/non-finite scores stays blocking, emits
+  `risk_summary: null`, says `risk summary unavailable`, contains no numeric fragments, and exits cleanly.
+
+Create a local black-box fixture in this E2E module using only stdlib Git/SQLite setup and subprocess CLI
+calls; the reusable helpers currently live only in unit-test modules and must not be imported. Do not
+import PEBRA internals. For the `consult_only` response, assert the reason does not contain `PEBRA`,
+`CodeGraph`, `experiment`, `oracle`, `permission denied`, or `goal rejected`, proving future experiment
+blinding compatibility. For the installed-hook `ask_human` response, assert the reason contains the
+bounded `pebra accept-risk --apply` next step. All restrictive reasons remain candidate-scoped.
+
 - [ ] **Step 2: Run Milestone 3 E2E acceptance**
 
 ```powershell
@@ -1311,7 +1493,9 @@ git diff --check
 ```
 
 Expected: the real production subprocess emits schema 1 with the unchanged `allow/pass` missing-store
-behavior, and no E2E module imports PEBRA.
+behavior; exact restrictive evidence is candidate-bound; both installed hook event shapes return the
+candidate without a sanction bypass or Codex fail-open; malformed stored scores remain restrictive; and
+no E2E module imports PEBRA.
 
 - [ ] **Step 3: Commit the process-boundary acceptance test**
 
@@ -1322,10 +1506,10 @@ git commit -m "test: verify gate schema over cli boundary"
 
 ### STOP FOR REVIEW 3
 
-Report all three commits, the complete enum/matrix, real subprocess envelope evidence, documentation
-coverage, and focused gate-contract E2E verification. Confirm that no decision math or fail-open path
-changed. The full A/B alignment and experiment suite remain intentionally deferred to the final
-milestone.
+Report all three commits, the complete semantic-enum/wire matrix, risk-summary validation, Claude/Codex
+projection evidence, documentation coverage, and focused gate-contract E2E verification. Confirm that
+no decision math, persisted decision value, sanction path, or fail-open infrastructure path changed.
+The full A/B alignment and experiment suite remain intentionally deferred to the final milestone.
 
 ---
 
@@ -1349,7 +1533,7 @@ _CLAUDE_RULE_REL = Path(".claude/rules/pebra-safe-edit.md")
 _OBLIGATIONS = (
     "assess before",
     "mismatched or incomplete candidate",
-    "deny or ask",
+    "candidate hold or human review",
     "human sanction",
     "verify and record",
 )
@@ -1396,7 +1580,8 @@ _CLAUDE_RULE_MD = """\
 
 1. Assess before every significant edit, rename, or delete.
 2. Never apply a mismatched or incomplete candidate; apply only the exact assessed candidate.
-3. A PEBRA gate deny or ask overrides an earlier advisory proceed for the attempted candidate.
+3. A PEBRA candidate hold or human-review request overrides an earlier advisory proceed for that exact
+   candidate; it does not cancel the user's requested goal.
 4. Never create, claim, or answer your own human sanction.
 5. After application, verify and record the outcome.
 """
@@ -1585,7 +1770,7 @@ def test_installed_host_check_is_real_cli_non_mutating(tmp_path, target):
     if target == "claude":
         rule = tmp_path / ".claude/rules/pebra-safe-edit.md"
         body = rule.read_text(encoding="utf-8")
-        for obligation in ("assess", "mismatched", "deny", "human sanction", "verify"):
+        for obligation in ("assess", "mismatched", "candidate hold", "human sanction", "verify"):
             assert obligation in body.lower()
 
     before = _snapshot(tmp_path)
@@ -1900,7 +2085,9 @@ checkpoint.
 - Modify: `e2e/utils/tests/test_gate_contract_cli.py`
 - Modify: `e2e/experiments/agent_ab/runners/agent_loop.py:270-288`
 - Modify: `e2e/experiments/agent_ab/runners/run_pair.py:1056-1096,1404-1445`
+- Modify: `e2e/experiments/agent_ab/runners/orchestrator.py:275-330`
 - Modify: `e2e/experiments/agent_ab/tests/test_run_pair.py`
+- Modify: `e2e/experiments/agent_ab/tests/test_orchestrator.py`
 - Modify: `e2e/experiments/agent_ab/tests/test_preflight.py`
 - Modify: `e2e/experiments/agent_ab/tests/test_blinding.py`
 - Modify: `e2e/experiments/agent_ab/tests/test_run_trial.py`
@@ -1912,9 +2099,15 @@ checkpoint.
 - Consumes: the production schema-1 envelope proved over the real CLI boundary in Milestone 3.
 - Changes: test doubles that represent the real CLI response use the complete production-shaped gate
   envelope; incompatible schema is experiment-fatal while ordinary gate infrastructure failures remain
-  fail-open; the runner names and documents its experiment-only positive-control tier.
-- Preserves: arm definitions, randomization, task corpus, prompts, model calls, consult-only treatment,
-  blinding, oracle/scoring rules, telemetry semantics, and the exact model-facing write result.
+  fail-open; the runner names and documents its experiment-only positive-control tier; the experiment
+  design explicitly versions the candidate-bound reason treatment.
+- Preserves: arm definitions, randomization, task corpus, prompts, model calls, consult-only execution,
+  oracle/scoring rules, telemetry definitions, post-write-only attribution, and the exact model-facing
+  field set `{ok, blocked, reason}`.
+- Intentionally changes: restrictive `reason` content may include neutral exact-candidate `decision`,
+  `expected_loss`, `benefit`, and `rau`. This is a new treatment, not a transparent schema refactor.
+- Rejects: resume or pooling with outcomes whose experiment design lacks or differs from the new reason
+  treatment version. A new live run must use a fresh run ID.
 - Does not run: the paid/provider-backed live assay (`nox -s e2e-ab`) without separate maintainer
   authorization and its existing environment gates.
 
@@ -1929,6 +2122,7 @@ _VALID_GATE = {
     "tier": "pass",
     "reason": None,
     "warn": None,
+    "risk_summary": None,
     "matched_assessment_id": None,
 }
 
@@ -1943,8 +2137,27 @@ _VALID_GATE = {
         {**_VALID_GATE, "tier": "unknown"},
         {**_VALID_GATE, "permission": "allow", "tier": "must_consult"},
         {**_VALID_GATE, "permission": "deny", "tier": "positive_control"},
+        {**_VALID_GATE, "permission": "deny", "tier": "must_consult", "reason": None},
+        {**_VALID_GATE, "permission": "ask", "tier": "consulted_review", "reason": " "},
         {**_VALID_GATE, "reason": 7},
         {**_VALID_GATE, "warn": []},
+        {**_VALID_GATE, "risk_summary": []},
+        {**_VALID_GATE, "risk_summary": {
+            "decision": "revise_safer", "expected_loss": float("nan"),
+            "benefit": 0.34, "rau": -0.27,
+        }},
+        {**_VALID_GATE, "risk_summary": {
+            "decision": "unknown", "expected_loss": 0.61,
+            "benefit": 0.34, "rau": -0.27,
+        }},
+        *(
+            {**_VALID_GATE, "matched_assessment_id": value}
+            for value in ("", "asm_0", "asm_-1", "asm_exact", "garbage")
+        ),
+        {**_VALID_GATE, "tier": "consulted", "risk_summary": {
+            "decision": "reject", "expected_loss": 0.61,
+            "benefit": 0.34, "rau": -0.27,
+        }, "matched_assessment_id": "asm_exact"},
         {key: value for key, value in _VALID_GATE.items() if key != "matched_assessment_id"},
     ),
 )
@@ -1952,6 +2165,12 @@ def test_gate_envelope_rejects_unsupported_or_malformed_payload(payload):
     with pytest.raises(cli_harness.GateContractError, match="gate contract"):
         cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"])
 ```
+
+Add consumer-side matrix tests for every declared
+`(permission, tier, risk_summary.decision)` combination and representative undeclared triples. Include
+valid `deny/consulted_review/reject`, valid `ask/consulted_review/ask_human`, and valid
+`deny/consulted_review_unavailable/ask_human` cases, all carrying valid `asm_1`. The E2E consumer must independently enforce
+the same wire contract without importing its production implementation.
 
 Add to `e2e/experiments/agent_ab/tests/test_write_gate.py`:
 
@@ -1971,7 +2190,39 @@ Import `pytest` and `e2e.utils.cli_harness` in that test module. Retain
 `test_gated_write_fails_open_on_backend_error`; together the tests distinguish protocol incompatibility
 from an ordinary unavailable gate.
 
-Add runner regressions proving protocol compatibility is checked before any provider/model trial begins:
+Add write/learning-boundary regressions:
+
+```python
+@pytest.mark.parametrize("permission", ("deny", "ask"))
+def test_held_candidate_never_writes_or_attributes_assessment(tmp_path, permission):
+    attributed = []
+    setup = SimpleNamespace(
+        repo_path=tmp_path,
+        gate_check_backend=lambda _event: {
+            "permission": permission,
+            "tier": "consulted_review" if permission == "ask" else "consulted_revise",
+            "reason": "This exact candidate is held—not your requested goal.",
+            "matched_assessment_id": "asm_exact",
+        },
+        write_applied_backend=lambda decision: attributed.append(decision),
+    )
+
+    result = agent_loop._gated_write({"path": "a.cs", "content": "hi"}, setup)
+
+    assert result["blocked"] is True
+    assert not (tmp_path / "a.cs").exists()
+    assert attributed == []
+```
+
+Keep the exact-allow companion proving a successful write receives attribution and a failed write never
+does. Retain `test_edit_cycles_ignores_blocked_write` and
+`test_restrictive_assessment_has_intervention_only_calibration_label`, and rerun the production learning
+tests proving only `completed` outcomes become `proceeded_edits_only` while `skipped`/`rejected` remain
+shadow. This is the precise learning-loop boundary: a held candidate cannot be joined as an applied or
+proceeded edit; it may remain visible only as an intervention/unresolved observation.
+
+Add runner regressions proving the base/null-evidence protocol branch is checked before any provider/model
+trial begins:
 
 ```python
 def test_incompatible_gate_contract_aborts_before_provider_setup(monkeypatch, treatment_setup):
@@ -2016,6 +2267,7 @@ _GATE_PERMISSION_TIERS = {
         "candidate_incomplete",
         "consulted_revise",
         "consulted_prerequisite",
+        "consulted_review",
         "consulted_review_unavailable",
     }),
 }
@@ -2023,6 +2275,41 @@ _GATE_PERMISSION_TIERS = {
 
 class GateContractError(CLIError):
     """The gate wire payload is incompatible with this experiment consumer."""
+
+
+_DECISIONS = frozenset({
+    "proceed", "inspect_first", "test_first", "revise_safer", "ask_human", "reject",
+})
+_ASSESSMENT_ID_RE = re.compile(r"asm_[1-9][0-9]*")
+_RISK_DECISIONS_BY_PAIR = {
+    ("allow", "consulted"): frozenset({"proceed"}),
+    ("deny", "consulted_revise"): frozenset({"revise_safer"}),
+    ("deny", "consulted_prerequisite"): frozenset({"inspect_first", "test_first"}),
+    ("ask", "consulted_review"): frozenset({"ask_human"}),
+    ("deny", "consulted_review"): frozenset({"reject"}),
+    ("deny", "consulted_review_unavailable"): frozenset({"ask_human"}),
+}
+
+
+def _validate_risk_summary(
+    value: object, permission: str, tier: str, cmd: list[str],
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict) or set(value) != {
+        "decision", "expected_loss", "benefit", "rau",
+    }:
+        raise GateContractError(f"command {cmd!r} returned an invalid gate risk summary")
+    if value["decision"] not in _DECISIONS:
+        raise GateContractError(f"command {cmd!r} returned an invalid gate risk decision")
+    if value["decision"] not in _RISK_DECISIONS_BY_PAIR.get(
+        (permission, tier), frozenset()
+    ):
+        raise GateContractError(f"command {cmd!r} returned inconsistent gate risk evidence")
+    for field in ("expected_loss", "benefit", "rau"):
+        number = value[field]
+        if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number):
+            raise GateContractError(f"command {cmd!r} returned a non-finite gate risk value")
 
 
 def _validate_gate_envelope(payload: object, cmd: list[str]) -> dict:
@@ -2040,14 +2327,33 @@ def _validate_gate_envelope(payload: object, cmd: list[str]) -> dict:
         raise GateContractError(f"command {cmd!r} returned an invalid gate contract permission")
     if tier not in _GATE_PERMISSION_TIERS[permission]:
         raise GateContractError(f"command {cmd!r} returned an invalid gate contract tier pair")
+    reason = payload.get("reason")
+    if permission in {"deny", "ask"} and (
+        not isinstance(reason, str) or not reason.strip()
+    ):
+        raise GateContractError(f"command {cmd!r} returned a restrictive gate without a reason")
     for field in ("reason", "warn", "matched_assessment_id"):
         value = payload.get(field)
         if field not in payload or (value is not None and not isinstance(value, str)):
             raise GateContractError(
                 f"command {cmd!r} returned an invalid gate contract {field}"
             )
+    assessment_id = payload["matched_assessment_id"]
+    if assessment_id is not None and _ASSESSMENT_ID_RE.fullmatch(assessment_id) is None:
+        raise GateContractError(f"command {cmd!r} returned an invalid matched assessment id")
+    if "risk_summary" not in payload:
+        raise GateContractError(f"command {cmd!r} omitted gate risk_summary")
+    _validate_risk_summary(payload["risk_summary"], permission, tier, cmd)
+    if payload["risk_summary"] is not None and payload["matched_assessment_id"] is None:
+        raise GateContractError(
+            f"command {cmd!r} returned gate risk evidence without an exact assessment"
+        )
     return payload
 ```
+
+Import `math` and `re`. The consumer validates shape and finiteness but does not recompute scores or import PEBRA.
+Unknown extra top-level keys remain compatible within schema 1; `risk_summary` itself is closed-shape so
+an ambiguous numeric field cannot silently enter the model-facing reason.
 
 Change `gate_check()` to return `_validate_gate_envelope(_parse_json_stdout(proc.stdout, cmd), cmd)` and
 update its docstring to name the complete versioned envelope. This single path covers calibration,
@@ -2063,8 +2369,8 @@ In `agent_loop.py`, import `cli_harness` and split the catch:
         decision = {"permission": "allow"}
 ```
 
-This prevents an incompatible protocol from silently changing the treatment into an allowed write while
-preserving the experiment's deliberate fail-open behavior for ordinary gate/runtime outages.
+This prevents a base-schema incompatibility from silently changing the treatment into an allowed write
+while preserving the experiment's deliberate fail-open behavior for ordinary gate/runtime outages.
 
 In `run_pair.py`, add a no-write contract probe for real gated arms and invoke it immediately after the
 existing `run_gate.check_gate()` authorization check, before `_load_config()`, provider selection, API-key
@@ -2090,7 +2396,9 @@ cfg = _load_config()["subject"]
 The empty event is a read-only production `gate-check` query. For gated arms, the backend calls the same
 validated `cli_harness.gate_check()` path used by calibration and writes; therefore an unsupported schema
 cannot consume model/provider work. Do not run the probe for synthetic controls, and do not reinterpret
-ordinary CLI/runtime failure as a fatal contract error.
+ordinary CLI/runtime failure as a fatal contract error. This probe exercises only the null-risk-summary
+branch. Every later response is still validated before its write; malformed non-null evidence therefore
+aborts safely before mutation, although provider setup may already have occurred. Do not claim otherwise.
 
 - [ ] **Step 3: Write the failing experiment compatibility regressions**
 
@@ -2104,6 +2412,7 @@ subprocess returns at least:
     "tier": "consulted",
     "reason": None,
     "warn": None,
+    "risk_summary": None,
     "matched_assessment_id": None,
 }
 ```
@@ -2123,6 +2432,27 @@ assert result == {"ok": True, "blocked": False, "reason": None}
 
 That exact equality is the blinding guarantee: new production metadata never reaches the coding agent.
 Keep the companion failed-write test proving no assessment is credited when mutation fails.
+
+Add a restrictive production-shaped case with an exact matched assessment and finite risk summary. Assert
+that `agent_loop` returns exactly:
+
+```python
+{
+    "ok": False,
+    "blocked": True,
+    "reason": (
+        "This exact candidate is held—not your requested goal. "
+        "Assessment: revise_safer; expected loss 0.61; benefit 0.34; RAU -0.27. "
+        "Next: revise this candidate and reassess."
+    ),
+}
+```
+
+The test must also prove no file write, no assessment attribution, and no edit-cycle increment. Add an
+unbound/mismatch companion proving its reason contains no copied numeric scores. Retain and extend
+`test_human_review_arm_requires_model_request_before_host_sanction_and_reassessment` to prove the human
+review arm still requires a model request, exact bound sanction, and new assessment before an allowed
+write. A human approval alone must never convert the original held decision into attribution.
 
 Add this positive-control regression to `test_run_pair.py`:
 
@@ -2149,30 +2479,62 @@ production gate response and therefore carries no production `schema_version`. D
 `GateTier`, `ALLOWED_PERMISSION_TIERS`, or `docs/GATE_CONTRACT.md`. Synthetic sham/control decisions must
 not pass through the production-envelope validator.
 
-- [ ] **Step 5: Document the experiment/production boundary**
+- [ ] **Step 5: Version the changed reason treatment and lock resume compatibility**
+
+In `orchestrator.py`, add a human-readable experiment design component:
+
+```python
+GATE_REASON_TREATMENT_VERSION = "candidate-risk-summary-v1"
+```
+
+Include it in `_experiment_design()` as `"gate_reason_treatment_version"`. The existing canonical design
+hash and `_assert_resume_design_compatible()` then reject checkpoints from the earlier reason treatment.
+Add tests proving:
+
+- changing only `GATE_REASON_TREATMENT_VERSION` changes `_design_sha256`;
+- a run directory whose stored design omits or differs from that value is rejected before provider setup;
+- an identical version resumes normally;
+- documentation and CLI examples use a fresh run ID for the first aligned run rather than an existing
+  historical run ID.
+
+Do not fabricate a random ID inside the runner or disable normal resume. The design hash is the hard
+compatibility boundary; the fresh run ID is an explicit operator requirement and review evidence.
+
+- [ ] **Step 6: Document the experiment/production boundary**
 
 Update `e2e/experiments/agent_ab/README.md` to state:
 
 - PEBRA treatment calls the real schema-1 gate subprocess with `consult_only=True`;
-- the harness rejects an unsupported gate schema before preflight or a trial;
+- the harness rejects incompatible base schema before provider setup and validates every later evidence
+  response before its write;
 - the runner performs a read-only schema probe after its existing authorization gate but before provider
   configuration or client construction;
 - the assay has no trusted human approver, so unresolved review remains conservatively blocked;
-- only `{ok, blocked, reason}` is model-facing in every arm;
+- only the `{ok, blocked, reason}` fields are model-facing in every arm;
+- candidate-bound risk mathematics in `reason` is an intentional new treatment identified by
+  `candidate-risk-summary-v1`, not a transparent refactor;
+- the first aligned live run requires a fresh run ID, and prior outcomes/checkpoints must not be resumed
+  or pooled with it;
+- held candidates do not write, do not receive assessment attribution, and do not count as edit cycles;
+- the `ask_human` review arm still requires explicit approval, exact sanction, and reassessment, while
+  persisted `reject` requires a different candidate or route;
 - `positive_control` is a synthetic experiment label, not a production `GateTier`;
-- this alignment changes no arm, prompt, task, outcome metric, or expected treatment effect.
+- arm definitions, prompts, tasks, outcome metrics, oracles, and scoring are unchanged, but the expected
+  treatment effect must be re-estimated because the reason content changed.
 
-- [ ] **Step 6: Run focused A/B compatibility tests**
+- [ ] **Step 7: Run focused A/B compatibility tests**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest e2e/utils/tests/test_gate_contract_cli.py e2e/experiments/agent_ab/tests/test_write_gate.py e2e/experiments/agent_ab/tests/test_run_pair.py::test_treatment_gate_check_backend_uses_consult_only e2e/experiments/agent_ab/tests/test_run_pair.py::test_exact_allowed_candidate_is_bound_for_post_edit_verify e2e/experiments/agent_ab/tests/test_run_pair.py::test_enforced_control_uses_unversioned_experiment_only_tier e2e/experiments/agent_ab/tests/test_agent_loop.py::test_allowed_assessment_is_attributed_only_after_write_succeeds e2e/experiments/agent_ab/tests/test_agent_loop.py::test_failed_write_never_credits_allowed_assessment e2e/experiments/agent_ab/tests/test_blinding.py e2e/experiments/agent_ab/tests/test_preflight.py e2e/test_boundary_discipline.py -q
+.\.venv\Scripts\python.exe -m pytest e2e/utils/tests/test_gate_contract_cli.py e2e/experiments/agent_ab/tests/test_write_gate.py e2e/experiments/agent_ab/tests/test_run_pair.py::test_treatment_gate_check_backend_uses_consult_only e2e/experiments/agent_ab/tests/test_run_pair.py::test_exact_allowed_candidate_is_bound_for_post_edit_verify e2e/experiments/agent_ab/tests/test_run_pair.py::test_enforced_control_uses_unversioned_experiment_only_tier e2e/experiments/agent_ab/tests/test_run_pair.py::test_human_review_arm_requires_model_request_before_host_sanction_and_reassessment e2e/experiments/agent_ab/tests/test_agent_loop.py::test_allowed_assessment_is_attributed_only_after_write_succeeds e2e/experiments/agent_ab/tests/test_agent_loop.py::test_failed_write_never_credits_allowed_assessment e2e/experiments/agent_ab/tests/test_oracle.py::test_restrictive_assessment_has_intervention_only_calibration_label e2e/experiments/agent_ab/tests/test_orchestrator.py::test_experiment_design_hash_changes_with_gate_reason_treatment e2e/experiments/agent_ab/tests/test_orchestrator.py::test_resume_rejects_changed_gate_reason_treatment tests/unit/test_learning_controller.py::test_completed_outcome_marks_rows_production_eligible tests/unit/test_learning_controller.py::test_skipped_outcome_keeps_rows_shadow tests/unit/test_learning_controller.py::test_rejected_outcome_keeps_rows_shadow e2e/experiments/agent_ab/tests/test_blinding.py e2e/experiments/agent_ab/tests/test_preflight.py e2e/test_boundary_discipline.py -q
 ```
 
 Expected: schema-1 data is consumed internally, consult-only and post-write attribution are unchanged,
-the model-facing schema remains fixed, positive control remains synthetic, blinding passes, and no E2E
-module imports PEBRA.
+held candidates never mutate or enter proceeded-edit calibration (while remaining honestly observable as
+interventions), the human-review sanction/reassessment path passes, the model-facing field set remains
+fixed, neutral reason content passes blinding, stale evidence does not leak, positive control remains
+synthetic, and no E2E module imports PEBRA.
 
-- [ ] **Step 7: Run the deferred aggregate E2E proof**
+- [ ] **Step 8: Run the deferred aggregate E2E proof**
 
 ```powershell
 .\.venv\Scripts\nox.exe -s tests lint e2e-fast
@@ -2180,21 +2542,22 @@ git diff --check
 ```
 
 Expected: the complete deterministic experiment suite and aggregate fast E2E lane pass. Compare test
-counts and skipped-test reasons with the pre-milestone baseline. Any change to arm definitions, prompts,
-task fixtures, oracle labels, scoring, provider calls, or model-facing tool schemas is a blocker requiring
-a new experiment-design review.
+counts and skipped-test reasons with the pre-milestone baseline. The approved reason-content difference
+and its new design hash are the only treatment change. Any change to arm definitions, prompts, task
+fixtures, oracle labels, scoring, provider calls, or model-facing field sets is a blocker requiring a new
+experiment-design review.
 
 Do not run `nox -s e2e-ab`; it is the live provider-backed assay and remains protected by
 `E2E_AB_RUN=1`, `E2E_EXTERNAL=1`, and the provider key.
 
-- [ ] **Step 8: Commit the experiment alignment**
+- [ ] **Step 9: Commit the experiment alignment**
 
 ```powershell
-git add e2e/utils/cli_harness.py e2e/utils/tests/test_gate_contract_cli.py e2e/experiments/agent_ab/runners/agent_loop.py e2e/experiments/agent_ab/runners/run_pair.py e2e/experiments/agent_ab/tests/test_run_pair.py e2e/experiments/agent_ab/tests/test_preflight.py e2e/experiments/agent_ab/tests/test_blinding.py e2e/experiments/agent_ab/tests/test_run_trial.py e2e/experiments/agent_ab/tests/test_agent_loop.py e2e/experiments/agent_ab/tests/test_write_gate.py e2e/experiments/agent_ab/README.md
+git add e2e/utils/cli_harness.py e2e/utils/tests/test_gate_contract_cli.py e2e/experiments/agent_ab/runners/agent_loop.py e2e/experiments/agent_ab/runners/run_pair.py e2e/experiments/agent_ab/runners/orchestrator.py e2e/experiments/agent_ab/tests/test_run_pair.py e2e/experiments/agent_ab/tests/test_orchestrator.py e2e/experiments/agent_ab/tests/test_preflight.py e2e/experiments/agent_ab/tests/test_blinding.py e2e/experiments/agent_ab/tests/test_run_trial.py e2e/experiments/agent_ab/tests/test_agent_loop.py e2e/experiments/agent_ab/tests/test_write_gate.py e2e/experiments/agent_ab/README.md
 git commit -m "test: align agent experiment with gate schema"
 ```
 
-- [ ] **Step 9: Run hosted cross-platform proof after explicit push approval**
+- [ ] **Step 10: Run hosted cross-platform proof after explicit push approval**
 
 After the maintainer authorizes pushing, push `main` and require the installed-wheel/test matrix to pass
 on Ubuntu, Windows, and macOS. Record workflow run URLs and job conclusions. Do not tag, publish, or add a
@@ -2207,10 +2570,15 @@ Report every milestone commit, each milestone's focused subprocess E2E evidence,
 
 - production gate schema 1 is consumed by the experiment;
 - treatment still uses the real consult-only gate and only successful writes receive attribution;
-- model-facing results remain exactly `{ok, blocked, reason}` in every arm;
+- model-facing results retain exactly the `{ok, blocked, reason}` fields in every arm;
+- candidate-bound mathematics in restrictive reasons is the declared `candidate-risk-summary-v1`
+  treatment, with a fresh run ID/design hash and no resume or pooling with earlier outcomes;
+- held candidates neither write nor receive applied/proceeded attribution; intervention-only observations
+  stay distinguishable, and the `ask_human` review path requires approval, exact sanction, and
+  reassessment;
 - `positive_control` remains experiment-local;
-- no decision math, fail-open behavior, arm, prompt, task corpus, oracle, scoring rule, or live model call
-  changed;
+- no decision math, persisted decision value, fail-open infrastructure behavior, arm, prompt, task corpus,
+  oracle, scoring rule, or live model call changed;
 - the live provider-backed assay was not launched without separate authorization.
 
 Runtime expansion requires a new approved spec based on a real host-loading experiment.

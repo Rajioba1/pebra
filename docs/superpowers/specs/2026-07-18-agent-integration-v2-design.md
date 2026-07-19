@@ -26,8 +26,11 @@ defines the contract and portability work that follows.
 
 ## Locked decisions
 
-1. **Permission is the host contract; tier is diagnostic.** Hosts branch on `allow`, `deny`, or `ask`.
-   A tier explains why that permission was returned and must not independently choose a host action.
+1. **Permission is the host wire contract; candidate disposition is the product meaning.** Preserve the
+   external values `allow`, `deny`, and `ask`, but name them internally `CONTINUE`, `RETURN_CANDIDATE`,
+   and `REQUEST_HUMAN`. A restrictive result holds only the exact attempted candidate; it never rejects
+   the human's goal or tells the agent to disobey the user. A tier explains the disposition and must not
+   independently choose a host action.
 2. **Preserve fail-open infrastructure policy.** Graph, Git, or store infrastructure failure continues to
    return `allow/fail_open` with a visible warning and degraded capability status. This design does not
    change that availability tradeoff.
@@ -40,12 +43,14 @@ defines the contract and portability work that follows.
    instruction or hook contract is identified and verified.
 7. **No new runtime in the first implementation plan.** Build the safety, contract, inspection, and
    conformance foundation first. Runtime expansion receives a separate experiment and review.
-8. **The agent A/B experiment is a versioned gate-contract consumer.** Its treatment continues to call
-   the real `pebra gate-check --consult-only` subprocess and act only on permission. It must reject an
-   unsupported gate schema before running a trial, keep the model-facing write result fixed at
-   `{ok, blocked, reason}`, and preserve the current intervention, blinding, telemetry attribution, and
-   conservative no-human behavior. `positive_control` remains an experiment-local synthetic tier and is
-   not added to the production `GateTier` enum.
+8. **The agent A/B experiment is a versioned gate-contract consumer and runs last.** Its treatment
+   continues to call the real `pebra gate-check --consult-only` subprocess and act only on permission.
+   It must reject an unsupported gate schema before running a trial, keep the model-facing write-result
+   fields fixed at `{ok, blocked, reason}`, and preserve conservative no-human execution and post-write
+   attribution. Adding candidate-bound mathematics to `reason` intentionally changes treatment content,
+   so aligned trials use a new experiment design hash and run ID and must not resume or pool outcomes
+   from the earlier treatment. `positive_control` remains an experiment-local synthetic tier and is not
+   added to the production `GateTier` enum.
 
 ## Architecture
 
@@ -74,16 +79,54 @@ across multiple files if an unrelated write fails after successful preflight.
 
 Create a dependency-free core contract containing:
 
-- `GatePermission`: `allow`, `deny`, `ask`;
+- `GatePermission.CONTINUE = "allow"`, `GatePermission.RETURN_CANDIDATE = "deny"`, and
+  `GatePermission.REQUEST_HUMAN = "ask"`;
 - `GateTier`: `pass`, `fail_open`, `must_consult`, `candidate_unverifiable`, `candidate_unbound`,
   `candidate_mismatch`, `candidate_incomplete`, `consulted`, `consulted_revise`,
   `consulted_prerequisite`, `consulted_review`, and `consulted_review_unavailable`;
+- a nullable `risk_summary` object containing the exact matched assessment's `decision`,
+  `expected_loss`, `benefit`, and `rau`;
 - `GATE_SCHEMA_VERSION = 1`;
 - the allowed permission/tier matrix.
 
 `GateDecision` normalizes values into those enums and rejects an undeclared pair. Its JSON output includes
-`schema_version`, string permission/tier values, reason, warning, and optional host metadata. Host shims
-continue to act only on permission.
+`schema_version`, string permission/tier values, reason, warning, nullable `risk_summary`, and optional
+host metadata. A risk summary is emitted only when a fresh assessment is bound to the exact attempted
+candidate and all three numeric values are finite. It is omitted as a unit for missing, stale, unbound,
+unverifiable, mismatched, or malformed evidence; the gate never attaches plausible-looking stale numbers.
+Internally, a non-null summary requires the exact matched assessment identifier (`asm_<positive-int>`),
+even when an untrusted serialized surface omits host-only attribution.
+The contract also validates the summary decision against the permission/tier pair: `allow/consulted`
+accepts only `proceed`; `deny/consulted_revise` only `revise_safer`;
+`deny/consulted_prerequisite` only `inspect_first`/`test_first`; `ask/consulted_review` only
+`ask_human`; `deny/consulted_review` only `reject`; and
+`deny/consulted_review_unavailable` only `ask_human`. Non-consulted pairs cannot carry a
+summary, and every restrictive permission requires a nonblank actionable reason.
+
+Restrictive exact-candidate reasons use neutral, actionable language: “this exact candidate is held—not
+your requested goal,” followed, when available, by the assessment decision, expected loss, benefit, RAU,
+and the next valid action. If exact persisted scores are missing, partial, or non-finite, the gate remains
+restrictive and states “risk summary unavailable”; it never crashes, fails open, fabricates, or partially
+prints values. `revise_safer`, `inspect_first`, and `test_first` return the candidate for the named work.
+`ask_human` returns the candidate with instructions for the existing bound sanction and reassessment
+workflow (`pebra accept-risk --apply`) on interactive installed hooks only when persisted candidate replay
+is available. Missing, malformed, or unavailable replay keeps the candidate held and requests reassessment
+or another route; it must not promise an inapplicable approval command. A consult-only surface states that
+no trusted approver is available without exposing product/experiment identity. `reject` returns the
+candidate and asks the human to choose a different candidate or route;
+persisted `reject` is not eligible for the current sanction workflow. The persisted six-value assessment
+`Decision` enum is unchanged for storage and learning compatibility; only the gate-facing semantics stop
+presenting it as rejection of the user's intent.
+
+Host shims act on permission subject to a tested host-capability projection. Claude supports native
+`ask`, but approving that prompt runs the tool without creating PEBRA's exact sanction or reassessment.
+Codex `PreToolUse` does not support `ask` at all: emitting it marks the hook failed and continues the tool
+call. Therefore both installed hook projections translate `REQUEST_HUMAN` into a blocking `deny` carrying
+the candidate-hold reason. For `ask_human`, the reason directs the agent to the bound sanction/reassessment
+workflow; for `reject`, it directs the agent to a different candidate or route. Native wire `ask` remains
+in the universal contract only for a future trusted adapter that proves an exact PEBRA approval callback.
+Installed shims must never silently convert a candidate hold into a warning-only write. `pebra gate-hook`
+remains the installed command; this design does not change the locked hook signature.
 
 `docs/GATE_CONTRACT.md` documents the JSON envelope, allowed pairs, fail-open policy, precedence, and
 threat boundary. A test derives every table row from the live allowed-pair matrix, so adding a tier without
@@ -107,7 +150,8 @@ The rule contains only five obligations:
 
 1. assess before significant edits;
 2. never apply a mismatched or incomplete candidate;
-3. a gate `deny` or `ask` overrides an earlier advisory `proceed` for the attempted candidate;
+3. a gate candidate hold or bound-human-review request overrides an earlier advisory `proceed` for that
+   attempted candidate without cancelling the user's goal;
 4. an agent never creates or answers its own human sanction;
 5. verify and record after application.
 
@@ -159,10 +203,20 @@ it. It deliberately does not import PEBRA internals: this preserves the process 
 incompatible schema change fail loudly instead of silently changing experimental treatment.
 
 The treatment arm continues to use `consult_only=True`. Because the assay has no trusted human approver,
-an unresolved `ask` or review outcome remains a conservative block. The experiment may retain
-`schema_version`, tier, warning, and host-only attribution internally, but the coding agent sees exactly
-the existing normalized `{ok, blocked, reason}` result in every arm. Assessment attribution still occurs
-only after a successful write.
+an unresolved review outcome remains a conservative candidate hold. The experiment may retain
+`schema_version`, tier, warning, risk summary, and host-only attribution internally, but the coding agent
+sees exactly the normalized `{ok, blocked, reason}` fields in every arm. A held candidate produces no
+write and no post-write assessment attribution. An allowed exact candidate is attributed only after a
+successful write. For `ask_human`, the existing human-review arm continues to prove approval, exact
+sanction, and fresh reassessment before a formerly held candidate may proceed. Persisted `reject` is not
+sanctionable and must take a different route.
+
+The reason now includes neutral candidate-bound assessment evidence when available. That is an intentional
+treatment-content change even though the JSON field set is stable. The experiment's blinding validator
+must permit only the approved neutral evidence vocabulary and must continue to reject product, oracle,
+arm, experiment, or provider identifiers. The aligned experiment receives a fresh design hash and run ID;
+pre-change checkpoints and outcomes are incompatible and cannot be resumed, pooled, or compared as one
+treatment population.
 
 The enforced positive control is not a production gate response. Its `positive_control` tier remains a
 local experimental label, is documented as such in the runner, and must not be accepted by the production
@@ -190,10 +244,12 @@ Stop for review before continuing or publishing `0.1.1`.
 
 ### Milestone 1 — Gate contract and binding constant
 
-Add typed permissions/tiers, schema version, allowed-pair validation, contract documentation, and the
-single candidate-binding constant. Prove the versioned envelope through a real subprocess E2E test, but
-do not update or run the complete A/B suite yet. Stop for review after focused tests, full tests, lint,
-import contracts, and the milestone's gate-contract E2E acceptance pass.
+Add typed candidate dispositions/wire permissions, tiers, schema version, allowed-pair validation,
+exact-candidate risk summaries, host-specific permission projection, contract documentation, and the
+single candidate-binding constant. Prove the versioned envelope and both Claude/Codex restrictive paths
+through real subprocess E2E tests, but do not update or run the complete A/B suite yet. Stop for review
+after focused tests, full tests, lint, import contracts, and the milestone's gate-contract E2E acceptance
+pass.
 
 ### Milestone 2 — Always-loaded Claude rule and inspection
 
@@ -208,9 +264,11 @@ add a third runtime. Stop for review after focused host E2E and installed-wheel 
 ### Milestone 4 — Experiment alignment and aggregate proof
 
 Align the existing A/B runner and its production-shaped test doubles with the completed schema-1 behavior.
-Preserve the intervention, consult-only mode, blinding, model-facing schema, telemetry, arm definitions,
-prompts, corpus, oracle, and scoring. Run the full deterministic A/B suite and aggregate `e2e-fast` only
-at this final milestone, then require Windows/Ubuntu/macOS CI evidence. Do not launch the separately gated
+Preserve consult-only execution, the `{ok, blocked, reason}` field set, post-write-only attribution,
+telemetry definitions, arm definitions, prompts, corpus, oracle, and scoring. Deliberately version the
+new reason content as a new treatment: generate a fresh design hash and run ID and prohibit resume or
+pooling with earlier results. Run the full deterministic A/B suite and aggregate `e2e-fast` only at this
+final milestone, then require Windows/Ubuntu/macOS CI evidence. Do not launch the separately gated
 provider-backed live assay without explicit authorization.
 
 ### Deferred runtime expansion
@@ -227,12 +285,22 @@ claims remain forbidden.
   changing it requires legacy-signature migration tests in the same change.
 - Byte-for-byte no-write assertions on validation and check paths.
 - Complete enum and allowed-pair coverage.
+- Exact-candidate risk-summary validation rejects partial, non-finite, stale, mismatched, unbound, and
+  unverifiable evidence; restrictive reasons never imply that the user's goal was rejected.
+- Both installed hooks project `REQUEST_HUMAN` to a blocking candidate hold; Claude cannot bypass PEBRA's
+  sanction/reassessment through native prompt approval, and Codex never receives unsupported `ask`.
+  The Claude and Codex event paths are proved across their subprocess boundaries.
 - Documentation rows derived from live contract values.
 - A focused production subprocess E2E proves the schema-1 envelope before the Milestone 1 review.
 - In the final milestone, the A/B subprocess harness rejects unsupported or malformed envelopes without
   importing PEBRA.
 - The A/B treatment still forwards `consult_only=True`, preserves post-write-only assessment attribution,
   and exposes only `{ok, blocked, reason}` to the model when gate metadata is present.
+- Held candidates produce neither a file write nor applied/proceeded assessment attribution; they may
+  remain intervention-only observations. The `ask_human` path proves approval, exact sanction, and
+  reassessment before a formerly held candidate proceeds, while `reject` requires a different route.
+- The candidate-bound reason treatment uses a fresh design hash/run ID and rejects resume or pooling with
+  pre-change experiment results.
 - `positive_control` remains experiment-local and absent from the production `GateTier` contract.
 - Candidate-binding consumers use the single core constant.
 - Claude always-loaded rule and full skills contain the required semantic obligations.
@@ -251,7 +319,8 @@ claims remain forbidden.
 
 - Changing `HOOK_COMMAND` or automatically migrating a legacy PEBRA hook signature; either requires a
   separate approved migration design with known legacy signatures and deduplication evidence.
-- Changing decision math, candidate authorization, sanctions, or persistence.
+- Changing decision math, the persisted six-value `Decision` enum, sanctions, or persistence. Gate-facing
+  wording and host projection change only how the exact candidate disposition is communicated and enforced.
 - Replacing the pre-act gate with CI-after-the-fact enforcement.
 - A multi-agent inbox, work queue, or coordinator.
 - A plugin engine, third-party risk-rule loader, or self-updater.
