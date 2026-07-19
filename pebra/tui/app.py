@@ -53,6 +53,16 @@ class ObservatoryApp(App[None]):
         variables.update(css_variables())
         return variables
 
+    def action_show_help_panel(self) -> None:
+        """Toggle Textual's key-binding help panel."""
+        from textual.widgets import HelpPanel
+
+        panels = self.screen.query(HelpPanel)
+        if len(panels):
+            panels.remove()
+        else:
+            self.screen.mount(HelpPanel())
+
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
         # Built-ins (Change theme, Quit, ...) plus the Observatory's read-only commands. There is
         # deliberately NO mutating command here — this surface only reads.
