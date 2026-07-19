@@ -114,6 +114,91 @@ def test_plan_rejects_missing_tasks():
         raise AssertionError("missing configured task must fail closed")
 
 
+@pytest.mark.parametrize(
+    ("mode", "parallel"),
+    (
+        pytest.param("pilot", False, id="legacy-pair"),
+        pytest.param("assay", False, id="sequential-assay"),
+        pytest.param("assay", True, id="parallel-assay"),
+        pytest.param("assay_js", False, id="staged-sham"),
+    ),
+)
+def test_main_probes_gate_contract_before_any_trial_or_provider_setup(
+    monkeypatch, tmp_path, mode, parallel,
+):
+    calls = []
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
+    monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1" if parallel else "0")
+    monkeypatch.setattr(
+        orchestrator.cli_harness,
+        "gate_check",
+        lambda event, *, db, consult_only: calls.append((event, db, consult_only))
+        or (_ for _ in ()).throw(
+            orchestrator.cli_harness.GateContractError("incompatible schema")
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_config",
+        lambda: pytest.fail("provider/trial setup must not begin"),
+    )
+
+    with pytest.raises(orchestrator.cli_harness.GateContractError, match="incompatible"):
+        orchestrator.main(["--run-id", "contract-probe", "--mode", mode])
+
+    assert calls == [({}, tmp_path / "contract-probe" / "gate-contract-probe.db", True)]
+
+
+def test_main_gate_contract_probe_keeps_infrastructure_failure_fail_open(
+    monkeypatch, tmp_path,
+):
+    class SetupReached(Exception):
+        pass
+
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(
+        orchestrator.cli_harness,
+        "gate_check",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            orchestrator.cli_harness.CLIError("gate unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_config",
+        lambda: (_ for _ in ()).throw(SetupReached),
+    )
+
+    with pytest.raises(SetupReached):
+        orchestrator.main(["--run-id", "contract-probe", "--mode", "pilot"])
+
+
+def test_run_contract_probe_uses_real_schema_validator(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        orchestrator.cli_harness.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps({
+                "schema_version": 2,
+                "permission": "allow",
+                "tier": "pass",
+                "reason": None,
+                "warn": None,
+                "risk_summary": None,
+                "matched_assessment_id": None,
+            }),
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(orchestrator.cli_harness.GateContractError, match="contract schema"):
+        orchestrator._preflight_gate_contract(tmp_path)
+
+
 def test_orchestrator_corpus_loader_includes_javascript_specimen():
     corpus = orchestrator.load_corpus()
     by_id = {spec.task_id: spec for spec in corpus}
@@ -322,6 +407,61 @@ def test_resume_accepts_identical_gate_reason_treatment(tmp_path):
     )
 
     orchestrator._assert_resume_design_compatible(run_dir, metadata)
+
+
+@pytest.mark.parametrize("mutation", ("missing-version", "changed-seeds"))
+def test_resume_rejects_forged_current_hash_over_corrupt_stored_design(
+    tmp_path, mutation,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    current = _run_meta(mode="assay_js", seeds_per_arm=3)
+    prior = json.loads(json.dumps(current))
+    if mutation == "missing-version":
+        prior["experiment_design"].pop("gate_reason_treatment_version")
+    else:
+        prior["experiment_design"]["mode_config"]["seeds_per_arm"] = 1
+    prior["experiment_design_sha256"] = current["experiment_design_sha256"]
+    (run_dir / "outcomes.json").write_text(
+        json.dumps({"outcomes": [], "run_metadata": prior}), encoding="utf-8"
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run.design"):
+        orchestrator._assert_resume_design_compatible(run_dir, current)
+
+
+def test_resume_rejects_stored_design_hash_mismatch(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    current = _run_meta(mode="assay_js", seeds_per_arm=3)
+    prior = json.loads(json.dumps(current))
+    prior["experiment_design"]["provider"] = "forged-provider"
+    (run_dir / "outcomes.json").write_text(
+        json.dumps({"outcomes": [], "run_metadata": prior}), encoding="utf-8"
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run.design"):
+        orchestrator._assert_resume_design_compatible(run_dir, current)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("seeds_per_arm", 1), ("mode", "pilot")),
+)
+def test_resume_rejects_top_level_design_config_inconsistency(
+    tmp_path, field, value,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    current = _run_meta(mode="assay_js", seeds_per_arm=3)
+    prior = json.loads(json.dumps(current))
+    prior[field] = value
+    (run_dir / "outcomes.json").write_text(
+        json.dumps({"outcomes": [], "run_metadata": prior}), encoding="utf-8"
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run.design"):
+        orchestrator._assert_resume_design_compatible(run_dir, current)
 
 
 @pytest.mark.parametrize("value", ("true", "false", "1.5", "0", "-1", ""))

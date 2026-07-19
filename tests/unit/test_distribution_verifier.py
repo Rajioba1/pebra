@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from pebra.cli import agent_init
+from scripts import verify_distribution as distribution_verifier
+
 from scripts.verify_distribution import (
     DistributionVerificationError,
     _EXPECTED_AGENT_HOSTS,
@@ -294,6 +297,91 @@ def test_installed_agent_check_validator_normalizes_malformed_and_stale_output(
 
     with pytest.raises(DistributionVerificationError, match=message):
         _validate_agent_init_check(raw, target="claude")
+
+
+def _write_agent_init_artifacts(root: Path, target: str) -> None:
+    spec = _EXPECTED_AGENT_HOSTS[target]
+    skill = root / str(spec["skill_path"])
+    skill.parent.mkdir(parents=True)
+    skill.write_text(agent_init._SKILL_MD, encoding="utf-8", newline="")
+    if target == "claude":
+        rule = root / str(spec["instruction_paths"][0])
+        rule.parent.mkdir(parents=True)
+        rule.write_text(agent_init._CLAUDE_RULE_MD, encoding="utf-8", newline="")
+    else:
+        (root / "AGENTS.md").write_text(
+            distribution_verifier._CODEX_SENTINEL
+            + "\n"
+            + agent_init._managed_block()
+            + "\n",
+            encoding="utf-8",
+            newline="",
+        )
+
+
+@pytest.mark.parametrize("target", ("claude", "codex"))
+def test_installed_artifact_verifier_accepts_independent_expected_files(
+    tmp_path, target,
+) -> None:
+    _write_agent_init_artifacts(tmp_path, target)
+
+    distribution_verifier._verify_agent_init_artifacts(tmp_path, target)
+
+
+@pytest.mark.parametrize("target", ("claude", "codex"))
+def test_installed_artifact_verifier_rejects_skill_byte_drift(tmp_path, target) -> None:
+    _write_agent_init_artifacts(tmp_path, target)
+    skill = tmp_path / str(_EXPECTED_AGENT_HOSTS[target]["skill_path"])
+    skill.write_bytes(skill.read_bytes() + b"\nchanged")
+
+    with pytest.raises(DistributionVerificationError, match="skill bytes"):
+        distribution_verifier._verify_agent_init_artifacts(tmp_path, target)
+
+
+def test_installed_artifact_verifier_checks_skill_semantic_relations(
+    tmp_path, monkeypatch,
+) -> None:
+    _write_agent_init_artifacts(tmp_path, "claude")
+    skill = tmp_path / str(_EXPECTED_AGENT_HOSTS["claude"]["skill_path"])
+    changed = skill.read_text(encoding="utf-8").replace(
+        "Never treat either decision as permission to edit.",
+        "Treat either decision as permission to edit.",
+    )
+    skill.write_text(changed, encoding="utf-8", newline="")
+    monkeypatch.setattr(
+        distribution_verifier,
+        "_EXPECTED_AGENT_SKILL_SHA256",
+        distribution_verifier.hashlib.sha256(skill.read_bytes()).hexdigest(),
+    )
+
+    with pytest.raises(DistributionVerificationError, match="semantic obligation"):
+        distribution_verifier._verify_agent_init_artifacts(tmp_path, "claude")
+
+
+def test_installed_artifact_verifier_checks_claude_rule_obligations(tmp_path) -> None:
+    _write_agent_init_artifacts(tmp_path, "claude")
+    rule = tmp_path / str(_EXPECTED_AGENT_HOSTS["claude"]["instruction_paths"][0])
+    rule.write_text("# PEBRA safe-edit non-negotiables\n", encoding="utf-8")
+
+    with pytest.raises(DistributionVerificationError, match="Claude rule obligation"):
+        distribution_verifier._verify_agent_init_artifacts(tmp_path, "claude")
+
+
+def test_installed_artifact_verifier_requires_codex_sentinel_outside_managed_block(
+    tmp_path,
+) -> None:
+    _write_agent_init_artifacts(tmp_path, "codex")
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agent_init._managed_block().replace(
+            agent_init._MARK_END,
+            distribution_verifier._CODEX_SENTINEL + "\n" + agent_init._MARK_END,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DistributionVerificationError, match="Codex sentinel"):
+        distribution_verifier._verify_agent_init_artifacts(tmp_path, "codex")
 
 
 def test_installed_verifier_mounts_tui_headlessly() -> None:

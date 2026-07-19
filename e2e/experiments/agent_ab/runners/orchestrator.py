@@ -43,7 +43,6 @@ _RCA_IDENTITY_KEYS = (
     "status", "validation_mode", "version", "sha256", "source_revision",
     "required_sha256", "accepted_version", "required_source_revision",
 )
-_RUN_DESIGN_KEYS = ("experiment_design_sha256",)
 _EVAL_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus" / "evaluator_tests"
 _ALLOW_UNVERIFIED_ENV = "E2E_AB_ALLOW_UNVERIFIED"
 _TERMINAL_PHASES = frozenset(
@@ -437,16 +436,44 @@ def _assert_resume_design_compatible(out_dir: Path, run_metadata: dict[str, Any]
         return
     try:
         prior = json.loads(outcomes_path.read_text(encoding="utf-8"))["run_metadata"]
-        prior_identity = tuple(prior[key] for key in _RUN_DESIGN_KEYS)
-        current_identity = tuple(run_metadata[key] for key in _RUN_DESIGN_KEYS)
+        prior_identity = _authenticated_design_identity(prior)
     except (OSError, ValueError, KeyError, TypeError):
         raise ExperimentRunError(
-            "cannot resume outcomes without prior run-design metadata; use a fresh run-id"
+            "cannot resume outcomes with inconsistent prior run-design metadata; "
+            "run design changed; use a fresh run-id"
         ) from None
+    try:
+        current_identity = _authenticated_design_identity(run_metadata)
+    except (ValueError, KeyError, TypeError):
+        raise ExperimentRunError("current run-design metadata is inconsistent") from None
     if prior_identity != current_identity:
         raise ExperimentRunError(
             "run design changed since this run-id produced outcomes; use a fresh run-id"
         )
+
+
+def _authenticated_design_identity(metadata: dict[str, Any]) -> tuple[str]:
+    design = metadata["experiment_design"]
+    claimed_hash = metadata["experiment_design_sha256"]
+    if not isinstance(design, dict) or not isinstance(claimed_hash, str):
+        raise ValueError("malformed experiment design")
+    if _design_sha256(design) != claimed_hash:
+        raise ValueError("experiment design hash mismatch")
+    if design.get("gate_reason_treatment_version") != GATE_REASON_TREATMENT_VERSION:
+        raise ValueError("stale gate reason treatment")
+    mode = metadata["mode"]
+    mode_config = design["mode_config"]
+    seeds_per_arm = metadata["seeds_per_arm"]
+    if (
+        not isinstance(mode, str)
+        or design.get("mode") != mode
+        or not isinstance(mode_config, dict)
+        or type(seeds_per_arm) is not int
+        or seeds_per_arm <= 0
+        or mode_config.get("seeds_per_arm") != seeds_per_arm
+    ):
+        raise ValueError("experiment mode configuration mismatch")
+    return (claimed_hash,)
 
 
 def _assert_rca_probe_usable(run_metadata: dict[str, Any]) -> None:
@@ -575,6 +602,18 @@ def _sham_admission_failures(
     return insufficient_data, no_headroom
 
 
+def _preflight_gate_contract(out_dir: Path) -> None:
+    """Validate the real schema-1 gate boundary once before any subject trial starts."""
+    try:
+        cli_harness.gate_check(
+            {}, db=out_dir / "gate-contract-probe.db", consult_only=True
+        )
+    except cli_harness.GateContractError:
+        raise
+    except Exception:  # noqa: BLE001 - gate availability remains deliberately fail-open
+        return
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the blinded agent A/B experiment (gated).")
     parser.add_argument("--run-id", required=True)
@@ -593,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.preflight_only:
         run_gate.check_gate()  # fail-closed before ANY clone / model call
+        _preflight_gate_contract(_AB_OUT / args.run_id)
     if args.preflight_only and (args.skip_oracle_preflight or args.skip_graph_preflight):
         raise ExperimentRunError("--preflight-only cannot be combined with preflight skip flags")
     if (args.skip_oracle_preflight or args.skip_graph_preflight) and os.environ.get(_ALLOW_UNVERIFIED_ENV) != "1":

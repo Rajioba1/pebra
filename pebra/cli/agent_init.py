@@ -17,6 +17,7 @@ Targets:
 from __future__ import annotations
 
 import json
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -201,6 +202,36 @@ def _reject_unsafe_managed_paths(repo_root: Path, target: str, with_hook: bool) 
         if unsafe is not None:
             raise AgentInitConfigError(
                 f"{unsafe}: managed path redirect or hardlink is not allowed"
+            )
+        _reject_invalid_managed_path_types(repo_root, path)
+
+
+def _reject_invalid_managed_path_types(repo_root: Path, path: Path) -> None:
+    """Require existing parents to be directories and the destination to be a file."""
+    try:
+        relative = path.relative_to(repo_root)
+    except ValueError as exc:
+        raise AgentInitConfigError(f"{path}: managed path is outside repository root") from exc
+    current = repo_root
+    last_index = len(relative.parts) - 1
+    for index, part in enumerate(relative.parts):
+        current /= part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise AgentInitConfigError(
+                f"{current}: cannot inspect managed path metadata"
+            ) from exc
+        if index == last_index:
+            if not stat.S_ISREG(mode):
+                raise AgentInitConfigError(
+                    f"{current}: managed destination must be a regular file"
+                )
+        elif not stat.S_ISDIR(mode):
+            raise AgentInitConfigError(
+                f"{current}: managed path parent must be a directory"
             )
 
 

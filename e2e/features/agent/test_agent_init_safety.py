@@ -69,6 +69,37 @@ def test_codex_non_utf8_agents_md_is_failure_atomic(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("target", "obstruction_rel", "earlier_rel"),
+    (
+        (
+            "claude",
+            ".claude/skills/pebra-safe-edit/SKILL.md",
+            ".claude/rules/pebra-safe-edit.md",
+        ),
+        ("codex", ".agents/skills/pebra-safe-edit/SKILL.md", "AGENTS.md"),
+    ),
+)
+def test_agent_init_destination_type_failure_is_atomic_across_real_cli(
+    tmp_path, target, obstruction_rel, earlier_rel,
+):
+    obstruction = tmp_path / obstruction_rel
+    obstruction.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "pebra", "agent-init", "--target", target,
+            "--repo-root", str(tmp_path),
+        ],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+
+    assert result.returncode == 2
+    assert "regular file" in result.stderr.lower()
+    assert obstruction.is_dir()
+    assert not (tmp_path / earlier_rel).exists()
+
+
+@pytest.mark.parametrize(
     ("target", "config_rel", "skill_rel", "matcher"),
     (
         (

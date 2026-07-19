@@ -9,7 +9,9 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -1076,6 +1078,100 @@ def test_agent_init_rejects_broken_managed_file_symlink(tmp_path, capsys):
 
     assert skill.is_symlink()
     assert "redirect" in capsys.readouterr().err.lower()
+    assert not (tmp_path / _CLAUDE_RULE_REL).exists()
+
+
+@pytest.mark.parametrize(
+    ("target", "obstruction_rel", "earlier_rel"),
+    (
+        ("claude", ".claude/skills/pebra-safe-edit/SKILL.md", _CLAUDE_RULE_REL),
+        ("codex", ".agents/skills/pebra-safe-edit/SKILL.md", "AGENTS.md"),
+    ),
+)
+def test_agent_init_rejects_directory_destination_before_any_write(
+    tmp_path, capsys, target, obstruction_rel, earlier_rel,
+):
+    obstruction = tmp_path / obstruction_rel
+    obstruction.mkdir(parents=True)
+
+    assert _run(target, tmp_path) == 2
+
+    assert "regular file" in capsys.readouterr().err.lower()
+    assert obstruction.is_dir()
+    assert not (tmp_path / earlier_rel).exists()
+
+
+@pytest.mark.parametrize(
+    ("target", "parent_rel", "earlier_rel"),
+    (
+        ("claude", ".claude/skills", _CLAUDE_RULE_REL),
+        ("codex", ".agents/skills", "AGENTS.md"),
+    ),
+)
+def test_agent_init_rejects_regular_file_parent_before_any_write(
+    tmp_path, capsys, target, parent_rel, earlier_rel,
+):
+    parent = tmp_path / parent_rel
+    parent.parent.mkdir(parents=True)
+    parent.write_bytes(b"not a directory")
+
+    assert _run(target, tmp_path) == 2
+
+    assert "directory" in capsys.readouterr().err.lower()
+    assert parent.read_bytes() == b"not a directory"
+    assert not (tmp_path / earlier_rel).exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation unavailable")
+def test_agent_init_rejects_fifo_destination_before_any_write(tmp_path, capsys):
+    skill = tmp_path / _SKILL_REL
+    skill.parent.mkdir(parents=True)
+    os.mkfifo(skill)
+
+    assert _run("claude", tmp_path) == 2
+
+    assert "regular file" in capsys.readouterr().err.lower()
+    assert not (tmp_path / _CLAUDE_RULE_REL).exists()
+
+
+@pytest.mark.parametrize("special_mode", (stat.S_IFIFO, stat.S_IFCHR), ids=("fifo", "device"))
+def test_agent_init_rejects_special_destination_types_before_any_write(
+    tmp_path, monkeypatch, special_mode,
+):
+    skill = tmp_path / _SKILL_REL
+    skill.parent.mkdir(parents=True)
+    original_lstat = Path.lstat
+
+    def _lstat(path):
+        if path == skill:
+            return SimpleNamespace(st_mode=special_mode)
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", _lstat)
+
+    with pytest.raises(agent_init.AgentInitConfigError, match="regular file"):
+        agent_init._reject_invalid_managed_path_types(tmp_path, skill)
+
+    assert not (tmp_path / _CLAUDE_RULE_REL).exists()
+
+
+def test_agent_init_metadata_error_is_fail_closed_before_any_write(
+    tmp_path, monkeypatch, capsys,
+):
+    original_lstat = Path.lstat
+    unreadable = tmp_path / ".claude"
+
+    def _lstat(path):
+        if path == unreadable:
+            raise OSError("metadata unavailable")
+        return original_lstat(path)
+
+    monkeypatch.setattr(agent_init, "_unsafe_managed_path", lambda root, path: None)
+    monkeypatch.setattr(Path, "lstat", _lstat)
+
+    assert _run("claude", tmp_path) == 2
+
+    assert "inspect" in capsys.readouterr().err.lower()
     assert not (tmp_path / _CLAUDE_RULE_REL).exists()
 
 

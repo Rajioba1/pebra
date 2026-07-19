@@ -77,6 +77,31 @@ _AGENT_CHECK_KEYS = {
     "declared_support",
     "effective_enforcement",
 }
+_EXPECTED_AGENT_SKILL_SHA256 = "0727ba1df53e6d944091a19f96b645983b32ba2776549eac3d4ec906cd92998d"
+_CODEX_SENTINEL = "# Pre-existing Codex distribution-verifier sentinel\nPreserve this instruction.\n"
+_MANAGED_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
+_MANAGED_END = "<!-- END pebra-safe-edit -->"
+_AGENT_SEMANTIC_OBLIGATIONS = (
+    "Assess before every significant edit, rename, or delete",
+    "Never treat either decision as permission to edit.",
+    "exact assessed candidate;",
+    "approval prompt yourself.",
+    "pebra verify --assessment-id <id> --scope staged",
+    "pebra record-outcome --assessment-id <id> --status completed",
+)
+_AGENT_SEMANTIC_RELATIONS = (
+    ("**Assess (pre-edit).**", "**Revise when asked.**"),
+    ("pebra accept-risk --apply", "apply_exact_candidate_then_verify"),
+    ("apply_exact_candidate_then_verify", "pebra verify --assessment-id"),
+    ("pebra verify --assessment-id", "pebra record-outcome --assessment-id"),
+)
+_CLAUDE_RULE_OBLIGATIONS = (
+    "Assess before every significant edit, rename, or delete.",
+    "Never apply a mismatched or incomplete candidate",
+    "candidate hold or human review overrides an earlier advisory proceed",
+    "Never create, claim, or answer your own human sanction.",
+    "After application, verify and record the outcome.",
+)
 
 
 class DistributionVerificationError(RuntimeError):
@@ -256,6 +281,69 @@ def _validate_agent_init_check(raw: str, *, target: str) -> dict[str, object]:
     return payload
 
 
+def _read_agent_artifact(path: Path, *, label: str) -> tuple[bytes, str]:
+    try:
+        raw = path.read_bytes()
+        return raw, raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DistributionVerificationError(
+            f"installed {label} is missing or unreadable: {path}"
+        ) from exc
+
+
+def _verify_agent_semantics(text: str, *, label: str) -> None:
+    if any(obligation not in text for obligation in _AGENT_SEMANTIC_OBLIGATIONS):
+        raise DistributionVerificationError(
+            f"installed {label} is missing a semantic obligation"
+        )
+    for before, after in _AGENT_SEMANTIC_RELATIONS:
+        if before not in text or after not in text or text.index(before) >= text.index(after):
+            raise DistributionVerificationError(
+                f"installed {label} has an invalid semantic obligation relation"
+            )
+
+
+def _verify_agent_init_artifacts(repo_root: Path, target: str) -> None:
+    """Inspect installed files directly using verifier-owned expectations."""
+    expected = _EXPECTED_AGENT_HOSTS[target]
+    skill_path = repo_root / str(expected["skill_path"])
+    skill_bytes, skill_text = _read_agent_artifact(skill_path, label=f"{target} skill")
+    if hashlib.sha256(skill_bytes).hexdigest() != _EXPECTED_AGENT_SKILL_SHA256:
+        raise DistributionVerificationError(
+            f"installed {target} skill bytes differ from the release oracle"
+        )
+    _verify_agent_semantics(skill_text, label=f"{target} skill")
+
+    instruction_path = repo_root / str(expected["instruction_paths"][0])
+    _raw, instruction_text = _read_agent_artifact(
+        instruction_path, label=f"{target} instructions"
+    )
+    if target == "claude":
+        if any(item not in instruction_text for item in _CLAUDE_RULE_OBLIGATIONS):
+            raise DistributionVerificationError(
+                "installed Claude rule obligation is missing"
+            )
+        return
+
+    if not instruction_text.startswith(_CODEX_SENTINEL):
+        raise DistributionVerificationError(
+            "installed Codex sentinel was not preserved outside the managed block"
+        )
+    if (
+        instruction_text.count(_MANAGED_BEGIN) != 1
+        or instruction_text.count(_MANAGED_END) != 1
+    ):
+        raise DistributionVerificationError("installed Codex managed block is malformed")
+    start = instruction_text.index(_MANAGED_BEGIN)
+    end = instruction_text.index(_MANAGED_END, start) + len(_MANAGED_END)
+    managed = instruction_text[start:end]
+    if _CODEX_SENTINEL.strip() in managed:
+        raise DistributionVerificationError(
+            "installed Codex sentinel was not preserved outside the managed block"
+        )
+    _verify_agent_semantics(managed, label="Codex managed block")
+
+
 def _verify_tui_mount(app: _HeadlessTestApp) -> None:
     """Enter Textual's headless lifecycle so packaged styles are parsed and loaded."""
 
@@ -343,6 +431,11 @@ def verify_installed() -> None:
             )
         for target in _EXPECTED_AGENT_HOSTS:
             repo_root = cwd / f"agent-{target}"
+            if target == "codex":
+                repo_root.mkdir(parents=True)
+                (repo_root / "AGENTS.md").write_text(
+                    _CODEX_SENTINEL, encoding="utf-8", newline=""
+                )
             installed = _run_cli(
                 "agent-init", "--target", target, "--repo-root", str(repo_root), "--with-hook",
                 cwd=cwd,
@@ -351,6 +444,7 @@ def verify_installed() -> None:
                 raise DistributionVerificationError(
                     f"installed agent-init failed for {target}: {installed.stderr.strip()}"
                 )
+            _verify_agent_init_artifacts(repo_root, target)
             before = {
                 path.relative_to(repo_root).as_posix(): path.read_bytes()
                 for path in repo_root.rglob("*")
