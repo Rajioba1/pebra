@@ -6,7 +6,9 @@ repos — the real repo's .claude/.codex folders are gitignored, so never rely o
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -405,7 +407,10 @@ def test_agent_init_with_hook_preserves_valid_settings(tmp_path, target, config_
     config.parent.mkdir(parents=True)
     original = {
         "custom": {"enabled": True},
-        "hooks": {"PreToolUse": [{"matcher": "Read", "hooks": []}]},
+        "hooks": {"PreToolUse": [{
+            "matcher": "Read",
+            "hooks": [{"type": "command", "command": "echo ok"}],
+        }]},
     }
     config.write_text(json.dumps(original), encoding="utf-8")
 
@@ -414,6 +419,59 @@ def test_agent_init_with_hook_preserves_valid_settings(tmp_path, target, config_
     after = json.loads(config.read_text(encoding="utf-8"))
     assert after["custom"] == original["custom"]
     assert original["hooks"]["PreToolUse"][0] in after["hooks"]["PreToolUse"]
+
+
+@pytest.mark.parametrize(
+    ("target", "config_rel", "matcher", "skill_rel"),
+    (
+        (
+            "claude",
+            ".claude/settings.json",
+            "Edit|Write|MultiEdit",
+            ".claude/skills/pebra-safe-edit/SKILL.md",
+        ),
+        ("codex", ".codex/hooks.json", "apply_patch", ".agents/skills/pebra-safe-edit/SKILL.md"),
+    ),
+)
+@pytest.mark.parametrize("state", ("malformed", "conflicting"))
+def test_with_hook_rejects_restricted_document_before_any_write(
+    tmp_path, capsys, target, config_rel, matcher, skill_rel, state,
+):
+    from pebra.adapters import enforcement_capability
+
+    config = tmp_path / config_rel
+    config.parent.mkdir(parents=True)
+    if state == "malformed":
+        entries = [
+            agent_init.managed_hook_entry(matcher),
+            {"matcher": "Read", "hooks": [{"type": "unknown"}]},
+        ]
+    else:
+        entries = [{
+            "matcher": "Read",
+            "hooks": [{"type": "command", "command": "pebra gate-hook"}],
+        }]
+    original = json.dumps({"custom": True, "hooks": {"PreToolUse": entries}}).encode()
+    config.write_bytes(original)
+
+    assert _run_with_hook(target, tmp_path) == 2
+
+    assert config.read_bytes() == original
+    assert not (tmp_path / skill_rel).exists()
+    assert not (tmp_path / _CLAUDE_RULE_REL).exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+    stderr = capsys.readouterr().err
+    assert state in stderr
+    assert "--check --json" in stderr
+    posture = enforcement_capability.probe(
+        tmp_path,
+        graph_available=True,
+        git_available=True,
+        hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )[target]
+    assert posture["candidate_bound"] is False
+    assert posture["reasons"] == [f"hook_{state}"]
 
 
 @pytest.mark.parametrize(
@@ -502,3 +560,613 @@ def test_claude_with_hook_is_idempotent(tmp_path):
     gate_entries = [e for e in entries if any("gate-hook" in (h.get("command") or "")
                                               for h in e.get("hooks", []))]
     assert len(gate_entries) == 1
+
+
+def _tree_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _stub_inspection_probes(monkeypatch) -> None:
+    from pebra.adapters import enforcement_capability
+
+    monkeypatch.setattr(
+        enforcement_capability,
+        "probe",
+        lambda repo_root, *, graph_available: {
+            "claude": {
+                "mode": "degraded_fail_open", "candidate_bound": False,
+                "reasons": ["graph_unverified_read_only"],
+            },
+            "codex": {
+                "mode": "degraded_fail_open", "candidate_bound": False,
+                "reasons": ["graph_unverified_read_only"],
+            },
+            "mcp": {"mode": "advisory_only", "candidate_bound": False, "reasons": []},
+        },
+    )
+
+
+def _check(target: str, root: Path, monkeypatch, *extra: str) -> int:
+    _stub_inspection_probes(monkeypatch)
+    args = build_parser().parse_args([
+        "agent-init", "--target", target, "--repo-root", str(root),
+        "--check", "--json", *extra,
+    ])
+    return args.func(args)
+
+
+@pytest.mark.parametrize("target", ("claude", "codex"))
+@pytest.mark.parametrize("file_state", ("absent", "current", "modified"))
+def test_agent_init_check_reports_file_state_without_mutation(
+    tmp_path, target, file_state, monkeypatch, capsys,
+):
+    if file_state != "absent":
+        assert _run(target, tmp_path) == 0
+        capsys.readouterr()
+    if file_state == "modified":
+        if target == "claude":
+            (tmp_path / _CLAUDE_RULE_REL).write_text("local rule\n", encoding="utf-8")
+            (tmp_path / _SKILL_REL).write_text("local skill\n", encoding="utf-8")
+        else:
+            agents = tmp_path / "AGENTS.md"
+            agents.write_text(
+                agents.read_text(encoding="utf-8").replace(
+                    "## PEBRA safe-edit protocol", "## stale PEBRA protocol"
+                ),
+                encoding="utf-8",
+            )
+            (tmp_path / ".agents/skills/pebra-safe-edit/SKILL.md").write_text(
+                "local skill\n", encoding="utf-8"
+            )
+
+    before = _tree_snapshot(tmp_path)
+    assert _check(target, tmp_path, monkeypatch) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["command"] == "agent-init"
+    assert set(payload) == {
+        "command", "target", "protocol_version", "gate_schema_version", "files", "hook",
+        "declared_support", "effective_enforcement",
+    }
+    assert payload["target"] == target
+    assert payload["protocol_version"] == 1
+    assert payload["gate_schema_version"] == 1
+    assert {item["state"] for item in payload["files"]} == {file_state}
+    assert payload["declared_support"] == (
+        "configured_enforcing" if target == "claude" else "best_effort"
+    )
+    assert payload["effective_enforcement"]["mode"] == "degraded_fail_open"
+    assert payload["effective_enforcement"]["reasons"] == ["graph_unverified_read_only"]
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("target", ("claude", "codex"))
+def test_agent_init_json_requires_check_without_writing(tmp_path, target, capsys):
+    args = build_parser().parse_args([
+        "agent-init", "--target", target, "--repo-root", str(tmp_path), "--json",
+    ])
+
+    assert args.func(args) == 2
+    assert "--json requires --check" in capsys.readouterr().err
+    assert _tree_snapshot(tmp_path) == {}
+
+
+@pytest.mark.parametrize("target", ("claude", "codex"))
+def test_agent_init_with_hook_check_is_still_inspection_only(
+    tmp_path, target, monkeypatch, capsys,
+):
+    before = _tree_snapshot(tmp_path)
+    assert _check(target, tmp_path, monkeypatch, "--with-hook") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["hook"]["state"] == "absent"
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        (None, "absent"),
+        ({"hooks": {"PreToolUse": [
+            agent_init.managed_hook_entry(agent_init._CLAUDE_HOOK_MATCHER)
+        ]}}, "exact"),
+        ({"hooks": {"PreToolUse": [
+            agent_init.managed_hook_entry(agent_init._CLAUDE_HOOK_MATCHER),
+            {"matcher": "Read", "hooks": [{"type": "command", "command": "echo ok"}]},
+        ]}}, "exact"),
+        ({"hooks": {"PreToolUse": [
+            agent_init.managed_hook_entry(agent_init._CLAUDE_HOOK_MATCHER),
+            {"matcher": "Read", "hooks": [{"type": "command", "command": "pebra gate-hook"}]},
+        ]}}, "conflicting"),
+        ({"hooks": {"PreToolUse": [
+            {"matcher": "Read", "hooks": [{"type": "command", "command": "pebra gate-hook"}]},
+        ]}}, "conflicting"),
+        ({"hooks": {"PreToolUse": [
+            {"matcher": agent_init._CLAUDE_HOOK_MATCHER, "hooks": {}},
+        ]}}, "conflicting"),
+        ({"hooks": {"PreToolUse": [
+            {"matcher": agent_init._CLAUDE_HOOK_MATCHER, "hooks": [{}]},
+        ]}}, "malformed"),
+        ({"hooks": {"PreToolUse": [
+            {"matcher": agent_init._CLAUDE_HOOK_MATCHER, "hooks": [
+                {"type": "command"}
+            ]},
+        ]}}, "malformed"),
+        ({"hooks": {"PreToolUse": [
+            {"matcher": agent_init._CLAUDE_HOOK_MATCHER, "hooks": [
+                {"type": "command", "command": 42}
+            ]},
+        ]}}, "malformed"),
+        ({"hooks": {"PreToolUse": [
+            {"matcher": agent_init._CLAUDE_HOOK_MATCHER, "hooks": [
+                {"type": "command", "command": "pebra gate-hook-v2"}
+            ]},
+        ]}}, "absent"),
+        ({"hooks": {"PreToolUse": [
+            {"matcher": agent_init._CLAUDE_HOOK_MATCHER, "hooks": [
+                {"type": "command", "command": "echo run-my-gate-hook-check"}
+            ]},
+        ]}}, "absent"),
+    ),
+)
+def test_hook_inspection_state_precedence(tmp_path, raw, expected):
+    path = tmp_path / "settings.json"
+    if raw is not None:
+        path.write_text(json.dumps(raw), encoding="utf-8")
+    assert (
+        agent_init._inspect_hook_state(
+            path, agent_init._CLAUDE_HOOK_MATCHER, host="claude"
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ("{broken", "null", "[]", '{"hooks": []}', '{"hooks": null}',
+     '{"hooks": {"PreToolUse": {}}}', '{"hooks": {"PreToolUse": null}}'),
+)
+def test_hook_inspection_reports_malformed_document_containers(tmp_path, raw):
+    path = tmp_path / "settings.json"
+    path.write_text(raw, encoding="utf-8")
+    assert (
+        agent_init._inspect_hook_state(
+            path, agent_init._CLAUDE_HOOK_MATCHER, host="claude"
+        )
+        == "malformed"
+    )
+
+
+@pytest.mark.parametrize("target", ("claude", "codex"))
+@pytest.mark.parametrize("hook_state", ("absent", "exact", "conflicting", "malformed"))
+def test_agent_init_check_reports_hook_state_without_mutation(
+    tmp_path, target, hook_state, monkeypatch, capsys,
+):
+    matcher = (
+        agent_init._CLAUDE_HOOK_MATCHER
+        if target == "claude"
+        else agent_init._CODEX_HOOK_MATCHER
+    )
+    path = (
+        tmp_path / ".claude/settings.json"
+        if target == "claude"
+        else tmp_path / ".codex/hooks.json"
+    )
+    if hook_state != "absent":
+        path.parent.mkdir(parents=True)
+        if hook_state == "exact":
+            raw = {"hooks": {"PreToolUse": [agent_init.managed_hook_entry(matcher)]}}
+            path.write_text(json.dumps(raw), encoding="utf-8")
+        elif hook_state == "conflicting":
+            raw = {
+                "hooks": {"PreToolUse": [
+                    {"matcher": "wrong", "hooks": [
+                        {"type": "command", "command": "pebra gate-hook"}
+                    ]}
+                ]}
+            }
+            path.write_text(json.dumps(raw), encoding="utf-8")
+        else:
+            path.write_text("{broken", encoding="utf-8")
+    before = _tree_snapshot(tmp_path)
+
+    assert _check(target, tmp_path, monkeypatch) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["hook"]["state"] == hook_state
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_codex_check_reports_corrupt_managed_markers_modified_without_repair(
+    tmp_path, monkeypatch, capsys,
+):
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(f"user\n{agent_init._MARK_BEGIN}\nunterminated\n", encoding="utf-8")
+    before = _tree_snapshot(tmp_path)
+
+    assert _check("codex", tmp_path, monkeypatch) == 0
+    payload = json.loads(capsys.readouterr().out)
+    states = {item["path"]: item["state"] for item in payload["files"]}
+    assert states["AGENTS.md"] == "modified"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_codex_check_treats_preserved_crlf_managed_block_as_current(
+    tmp_path, monkeypatch, capsys,
+):
+    agents = tmp_path / "AGENTS.md"
+    agents.write_bytes(b"# Project\r\n\r\nUser text.\r\n")
+    assert _run("codex", tmp_path) == 0
+    capsys.readouterr()
+    before = _tree_snapshot(tmp_path)
+
+    assert _check("codex", tmp_path, monkeypatch) == 0
+    payload = json.loads(capsys.readouterr().out)
+    states = {item["path"]: item["state"] for item in payload["files"]}
+    assert states["AGENTS.md"] == "current"
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("target", ("claude", "codex"))
+def test_check_reports_non_utf8_managed_content_modified_without_mutation(
+    tmp_path, target, monkeypatch, capsys,
+):
+    if target == "claude":
+        path = tmp_path / _SKILL_REL
+    else:
+        path = tmp_path / "AGENTS.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfeinvalid")
+    before = _tree_snapshot(tmp_path)
+
+    assert _check(target, tmp_path, monkeypatch) == 0
+    payload = json.loads(capsys.readouterr().out)
+    state = {item["path"]: item["state"] for item in payload["files"]}
+    assert state[path.relative_to(tmp_path).as_posix()] == "modified"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_check_reports_unreadable_file_modified_without_crashing(
+    tmp_path, monkeypatch, capsys,
+):
+    path = tmp_path / _CLAUDE_RULE_REL
+    path.parent.mkdir(parents=True)
+    path.write_text("present", encoding="utf-8")
+    real_read_bytes = Path.read_bytes
+
+    def unreadable(self):
+        if self == path:
+            raise OSError("denied")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    assert _check("claude", tmp_path, monkeypatch) == 0
+    payload = json.loads(capsys.readouterr().out)
+    state = {item["path"]: item["state"] for item in payload["files"]}
+    assert state[_CLAUDE_RULE_REL.as_posix()] == "modified"
+
+
+def test_agent_init_check_human_output_uses_same_payload(tmp_path, monkeypatch, capsys):
+    _stub_inspection_probes(monkeypatch)
+    args = build_parser().parse_args([
+        "agent-init", "--target", "claude", "--repo-root", str(tmp_path), "--check",
+    ])
+    assert args.func(args) == 0
+    output = capsys.readouterr().out
+    assert "configured_enforcing" in output
+    assert "effective mode: degraded_fail_open" in output
+    assert "hook" in output
+
+
+def test_agent_init_check_never_probes_codegraph_and_marks_graph_unverified(
+    tmp_path, monkeypatch, capsys,
+):
+    from pebra import composition
+    from pebra.adapters import enforcement_capability
+
+    observed: list[bool | None] = []
+
+    def forbidden_probe(*args, **kwargs):
+        raise AssertionError("check mode must not invoke CodeGraph")
+
+    def enforcement(repo_root, *, graph_available):
+        observed.append(graph_available)
+        return {
+            "claude": {
+                "mode": "degraded_fail_open",
+                "candidate_bound": False,
+                "reasons": ["graph_unverified_read_only"],
+            },
+            "codex": {
+                "mode": "degraded_fail_open",
+                "candidate_bound": False,
+                "reasons": ["graph_unverified_read_only"],
+            },
+        }
+
+    monkeypatch.setattr(composition, "probe_language_capabilities", forbidden_probe)
+    monkeypatch.setattr(enforcement_capability, "probe", enforcement)
+    args = build_parser().parse_args([
+        "agent-init", "--target", "claude", "--repo-root", str(tmp_path),
+        "--check", "--json",
+    ])
+
+    assert args.func(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert observed == [None]
+    assert payload["effective_enforcement"]["reasons"] == ["graph_unverified_read_only"]
+
+
+@pytest.mark.parametrize(
+    "sibling",
+    (42, {"matcher": "Read", "hooks": [42]}),
+)
+def test_hook_inspection_malformed_sibling_overrides_exact(tmp_path, sibling):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({
+        "hooks": {"PreToolUse": [
+            agent_init.managed_hook_entry(agent_init._CLAUDE_HOOK_MATCHER),
+            sibling,
+        ]},
+    }), encoding="utf-8")
+
+    assert (
+        agent_init._inspect_hook_state(
+            path, agent_init._CLAUDE_HOOK_MATCHER, host="claude"
+        )
+        == "malformed"
+    )
+
+
+def _directory_symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+
+def _file_symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+
+def _hardlink_or_skip(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, destination)
+    except OSError as exc:
+        pytest.skip(f"hardlinks unavailable: {exc}")
+
+
+@pytest.mark.parametrize(
+    ("target", "hook_rel", "skill_rel"),
+    (
+        ("claude", ".claude/settings.json", ".claude/skills/pebra-safe-edit/SKILL.md"),
+        ("codex", ".codex/hooks.json", ".agents/skills/pebra-safe-edit/SKILL.md"),
+    ),
+)
+def test_agent_init_rejects_hardlinked_hook_without_external_or_partial_write(
+    tmp_path, capsys, target, hook_rel, skill_rel,
+):
+    matcher = (
+        agent_init._CLAUDE_HOOK_MATCHER
+        if target == "claude"
+        else agent_init._CODEX_HOOK_MATCHER
+    )
+    outside = tmp_path.parent / f"{tmp_path.name}-{target}-outside-hook.json"
+    original = (json.dumps({
+        "hooks": {"PreToolUse": [agent_init.managed_hook_entry(matcher)]},
+    }) + "\n").encode()
+    outside.write_bytes(original)
+    _hardlink_or_skip(outside, tmp_path / hook_rel)
+
+    assert _run_with_hook(target, tmp_path) == 2
+
+    assert "hardlink" in capsys.readouterr().err.lower()
+    assert outside.read_bytes() == original
+    assert not (tmp_path / skill_rel).exists()
+    assert not (tmp_path / _CLAUDE_RULE_REL).exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+@pytest.mark.parametrize(
+    ("target", "instruction_rel", "hook_rel"),
+    (
+        ("claude", ".claude/rules/pebra-safe-edit.md", ".claude/settings.json"),
+        ("codex", "AGENTS.md", ".codex/hooks.json"),
+    ),
+)
+def test_check_reports_hardlinked_managed_files_conservatively(
+    tmp_path, monkeypatch, capsys, target, instruction_rel, hook_rel,
+):
+    matcher = (
+        agent_init._CLAUDE_HOOK_MATCHER
+        if target == "claude"
+        else agent_init._CODEX_HOOK_MATCHER
+    )
+    instruction_content = (
+        agent_init._CLAUDE_RULE_MD
+        if target == "claude"
+        else agent_init._render_agents_md(tmp_path).content
+    )
+    outside_instruction = tmp_path.parent / f"{tmp_path.name}-{target}-instruction"
+    outside_instruction.write_text(instruction_content, encoding="utf-8", newline="")
+    _hardlink_or_skip(outside_instruction, tmp_path / instruction_rel)
+    outside_hook = tmp_path.parent / f"{tmp_path.name}-{target}-hook"
+    outside_hook.write_text(json.dumps({
+        "hooks": {"PreToolUse": [agent_init.managed_hook_entry(matcher)]},
+    }), encoding="utf-8")
+    _hardlink_or_skip(outside_hook, tmp_path / hook_rel)
+    before_instruction = outside_instruction.read_bytes()
+    before_hook = outside_hook.read_bytes()
+
+    assert _check(target, tmp_path, monkeypatch) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    states = {item["path"]: item["state"] for item in payload["files"]}
+    assert states[instruction_rel] == "modified"
+    assert payload["hook"]["state"] == "conflicting"
+    assert payload["effective_enforcement"]["candidate_bound"] is False
+    assert outside_instruction.read_bytes() == before_instruction
+    assert outside_hook.read_bytes() == before_hook
+
+
+@pytest.mark.parametrize(
+    ("target", "parent_rel", "unexpected_rel"),
+    (
+        ("claude", ".claude/skills", "pebra-safe-edit/SKILL.md"),
+        ("codex", ".agents/skills", "pebra-safe-edit/SKILL.md"),
+    ),
+)
+def test_agent_init_rejects_managed_parent_redirect_before_any_write(
+    tmp_path, target, parent_rel, unexpected_rel, capsys,
+):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-{target}"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_bytes(b"outside stays unchanged")
+    parent = tmp_path / parent_rel
+    parent.parent.mkdir(parents=True)
+    _directory_symlink_or_skip(parent, outside)
+    before = _tree_snapshot(outside)
+
+    assert _run(target, tmp_path) == 2
+
+    assert "redirect" in capsys.readouterr().err.lower()
+    assert _tree_snapshot(outside) == before
+    assert not (outside / unexpected_rel).exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert not (tmp_path / _CLAUDE_RULE_REL).exists()
+
+
+def test_agent_init_rejects_broken_managed_file_symlink(tmp_path, capsys):
+    skill = tmp_path / _SKILL_REL
+    skill.parent.mkdir(parents=True)
+    _file_symlink_or_skip(skill, tmp_path / "missing-target")
+
+    assert _run("claude", tmp_path) == 2
+
+    assert skill.is_symlink()
+    assert "redirect" in capsys.readouterr().err.lower()
+    assert not (tmp_path / _CLAUDE_RULE_REL).exists()
+
+
+def test_check_reports_redirected_instruction_and_hook_without_reading_targets(
+    tmp_path, monkeypatch, capsys,
+):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-check"
+    outside.mkdir()
+    outside_agents = outside / "AGENTS.md"
+    outside_agents.write_bytes(b"outside agents")
+    outside_hook = outside / "hooks.json"
+    outside_hook.write_bytes(b'{"hooks": {"PreToolUse": []}}')
+    _file_symlink_or_skip(tmp_path / "AGENTS.md", outside_agents)
+    codex_parent = tmp_path / ".codex"
+    _directory_symlink_or_skip(codex_parent, outside)
+    before = _tree_snapshot(outside)
+
+    assert _check("codex", tmp_path, monkeypatch) == 0
+    payload = json.loads(capsys.readouterr().out)
+    states = {item["path"]: item["state"] for item in payload["files"]}
+    assert states["AGENTS.md"] == "modified"
+    assert payload["hook"]["state"] == "conflicting"
+    assert _tree_snapshot(outside) == before
+
+
+def test_agent_init_accepts_repo_root_reached_through_symlink(tmp_path):
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    alias = tmp_path / "alias"
+    _directory_symlink_or_skip(alias, real_root)
+
+    assert _run("claude", alias) == 0
+    assert (real_root / _CLAUDE_RULE_REL).is_file()
+
+
+def test_is_redirect_honors_junction_api_when_available(tmp_path, monkeypatch):
+    from pebra.adapters import path_safety
+
+    if not hasattr(Path, "is_junction"):
+        pytest.skip("Path.is_junction unavailable")
+    candidate = tmp_path / "junction"
+    monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+    monkeypatch.setattr(Path, "is_junction", lambda self: self == candidate)
+
+    assert path_safety.is_redirect(candidate) is True
+
+
+def test_redirected_component_treats_non_descendant_as_unsafe(tmp_path):
+    from pebra.adapters import path_safety
+
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.json"
+
+    assert path_safety.redirected_component(root, outside) == outside
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_agent_init_rejects_windows_junction_parent_without_external_write(
+    tmp_path, capsys,
+):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-junction"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_bytes(b"outside stays unchanged")
+    link = tmp_path / ".claude" / "skills"
+    link.parent.mkdir(parents=True)
+    made = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+        capture_output=True, text=True, check=False,
+    )
+    if made.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {made.stderr}")
+    before = _tree_snapshot(outside)
+    try:
+        assert _run("claude", tmp_path) == 2
+        assert "redirect" in capsys.readouterr().err.lower()
+        assert _tree_snapshot(outside) == before
+    finally:
+        if link.exists():
+            link.rmdir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_codex_hook_junction_is_rejected_or_reported_without_external_read(
+    tmp_path, capsys,
+):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-hook-junction"
+    outside.mkdir()
+    hook = outside / "hooks.json"
+    hook.write_bytes(b'{"hooks": {"PreToolUse": []}}')
+    link = tmp_path / ".codex"
+    made = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+        capture_output=True, text=True, check=False,
+    )
+    if made.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {made.stderr}")
+    before = _tree_snapshot(outside)
+    try:
+        assert _run_with_hook("codex", tmp_path) == 2
+        assert "redirect" in capsys.readouterr().err.lower()
+        assert not (tmp_path / "AGENTS.md").exists()
+        assert _tree_snapshot(outside) == before
+
+        args = build_parser().parse_args([
+            "agent-init", "--target", "codex", "--repo-root", str(tmp_path),
+            "--check", "--json",
+        ])
+        assert args.func(args) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["hook"]["state"] == "conflicting"
+        assert payload["effective_enforcement"]["candidate_bound"] is False
+        assert "hook_conflicting" in payload["effective_enforcement"]["reasons"]
+        assert _tree_snapshot(outside) == before
+    finally:
+        if link.exists():
+            link.rmdir()

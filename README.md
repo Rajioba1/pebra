@@ -123,8 +123,23 @@ pre-edit interception:
 ```powershell
 pebra agent-init --target claude --repo-root . --with-hook
 pebra agent-init --target codex --repo-root . --with-hook
+pebra agent-init --target claude --repo-root . --check
+pebra agent-init --target codex --repo-root . --check --json
 pebra capabilities --repo-root .
 ```
+
+`agent-init --check` is inspection-only: it reports generated-file state, hook state, declared
+support, and effective enforcement without creating or repairing anything. It intentionally does
+not invoke CodeGraph because even a pinned status command may migrate or write index state; configured
+hooks therefore report the graph as `graph_unverified_read_only`. Use `pebra capabilities` separately
+when measured graph capability is needed; that command may repair a stale index and is not an
+inspection-only surface. Add `--json` for the machine-readable schema. Normal `agent-init` refreshes
+the fully managed instruction content and,
+with `--with-hook`, installs the current hook when it is missing. If the existing hook document is
+malformed or conflicts with PEBRA's exact hook, initialization exits before writing any instruction or
+hook file and directs you to `--check --json`; resolving a conflict or legacy hook requires explicit
+user action or a separately tested migration. Managed symlink, junction, reparse-point, and hardlinked
+file destinations are likewise reported conservatively and never followed or overwritten.
 
 The guarantees are deliberately different:
 

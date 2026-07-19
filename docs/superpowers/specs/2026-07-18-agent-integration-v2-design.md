@@ -174,13 +174,39 @@ skills remain byte-identical.
 - each expected file as `absent`, `current`, or `modified`;
 - hook configuration as `absent`, `exact`, `conflicting`, or `malformed`;
 - the host's declared support tier;
-- the effective enforcement result obtained from the existing capability adapter;
+- the effective enforcement result obtained from the existing capability adapter with graph state
+  explicitly unverified;
 - protocol and gate schema versions.
 
 Human-readable `--check` output renders the same payload. `--json` is valid only with `--check`.
-Inspection never repairs state. Rerunning normal `agent-init` repairs fully managed instruction content
-and installs a missing current hook, but it does not claim to repair a conflicting or legacy hook. Such a
-hook remains visible as a conflict until a deliberate, tested migration or user resolution handles it.
+Inspection never repairs state and never invokes CodeGraph: even a pinned CodeGraph status operation may
+migrate or write index state. A configured hook therefore reports `graph_unverified_read_only` and is
+not candidate-bound in this inspection. `pebra capabilities` remains the separate measured surface and
+is not inspection-only. Hook classification is shared by installation inspection and capability
+reporting; malformed sibling matcher groups or handlers override an otherwise exact entry, and neither
+surface may claim enforcement for a malformed or conflicting config. Existing redirects in any managed
+descendant path are never followed: normal initialization exits without writes, while inspection reports
+redirected instruction files as `modified` and redirected hook paths as `conflicting`.
+
+The same conservative rule applies to hardlinked managed destination files (`lstat().st_nlink > 1` for
+regular files only): initialization aborts before any write, inspection reports instruction files as
+`modified` and hook files as `conflicting`, and capability reporting never credits the aliased hook.
+Non-descendant path checks fail conservatively rather than raising. User-home hook state is resolved once,
+then the settings path is built under that resolved boundary so a symlink or junction home alias cannot
+crash or bypass the check.
+
+Classification validates the selected host's documented hook schema. Omitted or empty matchers are valid
+match-all groups, while a present non-string matcher is malformed. Handler lists must be non-empty. Claude
+recognizes `command`, `http`, `mcp_tool`, `prompt`, and `agent` with their documented required string fields;
+Codex recognizes `command` plus its parsed-but-skipped `prompt` and `agent` compatibility types, and rejects
+unknown or Claude-only handler types. This validation remains read-only: exact structural equality through
+`is_managed_hook_entry()` is still the sole mutation ownership predicate.
+
+Rerunning normal `agent-init` repairs fully managed instruction content
+and installs a missing current hook. With `--with-hook`, an existing malformed or conflicting document
+aborts the complete validation-first plan before any instruction or hook write and points the user to
+`--check --json`; it never appends into or claims enforcement over that document. Such a hook remains
+visible until a deliberate, tested migration or user resolution handles it.
 
 ### 6. Minimal host registry and conformance matrix
 

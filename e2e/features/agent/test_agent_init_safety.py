@@ -109,6 +109,66 @@ def test_agent_init_preserves_lookalike_and_adds_exact_owned_hook(
 
 
 @pytest.mark.parametrize(
+    ("target", "config_rel", "skill_rel", "matcher"),
+    (
+        (
+            "claude", ".claude/settings.json", ".claude/skills/pebra-safe-edit/SKILL.md",
+            "Edit|Write|MultiEdit",
+        ),
+        ("codex", ".codex/hooks.json", ".agents/skills/pebra-safe-edit/SKILL.md", "apply_patch"),
+    ),
+)
+@pytest.mark.parametrize("state", ("malformed", "conflicting"))
+def test_agent_init_rejects_non_authorizable_hook_without_partial_write(
+    tmp_path, target, config_rel, skill_rel, matcher, state,
+):
+    config = tmp_path / config_rel
+    config.parent.mkdir(parents=True)
+    exact = {
+        "matcher": matcher,
+        "hooks": [{"type": "command", "command": "pebra gate-hook"}],
+    }
+    entries = (
+        [exact, {"matcher": "Read", "hooks": [{"type": "unknown"}]}]
+        if state == "malformed"
+        else [{
+            "matcher": "Read",
+            "hooks": [{"type": "command", "command": "pebra gate-hook"}],
+        }]
+    )
+    original = json.dumps({"hooks": {"PreToolUse": entries}})
+    config.write_text(original, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "pebra", "agent-init", "--target", target,
+            "--repo-root", str(tmp_path), "--with-hook",
+        ],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+
+    assert result.returncode == 2
+    assert state in result.stderr
+    assert "--check --json" in result.stderr
+    assert config.read_text(encoding="utf-8") == original
+    assert not (tmp_path / skill_rel).exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert not (tmp_path / ".claude/rules/pebra-safe-edit.md").exists()
+
+    checked = subprocess.run(
+        [
+            sys.executable, "-m", "pebra", "agent-init", "--target", target,
+            "--repo-root", str(tmp_path), "--check", "--json",
+        ],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert checked.returncode == 0, checked.stderr
+    payload = json.loads(checked.stdout)
+    assert payload["hook"]["state"] == state
+    assert payload["effective_enforcement"]["candidate_bound"] is False
+
+
+@pytest.mark.parametrize(
     "raw",
     (
         f"user text\n{_MARK_BEGIN}\nunterminated\n",

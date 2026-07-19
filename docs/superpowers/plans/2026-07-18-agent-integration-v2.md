@@ -114,7 +114,9 @@ def test_hook_probe_rejects_lookalike_command(tmp_path):
         }]},
     }), encoding="utf-8")
 
-    assert enforcement_capability._hook_installed(settings, "Edit|Write|MultiEdit") is False
+    assert enforcement_capability._hook_installed(
+        settings, "Edit|Write|MultiEdit", host="claude"
+    ) is False
 ```
 
 Lock the installed command identity so a future rename cannot silently strand old entries:
@@ -1633,9 +1635,19 @@ git commit -m "feat: add always-loaded Claude safety rules"
 ### Task 10: Add `agent-init --check --json`
 
 **Files:**
-- Modify: `pebra/cli/agent_init.py`
-- Modify: `tests/unit/test_agent_init.py`
+- Modify: `docs/superpowers/plans/2026-07-18-agent-integration-v2.md`
+- Modify: `docs/superpowers/specs/2026-07-18-agent-integration-v2-design.md`
 - Modify: `README.md`
+- Modify: `pebra/adapters/codegraph_adapter.py`
+- Modify: `pebra/adapters/enforcement_capability.py`
+- Create: `pebra/adapters/path_safety.py`
+- Modify: `pebra/cli/agent_init.py`
+- Modify: `pebra/core/agent_hook_contract.py`
+- Create: `tests/unit/test_agent_hook_contract.py`
+- Modify: `tests/unit/test_agent_init.py`
+- Modify: `tests/unit/test_codegraph_adapter.py`
+- Modify: `tests/unit/test_enforcement_capability.py`
+- Modify: `e2e/features/agent/test_agent_init_safety.py`
 - Create: `e2e/features/agent/test_agent_init_inspection.py`
 
 **Interfaces:**
@@ -1671,7 +1683,9 @@ def test_agent_init_check_json_is_non_mutating(tmp_path, capsys):
     assert _tree_snapshot(tmp_path) == before
 ```
 
-Mock language/enforcement probes so unit tests never shell out. Add a parser/runner test proving `--json`
+Make the language-capability/CodeGraph probe raise if called and mock only the enforcement probe. Assert
+that check passes `graph_available=None`, producing the stable `graph_unverified_read_only` degradation
+for an otherwise configured hook. Add a parser/runner test proving `--json`
 without `--check` returns `2` and writes nothing:
 
 ```python
@@ -1693,9 +1707,21 @@ Lock hook-state precedence with unit cases for:
 - expected matcher with a malformed hook list → `conflicting`;
 - expected matcher with only a different or substring-lookalike command → `absent`;
 - malformed document/`hooks`/`PreToolUse` containers → `malformed`.
+- an exact entry plus any malformed sibling matcher group or handler → `malformed`.
+
+The shared classifier takes the host explicitly. An omitted or empty matcher is a valid match-all group;
+a present non-string matcher is malformed. Every group requires a non-empty handler list. Claude accepts
+documented `command` (`command`), `http` (`url`), `mcp_tool` (`server` + `tool`), and `prompt`/`agent`
+(`prompt`) handlers with nonblank required strings. Codex accepts `command` and the documented parsed-but-
+skipped compatibility types `prompt`/`agent`; it rejects unknown types and Claude-only `http`/`mcp_tool`.
+An exact entry plus any invalid sibling is malformed, while an exact entry plus a valid match-all sibling
+remains exact.
 
 Inspection and deletion use different predicates: only `is_managed_hook_entry()` authorizes replacement;
-the broader conflict classifier is read-only and must never delete an entry.
+the broader pure classifier is shared by inspection and enforcement reporting, is read-only, and must
+never delete an entry. Malformed state wins over conflict, conflict wins over exact, and exact wins over
+valid unrelated entries. Enforcement reports malformed/conflicting configs as non-candidate-bound
+`degraded_fail_open` with stable reasons.
 
 - [ ] **Step 2: Run focused tests and verify the flags are absent**
 
@@ -1721,6 +1747,15 @@ def _file_state(path: Path, expected: str) -> str:
     return "current" if actual == expected else "modified"
 ```
 
+Resolve the caller's repository root once, then reject every existing symlink, junction, Windows reparse
+point, or regular-file destination with `st_nlink > 1` in a managed descendant path before rendering or
+writing. Do not apply the hardlink test to directories. A repository root reached via a symlink is allowed
+because the resolved root is the boundary; no managed component below it may redirect. Broken symlinks
+count as redirects, and a non-descendant path fails conservatively instead of raising. Normal initialization
+exits `2` with zero partial/external writes. Inspection never follows or credits redirected/hardlinked
+targets: instruction paths report `modified`, hook paths report `conflicting`, and enforcement remains
+non-candidate-bound.
+
 Hook inspection parses without writing and returns `malformed` for every shape rejected by Task 1,
 `exact` only for the shared exact predicate, `absent` when no PreToolUse entry exists, and `conflicting`
 for a non-owned PEBRA-shaped candidate. Classify all entries before returning: any conflicting candidate
@@ -1733,11 +1768,24 @@ unrelated even when it uses the same matcher. This rule depends on Task 1's comp
 `HOOK_COMMAND` cannot change until known legacy PEBRA commands are explicitly added to a tested migration
 predicate. Never infer legacy ownership from a substring.
 
-- [ ] **Step 4: Reuse measured capability reporting without making it authorization**
+Normal `agent-init --with-hook` preflights an existing decoded hook document with this same host-aware
+classifier. `absent` permits appending the current owned hook and `exact` remains idempotent. `malformed`
+or `conflicting` aborts with exit `2`, actionable `--check --json` guidance, and no instruction or hook
+write. Installation must never append a hook and then claim enforcement over a document that inspection
+and capability reporting reject.
 
-In check mode only, lazily call the existing language capability probe and
-`enforcement_capability.probe`. Embed the selected host's result as `effective_enforcement`. Do not cache
-it, persist it, or use it to authorize an edit.
+- [ ] **Step 4: Report enforcement without invoking CodeGraph**
+
+Do not call the language capability probe, CodeGraph CLI, or CodeGraph database from check mode. Pinned
+CodeGraph status may itself migrate or write index state, so strict non-mutation requires abstaining.
+Call `enforcement_capability.probe(..., graph_available=None)` and embed the selected host result as
+`effective_enforcement`; an otherwise configured hook reports `graph_unverified_read_only`, remains
+non-candidate-bound, and is never used to authorize an edit. `graph_available=False` retains the existing
+`graph` degradation reason. `pebra capabilities` remains the separate measured command and is explicitly
+not inspection-only.
+
+Both CodeGraph status JSON and gate-hook capability JSON must be objects. `null`, arrays, and scalars
+fail soft instead of reaching `.get()` and crashing.
 
 Set `PROTOCOL_VERSION = 1` beside the canonical generated protocol and include
 `GATE_SCHEMA_VERSION` from the core contract.
@@ -1748,8 +1796,8 @@ Human output lists each path/state, hook state, declared support, and effective 
 indented output. Both paths return `0` even for `modified`, `conflicting`, or `malformed`; those are
 inspection results, not CLI crashes. README documentation must state that check mode never repairs;
 normal `agent-init` refreshes fully managed instruction content and installs a missing current hook, but
-does not claim to repair a conflicting or legacy hook. Conflict resolution requires a deliberate tested
-migration or user action.
+`--with-hook` aborts before any write when the existing hook document is malformed or conflicting.
+Conflict resolution requires a deliberate tested migration or user action.
 
 - [ ] **Step 6: Prove materialization and non-mutation over the process boundary**
 
@@ -1794,6 +1842,10 @@ def test_installed_host_check_is_real_cli_non_mutating(tmp_path, target):
         for obligation in ("assess", "mismatched", "candidate hold", "human sanction", "verify"):
             assert obligation in body.lower()
 
+    graph = tmp_path / ".codegraph"
+    graph.mkdir()
+    (graph / "codegraph.db").write_bytes(b"initialized graph bytes")
+
     before = _snapshot(tmp_path)
     checked = _agent_init(tmp_path, target, "--check", "--json")
     assert checked.returncode == 0
@@ -1802,22 +1854,25 @@ def test_installed_host_check_is_real_cli_non_mutating(tmp_path, target):
     assert payload["gate_schema_version"] == 1
     assert {item["state"] for item in payload["files"]} == {"current"}
     assert payload["hook"]["state"] == "exact"
+    assert "graph_unverified_read_only" in payload["effective_enforcement"]["reasons"]
     assert _snapshot(tmp_path) == before
 ```
 
 Add a second test with malformed existing hook JSON. `--check --json` must return `0`, report
 `hook.state == "malformed"`, and leave the recursive byte snapshot unchanged for both targets. Add a
 third real-process test proving `--json` without `--check` returns `2` and creates no files for both
-targets.
+targets. The initialized `.codegraph` file set and bytes are part of the recursive before/after snapshot.
+Add cross-platform symlink tests and guarded Windows junction/reparse tests proving managed parent and
+final-file redirects never modify external targets or permit partial writes.
 
 - [ ] **Step 7: Run Milestone 4 E2E acceptance and commit inspection**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py -q
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_agent_hook_contract.py tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py tests/unit/test_codegraph_adapter.py tests/unit/test_composition.py -q
 .\.venv\Scripts\python.exe -m pytest e2e/features/agent/test_agent_init_safety.py e2e/features/agent/test_agent_init_inspection.py e2e/test_boundary_discipline.py -q
 .\.venv\Scripts\nox.exe -s tests lint
 git diff --check
-git add pebra/cli/agent_init.py tests/unit/test_agent_init.py README.md e2e/features/agent/test_agent_init_inspection.py
+git add pebra/cli/agent_init.py pebra/core/agent_hook_contract.py pebra/adapters/enforcement_capability.py pebra/adapters/codegraph_adapter.py pebra/adapters/path_safety.py tests/unit/test_agent_hook_contract.py tests/unit/test_agent_init.py tests/unit/test_enforcement_capability.py tests/unit/test_codegraph_adapter.py README.md e2e/features/agent/test_agent_init_inspection.py docs/superpowers/specs/2026-07-18-agent-integration-v2-design.md docs/superpowers/plans/2026-07-18-agent-integration-v2.md
 git commit -m "feat: inspect agent integration state"
 ```
 
@@ -1992,7 +2047,9 @@ def test_installed_hook_matches_registry_and_probe(target, tmp_path):
     assert _run_with_hook(target, tmp_path) == 0
     spec = AGENT_HOSTS[target]
     hook_path = tmp_path / spec.hook_path
-    assert enforcement_capability._hook_installed(hook_path, spec.hook_matcher)
+    assert enforcement_capability._hook_installed(
+        hook_path, spec.hook_matcher, host=spec.target
+    )
 ```
 
 - [ ] **Step 6: Prove both registry targets over the E2E process boundary**

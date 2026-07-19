@@ -194,9 +194,10 @@ def _run_status(repo_root: str, exe: str) -> dict[str, Any] | None:
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     try:
-        return json.loads(proc.stdout)
+        payload = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _is_fresh(status: dict[str, Any]) -> bool:

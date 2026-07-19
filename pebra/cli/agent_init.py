@@ -20,15 +20,22 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pebra.core.agent_hook_contract import is_managed_hook_entry, managed_hook_entry
+from pebra.adapters.path_safety import unsafe_managed_path as _unsafe_managed_path
+from pebra.core.agent_hook_contract import (
+    classify_hook_document,
+    is_managed_hook_entry,
+    managed_hook_entry,
+)
+from pebra.core.gate_contract import GATE_SCHEMA_VERSION
 
 _SKILL_DIR = "pebra-safe-edit"
 _CLAUDE_HOOK_MATCHER = "Edit|Write|MultiEdit"
 _CODEX_HOOK_MATCHER = "apply_patch"
 _MARK_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MARK_END = "<!-- END pebra-safe-edit -->"
+PROTOCOL_VERSION = 1
 
 # The protocol body — shared by the SKILL.md (with frontmatter) and the AGENTS.md managed block.
 # Must-consult wording only; no enforcement claim in Phase 1.
@@ -124,13 +131,33 @@ def register(subparsers: Any) -> None:
     p.add_argument("--with-hook", action="store_true",
                    help="Also install a pre-edit gate hook config (Claude verified; Codex repo-local "
                         ".codex/hooks.json is best-effort and host-dependent). Default: instructions only.")
+    p.add_argument(
+        "--check", action="store_true",
+        help="Inspect generated files, hook configuration, and effective enforcement without writing.",
+    )
+    p.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit machine-readable inspection output (requires --check).",
+    )
     p.set_defaults(func=run_agent_init)
 
 
 def run_agent_init(args: Any) -> int:
-    repo_root = Path(args.repo_root)
-    with_hook = getattr(args, "with_hook", False)
     try:
+        repo_root = Path(args.repo_root).resolve()
+    except (OSError, RuntimeError):
+        print(f"agent-init: {args.repo_root}: cannot resolve repository root", file=sys.stderr)
+        return 2
+    with_hook = getattr(args, "with_hook", False)
+    check = getattr(args, "check", False)
+    as_json = getattr(args, "as_json", False)
+    if as_json and not check:
+        print("agent-init: --json requires --check", file=sys.stderr)
+        return 2
+    if check:
+        return _run_check(repo_root, args.target, as_json=as_json)
+    try:
+        _reject_unsafe_managed_paths(repo_root, args.target, with_hook)
         planned = _plan_agent_init(repo_root, args.target, with_hook)
     except AgentInitConfigError as exc:
         print(f"agent-init: {exc}", file=sys.stderr)
@@ -152,6 +179,154 @@ def run_agent_init(args: Any) -> int:
     return 0
 
 
+def _instruction_paths(repo_root: Path, target: str) -> tuple[Path, Path]:
+    if target == "claude":
+        return (
+            repo_root / ".claude/rules/pebra-safe-edit.md",
+            repo_root / ".claude/skills/pebra-safe-edit/SKILL.md",
+        )
+    return (
+        repo_root / "AGENTS.md",
+        repo_root / ".agents/skills/pebra-safe-edit/SKILL.md",
+    )
+
+
+def _hook_path(repo_root: Path, target: str) -> Path:
+    return (
+        repo_root / ".claude/settings.json"
+        if target == "claude"
+        else repo_root / ".codex/hooks.json"
+    )
+
+
+def _reject_unsafe_managed_paths(repo_root: Path, target: str, with_hook: bool) -> None:
+    paths = list(_instruction_paths(repo_root, target))
+    if with_hook:
+        paths.append(_hook_path(repo_root, target))
+    for path in paths:
+        unsafe = _unsafe_managed_path(repo_root, path)
+        if unsafe is not None:
+            raise AgentInitConfigError(
+                f"{unsafe}: managed path redirect or hardlink is not allowed"
+            )
+
+
+def _file_state(path: Path, expected: str, *, repo_root: Path) -> str:
+    if _unsafe_managed_path(repo_root, path) is not None:
+        return "modified"
+    if not path.exists():
+        return "absent"
+    try:
+        actual = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "modified"
+    return "current" if actual == expected else "modified"
+
+
+def _relative_path(path: Path, repo_root: Path) -> str:
+    try:
+        return path.relative_to(repo_root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _inspection_files(repo_root: Path, target: str) -> list[dict[str, str]]:
+    if target == "claude":
+        expected = [
+            PlannedWrite(repo_root / ".claude/rules/pebra-safe-edit.md", _CLAUDE_RULE_MD),
+            _render_skill(repo_root, ".claude"),
+        ]
+    else:
+        skill = _render_skill(repo_root, ".agents")
+        agents_path = repo_root / "AGENTS.md"
+        if _unsafe_managed_path(repo_root, agents_path) is not None:
+            return [
+                {"path": _relative_path(agents_path, repo_root), "state": "modified"},
+                {
+                    "path": _relative_path(skill.path, repo_root),
+                    "state": _file_state(skill.path, skill.content, repo_root=repo_root),
+                },
+            ]
+        try:
+            agents = _render_agents_md(repo_root)
+        except AgentInitConfigError:
+            return [
+                {"path": _relative_path(agents_path, repo_root), "state": "modified"},
+                {
+                    "path": _relative_path(skill.path, repo_root),
+                    "state": _file_state(skill.path, skill.content, repo_root=repo_root),
+                },
+            ]
+        expected = [agents, skill]
+    return [
+        {
+            "path": _relative_path(write.path, repo_root),
+            "state": _file_state(write.path, write.content, repo_root=repo_root),
+        }
+        for write in expected
+    ]
+
+
+def _inspect_hook_state(
+    path: Path,
+    matcher: str,
+    *,
+    host: Literal["claude", "codex"],
+    repo_root: Path | None = None,
+) -> str:
+    if repo_root is not None and _unsafe_managed_path(repo_root, path) is not None:
+        return "conflicting"
+    if not path.exists():
+        return "absent"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "malformed"
+    if not isinstance(data, dict):
+        return "malformed"
+    return classify_hook_document(data, matcher, host=host)
+
+
+def _check_payload(repo_root: Path, target: str) -> dict[str, Any]:
+    # Lazy imports keep normal agent-init and parser construction dependency-light.
+    from pebra.adapters import enforcement_capability  # noqa: PLC0415
+
+    matcher = _CLAUDE_HOOK_MATCHER if target == "claude" else _CODEX_HOOK_MATCHER
+    hook_path = _hook_path(repo_root, target)
+    enforcement = enforcement_capability.probe(repo_root, graph_available=None)
+    return {
+        "command": "agent-init",
+        "target": target,
+        "protocol_version": PROTOCOL_VERSION,
+        "gate_schema_version": GATE_SCHEMA_VERSION,
+        "files": _inspection_files(repo_root, target),
+        "hook": {
+            "path": _relative_path(hook_path, repo_root),
+            "state": _inspect_hook_state(
+                hook_path, matcher, host=target, repo_root=repo_root
+            ),
+        },
+        "declared_support": (
+            "configured_enforcing" if target == "claude" else "best_effort"
+        ),
+        "effective_enforcement": enforcement[target],
+    }
+
+
+def _run_check(repo_root: Path, target: str, *, as_json: bool) -> int:
+    payload = _check_payload(repo_root, target)
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(f"agent-init check - target: {payload['target']}")
+    for item in payload["files"]:
+        print(f"  {item['path']}: {item['state']}")
+    print(f"  hook {payload['hook']['path']}: {payload['hook']['state']}")
+    print(f"  declared support: {payload['declared_support']}")
+    print(f"  effective mode: {payload['effective_enforcement']['mode']}")
+    return 0
+
+
 def _plan_agent_init(repo_root: Path, target: str, with_hook: bool) -> list[PlannedWrite]:
     if target == "claude":
         planned = [
@@ -164,13 +339,17 @@ def _plan_agent_init(repo_root: Path, target: str, with_hook: bool) -> list[Plan
         ]
         if with_hook:
             path = repo_root / ".claude" / "settings.json"
-            planned.append(PlannedWrite(path, _render_hook_config(path, _CLAUDE_HOOK_MATCHER)))
+            planned.append(PlannedWrite(
+                path, _render_hook_config(path, _CLAUDE_HOOK_MATCHER, host="claude")
+            ))
         return planned
 
     planned = [_render_agents_md(repo_root), _render_skill(repo_root, ".agents")]
     if with_hook:
         path = repo_root / ".codex" / "hooks.json"
-        planned.append(PlannedWrite(path, _render_hook_config(path, _CODEX_HOOK_MATCHER)))
+        planned.append(PlannedWrite(
+            path, _render_hook_config(path, _CODEX_HOOK_MATCHER, host="codex")
+        ))
     return planned
 
 
@@ -179,7 +358,9 @@ def _render_skill(repo_root: Path, base: str) -> PlannedWrite:
     return PlannedWrite(path, _SKILL_MD, newline="")
 
 
-def _render_hook_config(path: Path, matcher: str) -> str:
+def _render_hook_config(
+    path: Path, matcher: str, *, host: Literal["claude", "codex"]
+) -> str:
     if not path.exists():
         data: dict[str, Any] = {}
     else:
@@ -189,6 +370,12 @@ def _render_hook_config(path: Path, matcher: str) -> str:
             raise AgentInitConfigError(f"{path}: expected valid JSON object") from exc
         if not isinstance(data, dict):
             raise AgentInitConfigError(f"{path}: expected a JSON object")
+    state = classify_hook_document(data, matcher, host=host)
+    if state in {"conflicting", "malformed"}:
+        raise AgentInitConfigError(
+            f"{path}: hook configuration is {state}; inspect with --check --json "
+            "and resolve it before installing the hook"
+        )
     if "hooks" not in data:
         hooks = {}
         data["hooks"] = hooks

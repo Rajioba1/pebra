@@ -1276,6 +1276,14 @@ def test_default_status_returns_initial_when_post_sync_status_fails(monkeypatch)
     assert out == stale
 
 
+@pytest.mark.parametrize("payload", (None, [], 42, "status"))
+def test_run_status_rejects_non_object_json(monkeypatch, payload) -> None:
+    rec = _Recorder([payload])
+    monkeypatch.setattr(cga.subprocess, "run", rec)
+
+    assert cga._run_status("/repo", "/usr/bin/codegraph") is None
+
+
 def test_default_status_no_subprocess_when_binary_absent(monkeypatch) -> None:
     rec = _Recorder([])
     _patch(monkeypatch, rec, on_path=False)
