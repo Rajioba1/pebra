@@ -19,7 +19,7 @@
 - A restrictive gate result applies only to the exact candidate. It must say the candidate is held or returned, never that the human's goal is rejected or that the agent should disobey the user.
 - Preserve the A/B execution boundary: call the real gate subprocess with `consult_only=True`, attribute an assessment only after a successful write, and expose exactly the `{ok, blocked, reason}` fields to the model in every arm. Because `reason` gains candidate-bound mathematics, require a new experiment design hash/run ID and prohibit resume or pooling with the previous treatment.
 - Emit `risk_summary` only for a fresh assessment bound to the exact candidate and only when `expected_loss`, `benefit`, and `rau` are finite. Never attach stale or partial scores to an unbound, unverifiable, mismatched, or incomplete candidate.
-- Both installed hooks project `REQUEST_HUMAN` to a blocking candidate hold. For `ask_human`, the reason points to PEBRA's bound sanction/reassessment workflow only when candidate replay is available; otherwise it requests reassessment or another route. For `reject`, it always requests a different candidate or route. Native Claude approval must not bypass PEBRA's sanction, and Codex `PreToolUse` must never receive unsupported `ask`.
+- Both installed hooks project `REQUEST_HUMAN` to a blocking candidate hold. For `ask_human`, the reason points to PEBRA's bound sanction/reassessment workflow only when replay metadata has status `available`, the exact `sha256-candidate-replay-v1` algorithm, and a 64-character lowercase hexadecimal digest; otherwise it requests reassessment or another route. For `reject`, it always requests a different candidate or route. Native Claude approval must not bypass PEBRA's sanction, and Codex `PreToolUse` must never receive unsupported `ask`.
 - Keep `positive_control` as an experiment-local synthetic label; never add it to the production `GateTier` enum or present it as a versioned production gate response.
 - Before each review stop, run the milestone's focused subprocess E2E acceptance tests. Defer the complete deterministic A/B suite and `nox -s e2e-fast` to the final experiment milestone because they are the expensive aggregate proof.
 - Never overwrite malformed user configuration or delete a lookalike user hook.
@@ -1232,9 +1232,18 @@ class GateRiskSummary:
         decision = Decision(self.decision)
         numeric = (self.expected_loss, self.benefit, self.rau)
         if any(isinstance(value, bool) or not isinstance(value, (int, float))
-               or not math.isfinite(value) for value in numeric):
+               for value in numeric):
+            raise ValueError("gate risk summary values must be finite numbers")
+        try:
+            normalized = tuple(float(value) for value in numeric)
+        except OverflowError as exc:
+            raise ValueError("gate risk summary values must be finite numbers") from exc
+        if any(not math.isfinite(value) for value in normalized):
             raise ValueError("gate risk summary values must be finite numbers")
         object.__setattr__(self, "decision", decision)
+        object.__setattr__(self, "expected_loss", normalized[0])
+        object.__setattr__(self, "benefit", normalized[1])
+        object.__setattr__(self, "rau", normalized[2])
 
     def as_dict(self) -> dict[str, str | float]:
         return {
@@ -1330,16 +1339,23 @@ Change production call sites to the semantic enum members. Update the one test f
 Split the adapter's current combined `_REVIEW_DECISIONS` branch without changing persisted decisions:
 
 - exact `reject` → `RETURN_CANDIDATE/consulted_review` in every mode, with a different-route reason;
-- exact `ask_human`, interactive query, replay status `available` →
+- exact `ask_human`, interactive query, structurally valid replay metadata (status `available`, exact
+  `sha256-candidate-replay-v1` algorithm, 64 lowercase hexadecimal digest) →
   `REQUEST_HUMAN/consulted_review` with the bound `pebra accept-risk --apply` route;
-- exact `ask_human` with `consult_only=True`, or with missing/malformed/non-`available`
-  `request.candidate_replay.status` → `RETURN_CANDIDATE/consulted_review_unavailable`, explaining that
+- exact `ask_human` with `consult_only=True`, or with missing/malformed/unavailable replay metadata →
+  `RETURN_CANDIDATE/consulted_review_unavailable`, explaining that
   bound application is unavailable and requesting reassessment or another route.
 
 Inspect replay metadata from the already matched row's persisted `content_json`; do not read the replay
 payload, mutate storage, or add a new port. Test all mappings even when `risk_summary` is null, so malformed
 stored scores cannot erase the `ask_human` versus `reject` sanctionability distinction. Replay metadata
 failure must remain a candidate return and must never reach the infrastructure fail-open catch.
+
+Parse `matched["decision"]` explicitly through `Decision`. Only `Decision.PROCEED` may produce
+`CONTINUE/consulted`; do not use a generic fallthrough. A null, unknown, or corrupt persisted decision
+produces `CONTINUE/fail_open` with a visible data-integrity warning, `risk_summary: null`, and no matched
+assessment attribution. Candidate application refuses this fail-open result because it requires the
+`consulted` tier.
 
 Add one adapter helper that constructs `GateRiskSummary` only after exact candidate binding succeeds and
 all required persisted fields validate. Add one deterministic reason renderer for exact restrictive
@@ -1469,13 +1485,18 @@ Add seeded exact-candidate subprocess cases that exercise a restrictive assessme
   wire `deny` with a different-route instruction;
 - `pebra gate-hook` with both a Claude `Write` event and the installed Codex `apply_patch` event projects
   `REQUEST_HUMAN` to blocking `deny`, preserving the bound-review instruction and never emitting `ask`;
-- `ask_human` with replay status `available` names `pebra accept-risk --apply`, while missing,
-  malformed, or `unavailable` replay returns `consulted_review_unavailable`, stays blocking, and requests
+- `ask_human` with structurally valid available replay metadata names `pebra accept-risk --apply`, while
+  missing, malformed, unavailable, wrong-algorithm, or invalid-digest replay returns
+  `consulted_review_unavailable`, stays blocking, and requests
   reassessment without promising that command;
 - a one-byte candidate change produces mismatch with `risk_summary: null` and no numeric values copied
   into the reason;
 - an exact restrictive assessment with partial/non-finite scores stays blocking, emits
   `risk_summary: null`, says `risk summary unavailable`, contains no numeric fragments, and exits cleanly.
+- oversized positive or negative integer scores stay blocking, emit `risk_summary: null`, and keep both
+  CLI and installed-hook output clean;
+- null or unknown persisted decisions emit `allow/fail_open` with a visible data-integrity warning and no
+  risk summary or matched assessment attribution; bound candidate application refuses that tier.
 
 Create a local black-box fixture in this E2E module using only stdlib Git/SQLite setup and subprocess CLI
 calls; the reusable helpers currently live only in unit-test modules and must not be imported. Do not

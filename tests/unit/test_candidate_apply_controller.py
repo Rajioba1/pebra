@@ -64,11 +64,13 @@ class GateResult:
         permission=GatePermission.CONTINUE,
         tier=GateTier.CONSULTED,
         matched="asm_7",
+        warn=None,
     ):
         self.permission = permission
         self.tier = tier
         self.matched_assessment_id = matched
         self.reason = "gate reason"
+        self.warn = warn
 
 
 class FakeGate:
@@ -126,6 +128,23 @@ def test_apply_requires_valid_ledger_and_exact_consulted_assessment() -> None:
     ):
         with pytest.raises(controller.CandidateApplyError, match="authorize"):
             _apply(gate=FakeGate(result))
+
+
+def test_apply_refuses_data_integrity_fail_open_without_spending_replay() -> None:
+    replay = FakeReplay()
+    applier = FakeApplier()
+    decision = GateResult(
+        tier=GateTier.FAIL_OPEN,
+        matched=None,
+        warn="gate: persisted decision failed data-integrity validation",
+    )
+
+    with pytest.raises(controller.CandidateApplyError, match="authorize"):
+        _apply(replay=replay, gate=FakeGate(decision), applier=applier)
+
+    assert replay.consumed == []
+    assert replay.deleted == []
+    assert applier.calls == []
 
 
 def test_apply_authorizes_and_writes_inside_same_lock_then_deletes_replay() -> None:

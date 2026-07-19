@@ -39,9 +39,14 @@ from pathlib import Path
 from typing import Any
 
 from pebra.adapters import candidate_binding, paths
+from pebra.adapters.candidate_replay_cache import (
+    CandidateReplayError,
+    validate_candidate_replay_metadata,
+)
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
 from pebra.adapters.patch_header_adapter import touched_files
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
+from pebra.core.constants import Decision
 from pebra.core.gate_contract import (
     ALLOWED_PERMISSION_TIERS,
     ALLOWED_RISK_DECISIONS,
@@ -58,9 +63,9 @@ _QUERY_LIMIT = 200
 _IMPORT_GRAPH_REL = Path(".pebra") / "import_graph.json"
 
 # Persisted decision groups used to preserve assessment semantics at the gate.
-_REVIEW_DECISIONS = frozenset({"ask_human", "reject"})
-_REVISE_DECISIONS = frozenset({"revise_safer"})
-_PREREQUISITE_DECISIONS = frozenset({"inspect_first", "test_first"})
+_REVIEW_DECISIONS = frozenset({Decision.ASK_HUMAN, Decision.REJECT})
+_REVISE_DECISIONS = frozenset({Decision.REVISE_SAFER})
+_PREREQUISITE_DECISIONS = frozenset({Decision.INSPECT_FIRST, Decision.TEST_FIRST})
 _EDIT_TOOLS = ("Edit", "Write")
 _APPLY_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$", re.MULTILINE)
 
@@ -300,13 +305,20 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
             GateTier.CANDIDATE_MISMATCH,
             reason=_candidate_reason(targets, head),
         )
-    assessment_decision = str(matched.get("decision"))
+    try:
+        assessment_decision = Decision(matched.get("decision"))
+    except (TypeError, ValueError):
+        return GateDecision(
+            GatePermission.CONTINUE,
+            GateTier.FAIL_OPEN,
+            warn="gate: persisted decision failed data-integrity validation",
+        )
     risk_summary = _risk_summary(matched)
     if assessment_decision in _REVISE_DECISIONS:
         return GateDecision(
             GatePermission.RETURN_CANDIDATE,
             GateTier.CONSULTED_REVISE,
-            reason=_exact_restrictive_reason(assessment_decision, risk_summary),
+            reason=_exact_restrictive_reason(assessment_decision.value, risk_summary),
             risk_summary=risk_summary,
             matched_assessment_id=matched_id,
         )
@@ -314,26 +326,26 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
         return GateDecision(
             GatePermission.RETURN_CANDIDATE,
             GateTier.CONSULTED_PREREQUISITE,
-            reason=_exact_restrictive_reason(assessment_decision, risk_summary),
+            reason=_exact_restrictive_reason(assessment_decision.value, risk_summary),
             risk_summary=risk_summary,
             matched_assessment_id=matched_id,
         )
-    if assessment_decision == "reject":
+    if assessment_decision is Decision.REJECT:
         return GateDecision(
             GatePermission.RETURN_CANDIDATE,
             GateTier.CONSULTED_REVIEW,
-            reason=_exact_restrictive_reason(assessment_decision, risk_summary),
+            reason=_exact_restrictive_reason(assessment_decision.value, risk_summary),
             risk_summary=risk_summary,
             matched_assessment_id=matched_id,
         )
-    if assessment_decision == "ask_human":
+    if assessment_decision is Decision.ASK_HUMAN:
         replay_available = _candidate_replay_available(matched)
         if consult_only or not replay_available:
             return GateDecision(
                 GatePermission.RETURN_CANDIDATE,
                 GateTier.CONSULTED_REVIEW_UNAVAILABLE,
                 reason=_exact_restrictive_reason(
-                    assessment_decision,
+                    assessment_decision.value,
                     risk_summary,
                     consult_only=consult_only,
                     replay_available=replay_available,
@@ -345,19 +357,21 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
             GatePermission.REQUEST_HUMAN,
             GateTier.CONSULTED_REVIEW,
             reason=_exact_restrictive_reason(
-                assessment_decision,
+                assessment_decision.value,
                 risk_summary,
                 replay_available=True,
             ),
             risk_summary=risk_summary,
             matched_assessment_id=matched_id,
         )
-    return GateDecision(
-        GatePermission.CONTINUE,
-        GateTier.CONSULTED,
-        risk_summary=risk_summary,
-        matched_assessment_id=matched_id,
-    )
+    if assessment_decision is Decision.PROCEED:
+        return GateDecision(
+            GatePermission.CONTINUE,
+            GateTier.CONSULTED,
+            risk_summary=risk_summary,
+            matched_assessment_id=matched_id,
+        )
+    raise AssertionError(f"unhandled persisted decision: {assessment_decision}")
 
 
 def _deny_reason(targets: list[str], head: str) -> str:
@@ -404,8 +418,9 @@ def _candidate_replay_available(row: dict[str, Any]) -> bool:
     try:
         content = json.loads(row["content_json"])
         replay = content["request"]["candidate_replay"]
-        return isinstance(replay, dict) and replay.get("status") == "available"
-    except (KeyError, TypeError, ValueError):
+        validate_candidate_replay_metadata(replay)
+        return True
+    except (CandidateReplayError, KeyError, TypeError, ValueError):
         return False
 
 
@@ -550,7 +565,8 @@ def _query_pending_restriction(db_path: str, repo_id: str, head_sha: str) -> int
         return None
     try:
         decisions = tuple(sorted(
-            _REVISE_DECISIONS | _REVIEW_DECISIONS | _PREREQUISITE_DECISIONS
+            decision.value
+            for decision in _REVISE_DECISIONS | _REVIEW_DECISIONS | _PREREQUISITE_DECISIONS
         ))
         placeholders = ",".join("?" for _ in decisions)
         cur = con.execute(

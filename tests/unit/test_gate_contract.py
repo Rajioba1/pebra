@@ -75,6 +75,34 @@ def test_risk_summary_rejects_non_finite_or_boolean_numbers(field, value):
         GateRiskSummary(decision=Decision.REVISE_SAFER, **values)
 
 
+def test_risk_summary_normalizes_integer_numbers_to_floats():
+    summary = GateRiskSummary(
+        decision=Decision.REVISE_SAFER,
+        expected_loss=1,
+        benefit=0,
+        rau=-1,
+    )
+
+    assert summary.expected_loss == 1.0
+    assert summary.benefit == 0.0
+    assert summary.rau == -1.0
+    assert all(
+        isinstance(value, float)
+        for value in (summary.expected_loss, summary.benefit, summary.rau)
+    )
+
+
+@pytest.mark.parametrize("value", (10**1000, -(10**1000)))
+def test_risk_summary_translates_oversized_integer_overflow_to_value_error(value):
+    with pytest.raises(ValueError, match="finite"):
+        GateRiskSummary(
+            decision=Decision.REVISE_SAFER,
+            expected_loss=value,
+            benefit=0.34,
+            rau=-0.27,
+        )
+
+
 @pytest.mark.parametrize(
     ("permission", "tier", "assessment_decision"),
     [

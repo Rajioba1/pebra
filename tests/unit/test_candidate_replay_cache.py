@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 
 from pebra.adapters.candidate_replay_cache import (
+    CANDIDATE_REPLAY_ALGORITHM,
     CandidateReplayCache,
     CandidateReplayError,
+    validate_candidate_replay_metadata,
 )
 
 
@@ -41,7 +43,7 @@ def test_cache_round_trip_is_content_addressed_and_private(tmp_path: Path) -> No
 
     assert first == second
     assert first["status"] == "available"
-    assert first["algorithm"] == "sha256-candidate-replay-v1"
+    assert first["algorithm"] == CANDIDATE_REPLAY_ALGORITHM
     assert cache.load(first) == _bundle()
     files = list(tmp_path.glob("*.json"))
     assert len(files) == 1
@@ -70,6 +72,40 @@ def test_cache_rejects_unsafe_digest(tmp_path: Path, digest: str) -> None:
             "algorithm": "sha256-candidate-replay-v1",
             "digest": digest,
         })
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        {"status": "available", "digest": "a" * 64},
+        {
+            "status": "available",
+            "algorithm": "sha256-candidate-replay-v0",
+            "digest": "a" * 64,
+        },
+        {
+            "status": "available",
+            "algorithm": "sha256-candidate-replay-v1",
+            "digest": "A" * 64,
+        },
+    ),
+    ids=("missing-algorithm", "wrong-algorithm", "uppercase-digest"),
+)
+def test_public_metadata_validator_rejects_structurally_invalid_available_metadata(
+    metadata,
+) -> None:
+    with pytest.raises(CandidateReplayError, match="metadata"):
+        validate_candidate_replay_metadata(metadata)
+
+
+def test_public_metadata_validator_returns_validated_digest() -> None:
+    metadata = {
+        "status": "available",
+        "algorithm": CANDIDATE_REPLAY_ALGORITHM,
+        "digest": "a" * 64,
+    }
+
+    assert validate_candidate_replay_metadata(metadata) == "a" * 64
 
 
 def test_cache_rejects_expired_entry(tmp_path: Path) -> None:

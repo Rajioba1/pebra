@@ -20,10 +20,18 @@ import pytest
 
 from pebra.adapters import candidate_binding
 from pebra.adapters import gate_check_adapter as gca
+from pebra.adapters.candidate_replay_cache import CANDIDATE_REPLAY_ALGORITHM
 from pebra.cli import gate_check as gc_cmd
 from pebra.cli.main import build_parser
 from pebra.core.constants import Decision
 from pebra.core.gate_contract import GATE_SCHEMA_VERSION, GatePermission, GateTier
+
+
+_VALID_REPLAY = {
+    "status": "available",
+    "algorithm": CANDIDATE_REPLAY_ALGORITHM,
+    "digest": "a" * 64,
+}
 
 
 def _abs(root: Path, rel: str) -> str:
@@ -549,7 +557,7 @@ def test_decide_ask_when_matched_assessment_is_ask_human(tmp_path, monkeypatch):
     _consulted(
         tmp_path, monkeypatch, "ask_human",
         scores={"expected_loss": 0.61, "benefit": 0.34, "rau": -0.27},
-        candidate_replay={"status": "available"},
+        candidate_replay=_VALID_REPLAY,
     )
     d = gca.decide(_edit_event(tmp_path))
     assert d.permission == "ask" and d.tier == "consulted_review"
@@ -696,9 +704,46 @@ def test_malformed_exact_scores_keep_restriction_without_partial_fragments(
         assert fragment not in result.reason.lower()
 
 
+@pytest.mark.parametrize("value", (10**1000, -(10**1000)))
+def test_oversized_integer_scores_keep_exact_candidate_restricted(
+    tmp_path, monkeypatch, value,
+):
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "revise_safer",
+        scores={"expected_loss": value, "benefit": 0.34, "rau": -0.27},
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.RETURN_CANDIDATE
+    assert result.tier is GateTier.CONSULTED_REVISE
+    assert result.risk_summary is None
+    assert "risk summary unavailable" in result.reason.lower()
+
+
 @pytest.mark.parametrize(
     "replay",
-    [None, {}, "bad", {"status": "not_applicable"}, {"status": "consumed"}, {"status": 1}],
+    [
+        None,
+        {},
+        "bad",
+        {"status": "not_applicable"},
+        {"status": "consumed"},
+        {"status": 1},
+        {"status": "available"},
+        {
+            "status": "available",
+            "algorithm": "sha256-candidate-replay-v0",
+            "digest": "a" * 64,
+        },
+        {
+            "status": "available",
+            "algorithm": CANDIDATE_REPLAY_ALGORITHM,
+            "digest": "not-a-digest",
+        },
+    ],
 )
 def test_ask_human_without_available_replay_returns_candidate(
     tmp_path, monkeypatch, replay,
@@ -722,7 +767,7 @@ def test_consult_only_ask_human_never_exposes_product_or_approval_command(tmp_pa
     _consulted(
         tmp_path, monkeypatch, "ask_human",
         scores={"expected_loss": 0.61, "benefit": 0.34, "rau": -0.27},
-        candidate_replay={"status": "available"},
+        candidate_replay=_VALID_REPLAY,
     )
 
     result = gca.decide(_edit_event(tmp_path), consult_only=True)
@@ -765,7 +810,7 @@ def test_non_exact_paths_never_expose_a_risk_summary(tmp_path, monkeypatch):
             "ask_human",
             GatePermission.REQUEST_HUMAN,
             GateTier.CONSULTED_REVIEW,
-            {"status": "available"},
+            _VALID_REPLAY,
         ),
     ],
 )
@@ -779,6 +824,23 @@ def test_persisted_decision_mapping_survives_unavailable_risk_summary(
     assert result.permission is permission
     assert result.tier is tier
     assert result.risk_summary is None
+
+
+@pytest.mark.parametrize("persisted_decision", (None, "unknown_decision"))
+def test_corrupt_persisted_decision_fails_open_with_integrity_warning(
+    tmp_path, monkeypatch, persisted_decision,
+):
+    _consulted(tmp_path, monkeypatch, persisted_decision)
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.CONTINUE
+    assert result.tier is GateTier.FAIL_OPEN
+    assert result.warn
+    assert "persisted decision" in result.warn.lower()
+    assert "integrity" in result.warn.lower()
+    assert result.risk_summary is None
+    assert result.matched_assessment_id is None
 
 
 def test_gate_check_envelope_is_versioned_and_nullable(monkeypatch, capsys):

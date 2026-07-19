@@ -19,6 +19,12 @@ from e2e.utils import cli_harness
 
 _MISSING = object()
 _BINDING_ALGORITHM = "sha256-normalized-content-v1"
+_REPLAY_ALGORITHM = "sha256-candidate-replay-v1"
+_VALID_REPLAY = {
+    "status": "available",
+    "algorithm": _REPLAY_ALGORITHM,
+    "digest": "a" * 64,
+}
 _SCORES = {"expected_loss": 0.75, "benefit": 0.2, "rau": -0.55}
 _ENVELOPE_KEYS = {
     "schema_version",
@@ -81,6 +87,12 @@ def _seed_case(
     repo.mkdir(parents=True)
     target = repo / "target.txt"
     target.write_text("original\n", encoding="utf-8")
+    graph = repo / ".pebra" / "import_graph.json"
+    graph.parent.mkdir()
+    graph.write_text(
+        json.dumps({"god_node_scores": {"target.txt": 1.0}}),
+        encoding="utf-8",
+    )
     _run(["git", "init", "-q"], cwd=repo)
     _run(["git", "config", "user.name", "PEBRA E2E"], cwd=repo)
     _run(["git", "config", "user.email", "e2e@invalid.example"], cwd=repo)
@@ -207,7 +219,7 @@ def test_gate_hook_capabilities_emit_candidate_binding_protocol():
 
 
 def test_consult_only_holds_an_exact_restrictive_candidate_with_blinded_evidence(gate_case):
-    case = gate_case(decision="ask_human", replay={"status": "available"})
+    case = gate_case(decision="ask_human", replay=_VALID_REPLAY)
     payload = cli_harness.gate_check(case.claude_event, db=case.db, consult_only=True)
 
     reason = _assert_candidate_hold(payload)
@@ -221,7 +233,7 @@ def test_consult_only_holds_an_exact_restrictive_candidate_with_blinded_evidence
 
 
 def test_interactive_gate_asks_only_for_replay_available_ask_human(gate_case):
-    review = gate_case(decision="ask_human", replay={"status": "available"})
+    review = gate_case(decision="ask_human", replay=_VALID_REPLAY)
     payload = cli_harness.gate_check(review.claude_event, db=review.db)
 
     assert set(payload) == _ENVELOPE_KEYS
@@ -235,7 +247,7 @@ def test_interactive_gate_asks_only_for_replay_available_ask_human(gate_case):
 
 
 def test_reject_returns_candidate_and_requires_a_different_route(gate_case):
-    rejected = gate_case(decision="reject", replay={"status": "available"})
+    rejected = gate_case(decision="reject", replay=_VALID_REPLAY)
     payload = cli_harness.gate_check(rejected.claude_event, db=rejected.db)
 
     reason = _assert_candidate_hold(payload)
@@ -247,7 +259,7 @@ def test_reject_returns_candidate_and_requires_a_different_route(gate_case):
 
 @pytest.mark.parametrize("event_name", ("claude_event", "codex_event"))
 def test_installed_hooks_project_bound_review_to_blocking_deny(gate_case, event_name):
-    review = gate_case(decision="ask_human", replay={"status": "available"})
+    review = gate_case(decision="ask_human", replay=_VALID_REPLAY)
     payload = _gate_hook(getattr(review, event_name), db=review.db)["hookSpecificOutput"]
 
     assert payload["hookEventName"] == "PreToolUse"
@@ -263,8 +275,26 @@ def test_installed_hooks_project_bound_review_to_blocking_deny(gate_case, event_
         _MISSING,
         "malformed",
         {"status": "unavailable"},
+        {"status": "available"},
+        {
+            "status": "available",
+            "algorithm": "sha256-candidate-replay-v0",
+            "digest": "a" * 64,
+        },
+        {
+            "status": "available",
+            "algorithm": _REPLAY_ALGORITHM,
+            "digest": "bad",
+        },
     ),
-    ids=("missing", "malformed", "unavailable"),
+    ids=(
+        "missing",
+        "malformed",
+        "unavailable",
+        "missing-algorithm-and-digest",
+        "wrong-algorithm",
+        "bad-digest",
+    ),
 )
 def test_unavailable_replay_stays_blocking_without_promising_bound_apply(gate_case, replay):
     case = gate_case(decision="ask_human", replay=replay)
@@ -312,3 +342,38 @@ def test_malformed_scores_stay_blocking_without_numeric_fragments(gate_case, sco
     assert payload["matched_assessment_id"] == "asm_1"
     assert "risk summary unavailable" in reason.lower()
     assert re.search(r"(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?", reason) is None
+
+
+@pytest.mark.parametrize("value", (10**1000, -(10**1000)), ids=("positive", "negative"))
+def test_oversized_integer_scores_keep_cli_and_hook_clean_and_restrictive(gate_case, value):
+    scores = {"expected_loss": value, "benefit": 0.2, "rau": -0.55}
+    case = gate_case(decision="revise_safer", scores=scores)
+
+    cli_payload = cli_harness.gate_check(case.claude_event, db=case.db)
+    hook_payload = _gate_hook(case.claude_event, db=case.db)["hookSpecificOutput"]
+
+    reason = _assert_candidate_hold(cli_payload)
+    assert cli_payload["tier"] == "consulted_revise"
+    assert cli_payload["risk_summary"] is None
+    assert "risk summary unavailable" in reason.lower()
+    assert hook_payload["permissionDecision"] == "deny"
+    assert "risk summary unavailable" in hook_payload["permissionDecisionReason"].lower()
+
+
+@pytest.mark.parametrize("persisted_decision", (None, "unknown_decision"))
+def test_corrupt_persisted_decision_fails_open_with_visible_warning(
+    gate_case, persisted_decision,
+):
+    case = gate_case(decision=persisted_decision)
+
+    payload = cli_harness.gate_check(case.claude_event, db=case.db)
+    hook_payload = _gate_hook(case.claude_event, db=case.db)
+
+    assert payload["permission"] == "allow"
+    assert payload["tier"] == "fail_open"
+    assert payload["risk_summary"] is None
+    assert payload["matched_assessment_id"] is None
+    assert "persisted decision" in payload["warn"].lower()
+    assert "integrity" in payload["warn"].lower()
+    assert "hookSpecificOutput" not in hook_payload
+    assert "persisted decision" in hook_payload["systemMessage"].lower()

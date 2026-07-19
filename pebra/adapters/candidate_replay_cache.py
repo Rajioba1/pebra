@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-_ALGORITHM = "sha256-candidate-replay-v1"
+CANDIDATE_REPLAY_ALGORITHM = "sha256-candidate-replay-v1"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _DEFAULT_MAX_BYTES = 8 * 1024 * 1024
 _DEFAULT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
@@ -19,6 +19,19 @@ _DEFAULT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 class CandidateReplayError(RuntimeError):
     pass
+
+
+def validate_candidate_replay_metadata(metadata: object) -> str:
+    """Return the digest from structurally valid, available replay metadata."""
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("status") != "available"
+        or metadata.get("algorithm") != CANDIDATE_REPLAY_ALGORITHM
+        or not isinstance(metadata.get("digest"), str)
+        or _DIGEST.fullmatch(metadata["digest"]) is None
+    ):
+        raise CandidateReplayError("candidate replay metadata is invalid")
+    return metadata["digest"]
 
 
 def _canonical(bundle: dict[str, Any]) -> bytes:
@@ -65,7 +78,11 @@ class CandidateReplayCache:
                 os.replace(tmp, target)
             finally:
                 tmp.unlink(missing_ok=True)
-        return {"status": "available", "algorithm": _ALGORITHM, "digest": digest}
+        return {
+            "status": "available",
+            "algorithm": CANDIDATE_REPLAY_ALGORITHM,
+            "digest": digest,
+        }
 
     def load(self, metadata: dict[str, Any]) -> dict[str, Any]:
         digest = self._validated_digest(metadata)
@@ -108,15 +125,7 @@ class CandidateReplayCache:
 
     @staticmethod
     def _validated_digest(metadata: dict[str, Any]) -> str:
-        if (
-            not isinstance(metadata, dict)
-            or metadata.get("status") != "available"
-            or metadata.get("algorithm") != _ALGORITHM
-            or not isinstance(metadata.get("digest"), str)
-            or _DIGEST.fullmatch(metadata["digest"]) is None
-        ):
-            raise CandidateReplayError("candidate replay metadata is invalid")
-        return metadata["digest"]
+        return validate_candidate_replay_metadata(metadata)
 
     def _reap(self) -> None:
         cutoff = time.time() - self._max_age_seconds

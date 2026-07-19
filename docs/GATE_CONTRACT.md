@@ -37,6 +37,9 @@ attempted candidate. It never cancels or rejects the user's goal.
 Risk summaries are exact-only and all-or-none. All three numbers must be finite, non-boolean numbers from
 the matched assessment; missing, partial, malformed, stale, unbound, unverifiable, mismatched, or
 incomplete evidence yields `risk_summary: null`. Non-consulted tiers cannot carry scores.
+Accepted integers and floats are normalized to finite JSON numbers. Oversized integers that cannot be
+represented as floats also yield `risk_summary: null`; the exact candidate keeps its original disposition
+and the reason states `risk summary unavailable`.
 
 | Permission / tier | Allowed persisted decision |
 | --- | --- |
@@ -46,6 +49,17 @@ incomplete evidence yields `risk_summary: null`. Non-consulted tiers cannot carr
 | `ask` / `consulted_review` | `ask_human` |
 | `deny` / `consulted_review` | `reject` |
 | `deny` / `consulted_review_unavailable` | `ask_human` |
+
+Only an explicitly parsed persisted `proceed` decision can produce `allow/consulted`. A null, unknown, or
+corrupt persisted decision produces `allow/fail_open` with a visible data-integrity warning, no risk
+summary, and no assessment attribution. This preserves the infrastructure fail-open policy while ensuring
+the bound application controller refuses the result because it is not `consulted`.
+
+An interactive `ask_human` result names `pebra accept-risk --apply` only when persisted replay metadata is
+structurally valid: `status` is `available`, `algorithm` is exactly `sha256-candidate-replay-v1`, and
+`digest` is 64 lowercase hexadecimal characters. The gate validates metadata only; it does not read the
+cached payload. Missing or malformed metadata produces `deny/consulted_review_unavailable` without
+promising the approval command.
 
 ## Host projection and threat boundary
 

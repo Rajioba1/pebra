@@ -92,8 +92,10 @@ Create a dependency-free core contract containing:
 `GateDecision` normalizes values into those enums and rejects an undeclared pair. Its JSON output includes
 `schema_version`, string permission/tier values, reason, warning, nullable `risk_summary`, and optional
 host metadata. A risk summary is emitted only when a fresh assessment is bound to the exact attempted
-candidate and all three numeric values are finite. It is omitted as a unit for missing, stale, unbound,
-unverifiable, mismatched, or malformed evidence; the gate never attaches plausible-looking stale numbers.
+candidate and all three numeric values are finite. Accepted integers and floats are normalized to floats;
+booleans, non-finite values, and oversized integers that cannot be represented as floats are rejected
+locally. It is omitted as a unit for missing, stale, unbound, unverifiable, mismatched, or malformed
+evidence; the gate never attaches plausible-looking stale numbers.
 Internally, a non-null summary requires the exact matched assessment identifier (`asm_<positive-int>`),
 even when an untrusted serialized surface omits host-only attribution.
 The contract also validates the summary decision against the permission/tier pair: `allow/consulted`
@@ -107,10 +109,15 @@ Restrictive exact-candidate reasons use neutral, actionable language: “this ex
 your requested goal,” followed, when available, by the assessment decision, expected loss, benefit, RAU,
 and the next valid action. If exact persisted scores are missing, partial, or non-finite, the gate remains
 restrictive and states “risk summary unavailable”; it never crashes, fails open, fabricates, or partially
-prints values. `revise_safer`, `inspect_first`, and `test_first` return the candidate for the named work.
+prints values. Persisted decisions are parsed through the six-value `Decision` enum; only explicit
+`proceed` can return `allow/consulted`. A null, unknown, or corrupt value returns `allow/fail_open` with a
+visible data-integrity warning and without a risk summary or assessment attribution. Bound candidate
+application still refuses that result because its tier is not `consulted`.
+`revise_safer`, `inspect_first`, and `test_first` return the candidate for the named work.
 `ask_human` returns the candidate with instructions for the existing bound sanction and reassessment
 workflow (`pebra accept-risk --apply`) on interactive installed hooks only when persisted candidate replay
-is available. Missing, malformed, or unavailable replay keeps the candidate held and requests reassessment
+metadata is structurally valid: status `available`, exact algorithm `sha256-candidate-replay-v1`, and a
+64-character lowercase hexadecimal digest. Missing, malformed, or unavailable replay keeps the candidate held and requests reassessment
 or another route; it must not promise an inapplicable approval command. A consult-only surface states that
 no trusted approver is available without exposing product/experiment identity. `reject` returns the
 candidate and asks the human to choose a different candidate or route;

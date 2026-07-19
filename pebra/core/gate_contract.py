@@ -44,13 +44,20 @@ class GateRiskSummary:
         decision = Decision(self.decision)
         numeric = (self.expected_loss, self.benefit, self.rau)
         if any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
+            isinstance(value, bool) or not isinstance(value, (int, float))
             for value in numeric
         ):
             raise ValueError("gate risk summary values must be finite numbers")
+        try:
+            normalized = tuple(float(value) for value in numeric)
+        except OverflowError as exc:
+            raise ValueError("gate risk summary values must be finite numbers") from exc
+        if any(not math.isfinite(value) for value in normalized):
+            raise ValueError("gate risk summary values must be finite numbers")
         object.__setattr__(self, "decision", decision)
+        object.__setattr__(self, "expected_loss", normalized[0])
+        object.__setattr__(self, "benefit", normalized[1])
+        object.__setattr__(self, "rau", normalized[2])
 
     def as_dict(self) -> dict[str, str | float]:
         return {
