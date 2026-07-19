@@ -13,10 +13,19 @@ import pytest
 from pebra.cli import agent_init
 from pebra.cli.main import build_parser
 from pebra.core import agent_hook_contract
+from pebra.core.constants import Decision
 
 _SKILL_REL = Path(".claude") / "skills" / "pebra-safe-edit" / "SKILL.md"
+_CLAUDE_RULE_REL = Path(".claude/rules/pebra-safe-edit.md")
 _TOKENS = ("pebra assess", "pebra verify", "record-outcome", "pre-edit")
 _REVISE_TOKENS = ("revise_safer", "proposed_patch", "expected_loss", "resubmit")
+_OBLIGATIONS = (
+    "assess before",
+    "mismatched or incomplete candidate",
+    "candidate hold or human review",
+    "human sanction",
+    "verify and record",
+)
 
 
 def _run(target: str, repo_root: Path) -> int:
@@ -39,6 +48,43 @@ def test_claude_creates_skill_file(tmp_path):
     body = skill.read_text(encoding="utf-8")
     for token in _TOKENS:
         assert token in body, f"missing {token!r}"
+
+
+def test_claude_writes_always_loaded_non_negotiables(tmp_path):
+    assert _run("claude", tmp_path) == 0
+    generated = (tmp_path / _CLAUDE_RULE_REL).read_bytes()
+    assert generated == agent_init._CLAUDE_RULE_MD.encode("utf-8")
+    body = generated.decode("utf-8").lower()
+    for obligation in _OBLIGATIONS:
+        assert obligation in body
+
+
+def test_claude_rule_is_fully_managed_and_idempotent(tmp_path):
+    assert _run("claude", tmp_path) == 0
+    rule = tmp_path / _CLAUDE_RULE_REL
+    original = rule.read_bytes()
+
+    rule.write_text("local edit\n", encoding="utf-8")
+    assert _run("claude", tmp_path) == 0
+    assert rule.read_bytes() == original
+
+    assert _run("claude", tmp_path) == 0
+    assert rule.read_bytes() == original
+
+
+def test_full_host_skills_are_byte_identical(tmp_path):
+    assert _run("claude", tmp_path) == 0
+    claude = (tmp_path / _SKILL_REL).read_bytes()
+    assert _run("codex", tmp_path) == 0
+    codex = (tmp_path / ".agents/skills/pebra-safe-edit/SKILL.md").read_bytes()
+    expected = agent_init._SKILL_MD.encode("utf-8")
+    assert claude == expected
+    assert codex == expected
+
+
+def test_detailed_protocol_names_every_live_decision():
+    for decision in Decision:
+        assert decision.value in agent_init._PROTOCOL_BODY
 
 
 def test_skill_wording_is_consult_not_block(tmp_path):
@@ -91,6 +137,7 @@ def test_codex_creates_agents_md(tmp_path):
     assert _run("codex", tmp_path) == 0
     agents = tmp_path / "AGENTS.md"
     assert agents.is_file()
+    assert not (tmp_path / _CLAUDE_RULE_REL).exists()
     body = agents.read_text(encoding="utf-8")
     for token in _TOKENS:
         assert token in body, f"missing {token!r}"
@@ -314,6 +361,7 @@ def test_agent_init_with_hook_rejects_invalid_config_without_any_write(
 
     assert settings.read_text(encoding="utf-8") == raw
     assert not (tmp_path / _SKILL_REL).exists()
+    assert not (tmp_path / _CLAUDE_RULE_REL).exists()
     assert not (tmp_path / "AGENTS.md").exists()
     assert str(settings) in capsys.readouterr().err
 

@@ -114,8 +114,11 @@ for diagnosis and manual operation.
 
 ## Agent Enforcement
 
-Install the repository protocol for either host. Add `--with-hook` when you want pre-edit interception,
-not only instructions:
+Install the repository protocol for either host. Claude receives the detailed
+`.claude/skills/pebra-safe-edit/SKILL.md` protocol and an unconditional, fully managed
+`.claude/rules/pebra-safe-edit.md` rule. Codex receives a managed `AGENTS.md` block and the same
+detailed protocol at `.agents/skills/pebra-safe-edit/SKILL.md`. Add `--with-hook` when you also want
+pre-edit interception:
 
 ```powershell
 pebra agent-init --target claude --repo-root . --with-hook
@@ -127,8 +130,10 @@ The guarantees are deliberately different:
 
 | Host surface | Reported mode | Guarantee |
 |---|---|---|
-| Claude Code PreToolUse hook | `configured_enforcing` | Exact enabled hook config, matching gate capability handshake, graph, and Git HEAD were observed. Candidate-bound checks deny or ask before supported structured edits; this does not prove the host invoked every event. |
-| Codex repo-local hook | `best_effort` | Candidate-bound gate logic is installed, but repo-local hook loading remains host-dependent. |
+| Claude skill + unconditional rule | instructions | The detailed protocol and concise non-negotiables are fully managed by `agent-init`; rerunning it restores their generated contents. |
+| Claude Code PreToolUse hook (optional) | `configured_enforcing` | Exact enabled hook config, matching gate capability handshake, graph, and Git HEAD were observed. Candidate-bound checks deny unsupported candidates before supported structured edits; this does not prove the host invoked every event. |
+| Codex managed block + skill | instructions | Existing `AGENTS.md` content is preserved around a managed protocol block, and the detailed skill matches Claude's byte-for-byte. |
+| Codex repo-local hook (optional) | `best_effort` | Candidate-bound gate logic is installed, but repo-local hook loading remains host-dependent. |
 | MCP tools | `advisory_only` | Assess/verify tools are available, but MCP alone does not intercept another host's writes. |
 
 If graph or Git HEAD evidence is unavailable, an installed gate remains fail-open by policy and

@@ -8,7 +8,8 @@ also writes a host hook config that calls ``pebra gate-hook`` before structured 
 Templates are inline string constants so nothing depends on package-data being shipped.
 
 Targets:
-- ``claude`` -> ``.claude/skills/pebra-safe-edit/SKILL.md``
+- ``claude`` -> ``.claude/rules/pebra-safe-edit.md`` plus
+  ``.claude/skills/pebra-safe-edit/SKILL.md``
 - ``codex``  -> ``AGENTS.md`` (idempotent managed block; the reliable Codex surface) plus
   ``.agents/skills/pebra-safe-edit/SKILL.md`` (the documented repo-local Codex skills path).
 """
@@ -38,7 +39,9 @@ obligation, not optional. Do not skip these steps:
 1. **Assess (pre-edit).** Draft the intended change, then run
    `pebra assess <request.json> --json` with the target file(s) in `expected_files` and the intended
    unified diff in `proposed_patch`. Read the returned decision, `scores.expected_loss`, safe edit
-   scope, and required checks before touching the code.
+   scope, and required checks before touching the code. If the decision is `inspect_first`, inspect
+   the reported dependents before resubmitting. If it is `test_first`, add or run the required tests
+   before resubmitting.
 2. **Revise when asked.** If the decision is `revise_safer`, do not apply the original patch. Use
    `model_guidance_packet.advisory.safer_route` (its `summary` and `constraints`) to draft a safer or
    compatibility-preserving candidate. For public contract changes, consider retaining the existing
@@ -79,6 +82,17 @@ description: Use BEFORE editing, renaming, or deleting any function, class, or f
 # PEBRA safe edit
 
 {_PROTOCOL_BODY}"""
+
+_CLAUDE_RULE_MD = """\
+# PEBRA safe-edit non-negotiables
+
+1. Assess before every significant edit, rename, or delete.
+2. Never apply a mismatched or incomplete candidate; apply only the exact assessed candidate.
+3. A PEBRA candidate hold or human review overrides an earlier advisory proceed for that exact
+   candidate; it does not cancel the user's requested goal.
+4. Never create, claim, or answer your own human sanction.
+5. After application, verify and record the outcome.
+"""
 
 _AGENTS_HEADING = "## PEBRA safe-edit protocol"
 
@@ -140,7 +154,14 @@ def run_agent_init(args: Any) -> int:
 
 def _plan_agent_init(repo_root: Path, target: str, with_hook: bool) -> list[PlannedWrite]:
     if target == "claude":
-        planned = [_render_skill(repo_root, ".claude")]
+        planned = [
+            PlannedWrite(
+                repo_root / ".claude" / "rules" / "pebra-safe-edit.md",
+                _CLAUDE_RULE_MD,
+                newline="",
+            ),
+            _render_skill(repo_root, ".claude"),
+        ]
         if with_hook:
             path = repo_root / ".claude" / "settings.json"
             planned.append(PlannedWrite(path, _render_hook_config(path, _CLAUDE_HOOK_MATCHER)))
@@ -155,7 +176,7 @@ def _plan_agent_init(repo_root: Path, target: str, with_hook: bool) -> list[Plan
 
 def _render_skill(repo_root: Path, base: str) -> PlannedWrite:
     path = repo_root / base / "skills" / _SKILL_DIR / "SKILL.md"
-    return PlannedWrite(path, _SKILL_MD)
+    return PlannedWrite(path, _SKILL_MD, newline="")
 
 
 def _render_hook_config(path: Path, matcher: str) -> str:
