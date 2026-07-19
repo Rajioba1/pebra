@@ -163,7 +163,16 @@ def verify_installed() -> None:
 
     with tempfile.TemporaryDirectory(prefix="pebra-wheel-smoke-") as raw:
         cwd = Path(raw)
-        for args in (("--help",), ("--version",), ("help", "dashboard"), ("help", "tui")):
+        installed_version = importlib.metadata.version("pebra")
+        version_result = _run_cli("--version", cwd=cwd)
+        if (
+            version_result.returncode != 0
+            or not version_result.stdout.startswith(f"PEBRA {installed_version} ")
+        ):
+            raise DistributionVerificationError(
+                f"installed CLI reported the wrong version: {version_result.stdout.strip()}"
+            )
+        for args in (("--help",), ("help", "dashboard"), ("help", "tui")):
             result = _run_cli(*args, cwd=cwd)
             if result.returncode != 0 or "pebra" not in result.stdout.lower():
                 raise DistributionVerificationError(

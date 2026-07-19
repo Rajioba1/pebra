@@ -94,3 +94,12 @@ def test_nox_exposes_packaged_development_session() -> None:
 
     assert '@nox.session(name="dev-package")' in source
     assert '"python", "-m", "scripts.dev_package"' in source
+
+
+def test_dashboard_process_cwd_stays_outside_temporary_workspace() -> None:
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "scripts" / "dev_package.py").read_text(encoding="utf-8")
+    popen_call = source.split("process = subprocess.Popen(", maxsplit=1)[1].split(")", maxsplit=1)[0]
+
+    assert "cwd=root" in popen_call
+    assert "cwd=repo" not in popen_call

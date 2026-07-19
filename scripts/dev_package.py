@@ -193,7 +193,7 @@ def run(*, open_browser: bool = False) -> None:
             command.append("--open")
         process = subprocess.Popen(
             command,
-            cwd=repo,
+            cwd=root,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

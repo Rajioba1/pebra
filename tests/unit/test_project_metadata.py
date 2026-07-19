@@ -88,3 +88,9 @@ def test_readme_documents_cli_and_tui_discovery_commands() -> None:
         "pebra help --all",
     ):
         assert command in body
+
+
+def test_project_version_is_0_1_1_release_candidate() -> None:
+    _, project = _project_metadata()
+
+    assert project["version"] == "0.1.1"
