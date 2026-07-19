@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from pebra.adapters import candidate_binding
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 from pebra.core.models import CandidateAction
 
 
@@ -31,6 +32,17 @@ def _repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def test_patch_binding_uses_public_algorithm_constant(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("old\n", encoding="utf-8")
+    patch = "*** Begin Patch\n*** Update File: a.py\n@@\n-old\n+new\n*** End Patch"
+
+    binding = candidate_binding.binding_for_patch(tmp_path, patch)
+
+    assert binding is not None
+    assert binding["algorithm"] == CANDIDATE_BINDING_ALGORITHM
+
+
 def test_patch_and_claude_edit_produce_the_same_binding(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     assessed = candidate_binding.binding_for_patch(repo, _PATCH)
@@ -45,7 +57,7 @@ def test_patch_and_claude_edit_produce_the_same_binding(tmp_path: Path) -> None:
     }, repo)
 
     assert assessed == attempted
-    assert assessed["algorithm"] == "sha256-normalized-content-v1"
+    assert assessed["algorithm"] == CANDIDATE_BINDING_ALGORITHM
     assert set(assessed["files"]) == {"src/a.py"}
 
 

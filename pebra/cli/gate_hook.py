@@ -18,6 +18,7 @@ import sys
 from typing import Any
 
 from pebra.adapters import gate_check_adapter as gca
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 
 
 def register(subparsers: Any) -> None:
@@ -37,7 +38,7 @@ def register(subparsers: Any) -> None:
 def run_gate_hook(args: Any) -> int:
     if getattr(args, "capabilities", False):
         print(json.dumps({
-            "candidate_binding_protocol": "sha256-normalized-content-v1",
+            "candidate_binding_protocol": CANDIDATE_BINDING_ALGORITHM,
             "complete_candidate_event_required": True,
         }, sort_keys=True))
         return 0

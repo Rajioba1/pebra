@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from pebra.adapters import enforcement_capability
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 
 
 def _hook(root: Path, rel: str, *, matcher: str = "Edit|Write|MultiEdit", command: str = "pebra gate-hook") -> None:
@@ -144,7 +145,7 @@ def test_hook_runtime_probe_requires_matching_candidate_binding_handshake(monkey
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args[0], 0,
             stdout=json.dumps({
-                "candidate_binding_protocol": "sha256-normalized-content-v1",
+                "candidate_binding_protocol": CANDIDATE_BINDING_ALGORITHM,
                 "complete_candidate_event_required": True,
             }),
         ),

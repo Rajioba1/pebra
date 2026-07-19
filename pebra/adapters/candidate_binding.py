@@ -16,9 +16,9 @@ from typing import Any
 
 from pebra.adapters.patch_header_adapter import touched_files
 from pebra.adapters.patch_materializer import materialize_patch
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 from pebra.core.models import CandidateAction
 
-_ALGORITHM = "sha256-normalized-content-v1"
 _BASELINE_ALGORITHM = "sha256-git-worktree-v1"
 _CODEX_FILE = re.compile(r"^\*\*\* (Add|Update|Delete) File:\s*(.+?)\s*$")
 _UNSUPPORTED_MODE = re.compile(
@@ -72,7 +72,7 @@ def _read(repo_root: Path, rel: str) -> str | None:
 
 def _binding(after: dict[str, str | None]) -> dict[str, Any]:
     return {
-        "algorithm": _ALGORITHM,
+        "algorithm": CANDIDATE_BINDING_ALGORITHM,
         "files": {rel: _digest(after[rel]) for rel in sorted(after)},
     }
 

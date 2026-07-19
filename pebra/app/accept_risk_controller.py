@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 from pebra.ports.sanction_port import SanctionPort
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -32,7 +33,7 @@ def _validated_binding(
     if risk_profile.get("action_id") != action_id:
         raise ValueError("risk_profile action_id does not match the sanction")
     candidate = risk_profile.get("candidate_binding")
-    if not isinstance(candidate, dict) or candidate.get("algorithm") != "sha256-normalized-content-v1":
+    if not isinstance(candidate, dict) or candidate.get("algorithm") != CANDIDATE_BINDING_ALGORITHM:
         raise ValueError("a sanction must use the normalized-content candidate binding")
     files = candidate.get("files")
     if not isinstance(files, dict) or not files:

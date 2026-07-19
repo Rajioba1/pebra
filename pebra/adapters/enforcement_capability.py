@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from pebra.core.agent_hook_contract import is_managed_hook_entry
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 
 
 def _hook_installed(path: Path, expected_matcher: str) -> bool:
@@ -62,7 +63,7 @@ def _hook_runtime_available() -> bool:
     except (TypeError, ValueError):
         return False
     return (
-        payload.get("candidate_binding_protocol") == "sha256-normalized-content-v1"
+        payload.get("candidate_binding_protocol") == CANDIDATE_BINDING_ALGORITHM
         and payload.get("complete_candidate_event_required") is True
     )
 

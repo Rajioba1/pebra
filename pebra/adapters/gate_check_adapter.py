@@ -42,6 +42,7 @@ from typing import Any
 from pebra.adapters import candidate_binding, paths
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
 from pebra.adapters.patch_header_adapter import touched_files
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 
 _IMPACT_THRESHOLD = 0.90  # matches modify_risk_model._HIGH_FANIN_THRESHOLD
 _ANCHOR_THRESHOLD = 0.75  # matches destructive_op_model._GOD_NODE_THRESHOLD (import-graph god_node)
@@ -471,7 +472,7 @@ def _candidate_binding(row: dict[str, Any]) -> dict[str, Any] | None:
             return None
         algorithm = candidate.get("algorithm")
         files = candidate.get("files")
-        if algorithm != "sha256-normalized-content-v1" or not isinstance(files, dict) or not files:
+        if algorithm != CANDIDATE_BINDING_ALGORITHM or not isinstance(files, dict) or not files:
             return None
         if not all(
             isinstance(path, str)

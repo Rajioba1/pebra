@@ -15,6 +15,7 @@ import json
 from pebra.adapters import gate_check_adapter as gca
 from pebra.cli import gate_hook as gh_cmd
 from pebra.cli.main import build_parser
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 
 
 def _run(stdin_text: str, monkeypatch, capsys):
@@ -28,15 +29,12 @@ def test_gate_hook_is_registered():
     assert args.func is gh_cmd.run_gate_hook
 
 
-def test_gate_hook_capability_handshake_reports_candidate_binding_contract(capsys):
+def test_gate_hook_capability_uses_candidate_binding_contract(capsys):
     args = build_parser().parse_args(["gate-hook", "--capabilities"])
-
-    assert gh_cmd.run_gate_hook(args) == 0
-
-    assert json.loads(capsys.readouterr().out) == {
-        "candidate_binding_protocol": "sha256-normalized-content-v1",
-        "complete_candidate_event_required": True,
-    }
+    assert args.func(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["candidate_binding_protocol"] == CANDIDATE_BINDING_ALGORITHM
+    assert payload["complete_candidate_event_required"] is True
 
 
 def test_deny_emits_permission_decision(monkeypatch, capsys):

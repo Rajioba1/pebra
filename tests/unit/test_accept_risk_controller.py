@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pebra.app import accept_risk_controller as arc
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 
 
 class FakeSanctionPort:
@@ -20,7 +21,7 @@ class FakeSanctionPort:
 
 
 _BINDING = {
-    "algorithm": "sha256-normalized-content-v1",
+    "algorithm": CANDIDATE_BINDING_ALGORITHM,
     "files": {"src/a.py": "a" * 64},
 }
 
