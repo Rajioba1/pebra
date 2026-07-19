@@ -35,6 +35,7 @@ class ObservatoryApp(App[None]):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("?", "show_help_panel", "pebra --help"),
+        ("escape", "close_help_panel", "Back"),
     ]
 
     def __init__(self, context: ObservatoryContext) -> None:
@@ -59,9 +60,24 @@ class ObservatoryApp(App[None]):
 
         panels = self.screen.query(HelpPanel)
         if len(panels):
-            panels.remove()
+            self.action_close_help_panel()
         else:
             self.screen.mount(HelpPanel())
+            self.call_after_refresh(self.refresh_bindings)
+
+    def action_close_help_panel(self) -> None:
+        """Close the key-binding help panel when it is open."""
+        from textual.widgets import HelpPanel
+
+        self.screen.query(HelpPanel).remove()
+        self.call_after_refresh(self.refresh_bindings)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "close_help_panel":
+            from textual.widgets import HelpPanel
+
+            return len(self.screen.query(HelpPanel)) > 0
+        return super().check_action(action, parameters)
 
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
         # Built-ins (Change theme, Quit, ...) plus the Observatory's read-only commands. There is

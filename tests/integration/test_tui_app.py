@@ -64,6 +64,17 @@ def test_question_mark_footer_binding_toggles_textual_help_panel() -> None:
             assert binding.action == "show_help_panel"
             assert binding.description == "pebra --help"
             assert len(app.query(HelpPanel)) == 0
+            assert "escape" not in app.active_bindings
+            await pilot.press("?")
+            await pilot.pause()
+            assert app.query_one(HelpPanel) is not None
+            escape = app.active_bindings["escape"].binding
+            assert escape.action == "close_help_panel"
+            assert escape.description == "Back"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(app.query(HelpPanel)) == 0
+            assert "escape" not in app.active_bindings
             await pilot.press("?")
             await pilot.pause()
             assert app.query_one(HelpPanel) is not None
