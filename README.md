@@ -139,15 +139,19 @@ with `--with-hook`, installs the current hook when it is missing. If the existin
 malformed or conflicts with PEBRA's exact hook, initialization exits before writing any instruction or
 hook file and directs you to `--check --json`; resolving a conflict or legacy hook requires explicit
 user action or a separately tested migration. Managed symlink, junction, reparse-point, and hardlinked
-file destinations are likewise reported conservatively and never followed or overwritten.
+file destinations observed during preflight validation are rejected before writes and are not followed.
+These checks are not an OS-level transaction: a concurrent process running as the same OS identity can
+swap a path after validation, which is outside this threat boundary.
 
 The guarantees are deliberately different:
 
 | Host surface | Reported mode | Guarantee |
 |---|---|---|
 | Claude skill + unconditional rule | instructions | The detailed protocol and concise non-negotiables are fully managed by `agent-init`; rerunning it restores their generated contents. |
+<!-- agent-host:claude -->
 | Claude Code PreToolUse hook (optional) | `configured_enforcing` | Exact enabled hook config, matching gate capability handshake, graph, and Git HEAD were observed. Candidate-bound checks deny unsupported candidates before supported structured edits; this does not prove the host invoked every event. |
 | Codex managed block + skill | instructions | Existing `AGENTS.md` content is preserved around a managed protocol block, and the detailed skill matches Claude's byte-for-byte. |
+<!-- agent-host:codex -->
 | Codex repo-local hook (optional) | `best_effort` | Candidate-bound gate logic is installed, but repo-local hook loading remains host-dependent. |
 | MCP tools | `advisory_only` | Assess/verify tools are available, but MCP alone does not intercept another host's writes. |
 

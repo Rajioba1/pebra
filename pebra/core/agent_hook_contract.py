@@ -76,10 +76,7 @@ def classify_hook_document(
             continue
         handlers = entry.get("hooks")
         if not isinstance(handlers, list):
-            if entry_matcher == matcher:
-                conflicting = True
-            else:
-                malformed = True
+            malformed = True
             continue
         if not handlers:
             malformed = True

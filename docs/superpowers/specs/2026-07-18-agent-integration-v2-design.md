@@ -184,16 +184,18 @@ migrate or write index state. A configured hook therefore reports `graph_unverif
 not candidate-bound in this inspection. `pebra capabilities` remains the separate measured surface and
 is not inspection-only. Hook classification is shared by installation inspection and capability
 reporting; malformed sibling matcher groups or handlers override an otherwise exact entry, and neither
-surface may claim enforcement for a malformed or conflicting config. Existing redirects in any managed
-descendant path are never followed: normal initialization exits without writes, while inspection reports
-redirected instruction files as `modified` and redirected hook paths as `conflicting`.
+surface may claim enforcement for a malformed or conflicting config. Redirects observed during managed-
+path preflight validation are rejected before writes and are not followed. Inspection reports observed
+redirected instruction files as `modified` and observed redirected hook paths as `conflicting`.
 
 The same conservative rule applies to hardlinked managed destination files (`lstat().st_nlink > 1` for
 regular files only): initialization aborts before any write, inspection reports instruction files as
 `modified` and hook files as `conflicting`, and capability reporting never credits the aliased hook.
 Non-descendant path checks fail conservatively rather than raising. User-home hook state is resolved once,
 then the settings path is built under that resolved boundary so a symlink or junction home alias cannot
-crash or bypass the check.
+crash or bypass the check. These preflight checks do not provide an OS-level time-of-check/time-of-use
+guarantee; a concurrent process running as the same OS identity can swap a path after validation, which is
+outside the threat boundary.
 
 Classification validates the selected host's documented hook schema. Omitted or empty matchers are valid
 match-all groups, while a present non-string matcher is malformed. Handler lists must be non-empty. Claude

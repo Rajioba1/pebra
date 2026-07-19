@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import tarfile
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from scripts.verify_distribution import (
     DistributionVerificationError,
+    _EXPECTED_AGENT_HOSTS,
+    _validate_agent_host_registry,
+    _validate_agent_init_check,
     _verify_tui_mount,
     release_version_from_tag,
     verify_candidate_manifest,
@@ -29,6 +33,27 @@ _ASSETS = (
     "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
     "pebra/tui/theme.tcss",
 )
+
+
+def _agent_check_payload(target: str) -> dict[str, object]:
+    spec = _EXPECTED_AGENT_HOSTS[target]
+    return {
+        "command": "agent-init",
+        "target": target,
+        "protocol_version": 1,
+        "gate_schema_version": 1,
+        "files": [
+            {"path": path, "state": "current"}
+            for path in (*spec["instruction_paths"], spec["skill_path"])
+        ],
+        "hook": {"path": spec["hook_path"], "state": "exact"},
+        "declared_support": spec["declared_support"],
+        "effective_enforcement": {
+            "mode": "degraded_fail_open",
+            "candidate_bound": False,
+            "reasons": ["graph_unverified_read_only"],
+        },
+    }
 
 
 def _write_wheel(
@@ -180,6 +205,95 @@ def test_installed_verifier_exercises_console_script() -> None:
     assert 'importlib.metadata.version("pebra")' in source
     assert '_run_cli("--version", cwd=cwd)' in source
     assert 'stdout.startswith(f"PEBRA {installed_version} ")' in source
+    assert '"agent-init"' in source
+    assert '"--check"' in source
+
+
+def test_installed_registry_matches_independent_five_field_oracle() -> None:
+    from pebra.core.agent_hosts import AGENT_HOSTS
+
+    _validate_agent_host_registry(AGENT_HOSTS)
+
+
+@pytest.mark.parametrize("mutation", ("missing", "extra", "drift"))
+def test_installed_registry_validator_rejects_missing_extra_and_drift(mutation: str) -> None:
+    from pebra.core.agent_hosts import AGENT_HOSTS, HostSpec
+
+    registry = dict(AGENT_HOSTS)
+    if mutation == "missing":
+        del registry["codex"]
+    elif mutation == "extra":
+        registry["other"] = HostSpec(
+            skill_path="other/SKILL.md",
+            instruction_paths=("OTHER.md",),
+            hook_path="other/hooks.json",
+            hook_matcher="edit",
+            declared_support="best_effort",
+        )
+    else:
+        registry["codex"] = replace(registry["codex"], hook_matcher="Write")
+
+    with pytest.raises(DistributionVerificationError, match="agent host registry mismatch"):
+        _validate_agent_host_registry(registry)
+
+
+@pytest.mark.parametrize("target", ("claude", "codex"))
+def test_installed_agent_check_validator_accepts_exact_payload(target: str) -> None:
+    payload = _agent_check_payload(target)
+
+    assert _validate_agent_init_check(json.dumps(payload), target=target) == payload
+
+
+@pytest.mark.parametrize("field", ("protocol_version", "gate_schema_version"))
+@pytest.mark.parametrize("value", (True, 1.0))
+def test_installed_agent_check_validator_requires_integer_version_fields(
+    field: str, value: object,
+) -> None:
+    payload = _agent_check_payload("claude")
+    payload[field] = value
+
+    with pytest.raises(DistributionVerificationError, match="protocol mismatch"):
+        _validate_agent_init_check(json.dumps(payload), target="claude")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("not-json", "malformed JSON"),
+        ("missing-key", "schema mismatch"),
+        ("stale-protocol", "protocol mismatch"),
+        ("stale-files", "file state mismatch"),
+        ("wrong-hook", "hook state mismatch"),
+        ("wrong-support", "support mismatch"),
+        ("stale-enforcement", "enforcement mismatch"),
+        ("malformed-files", "malformed payload"),
+    ),
+)
+def test_installed_agent_check_validator_normalizes_malformed_and_stale_output(
+    mutation: str, message: str,
+) -> None:
+    payload = _agent_check_payload("claude")
+    if mutation == "not-json":
+        raw = "not json"
+    else:
+        if mutation == "missing-key":
+            del payload["gate_schema_version"]
+        elif mutation == "stale-protocol":
+            payload["protocol_version"] = 2
+        elif mutation == "stale-files":
+            payload["files"][0]["state"] = "modified"
+        elif mutation == "wrong-hook":
+            payload["hook"]["path"] = ".claude/wrong.json"
+        elif mutation == "wrong-support":
+            payload["declared_support"] = "best_effort"
+        elif mutation == "stale-enforcement":
+            payload["effective_enforcement"]["candidate_bound"] = True
+        else:
+            payload["files"] = None
+        raw = json.dumps(payload)
+
+    with pytest.raises(DistributionVerificationError, match=message):
+        _validate_agent_init_check(raw, target="claude")
 
 
 def test_installed_verifier_mounts_tui_headlessly() -> None:

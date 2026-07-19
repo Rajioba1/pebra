@@ -15,6 +15,7 @@ import pytest
 from pebra.cli import agent_init
 from pebra.cli.main import build_parser
 from pebra.core import agent_hook_contract
+from pebra.core.agent_hosts import AGENT_HOSTS
 from pebra.core.constants import Decision
 
 _SKILL_REL = Path(".claude") / "skills" / "pebra-safe-edit" / "SKILL.md"
@@ -599,7 +600,7 @@ def _check(target: str, root: Path, monkeypatch, *extra: str) -> int:
     return args.func(args)
 
 
-@pytest.mark.parametrize("target", ("claude", "codex"))
+@pytest.mark.parametrize("target", tuple(AGENT_HOSTS))
 @pytest.mark.parametrize("file_state", ("absent", "current", "modified"))
 def test_agent_init_check_reports_file_state_without_mutation(
     tmp_path, target, file_state, monkeypatch, capsys,
@@ -636,9 +637,7 @@ def test_agent_init_check_reports_file_state_without_mutation(
     assert payload["protocol_version"] == 1
     assert payload["gate_schema_version"] == 1
     assert {item["state"] for item in payload["files"]} == {file_state}
-    assert payload["declared_support"] == (
-        "configured_enforcing" if target == "claude" else "best_effort"
-    )
+    assert payload["declared_support"] == AGENT_HOSTS[target].declared_support
     assert payload["effective_enforcement"]["mode"] == "degraded_fail_open"
     assert payload["effective_enforcement"]["reasons"] == ["graph_unverified_read_only"]
     assert _tree_snapshot(tmp_path) == before
@@ -686,7 +685,7 @@ def test_agent_init_with_hook_check_is_still_inspection_only(
         ]}}, "conflicting"),
         ({"hooks": {"PreToolUse": [
             {"matcher": agent_init._CLAUDE_HOOK_MATCHER, "hooks": {}},
-        ]}}, "conflicting"),
+        ]}}, "malformed"),
         ({"hooks": {"PreToolUse": [
             {"matcher": agent_init._CLAUDE_HOOK_MATCHER, "hooks": [{}]},
         ]}}, "malformed"),
@@ -901,7 +900,11 @@ def test_agent_init_check_never_probes_codegraph_and_marks_graph_unverified(
 
 @pytest.mark.parametrize(
     "sibling",
-    (42, {"matcher": "Read", "hooks": [42]}),
+    (
+        42,
+        {"matcher": "Read", "hooks": [42]},
+        {"matcher": agent_init._CLAUDE_HOOK_MATCHER, "hooks": {}},
+    ),
 )
 def test_hook_inspection_malformed_sibling_overrides_exact(tmp_path, sibling):
     path = tmp_path / "settings.json"

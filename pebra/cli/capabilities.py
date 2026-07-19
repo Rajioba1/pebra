@@ -13,6 +13,7 @@ from typing import Any
 
 from pebra import composition
 from pebra.adapters import enforcement_capability
+from pebra.core.agent_hosts import AGENT_HOSTS
 from pebra.core.language_capability import DECLARED_LANGUAGES
 
 
@@ -51,7 +52,7 @@ def run_capabilities(args: Any) -> int:
                 f"  {r['signature_coverage_ratio']:>4.0%} {r['visibility_coverage_ratio']:>4.0%}"
             )
     print("  enforcement:")
-    for host in ("claude", "codex", "mcp"):
+    for host in (*AGENT_HOSTS, "mcp"):
         state = enforcement[host]
         reasons = f" ({', '.join(state['reasons'])})" if state["reasons"] else ""
         print(f"    {host:<7} {state['mode']}{reasons}")

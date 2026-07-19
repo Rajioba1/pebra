@@ -1704,7 +1704,7 @@ Lock hook-state precedence with unit cases for:
 - exact owned entry plus unrelated or lookalike entries → `exact`;
 - exact owned entry plus a PEBRA-shaped conflicting entry → `conflicting`;
 - exact command under the wrong matcher → `conflicting`;
-- expected matcher with a malformed hook list → `conflicting`;
+- expected matcher with a malformed hook list → `malformed`;
 - expected matcher with only a different or substring-lookalike command → `absent`;
 - malformed document/`hooks`/`PreToolUse` containers → `malformed`.
 - an exact entry plus any malformed sibling matcher group or handler → `malformed`.
@@ -1758,13 +1758,15 @@ non-candidate-bound.
 
 Hook inspection parses without writing and returns `malformed` for every shape rejected by Task 1,
 `exact` only for the shared exact predicate, `absent` when no PreToolUse entry exists, and `conflicting`
-for a non-owned PEBRA-shaped candidate. Classify all entries before returning: any conflicting candidate
-wins over an exact entry; otherwise exact wins over unrelated entries; otherwise return absent.
+for a non-owned PEBRA-shaped candidate. Classify all entries before returning: any malformed entry wins;
+otherwise any conflicting candidate wins over an exact entry; otherwise exact wins over unrelated entries;
+otherwise return absent.
 
-A PEBRA-shaped conflicting candidate is either an entry containing the exact command
-`pebra gate-hook` but not matching the complete owned structure, or an expected-matcher entry whose
-`hooks` value is structurally malformed. A different command—including a substring lookalike—is
-unrelated even when it uses the same matcher. This rule depends on Task 1's compatibility invariant:
+A PEBRA-shaped conflicting candidate is an entry containing the exact command `pebra gate-hook` but not
+matching the complete owned structure. Any structurally malformed entry, including an expected-matcher
+entry whose `hooks` value is not a list, is `malformed` and takes precedence over conflicting and exact
+entries. A different command—including a substring lookalike—is unrelated even when it uses the same
+matcher. This rule depends on Task 1's compatibility invariant:
 `HOOK_COMMAND` cannot change until known legacy PEBRA commands are explicitly added to a tested migration
 predicate. Never infer legacy ownership from a substring.
 
@@ -2048,7 +2050,7 @@ def test_installed_hook_matches_registry_and_probe(target, tmp_path):
     spec = AGENT_HOSTS[target]
     hook_path = tmp_path / spec.hook_path
     assert enforcement_capability._hook_installed(
-        hook_path, spec.hook_matcher, host=spec.target
+        hook_path, spec.hook_matcher, host=target
     )
 ```
 

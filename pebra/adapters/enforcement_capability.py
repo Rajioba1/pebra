@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from pebra.adapters.path_safety import unsafe_managed_path
 from pebra.core.agent_hook_contract import classify_hook_document
+from pebra.core.agent_hosts import AGENT_HOSTS
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 
 
@@ -148,7 +149,7 @@ def _configured_host(
         reasons.append("hooks_disabled")
     return {
         "mode": "degraded_fail_open" if reasons else supported_mode,
-        "candidate_bound": not reasons,
+        "candidate_bound": not reasons and supported_mode == "configured_enforcing",
         "reasons": reasons,
     }
 
@@ -164,14 +165,19 @@ def probe(
     """Report current repo-local host posture; never claim host loading we cannot verify."""
     root = Path(repo_root).resolve()
     git_ok = _git_available(root) if git_available is None else git_available
+    claude_spec = AGENT_HOSTS["claude"]
+    codex_spec = AGENT_HOSTS["codex"]
     claude_state = _hook_state(
-        root / ".claude" / "settings.json",
-        "Edit|Write|MultiEdit",
+        root / claude_spec.hook_path,
+        claude_spec.hook_matcher,
         host="claude",
         root=root,
     )
     codex_state = _hook_state(
-        root / ".codex" / "hooks.json", "apply_patch", host="codex", root=root
+        root / codex_spec.hook_path,
+        codex_spec.hook_matcher,
+        host="codex",
+        root=root,
     )
     claude_installed = claude_state == "exact"
     codex_installed = codex_state == "exact"
@@ -191,25 +197,25 @@ def probe(
     return {
         "claude": _configured_host(
             hook_state=claude_state,
-            supported_mode="configured_enforcing",
+            supported_mode=claude_spec.declared_support,
             graph_available=graph_available,
             git_available=git_ok,
             hook_runtime_available=runtime_ok,
             local_hook_conflict=_local_hook_conflicts(
                 root / ".claude" / "settings.local.json",
-                "Edit|Write|MultiEdit",
+                claude_spec.hook_matcher,
                 host="claude",
                 root=root,
             ),
             hooks_disabled=(
-                _hooks_disabled(root / ".claude" / "settings.json", root=root)
+                _hooks_disabled(root / claude_spec.hook_path, root=root)
                 or _hooks_disabled(root / ".claude" / "settings.local.json", root=root)
                 or user_disabled
             ),
         ),
         "codex": _configured_host(
             hook_state=codex_state,
-            supported_mode="best_effort",
+            supported_mode=codex_spec.declared_support,
             graph_available=graph_available,
             git_available=git_ok,
             hook_runtime_available=runtime_ok,

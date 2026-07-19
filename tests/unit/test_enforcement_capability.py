@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from pebra.adapters import enforcement_capability
+from pebra.core.agent_hosts import AGENT_HOSTS
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 
 
@@ -138,6 +139,41 @@ def test_host_schema_malformed_sibling_never_claims_candidate_bound(
 
 
 @pytest.mark.parametrize(
+    ("host", "rel", "matcher"),
+    (
+        ("claude", ".claude/settings.json", "Edit|Write|MultiEdit"),
+        ("codex", ".codex/hooks.json", "apply_patch"),
+    ),
+)
+def test_expected_matcher_non_list_hooks_is_malformed_for_enforcement(
+    tmp_path: Path, host: str, rel: str, matcher: str,
+) -> None:
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "hooks": {"PreToolUse": [
+            {
+                "matcher": matcher,
+                "hooks": [{"type": "command", "command": "pebra gate-hook"}],
+            },
+            {"matcher": matcher, "hooks": {}},
+        ]},
+    }), encoding="utf-8")
+
+    result = enforcement_capability.probe(
+        tmp_path,
+        graph_available=True,
+        git_available=True,
+        hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )[host]
+
+    assert result["mode"] == "degraded_fail_open"
+    assert result["candidate_bound"] is False
+    assert result["reasons"] == ["hook_malformed"]
+
+
+@pytest.mark.parametrize(
     ("host", "rel", "matcher", "handler"),
     (
         ("claude", ".claude/settings.json", "Edit|Write|MultiEdit",
@@ -167,7 +203,7 @@ def test_valid_matcherless_sibling_preserves_exact_enforcement(
     )[host]
 
     assert result["mode"] == ("configured_enforcing" if host == "claude" else "best_effort")
-    assert result["candidate_bound"] is True
+    assert result["candidate_bound"] is (host == "claude")
 
 
 @pytest.mark.parametrize("raw", ("null", "[]", "42"))
@@ -191,7 +227,26 @@ def test_codex_hook_is_best_effort_not_verified(tmp_path: Path) -> None:
     )
 
     assert result["codex"]["mode"] == "best_effort"
-    assert result["codex"]["candidate_bound"] is True
+    assert result["codex"]["candidate_bound"] is False
+
+
+@pytest.mark.parametrize("host", tuple(AGENT_HOSTS))
+def test_probe_uses_registry_hook_facts(tmp_path: Path, host: str) -> None:
+    spec = AGENT_HOSTS[host]
+    _hook(tmp_path, spec.hook_path, matcher=spec.hook_matcher)
+
+    result = enforcement_capability.probe(
+        tmp_path,
+        graph_available=True,
+        git_available=True,
+        hook_runtime_available=True,
+        user_hooks_disabled=False,
+    )
+
+    assert result[host]["mode"] == spec.declared_support
+    assert result[host]["candidate_bound"] is (
+        spec.declared_support == "configured_enforcing"
+    )
 
 
 def test_suggestive_command_or_wrong_matcher_does_not_claim_enforcement(tmp_path: Path) -> None:

@@ -28,11 +28,11 @@ from pebra.core.agent_hook_contract import (
     is_managed_hook_entry,
     managed_hook_entry,
 )
+from pebra.core.agent_hosts import AGENT_HOSTS
 from pebra.core.gate_contract import GATE_SCHEMA_VERSION
 
-_SKILL_DIR = "pebra-safe-edit"
-_CLAUDE_HOOK_MATCHER = "Edit|Write|MultiEdit"
-_CODEX_HOOK_MATCHER = "apply_patch"
+_CLAUDE_HOOK_MATCHER = AGENT_HOSTS["claude"].hook_matcher
+_CODEX_HOOK_MATCHER = AGENT_HOSTS["codex"].hook_matcher
 _MARK_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MARK_END = "<!-- END pebra-safe-edit -->"
 PROTOCOL_VERSION = 1
@@ -121,7 +121,7 @@ def register(subparsers: Any) -> None:
         help="Scaffold the pebra-safe-edit skill/rules and optionally a host pre-edit gate hook.",
     )
     p.add_argument(
-        "--target", choices=("claude", "codex"), required=True,
+        "--target", choices=tuple(AGENT_HOSTS), required=True,
         help="Agent host whose PEBRA protocol files should be installed.",
     )
     p.add_argument(
@@ -179,24 +179,16 @@ def run_agent_init(args: Any) -> int:
     return 0
 
 
-def _instruction_paths(repo_root: Path, target: str) -> tuple[Path, Path]:
-    if target == "claude":
-        return (
-            repo_root / ".claude/rules/pebra-safe-edit.md",
-            repo_root / ".claude/skills/pebra-safe-edit/SKILL.md",
-        )
-    return (
-        repo_root / "AGENTS.md",
-        repo_root / ".agents/skills/pebra-safe-edit/SKILL.md",
+def _instruction_paths(repo_root: Path, target: str) -> tuple[Path, ...]:
+    spec = AGENT_HOSTS[target]
+    return tuple(
+        repo_root / relative
+        for relative in (*spec.instruction_paths, spec.skill_path)
     )
 
 
 def _hook_path(repo_root: Path, target: str) -> Path:
-    return (
-        repo_root / ".claude/settings.json"
-        if target == "claude"
-        else repo_root / ".codex/hooks.json"
-    )
+    return repo_root / AGENT_HOSTS[target].hook_path
 
 
 def _reject_unsafe_managed_paths(repo_root: Path, target: str, with_hook: bool) -> None:
@@ -231,14 +223,15 @@ def _relative_path(path: Path, repo_root: Path) -> str:
 
 
 def _inspection_files(repo_root: Path, target: str) -> list[dict[str, str]]:
+    spec = AGENT_HOSTS[target]
     if target == "claude":
         expected = [
-            PlannedWrite(repo_root / ".claude/rules/pebra-safe-edit.md", _CLAUDE_RULE_MD),
-            _render_skill(repo_root, ".claude"),
+            PlannedWrite(repo_root / spec.instruction_paths[0], _CLAUDE_RULE_MD),
+            _render_skill(repo_root, target),
         ]
     else:
-        skill = _render_skill(repo_root, ".agents")
-        agents_path = repo_root / "AGENTS.md"
+        skill = _render_skill(repo_root, target)
+        agents_path = repo_root / spec.instruction_paths[0]
         if _unsafe_managed_path(repo_root, agents_path) is not None:
             return [
                 {"path": _relative_path(agents_path, repo_root), "state": "modified"},
@@ -291,7 +284,8 @@ def _check_payload(repo_root: Path, target: str) -> dict[str, Any]:
     # Lazy imports keep normal agent-init and parser construction dependency-light.
     from pebra.adapters import enforcement_capability  # noqa: PLC0415
 
-    matcher = _CLAUDE_HOOK_MATCHER if target == "claude" else _CODEX_HOOK_MATCHER
+    spec = AGENT_HOSTS[target]
+    matcher = spec.hook_matcher
     hook_path = _hook_path(repo_root, target)
     enforcement = enforcement_capability.probe(repo_root, graph_available=None)
     return {
@@ -306,9 +300,7 @@ def _check_payload(repo_root: Path, target: str) -> dict[str, Any]:
                 hook_path, matcher, host=target, repo_root=repo_root
             ),
         },
-        "declared_support": (
-            "configured_enforcing" if target == "claude" else "best_effort"
-        ),
+        "declared_support": spec.declared_support,
         "effective_enforcement": enforcement[target],
     }
 
@@ -328,33 +320,34 @@ def _run_check(repo_root: Path, target: str, *, as_json: bool) -> int:
 
 
 def _plan_agent_init(repo_root: Path, target: str, with_hook: bool) -> list[PlannedWrite]:
+    spec = AGENT_HOSTS[target]
     if target == "claude":
         planned = [
             PlannedWrite(
-                repo_root / ".claude" / "rules" / "pebra-safe-edit.md",
+                repo_root / spec.instruction_paths[0],
                 _CLAUDE_RULE_MD,
                 newline="",
             ),
-            _render_skill(repo_root, ".claude"),
+            _render_skill(repo_root, target),
         ]
         if with_hook:
-            path = repo_root / ".claude" / "settings.json"
+            path = repo_root / spec.hook_path
             planned.append(PlannedWrite(
-                path, _render_hook_config(path, _CLAUDE_HOOK_MATCHER, host="claude")
+                path, _render_hook_config(path, spec.hook_matcher, host="claude")
             ))
         return planned
 
-    planned = [_render_agents_md(repo_root), _render_skill(repo_root, ".agents")]
+    planned = [_render_agents_md(repo_root), _render_skill(repo_root, target)]
     if with_hook:
-        path = repo_root / ".codex" / "hooks.json"
+        path = repo_root / spec.hook_path
         planned.append(PlannedWrite(
-            path, _render_hook_config(path, _CODEX_HOOK_MATCHER, host="codex")
+            path, _render_hook_config(path, spec.hook_matcher, host="codex")
         ))
     return planned
 
 
-def _render_skill(repo_root: Path, base: str) -> PlannedWrite:
-    path = repo_root / base / "skills" / _SKILL_DIR / "SKILL.md"
+def _render_skill(repo_root: Path, target: str) -> PlannedWrite:
+    path = repo_root / AGENT_HOSTS[target].skill_path
     return PlannedWrite(path, _SKILL_MD, newline="")
 
 

@@ -34,7 +34,7 @@ _MATCHER = "Edit|Write|MultiEdit"
         ]}}, "conflicting"),
         ({"hooks": {"PreToolUse": [
             {"matcher": _MATCHER, "hooks": {}},
-        ]}}, "conflicting"),
+        ]}}, "malformed"),
         ({"hooks": {"PreToolUse": [
             {"matcher": _MATCHER, "hooks": [
                 {"type": "command", "command": "echo run-my-gate-hook-check"}

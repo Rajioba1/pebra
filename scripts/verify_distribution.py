@@ -18,8 +18,9 @@ import tarfile
 import tempfile
 import tomllib
 import zipfile
+from dataclasses import fields
 from pathlib import Path
-from typing import AsyncContextManager, Protocol, Sequence
+from typing import AsyncContextManager, Mapping, Protocol, Sequence
 
 
 _PACKAGE_ASSETS = (
@@ -43,6 +44,39 @@ _TAG = re.compile(r"^v?(\d+\.\d+\.\d+(?:[a-zA-Z0-9.-]+)?)$")
 _CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^/\\]+)$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_AGENT_HOST_FIELDS = (
+    "skill_path",
+    "instruction_paths",
+    "hook_path",
+    "hook_matcher",
+    "declared_support",
+)
+_EXPECTED_AGENT_HOSTS: dict[str, dict[str, object]] = {
+    "claude": {
+        "skill_path": ".claude/skills/pebra-safe-edit/SKILL.md",
+        "instruction_paths": (".claude/rules/pebra-safe-edit.md",),
+        "hook_path": ".claude/settings.json",
+        "hook_matcher": "Edit|Write|MultiEdit",
+        "declared_support": "configured_enforcing",
+    },
+    "codex": {
+        "skill_path": ".agents/skills/pebra-safe-edit/SKILL.md",
+        "instruction_paths": ("AGENTS.md",),
+        "hook_path": ".codex/hooks.json",
+        "hook_matcher": "apply_patch",
+        "declared_support": "best_effort",
+    },
+}
+_AGENT_CHECK_KEYS = {
+    "command",
+    "target",
+    "protocol_version",
+    "gate_schema_version",
+    "files",
+    "hook",
+    "declared_support",
+    "effective_enforcement",
+}
 
 
 class DistributionVerificationError(RuntimeError):
@@ -113,6 +147,115 @@ def _run_cli(*args: str, cwd: Path, timeout: int = 120) -> subprocess.CompletedP
     )
 
 
+def _validate_agent_host_registry(registry: Mapping[str, object]) -> None:
+    """Compare the installed registry with this verifier's independent release oracle."""
+    if tuple(registry) != tuple(_EXPECTED_AGENT_HOSTS):
+        raise DistributionVerificationError(
+            "installed agent host registry mismatch: "
+            f"expected targets {tuple(_EXPECTED_AGENT_HOSTS)}, got {tuple(registry)}"
+        )
+    for target, expected in _EXPECTED_AGENT_HOSTS.items():
+        spec = registry[target]
+        try:
+            field_names = tuple(field.name for field in fields(spec))
+            actual = {name: getattr(spec, name) for name in _AGENT_HOST_FIELDS}
+        except (AttributeError, TypeError) as exc:
+            raise DistributionVerificationError(
+                f"installed agent host registry mismatch for {target}: malformed HostSpec"
+            ) from exc
+        if field_names != _AGENT_HOST_FIELDS or actual != expected:
+            raise DistributionVerificationError(
+                f"installed agent host registry mismatch for {target}: "
+                f"expected {expected}, got {actual}"
+            )
+
+
+def _validate_agent_init_check(raw: str, *, target: str) -> dict[str, object]:
+    """Validate installed check output against the independent host oracle."""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise DistributionVerificationError(
+            f"installed agent-init check returned malformed JSON for {target}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise DistributionVerificationError(
+            f"installed agent-init check returned malformed payload for {target}"
+        )
+    if set(payload) != _AGENT_CHECK_KEYS:
+        raise DistributionVerificationError(
+            f"installed agent-init check schema mismatch for {target}: got {sorted(payload)}"
+        )
+    expected = _EXPECTED_AGENT_HOSTS.get(target)
+    if expected is None:
+        raise DistributionVerificationError(f"unknown installed agent target: {target}")
+    if payload["command"] != "agent-init" or payload["target"] != target:
+        raise DistributionVerificationError(
+            f"installed agent-init check target mismatch for {target}"
+        )
+    if (
+        type(payload["protocol_version"]) is not int
+        or payload["protocol_version"] != 1
+        or type(payload["gate_schema_version"]) is not int
+        or payload["gate_schema_version"] != 1
+    ):
+        raise DistributionVerificationError(
+            f"installed agent-init check protocol mismatch for {target}"
+        )
+
+    files_payload = payload["files"]
+    expected_paths = [*expected["instruction_paths"], expected["skill_path"]]
+    if not isinstance(files_payload, list) or any(
+        not isinstance(item, dict) or set(item) != {"path", "state"}
+        for item in files_payload
+    ):
+        raise DistributionVerificationError(
+            f"installed agent-init check returned malformed payload for {target}"
+        )
+    actual_paths = [item["path"] for item in files_payload]
+    if actual_paths != expected_paths or any(
+        item["state"] != "current" for item in files_payload
+    ):
+        raise DistributionVerificationError(
+            f"installed agent-init check file state mismatch for {target}"
+        )
+
+    hook = payload["hook"]
+    if not isinstance(hook, dict) or set(hook) != {"path", "state"}:
+        raise DistributionVerificationError(
+            f"installed agent-init check returned malformed payload for {target}"
+        )
+    if hook["path"] != expected["hook_path"] or hook["state"] != "exact":
+        raise DistributionVerificationError(
+            f"installed agent-init check hook state mismatch for {target}"
+        )
+    if payload["declared_support"] != expected["declared_support"]:
+        raise DistributionVerificationError(
+            f"installed agent-init check support mismatch for {target}"
+        )
+    enforcement = payload["effective_enforcement"]
+    if (
+        not isinstance(enforcement, dict)
+        or set(enforcement) != {"mode", "candidate_bound", "reasons"}
+        or not isinstance(enforcement["mode"], str)
+        or not isinstance(enforcement["candidate_bound"], bool)
+        or not isinstance(enforcement["reasons"], list)
+        or any(not isinstance(reason, str) for reason in enforcement["reasons"])
+    ):
+        raise DistributionVerificationError(
+            f"installed agent-init check returned malformed payload for {target}"
+        )
+    if (
+        enforcement["mode"] != "degraded_fail_open"
+        or enforcement["candidate_bound"] is not False
+        or "graph_unverified_read_only" not in enforcement["reasons"]
+    ):
+        raise DistributionVerificationError(
+            f"installed agent-init check enforcement mismatch for {target}"
+        )
+    return payload
+
+
 def _verify_tui_mount(app: _HeadlessTestApp) -> None:
     """Enter Textual's headless lifecycle so packaged styles are parsed and loaded."""
 
@@ -143,8 +286,11 @@ def verify_installed() -> None:
     if not importlib.resources.files("pebra.tui").joinpath("theme.tcss").is_file():
         raise DistributionVerificationError("installed package missing pebra/tui/theme.tcss")
 
+    from pebra.core.agent_hosts import AGENT_HOSTS
     from pebra.observatory_context import ObservatoryContext
     from pebra.tui.app import ObservatoryApp
+
+    _validate_agent_host_registry(AGENT_HOSTS)
 
     app = ObservatoryApp(ObservatoryContext(
         db_path="installed-wheel-smoke.db",
@@ -195,6 +341,39 @@ def verify_installed() -> None:
             raise DistributionVerificationError(
                 f"installed console script failed: {console.stderr.strip()}"
             )
+        for target in _EXPECTED_AGENT_HOSTS:
+            repo_root = cwd / f"agent-{target}"
+            installed = _run_cli(
+                "agent-init", "--target", target, "--repo-root", str(repo_root), "--with-hook",
+                cwd=cwd,
+            )
+            if installed.returncode != 0:
+                raise DistributionVerificationError(
+                    f"installed agent-init failed for {target}: {installed.stderr.strip()}"
+                )
+            before = {
+                path.relative_to(repo_root).as_posix(): path.read_bytes()
+                for path in repo_root.rglob("*")
+                if path.is_file()
+            }
+            checked = _run_cli(
+                "agent-init", "--target", target, "--repo-root", str(repo_root),
+                "--check", "--json", cwd=cwd,
+            )
+            if checked.returncode != 0:
+                raise DistributionVerificationError(
+                    f"installed agent-init check failed for {target}: {checked.stderr.strip()}"
+                )
+            _validate_agent_init_check(checked.stdout, target=target)
+            after = {
+                path.relative_to(repo_root).as_posix(): path.read_bytes()
+                for path in repo_root.rglob("*")
+                if path.is_file()
+            }
+            if after != before:
+                raise DistributionVerificationError(
+                    "installed agent-init check mutated repository state"
+                )
 
     old_path = os.environ.get("PATH")
     old_override = os.environ.get("PEBRA_RCA_BIN")
