@@ -1262,6 +1262,29 @@ def test_is_redirect_does_not_misclassify_not_a_directory_as_redirect(
     assert path_safety.is_redirect(candidate) is False
 
 
+def test_unsafe_managed_path_does_not_misclassify_not_a_directory_as_hardlink(
+    tmp_path, monkeypatch,
+):
+    from pebra.adapters import path_safety
+
+    regular_parent = tmp_path / "regular-parent"
+    regular_parent.write_bytes(b"not a directory")
+    candidate = regular_parent / "child"
+    original_lstat = Path.lstat
+
+    def raise_not_a_directory(self):
+        if self == candidate:
+            raise NotADirectoryError("parent is not a directory")
+        return original_lstat(self)
+
+    monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+    if hasattr(Path, "is_junction"):
+        monkeypatch.setattr(Path, "is_junction", lambda self: False)
+    monkeypatch.setattr(Path, "lstat", raise_not_a_directory)
+
+    assert path_safety.unsafe_managed_path(tmp_path, candidate) is None
+
+
 def test_redirected_component_treats_non_descendant_as_unsafe(tmp_path):
     from pebra.adapters import path_safety
 

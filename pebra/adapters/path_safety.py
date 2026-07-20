@@ -38,7 +38,7 @@ def is_hardlinked_file(path: Path) -> bool:
     """Fail closed for an aliased regular file or unreadable destination metadata."""
     try:
         metadata = path.lstat()
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
     except OSError:
         return True
