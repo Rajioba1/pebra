@@ -99,6 +99,7 @@ class AssessmentDetailScreen(Screen):
         self.assessment_ids = assessment_ids
         self._repo_root = repo_root
         self._explorer = explorer
+        self._exploration_available = repo_root is not None and explorer is not None
         identity = project_assessment_identity(detail.get("content") or {})
         self._explore_query = identity.task or ""
         self._explore_files = tuple(identity.target_files)
@@ -109,6 +110,16 @@ class AssessmentDetailScreen(Screen):
         return self._exploring
 
     def compose(self) -> ComposeResult:
+        if self._exploration_available:
+            exploration_status = (
+                "Press x to prepare the repository graph and explore this assessment's impact."
+            )
+        elif self._repo_root is None:
+            exploration_status = (
+                "Repository exploration unavailable — no repository context was supplied."
+            )
+        else:
+            exploration_status = "Repository exploration unavailable — no explorer is configured."
         yield Header()
         with VerticalScroll(id="detail-body"):
             yield Static(header_line(self._detail), id="detail-header")
@@ -120,7 +131,7 @@ class AssessmentDetailScreen(Screen):
                 yield Pretty(payload, classes="section-body")
             yield Static("Repository impact", classes="section-title")
             yield Static(
-                "Press x to prepare the repository graph and explore this assessment's impact.",
+                exploration_status,
                 id="exploration-status",
                 markup=False,
             )
@@ -137,12 +148,12 @@ class AssessmentDetailScreen(Screen):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "explore":
-            return self._repo_root is not None and self._explorer is not None
+            return self._exploration_available
         return super().check_action(action, parameters)
 
     def action_explore(self) -> bool:
         """Start one explicit prepare-then-query operation; repeated busy presses are ignored."""
-        if self._exploring or self._repo_root is None or self._explorer is None:
+        if self._exploring or not self._exploration_available:
             return False
         self._exploring = True
         self.query_one("#exploration-status", Static).update(

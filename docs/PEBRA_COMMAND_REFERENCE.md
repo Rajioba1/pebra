@@ -553,8 +553,10 @@ Product-defined keys:
 | `g` | Toggle contiguous exact-candidate grouping (`Group repeats` / `Show raw`) |
 | `x` | Explore impact from assessment detail only |
 
-The detail-only `x` action visibly prepares/reconciles the existing derived graph cache and then queries
-that accepted snapshot. It is single-flight: another `x` press is ignored while work is in progress. It
+The detail-only `x` action requires repository context and an injected explorer; a read-only replay
+launched without `--repo-root` reports exploration as unavailable and does not construct a provider.
+When available, `x` visibly prepares/reconciles the existing derived graph cache and then queries that
+accepted snapshot. It is single-flight: another `x` press is ignored while work is in progress. It
 never runs automatically on TUI launch, detail mount, row selection, five-second ledger refresh, or
 background polling. Its bounded output is descriptive context only and never enters stored assessments,
 scores, gates, sanctions, outcomes, or learning.

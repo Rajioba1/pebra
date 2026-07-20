@@ -135,5 +135,6 @@ def test_command_reference_pins_every_pebra_defined_tui_binding() -> None:
     for key in keys:
         assert f"| `{key}` |" in table.lower()
     assert "detail-only" in table
+    assert "requires repository context" in table
     assert "single-flight" in table
     assert "never runs automatically" in table

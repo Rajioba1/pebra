@@ -136,6 +136,31 @@ def test_default_launch_injects_composed_explorer_for_a_resolved_repository(monk
     assert captured == {"context": context, "explorer": explorer}
 
 
+def test_default_launch_without_repository_context_does_not_construct_explorer(
+    monkeypatch,
+) -> None:
+    from pebra import composition
+    from pebra.observatory_context import ObservatoryContext
+    from pebra.tui import app as tui_app
+
+    captured: dict = {}
+
+    def unexpected_factory():
+        raise AssertionError("read-only replay must not construct a repository explorer")
+
+    monkeypatch.setattr(composition, "build_repository_explorer", unexpected_factory)
+    monkeypatch.setattr(
+        tui_app,
+        "run_observatory",
+        lambda context, *, explorer=None: captured.update(context=context, explorer=explorer),
+    )
+    context = ObservatoryContext("db", "repo", None, True)
+
+    cli_tui._launch(context)
+
+    assert captured == {"context": context, "explorer": None}
+
+
 def test_version_flag_prints_provenance_without_a_subcommand() -> None:
     import io
     from contextlib import redirect_stdout

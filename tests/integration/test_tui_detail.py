@@ -65,6 +65,7 @@ class _RecordingExplorer:
         self.explore_calls: list[tuple[str, str, GraphSnapshot, tuple[str, ...]]] = []
         self.started = Event()
         self.release = Event()
+        self.completed = Event()
 
     def prepare(self, repo_root: str) -> GraphSnapshot:
         self.prepare_calls.append(repo_root)
@@ -77,7 +78,9 @@ class _RecordingExplorer:
 
     def explore(self, repo_root, query, *, snapshot, files=(), max_files=8, max_bytes=24_000):
         self.explore_calls.append((repo_root, query, snapshot, files))
-        return _exploration_result()
+        result = _exploration_result()
+        self.completed.set()
+        return result
 
 
 async def _pause_until(predicate, pilot, *, attempts: int = 100) -> None:
@@ -373,6 +376,40 @@ def test_detail_never_explores_on_mount() -> None:
     asyncio.run(scenario())
 
 
+def test_detail_without_repository_context_reports_exploration_unavailable() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer()
+        screen = AssessmentDetailScreen(_detail(), repo_root=None, explorer=explorer)
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.pause()
+            status = str(screen.query_one("#exploration-status").render())
+            assert "unavailable" in status.lower()
+            assert "repository context" in status.lower()
+            assert "press x" not in status.lower()
+            assert screen.query_one("#exploration-result").render().plain == ""
+            assert "x" not in screen.app.active_bindings
+            await pilot.press("x")
+            await pilot.pause()
+            assert explorer.prepare_calls == []
+            assert explorer.explore_calls == []
+
+    asyncio.run(scenario())
+
+
+def test_detail_without_explorer_reports_exploration_unavailable() -> None:
+    async def scenario() -> None:
+        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=None)
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.pause()
+            status = str(screen.query_one("#exploration-status").render())
+            assert "unavailable" in status.lower()
+            assert "explorer" in status.lower()
+            assert "no repository context" not in status.lower()
+            assert "x" not in screen.app.active_bindings
+
+    asyncio.run(scenario())
+
+
 def test_five_second_refresh_never_calls_explorer() -> None:
     async def scenario() -> None:
         explorer = _RecordingExplorer()
@@ -441,7 +478,10 @@ def test_late_explore_result_cannot_touch_popped_screen() -> None:
             await app.pop_screen()
             await _pause_until(lambda: not screen._can_update_children(), pilot)
             explorer.release.set()
-            await _pause_until(lambda: not screen.exploring, pilot)
+            await _pause_until(explorer.completed.is_set, pilot)
+            assert len(explorer.explore_calls) == 1
+            for _ in range(3):
+                await pilot.pause()
             assert len(screen.query("#exploration-status")) == 0
 
     asyncio.run(scenario())
