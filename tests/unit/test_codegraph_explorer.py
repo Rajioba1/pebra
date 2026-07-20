@@ -123,6 +123,44 @@ def test_file_only_mode_skips_free_text_explore_and_normalizes_duplicate_windows
     assert result.truncated is False
 
 
+def test_files_canonicalize_and_reject_every_path_outside_resolved_repo(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+
+    normalized = CodeGraphExplorer._files(
+        str(repo),
+        (
+            "./src/./target.py",
+            "src/nested/../target.py",
+            str(repo / "src" / "target.py"),
+            "../outside.py",
+            "src/../../outside.py",
+            str(outside),
+        ),
+    )
+
+    assert normalized == ("src/target.py",)
+
+
+def test_invalid_only_files_with_blank_query_return_error_without_provider_call(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    graph = _Graph()
+    runner = _Runner()
+    explorer = _explorer(graph, runner)
+
+    result = explorer.explore(
+        str(repo), " ", snapshot=explorer.prepare(str(repo)),
+        files=("../outside.py", str(tmp_path / "absolute-outside.py")),
+    )
+
+    assert result.status == "error"
+    assert result.fallback_reason == "query or file is required"
+    assert runner.calls == []
+    assert graph.dependent_calls == []
+
+
 def test_oversized_context_is_utf8_safe_and_explicitly_truncated() -> None:
     graph = _Graph()
     runner = _Runner(context="a" * 999 + "💥tail")

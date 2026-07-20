@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from pebra.core.graph_snapshot import GraphSnapshot
@@ -40,6 +41,24 @@ def bounded_context(context: str, max_bytes: int) -> tuple[str, bool]:
     if len(encoded) <= max_bytes:
         return context, False
     return encoded[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def normalize_repository_files(repo_root: str, files: tuple[str, ...]) -> tuple[str, ...]:
+    root = Path(repo_root).resolve()
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in files:
+        candidate = Path(value)
+        try:
+            resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+            relative = resolved.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        path = relative.as_posix()
+        if path and path != "." and path not in seen:
+            seen.add(path)
+            normalized.append(path)
+    return tuple(normalized)
 
 
 def unavailable_result(

@@ -6,7 +6,6 @@ import json
 import subprocess
 from collections.abc import Callable
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
@@ -16,6 +15,7 @@ from pebra.core.exploration import (
     ExplorationResult,
     bounded_context,
     clamp_bounds,
+    normalize_repository_files,
     unavailable_result,
 )
 from pebra.core.graph_snapshot import GraphSnapshot
@@ -41,26 +41,7 @@ class CodeGraphExplorer:
 
     @staticmethod
     def _files(repo_root: str, files: tuple[str, ...]) -> tuple[str, ...]:
-        root = Path(repo_root).resolve()
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for value in files:
-            candidate = Path(value)
-            try:
-                relative = (
-                    candidate.resolve().relative_to(root)
-                    if candidate.is_absolute()
-                    else candidate
-                )
-            except (OSError, ValueError):
-                continue
-            path = relative.as_posix()
-            while path.startswith("./"):
-                path = path[2:]
-            if path and path != "." and path not in seen:
-                seen.add(path)
-                normalized.append(path)
-        return tuple(normalized)
+        return normalize_repository_files(repo_root, files)
 
     def _run(self, engine: str, args: list[str], timeout: int) -> tuple[str | None, str | None]:
         try:

@@ -8,7 +8,7 @@ from dataclasses import asdict
 from typing import Any
 
 from pebra import composition
-from pebra.core.exploration import ExplorationResult
+from pebra.core.exploration import ExplorationResult, normalize_repository_files
 
 
 def register(subparsers: Any) -> None:
@@ -72,9 +72,11 @@ def _print_human(result: ExplorationResult) -> None:
 
 def run_explore(args: Any) -> int:
     query = args.query or ""
-    files = tuple(args.files)
+    files = normalize_repository_files(args.repo_root, tuple(args.files))
     if not query.strip() and not files:
-        args._explore_parser.error("QUERY is required unless at least one --file is supplied")
+        args._explore_parser.error(
+            "QUERY is required unless at least one valid in-repository --file is supplied"
+        )
     try:
         result = composition.explore_repository(
             args.repo_root,

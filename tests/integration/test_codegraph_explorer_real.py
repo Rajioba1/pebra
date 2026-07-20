@@ -50,6 +50,20 @@ def _db_identity(db: Path) -> tuple[str, int, int, str]:
     )
 
 
+def _persistent_snapshot(cache: Path) -> dict[str, tuple[str, int, int, str]]:
+    root = cache.resolve()
+    return {
+        path.relative_to(root).as_posix(): (
+            str(path.resolve()),
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in root.rglob("*")
+        if path.is_file() and path.name not in {"codegraph.db-wal", "codegraph.db-shm"}
+    }
+
+
 def _logical_digest(db: Path, copy: Path) -> tuple[str, str, int]:
     shutil.copyfile(db, copy)
     connection = sqlite3.connect(f"{copy.resolve().as_uri()}?mode=ro", uri=True)
@@ -121,6 +135,7 @@ def test_real_explorer_preserves_repository_and_logical_graph_state(tmp_path) ->
 
     db = cache / "codegraph.db"
     outside_before_query = _outside(repo, cache)
+    persistent_before_query = _persistent_snapshot(cache)
     db_before = _db_identity(db)
     graph_before = _logical_digest(db, diagnostics / "before.db")
 
@@ -134,6 +149,7 @@ def test_real_explorer_preserves_repository_and_logical_graph_state(tmp_path) ->
     assert len(result.context.encode("utf-8")) <= 1_000
     assert "repository_resolution" in result.context
     assert _outside(repo, cache) == outside_before_query
+    assert _persistent_snapshot(cache) == persistent_before_query
     assert _db_identity(db) == db_before
     assert _logical_digest(db, diagnostics / "after.db") == graph_before
     assert _git(repo, "rev-parse", "HEAD") == head

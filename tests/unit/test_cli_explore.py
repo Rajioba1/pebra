@@ -49,6 +49,25 @@ def test_explore_parser_is_provider_neutral_and_requires_query_or_file() -> None
     assert exc.value.code == 2
 
 
+def test_invalid_only_file_with_blank_query_is_argparse_error_before_composition(
+    tmp_path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        composition, "explore_repository", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main.main([
+            "explore", " ", "--file", "../outside.py", "--repo-root", str(repo),
+        ])
+
+    assert exc.value.code == 2
+    assert calls == []
+
+
 def test_composition_prepares_once_clamps_bounds_and_queries_same_snapshot(monkeypatch) -> None:
     calls: list[tuple] = []
     snapshot = _result().snapshot

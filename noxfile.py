@@ -123,7 +123,8 @@ def e2e(session: nox.Session) -> None:
     session.install("-e", ".")
     session.install("pytest")
     targets = [
-        "e2e/utils/tests", "e2e/test_boundary_discipline.py", "e2e/smoke",
+        "e2e/utils/tests", "e2e/test_boundary_discipline.py",
+        "e2e/test_graph_snapshot_boundary.py", "e2e/smoke",
         "e2e/features/agent", "e2e/features/learning", "e2e/features/dashboard",
         # RCA benefit lane: skips internally when rust-code-analysis-cli is absent (except the
         # binary-free fail-safe test), so it's safe to always include.
@@ -150,6 +151,7 @@ def e2e_fast(session: nox.Session) -> None:
         # driven by ScriptedClient/mock, no LLM, no dotnet, no gate: safe for fast CI.
         "e2e/experiments/agent_ab/tests",
         "e2e/test_boundary_discipline.py",
+        "e2e/test_graph_snapshot_boundary.py",
         "e2e/smoke",
         "e2e/features/agent",
         "-v",

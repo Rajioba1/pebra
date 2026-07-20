@@ -120,6 +120,38 @@ def test_explore_queries_only_after_sync_and_revalidates_after_query(tmp_path) -
     assert commands == ["status", "sync", "status", "explore", "status"]
 
 
+def test_explore_process_rejects_invalid_only_file_before_provider(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _repo(repo)
+    launcher, log = _launcher(tmp_path)
+
+    proc = _run(
+        repo, launcher, log, "explore", " ", "--file", "../outside.py",
+        "--repo-root", str(repo),
+    )
+
+    assert proc.returncode == 2
+    assert _calls(log) == []
+
+
+def test_explore_process_deduplicates_in_root_files_and_drops_outside_files(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _repo(repo)
+    launcher, log = _launcher(tmp_path)
+
+    proc = _run(
+        repo, launcher, log, "explore", "--file", "src/./auth.py",
+        "--file", str(repo / "src" / "auth.py"), "--file", "../outside.py",
+        "--repo-root", str(repo), "--json",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    affected = next(call for call in _calls(log) if call[0] == "affected")
+    assert affected[1:affected.index("--path")] == ["src/auth.py"]
+
+
 def test_assess_emits_fenced_graph_provenance_after_sync(tmp_path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
