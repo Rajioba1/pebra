@@ -765,6 +765,8 @@ def _wire(monkeypatch, tmp_path, corpus, run_pair_fn):
     monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
     monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", lambda *a, **k: None)
     monkeypatch.setattr(orchestrator, "load_corpus", lambda: corpus)
     monkeypatch.setattr(orchestrator, "_config",
                         lambda: {"pilot": {"tasks": ["T1"], "seeds_per_arm": 1}, "bootstrap_seed": 0})
@@ -778,7 +780,7 @@ def test_main_end_to_end_writes_report(monkeypatch, tmp_path):
 
     _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
-    rc = orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
+    rc = orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight"])
     assert rc == 0
     assert (tmp_path / "t1" / "outcomes.json").exists()
     assert (tmp_path / "t1" / "reports" / "ab_t1.md").exists()
@@ -805,7 +807,7 @@ def test_main_uses_effective_seed_count_override(monkeypatch, tmp_path):
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
 
     assert orchestrator.main([
-        "--run-id", "one-seed", "--skip-oracle-preflight", "--skip-graph-preflight",
+        "--run-id", "one-seed", "--skip-oracle-preflight",
     ]) == 0
     assert observed_seeds == [0]
 
@@ -835,7 +837,6 @@ def test_main_rejects_missing_reason_treatment_before_subject_setup(monkeypatch,
         orchestrator.main([
             "--run-id", "stale-design",
             "--skip-oracle-preflight",
-            "--skip-graph-preflight",
         ])
 
 
@@ -847,7 +848,7 @@ def test_main_writes_finished_run_status(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
     monkeypatch.delenv("E2E_AB_PARALLEL_ARMS", raising=False)
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
-    orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
+    orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight"])
     status = json.loads((tmp_path / "t1" / "run_status.json").read_text(encoding="utf-8"))
     assert status["phase"] == "finished"
     assert status["mode"] == "pilot"
@@ -869,7 +870,7 @@ def test_main_marks_interrupted_run_terminal_before_reraising(monkeypatch, tmp_p
 
     with pytest.raises(KeyboardInterrupt):
         orchestrator.main(
-            ["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"]
+            ["--run-id", "t1", "--skip-oracle-preflight"]
         )
 
     status = json.loads((tmp_path / "t1" / "run_status.json").read_text(encoding="utf-8"))
@@ -897,7 +898,7 @@ def test_main_run_status_records_parallel_arms_when_enabled(monkeypatch, tmp_pat
     monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1")
     monkeypatch.setenv("E2E_AB_MAX_WORKERS", "5")
 
-    orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
+    orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight"])
 
     status = json.loads((tmp_path / "t1" / "run_status.json").read_text(encoding="utf-8"))
     assert status["run_metadata"]["parallel_arms"] is True
@@ -936,7 +937,7 @@ def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
-    rc = orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
+    rc = orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight"])
     assert rc == 0
     assert (tmp_path / "t1" / "reports" / "ab_t1.md").exists()  # still renders from loaded outcomes
 
@@ -951,7 +952,7 @@ def test_main_fails_fast_on_errored_run(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, [_T1], _erroring_pair)
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
     try:
-        orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
+        orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight"])
     except orchestrator.ExperimentRunError as exc:
         assert "invalid x-api-key" in str(exc)
     else:
@@ -1002,7 +1003,7 @@ def test_main_reports_scoring_mode_for_planned_tasks_only(monkeypatch, tmp_path)
     monkeypatch.setattr(orchestrator, "_scoring_mode", lambda specs: ",".join(s.task_id for s in specs))
     monkeypatch.setattr(orchestrator.render_report, "write_report", _capture_report)
 
-    orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight", "--skip-graph-preflight"])
+    orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight"])
 
     assert seen["scoring_mode"] == "T1"
 
@@ -1379,6 +1380,64 @@ def test_skip_preflight_requires_debug_env(monkeypatch, tmp_path):
     monkeypatch.delenv("E2E_AB_ALLOW_UNVERIFIED", raising=False)
     with pytest.raises(orchestrator.ExperimentRunError, match="E2E_AB_ALLOW_UNVERIFIED"):
         orchestrator.main(["--run-id", "t1", "--skip-oracle-preflight"])
+
+
+def test_skip_graph_preflight_rejects_real_advisory_plan_before_subject_call(
+    monkeypatch, tmp_path
+):
+    subject_calls: list[str] = []
+
+    def _must_not_run(spec, seed, run_id):
+        subject_calls.append(spec.task_id)
+        pytest.fail("subject/provider path ran without an authenticated graph cohort")
+
+    _wire(monkeypatch, tmp_path, [_T1], _must_not_run)
+    monkeypatch.delenv("E2E_AB_ALLOW_UNVERIFIED", raising=False)
+
+    with pytest.raises(
+        orchestrator.ExperimentRunError,
+        match="graph-scope cohort cannot be authenticated.*fresh run-id",
+    ):
+        orchestrator.main(
+            ["--run-id", "unverified", "--skip-oracle-preflight", "--skip-graph-preflight"]
+        )
+
+    assert subject_calls == []
+    assert not (tmp_path / "unverified" / "outcomes.json").exists()
+
+
+def test_skip_graph_preflight_remains_available_when_no_real_advisory_is_planned(
+    monkeypatch, tmp_path
+):
+    subject_calls: list[str] = []
+
+    def _non_real_pair(spec, seed, run_id):
+        subject_calls.append(spec.task_id)
+        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),)
+
+    _wire(monkeypatch, tmp_path, [_T1], _non_real_pair)
+    monkeypatch.setattr(
+        orchestrator,
+        "_planned_arms_for_mode",
+        lambda _mode: frozenset({models.ARM_CONTROL}),
+    )
+    monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
+
+    assert orchestrator.main(
+        ["--run-id", "non-real", "--skip-oracle-preflight", "--skip-graph-preflight"]
+    ) == 0
+    assert subject_calls == ["T1"]
+
+
+def test_cli_help_marks_graph_preflight_skip_as_non_real_debug_only(capsys):
+    with pytest.raises(SystemExit) as caught:
+        orchestrator.main(["--help"])
+
+    assert caught.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "--skip-graph-preflight" in help_text
+    assert "plans without real-advisory arms" in help_text
+    assert "authenticated graph-scope cohort" in help_text
 
 
 def test_skipped_preflight_status_is_reported(monkeypatch, tmp_path):

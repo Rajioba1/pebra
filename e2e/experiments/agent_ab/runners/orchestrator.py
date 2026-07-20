@@ -671,6 +671,28 @@ def _preflight_gate_contract(out_dir: Path) -> None:
         return
 
 
+def _planned_arms_for_mode(mode: str) -> frozenset[str]:
+    if mode not in {"assay", "assay_js"}:
+        return frozenset({ARM_CONTROL, ARM_TREATMENT})
+    return frozenset(
+        arm
+        for harm_label in ("safe", "risky")
+        for arm in run_pair.arms_for(harm_label)
+    )
+
+
+def _reject_unauthenticated_real_advisory_plan(
+    *, skip_graph_preflight: bool, planned_arms: frozenset[str]
+) -> None:
+    real_arms = sorted(planned_arms & REAL_ADVISORY_ARMS)
+    if skip_graph_preflight and real_arms:
+        raise ExperimentRunError(
+            "--skip-graph-preflight cannot run real-advisory arms "
+            f"({', '.join(real_arms)}): the graph-scope cohort cannot be authenticated; "
+            "run the graph preflight with a fresh run-id"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the blinded agent A/B experiment (gated).")
     parser.add_argument("--run-id", required=True)
@@ -682,17 +704,30 @@ def main(argv: list[str] | None = None) -> int:
         help="Run deterministic preflights and exit before any subject/model calls.",
     )
     parser.add_argument("--skip-oracle-preflight", action="store_true")
-    parser.add_argument("--skip-graph-preflight", action="store_true")
+    parser.add_argument(
+        "--skip-graph-preflight",
+        action="store_true",
+        help=(
+            "Debug-only for plans without real-advisory arms; real advisory trials require an "
+            "authenticated graph-scope cohort."
+        ),
+    )
     args = parser.parse_args(argv)
     _validate_run_id(args.run_id)
     harness_commit = _assert_harness_clean()
 
+    if args.preflight_only and (args.skip_oracle_preflight or args.skip_graph_preflight):
+        raise ExperimentRunError("--preflight-only cannot be combined with preflight skip flags")
+    _reject_unauthenticated_real_advisory_plan(
+        skip_graph_preflight=args.skip_graph_preflight,
+        planned_arms=_planned_arms_for_mode(args.mode),
+    )
     if not args.preflight_only:
         run_gate.check_gate()  # fail-closed before ANY clone / model call
         _preflight_gate_contract(_AB_OUT / args.run_id)
-    if args.preflight_only and (args.skip_oracle_preflight or args.skip_graph_preflight):
-        raise ExperimentRunError("--preflight-only cannot be combined with preflight skip flags")
-    if (args.skip_oracle_preflight or args.skip_graph_preflight) and os.environ.get(_ALLOW_UNVERIFIED_ENV) != "1":
+    if (
+        args.skip_oracle_preflight or args.skip_graph_preflight
+    ) and os.environ.get(_ALLOW_UNVERIFIED_ENV) != "1":
         raise ExperimentRunError(
             f"preflight skip requested; set {_ALLOW_UNVERIFIED_ENV}=1 for an explicitly unverified debug run"
         )

@@ -407,6 +407,11 @@ subject/model loop. It does **not** require a provider key or the live run gate.
 preflight skip flags. Run IDs are limited to 32 portable filename characters: letters, numbers,
 periods, underscores, and hyphens.
 
+`--skip-graph-preflight` is debug-only and is rejected whenever the planned run contains a real
+advisory arm. Without the preflight, the harness cannot authenticate the graph-scope cohort, so a
+real-advisory run must use the graph preflight and a fresh run ID. The skip remains available only to
+plans with no real-advisory arm.
+
 PowerShell:
 
 ```powershell

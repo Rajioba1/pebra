@@ -929,7 +929,7 @@ Demo data cannot contaminate a real repository ledger; all commands and new beha
 - Create: `scripts/demo_observatory.py`
 - Create: `tests/integration/test_demo_observatory.py`
 - Modify: `README.md`
-- Modify: `DEVELOPMENT.md`
+- Modify locally (gitignored; not committed): `DEVELOPMENT.md`
 - Modify: `CONTRIBUTING.md`
 - Modify: `SECURITY.md`
 - Modify: `docs/PEBRA_COMMAND_REFERENCE.md`
@@ -980,6 +980,9 @@ Update all existing docs to:
 - audit every `console`, `powershell`, `cmd`, and `bash` block for the shell-compatibility policy and provide equivalents where activation, environment variables, piping, globbing, or command substitution differ;
 - regenerate the command/session inventory from the live parser and `nox --list`, failing tests on a missing, extra, renamed, or still-marked-unshipped command;
 - preserve the maintainer authorization gate for every release mutation.
+
+`DEVELOPMENT.md` is a local-only convenience copy. The committed `README.md` and
+`docs/PEBRA_COMMAND_REFERENCE.md` carry the public graph/preparation guidance.
 
 - [x] **Step 4: Strengthen distribution verification**
 
@@ -1043,7 +1046,7 @@ Stop on any failure. Passing these jobs authorizes review, not tagging or publis
 - [x] **Step 9: Commit the final milestone without releasing**
 
 ```powershell
-git add scripts/demo_observatory.py tests/integration/test_demo_observatory.py README.md DEVELOPMENT.md CONTRIBUTING.md SECURITY.md scripts/verify_distribution.py tests/unit/test_distribution_verifier.py tests/unit/test_cli_help.py e2e/experiments/agent_ab
+git add scripts/demo_observatory.py tests/integration/test_demo_observatory.py README.md CONTRIBUTING.md SECURITY.md scripts/verify_distribution.py tests/unit/test_distribution_verifier.py tests/unit/test_cli_help.py e2e/experiments/agent_ab
 git add -f docs/PEBRA_COMMAND_REFERENCE.md docs/superpowers/plans/2026-07-20-observatory-identity-and-exploration.md
 git commit -m "docs: finalize observatory exploration workflow"
 ```
