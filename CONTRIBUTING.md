@@ -3,6 +3,11 @@
 PEBRA accepts focused contributions that preserve its deterministic decision core, explicit trust
 boundaries, and testable CLI behavior.
 
+The exhaustive command/session inventory is
+[docs/PEBRA_COMMAND_REFERENCE.md](docs/PEBRA_COMMAND_REFERENCE.md). PEBRA commands are
+terminal-agnostic; examples below use PowerShell only where Windows executable or environment syntax
+differs, and the reference supplies Command Prompt and Bash/zsh equivalents.
+
 ## Contribution Terms
 
 PEBRA accepts contributions under the Apache License 2.0, without additional terms or conditions.
@@ -29,6 +34,10 @@ Use the equivalent activation and executable paths on macOS or Linux.
 Run `nox -s tests lint e2e-fast` for the normal source checkout. Before release, run
 `nox -s dev-package` to build and verify the tracked source as a clean wheel and source distribution;
 use `nox -s dev-package -- --open` to open the installed wheel's dashboard.
+
+For an isolated synthetic Observatory, use `python -m scripts.demo_observatory` (TUI default),
+`--dashboard`, or `--keep`. This is a source-only developer module, not a root `pebra` command, and it
+must never use the checkout's `.pebra/pebra.db`.
 
 ### Developing the Observatory TUI
 
@@ -85,6 +94,11 @@ review:
 
 Some external-engine, browser, and paid-model lanes are gated. State clearly which gated checks were
 not run and why; never report them as passing without evidence.
+
+Passing tests, review approval, a clean candidate, or an existing tag authorizes none of: creating or
+pushing a release tag, dispatching/rerunning a release workflow, approving a protected publication
+environment, publishing to an index, or creating a GitHub release. Each release mutation requires
+explicit maintainer authorization; follow [RELEASING.md](RELEASING.md).
 
 ## Pull Requests
 

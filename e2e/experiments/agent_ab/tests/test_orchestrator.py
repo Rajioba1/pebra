@@ -376,6 +376,33 @@ def test_experiment_design_hash_changes_with_gate_reason_treatment(monkeypatch):
     assert orchestrator._design_sha256(base) != orchestrator._design_sha256(changed)
 
 
+def test_experiment_design_binds_protocol_version_and_graph_scope_digest():
+    cfg = orchestrator._config()
+    args = type("Args", (), {"mode": "assay_js"})()
+    js4 = next(spec for spec in orchestrator.load_corpus() if spec.task_id == "JS4")
+    unbound = orchestrator._run_metadata(args, cfg, [js4])
+
+    bound = orchestrator._bind_graph_scope(unbound, "a" * 64)
+
+    assert bound["graph_scope_digest"] == "a" * 64
+    assert bound["experiment_design"]["graph_scope_digest"] == "a" * 64
+    assert bound["experiment_design"]["protocol_version"] == "no-repeat-understand-v1"
+    assert bound["experiment_design_sha256"] != unbound["experiment_design_sha256"]
+
+
+def test_resume_rejects_different_graph_scope_cohort(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    prior = orchestrator._bind_graph_scope(_run_meta(), "a" * 64)
+    current = orchestrator._bind_graph_scope(_run_meta(), "b" * 64)
+    (run_dir / "outcomes.json").write_text(
+        json.dumps({"outcomes": [], "run_metadata": prior}), encoding="utf-8"
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run design changed"):
+        orchestrator._assert_resume_design_compatible(run_dir, current)
+
+
 @pytest.mark.parametrize("stored_version", (None, "candidate-risk-summary-v0"))
 def test_resume_rejects_changed_gate_reason_treatment(tmp_path, stored_version):
     run_dir = tmp_path / "run"
@@ -487,6 +514,8 @@ def test_aligned_live_run_documentation_uses_fresh_one_seed_run_id():
     readme = (orchestrator._CONFIG_PATH.parent / "README.md").read_text(encoding="utf-8")
 
     assert "candidate-risk-summary-v1" in readme
+    assert "no-repeat-understand-v1" in readme
+    assert "different graph-scope digests" in readme
     assert 'E2E_AB_SEEDS_PER_ARM="1"' in readme
     assert 'E2E_AB_RUN_ID="js4_schema1_1seed_20260719_001"' in readme
     assert "js4_v4pro_sp_3seed_001" not in readme
@@ -930,8 +959,11 @@ def test_main_runs_preflights_for_planned_tasks_only(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, [_T1, _B1], _fake_pair)
     monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight",
                         lambda specs, *_args, **_kwargs: seen.setdefault("oracle", [s.task_id for s in specs]))
-    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight",
-                        lambda specs, *_args, **_kwargs: seen.setdefault("graph", [s.task_id for s in specs]))
+    def _graph(specs, *_args, **_kwargs):
+        seen["graph"] = [spec.task_id for spec in specs]
+        return "a" * 64
+
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", _graph)
 
     orchestrator.main(["--run-id", "t1"])
 

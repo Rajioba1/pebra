@@ -94,6 +94,16 @@ run must use a fresh run ID. Outcomes or checkpoints from the earlier reason tre
 resumed or pooled with it; the treatment version and effective seed count are part of the canonical
 experiment design hash.
 
+Both subject protocols also carry the same blinded no-repeat understanding phase, versioned as
+`no-repeat-understand-v1`: reuse equivalent current repository context when supplied, otherwise use
+ordinary repository search/read tools, and do not repeat equivalent exploration. This instruction
+never names the product, graph provider, oracle, or experiment to the subject.
+
+The deterministic graph preflight requires one canonical graph-scope digest across the planned task
+cohort. The digest is stored only in host-side run metadata and included in the canonical design hash;
+it is never serialized to the coding model. Runs from different graph-scope digests cannot be resumed
+or pooled under one run ID.
+
 Held candidates do not write, receive applied/proceeded-edit assessment attribution, or count as edit
 cycles; they remain visible only as intervention/unresolved observations. The `ask_human` review arm
 still requires an explicit model request, exact-candidate sanction, and a new assessment before an

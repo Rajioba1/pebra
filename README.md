@@ -6,6 +6,9 @@ It evaluates a proposed code edit before the agent applies it, returns a determi
 math packet, verifies the actual post-edit diff against the approved envelope, records outcomes, and
 uses measured calibration data to promote learned facts for future assessments.
 
+See the [PEBRA Command Reference](docs/PEBRA_COMMAND_REFERENCE.md) for the exhaustive, parser-checked
+CLI, TUI, MCP, development, validation, and release command inventory.
+
 ## Current Capabilities
 
 - Pre-edit `assess` with expected loss, expected utility, RAU, edit confidence, and ordered gates.
@@ -14,6 +17,9 @@ uses measured calibration data to promote learned facts for future assessments.
   contents as the patch that was assessed; same repository/HEAD/path alone is not sufficient.
 - Outcome recording, shadow learning, promotion, scorecards, and learned-fact reapplication.
 - Read-only local Risk Observatory dashboard for assessment, calibration, learning, and graph state.
+- Read-only Textual Observatory with assessment identity, repeat grouping, and explicit detail-only
+  impact exploration.
+- Provider-neutral `pebra explore` for bounded repository context from an existing graph index.
 - Explicit graph-engine setup and diagnostics through `pebra setup-graph` and `pebra doctor`.
 - CodeGraph-backed evidence:
   - per-symbol fan-in;
@@ -38,7 +44,7 @@ python -m venv .venv
 
 The graph engine is explicit, not a pip dependency:
 
-```powershell
+```console
 pebra setup-graph --fix
 pebra doctor
 ```
@@ -49,19 +55,31 @@ pebra doctor
 
 Launch the terminal dashboard from an installed or editable checkout:
 
-```powershell
+```console
 pebra tui --repo-root .
+python -m pebra tui --repo-root .
+```
+
+From this repository's Windows virtual environment, the PATH-independent equivalent is:
+
+```powershell
 .\.venv\Scripts\python.exe -m pebra tui --repo-root .
 ```
 
 Discover the installed version, root help, command help, and complete help:
 
-```powershell
+```console
 pebra --version
 pebra --help
 pebra help tui
+pebra help explore
 pebra help --all
 ```
+
+`pebra --version` distinguishes a released wheel (`installed`) from an editable checkout and includes
+the source revision for an editable checkout. The command reference documents packaged-development
+and isolated demo workflows; the browser dashboard and terminal TUI are two read-only views over the
+same ledger, not different PEBRA engines.
 
 The **benefit signal** (multi-language complexity + maintainability index) is likewise an explicit
 external binary — [`rust-code-analysis`](https://github.com/mozilla/rust-code-analysis) (MPL-2.0),
@@ -94,10 +112,10 @@ finalize trusted outcome -> future assess uses promoted learned snapshot
 
 Example command surface:
 
-```powershell
+```console
 pebra assess request.json --json
 pebra verify --assessment-id <assessment_id> --json
-pebra record-outcome --assessment-id <assessment_id> --status completed --detail '{"actual_success": true}'
+pebra record-outcome --assessment-id <assessment_id> --status completed
 pebra learn --assessment-id <assessment_id>
 pebra promote --repo-root <repo_root>
 # Preferred host path: one idempotent record + measure + gated-promotion operation.
@@ -106,6 +124,12 @@ pebra scorecard --repo-root <repo_root>
 pebra dashboard --port 4500 --open
 pebra capabilities --repo-root <repo_root>
 ```
+
+For a significant or unfamiliar edit, the generated agent protocol first reuses equivalent current
+repository context already supplied by the host. If none is available, it runs `pebra explore` before
+assessment; if exploration is unavailable, it falls back to ordinary repository search/read tools.
+Equivalent exploration is not repeated. Exploration is descriptive context only—it never authorizes
+an edit or becomes trusted PEBRA scoring evidence.
 
 `outcome.json` contains `assessment_id`, terminal `status`, and an optional `detail` object. The
 `finalize-outcome` command is host-only: MCP outcome reports are retained for lifecycle telemetry but
@@ -120,7 +144,7 @@ Install the repository protocol for either host. Claude receives the detailed
 detailed protocol at `.agents/skills/pebra-safe-edit/SKILL.md`. Add `--with-hook` when you also want
 pre-edit interception:
 
-```powershell
+```console
 pebra agent-init --target claude --repo-root . --with-hook
 pebra agent-init --target codex --repo-root . --with-hook
 pebra agent-init --target claude --repo-root . --check
@@ -175,7 +199,7 @@ The dashboard is read-only. On a loopback bind (`localhost`, `127.0.0.1`, `::1`)
 token-free for local convenience; `--auth token` forces a bearer token when you want the old locked
 path. Any non-loopback bind requires a token.
 
-```powershell
+```console
 # normal local browser UX
 pebra dashboard --port 4500 --open
 
@@ -192,6 +216,12 @@ pebra dashboard --host 0.0.0.0 --port 4500 --auth token
 It exposes five browser views: overview, score history, calibration, learned facts, and CodeGraph
 hotspots. Graph views are fail-soft when no trusted graph index is bound to the launched repo, and
 graph routes are repo-scoped to avoid replaying one repo's graph under another repo id.
+
+Explicit graph-backed commands may reconcile an already-initialized, same-worktree `.codegraph/`
+cache. They never create or edit `codegraph.json`; its exclusions are operator-owned scope controls,
+not freshness controls. PEBRA binds accepted graph evidence to the repository HEAD, configuration
+digest, provider/extraction version, and graph-scope digest. Dashboard/TUI timers never prepare or
+sync the graph; TUI exploration occurs only when the user presses `x` in assessment detail.
 
 ## Validation
 
@@ -225,6 +255,7 @@ Benchmark lanes:
 
 ## More Docs
 
+- [Exhaustive command reference](docs/PEBRA_COMMAND_REFERENCE.md)
 - [Contributing and development setup](CONTRIBUTING.md)
 - [True e2e suite](e2e/README.md)
 - [Benchmarks](benchmarks/README.md)

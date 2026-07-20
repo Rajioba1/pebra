@@ -20,6 +20,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from pebra.dashboard import auth, ports
 from pebra.dashboard.api import build_router
+from pebra.observatory_context import observatory_display_label
 
 _HERE = Path(__file__).parent
 _STATIC = _HERE / "static"
@@ -143,7 +144,9 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
         nonce = auth.create_nonce()  # fresh per request
-        html = _env.get_template("index.html").render(nonce=nonce)
+        html = _env.get_template("index.html").render(
+            nonce=nonce, observatory_label=observatory_display_label()
+        )
         return HTMLResponse(html, headers={"Content-Security-Policy": auth.build_csp(nonce)})
 
     return app

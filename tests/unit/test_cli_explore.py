@@ -5,6 +5,7 @@ import json
 import pytest
 
 from pebra import composition
+from pebra.adapters import codegraph_explorer
 from pebra.cli import main
 from pebra.core.exploration import ExplorationResult
 from pebra.core.graph_snapshot import GraphSnapshot
@@ -81,7 +82,7 @@ def test_composition_prepares_once_clamps_bounds_and_queries_same_snapshot(monke
             calls.append(("explore", repo_root, query, kwargs))
             return _result()
 
-    monkeypatch.setattr(composition, "CodeGraphExplorer", Explorer)
+    monkeypatch.setattr(codegraph_explorer, "CodeGraphExplorer", Explorer)
 
     result = composition.explore_repository(
         "/repo", "q", files=("src/a.py",), max_files=100, max_bytes=10,

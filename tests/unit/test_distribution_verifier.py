@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import tarfile
 import zipfile
@@ -17,6 +18,7 @@ from scripts.verify_distribution import (
     _EXPECTED_AGENT_HOSTS,
     _validate_agent_host_registry,
     _validate_agent_init_check,
+    _verify_installed_cli,
     _verify_tui_mount,
     release_version_from_tag,
     verify_candidate_manifest,
@@ -211,6 +213,83 @@ def test_installed_verifier_exercises_console_script() -> None:
     assert 'stdout.startswith(f"PEBRA {installed_version} ")' in source
     assert '"agent-init"' in source
     assert '"--check"' in source
+
+
+def test_installed_cli_verifier_checks_all_explore_help_entry_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_calls: list[tuple[str, ...]] = []
+    console_calls: list[tuple[str, ...]] = []
+
+    def completed(*args: str, cwd: Path):
+        del cwd
+        module_calls.append(args)
+        text = "PEBRA 9.8.7 installed" if args == ("--version",) else "usage: pebra explore"
+        return SimpleNamespace(returncode=0, stdout=text, stderr="")
+
+    def console(argv, **kwargs):
+        del kwargs
+        console_calls.append(tuple(argv[1:]))
+        return SimpleNamespace(returncode=0, stdout="usage: pebra explore", stderr="")
+
+    monkeypatch.setattr(distribution_verifier, "_run_cli", completed)
+    monkeypatch.setattr(distribution_verifier.shutil, "which", lambda _name: "pebra")
+    monkeypatch.setattr(distribution_verifier.subprocess, "run", console)
+
+    _verify_installed_cli(tmp_path, installed_version="9.8.7")
+
+    assert ("help", "explore") in module_calls
+    assert ("help", "explore") in console_calls
+    assert ("explore", "--help") in console_calls
+    assert ("help", "dashboard") in module_calls
+    assert ("help", "tui") in module_calls
+
+
+def test_installed_cli_verifier_rejects_missing_explore_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def completed(*args: str, cwd: Path):
+        del cwd
+        text = "PEBRA 9.8.7 installed" if args == ("--version",) else "pebra"
+        return SimpleNamespace(returncode=0, stdout=text, stderr="")
+
+    monkeypatch.setattr(distribution_verifier, "_run_cli", completed)
+    monkeypatch.setattr(distribution_verifier.shutil, "which", lambda _name: "pebra")
+    monkeypatch.setattr(
+        distribution_verifier.subprocess,
+        "run",
+        lambda argv, **kwargs: SimpleNamespace(returncode=0, stdout="pebra", stderr=""),
+    )
+
+    with pytest.raises(DistributionVerificationError, match="help explore"):
+        _verify_installed_cli(tmp_path, installed_version="9.8.7")
+
+
+def test_installed_verifier_imports_exploration_contract_without_adapter() -> None:
+    source = (Path(__file__).resolve().parents[2] / "scripts" / "verify_distribution.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from pebra.core.graph_snapshot import GraphSnapshot" in source
+    assert "from pebra.core.exploration import ExplorationResult" in source
+    assert "from pebra.ports.repository_explorer_port import RepositoryExplorer" in source
+    assert "from pebra.cli.main import build_parser" in source
+    imports = {
+        node.module
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    assert not any(module.startswith("pebra.adapters.codegraph") for module in imports)
+
+
+def test_installed_verifier_measures_cli_module_imports_for_eager_adapters() -> None:
+    source = (Path(__file__).resolve().parents[2] / "scripts" / "verify_distribution.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert source.index("before_parser = set(sys.modules)") < source.index(
+        "from pebra.cli.main import build_parser"
+    )
 
 
 def test_installed_registry_matches_independent_five_field_oracle() -> None:

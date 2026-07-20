@@ -21,15 +21,10 @@ from pebra.adapters.ast_diff_adapter import AstDiffAdapter
 from pebra.adapters.ast_import_graph import AstImportGraphAdapter
 from pebra.adapters.composite_evidence import CompositeEvidenceProvider
 from pebra.adapters.contract_surface import ContractSurfaceScanner
-from pebra.adapters.codegraph_candidate_refinement import CodeGraphCandidateRefinementAdapter
 from pebra.adapters.git_change_verifier import GitChangeVerifier
 from pebra.adapters.candidate_binding import CandidateBindingAdapter
 from pebra.adapters.candidate_application import CandidateApplicationAdapter
-from pebra.adapters.candidate_gate import CandidateGateAdapter
 from pebra.adapters.candidate_replay_cache import CandidateReplayCache
-from pebra.adapters.codegraph_adapter import CodeGraphAdapter
-from pebra.adapters.codegraph_explorer import CodeGraphExplorer
-from pebra.adapters.codegraph_materialized_diff import CodeGraphMaterializedDiffAdapter
 from pebra.adapters.import_graph_cache import GraphProvider
 from pebra.adapters.rca_adapter import RustCodeAnalysisAdapter
 from pebra.adapters.repository_registry import RepositoryRegistry
@@ -66,6 +61,8 @@ def resolve_repo_and_db(start_path: str, db_path: str | None = None) -> RepoCont
 def graph_node_counts(repo_root: str) -> dict[str, int]:
     """Repo-wide CodeGraph node counts via the codegraph adapter (used by `pebra graph-stats` and the
     A/B graph preflight for an independent graph-validity check). Zeros when the graph is absent."""
+    from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
+
     adapter = CodeGraphAdapter()
     adapter.prepare(repo_root)
     return adapter.node_counts(repo_root)
@@ -76,6 +73,7 @@ def probe_language_capabilities(repo_root: str) -> list[dict[str, Any]]:
     language with its support tier + coverage. Empty when the graph is absent. Sorted by node_count
     desc so the best-covered languages lead."""
     from pebra.core.language_capability import classify_tier  # noqa: PLC0415
+    from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
 
     adapter = CodeGraphAdapter()
     adapter.prepare(repo_root)
@@ -97,6 +95,8 @@ def probe_language_capabilities(repo_root: str) -> list[dict[str, Any]]:
 def dependent_files(repo_root: str, target: str) -> list[str]:
     """Repo-relative files that depend on ``target`` (the file-level blast radius), via the codegraph
     adapter. Empty when the graph is absent. Used by `pebra dependents`."""
+    from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
+
     adapter = CodeGraphAdapter()
     adapter.prepare(repo_root)
     return adapter.dependent_files(target, repo_root)
@@ -104,6 +104,8 @@ def dependent_files(repo_root: str, target: str) -> list[str]:
 
 def dependent_files_result(repo_root: str, target: str) -> dict[str, Any]:
     """Structured file-level blast radius with graph availability/fallback metadata."""
+    from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
+
     adapter = CodeGraphAdapter()
     adapter.prepare(repo_root)
     return adapter.dependent_files_result(target, repo_root)
@@ -118,6 +120,8 @@ def explore_repository(
     max_bytes: int = 24_000,
 ) -> ExplorationResult:
     """Prepare once, then query that exact fenced snapshot through one explorer instance."""
+    from pebra.adapters.codegraph_explorer import CodeGraphExplorer  # noqa: PLC0415
+
     max_files, max_bytes = clamp_bounds(max_files, max_bytes)
     explorer = CodeGraphExplorer()
     snapshot = explorer.prepare(repo_root)
@@ -133,12 +137,15 @@ def explore_repository(
 
 def build_repository_explorer() -> RepositoryExplorer:
     """Construct the provider adapter at the composition boundary."""
+    from pebra.adapters.codegraph_explorer import CodeGraphExplorer  # noqa: PLC0415
+
     return CodeGraphExplorer()
 
 
 def prepare_dashboard_graph_reader(repo_root: str | None, *, read_only: bool) -> object:
     """Build a query-only reader; preparation is explicit and never reachable from a GET route."""
     from pebra.adapters.codegraph_graph_reader import CodeGraphReader  # noqa: PLC0415
+    from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
 
     if read_only or repo_root is None:
         return CodeGraphReader(status_fn=lambda _root: None)
@@ -150,6 +157,14 @@ def prepare_dashboard_graph_reader(repo_root: str | None, *, read_only: bool) ->
 def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str, Any]:
     """The adapter bundle ``assess_controller.assess`` needs (keyword args minus thresholds/start_path).
     One GraphProvider is shared by the architecture + blast adapters (build-once memo, 5c)."""
+    from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
+    from pebra.adapters.codegraph_candidate_refinement import (  # noqa: PLC0415
+        CodeGraphCandidateRefinementAdapter,
+    )
+    from pebra.adapters.codegraph_materialized_diff import (  # noqa: PLC0415
+        CodeGraphMaterializedDiffAdapter,
+    )
+
     graph_provider = GraphProvider()
     # One CodeGraphAdapter serves both the per-symbol fan-in and the whole-file roll-up (it satisfies
     # both ports structurally) — sharing the instance shares its distribution cache (one DB scan).
@@ -223,6 +238,11 @@ def build_verify_ports(repo_root: str | None = None) -> dict[str, Any]:
     A1: the verifier gets the graph engine's per-symbol fan-in lookup so post-edit reclassification
     sees real fan-in (symmetric with assess). Absent codegraph -> the lookup returns {} -> verify keeps
     its pre-A1 behavior."""
+    from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
+    from pebra.adapters.codegraph_materialized_diff import (  # noqa: PLC0415
+        CodeGraphMaterializedDiffAdapter,
+    )
+
     # One CodeGraphAdapter backs both the per-symbol fan-in lookup (Python rows) and the multi-language
     # structural reclassification of non-Python changed files (else they'd be silently skipped).
     codegraph = CodeGraphAdapter()
@@ -252,6 +272,8 @@ def build_sanction_port(ctx: RepoContext) -> SanctionPort:
 
 def build_candidate_apply_ports(ctx: RepoContext) -> dict[str, Any]:
     """Adapters for exact, gate-authorized working-tree candidate application."""
+    from pebra.adapters.candidate_gate import CandidateGateAdapter  # noqa: PLC0415
+
     return {
         "replay_cache": CandidateReplayCache(
             Path(ctx.repo.repo_root) / ".pebra" / "candidates"

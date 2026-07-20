@@ -362,6 +362,52 @@ def _verify_tui_mount(app: _HeadlessTestApp) -> None:
         raise DistributionVerificationError("installed TUI failed to mount") from exc
 
 
+def _verify_installed_cli(cwd: Path, *, installed_version: str) -> None:
+    """Exercise both installed entry paths, including the exploration help contract."""
+    version_result = _run_cli("--version", cwd=cwd)
+    if (
+        version_result.returncode != 0
+        or not version_result.stdout.startswith(f"PEBRA {installed_version} ")
+    ):
+        raise DistributionVerificationError(
+            f"installed CLI reported the wrong version: {version_result.stdout.strip()}"
+        )
+    module_commands = (
+        ("--help",),
+        ("help", "dashboard"),
+        ("help", "tui"),
+        ("help", "explore"),
+    )
+    for args in module_commands:
+        result = _run_cli(*args, cwd=cwd)
+        required = "usage: pebra explore" if args == ("help", "explore") else "pebra"
+        if result.returncode != 0 or required not in result.stdout.lower():
+            raise DistributionVerificationError(
+                f"installed CLI failed for {' '.join(args)}: {result.stderr.strip()}"
+            )
+
+    launcher = shutil.which("pebra")
+    if launcher is None:
+        raise DistributionVerificationError("installed console script was not found on PATH")
+    for args in (("--help",), ("help", "explore"), ("explore", "--help")):
+        console = subprocess.run(
+            [launcher, *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=120,
+        )
+        required = "usage: pebra explore" if "explore" in args else "pebra"
+        if console.returncode != 0 or required not in console.stdout.lower():
+            raise DistributionVerificationError(
+                f"installed console script failed for {' '.join(args)}: "
+                f"{console.stderr.strip()}"
+            )
+
+
 def verify_installed() -> None:
     """Check the installed wheel without importing PEBRA from its source checkout."""
     dashboard = importlib.resources.files("pebra.dashboard")
@@ -380,10 +426,51 @@ def verify_installed() -> None:
         raise DistributionVerificationError("installed package missing pebra/tui/theme.tcss")
 
     from pebra.core.agent_hosts import AGENT_HOSTS
+    from pebra.core.exploration import ExplorationResult
+    from pebra.core.graph_snapshot import GraphSnapshot
     from pebra.observatory_context import ObservatoryContext
+    from pebra.ports.repository_explorer_port import RepositoryExplorer
     from pebra.tui.app import ObservatoryApp
 
     _validate_agent_host_registry(AGENT_HOSTS)
+
+    before_parser = set(sys.modules)
+    from pebra.cli.main import build_parser
+
+    parser = build_parser()
+    eager_codegraph = sorted(
+        name for name in set(sys.modules) - before_parser
+        if name.startswith("pebra.adapters.codegraph")
+    )
+    if eager_codegraph:
+        raise DistributionVerificationError(
+            "installed parser eagerly imported CodeGraph adapters: " + ", ".join(eager_codegraph)
+        )
+    if "explore" not in parser._subparsers._group_actions[0].choices:
+        raise DistributionVerificationError("installed parser is missing pebra explore")
+    snapshot = GraphSnapshot(
+        status="unavailable",
+        provider=None,
+        provider_version=None,
+        index_version=None,
+        repo_head=None,
+        config_digest=None,
+        graph_scope_digest=None,
+        sync_performed=False,
+        fallback_reason="installed contract smoke",
+    )
+    result = ExplorationResult(
+        status="unavailable",
+        snapshot=snapshot,
+        context="",
+        dependent_files=(),
+        affected_tests=(),
+        warnings=(),
+        fallback_reason="installed contract smoke",
+        truncated=False,
+    )
+    if result.snapshot is not snapshot or not callable(RepositoryExplorer.explore):
+        raise DistributionVerificationError("installed repository exploration contract is malformed")
 
     app = ObservatoryApp(ObservatoryContext(
         db_path="installed-wheel-smoke.db",
@@ -403,37 +490,7 @@ def verify_installed() -> None:
     with tempfile.TemporaryDirectory(prefix="pebra-wheel-smoke-") as raw:
         cwd = Path(raw)
         installed_version = importlib.metadata.version("pebra")
-        version_result = _run_cli("--version", cwd=cwd)
-        if (
-            version_result.returncode != 0
-            or not version_result.stdout.startswith(f"PEBRA {installed_version} ")
-        ):
-            raise DistributionVerificationError(
-                f"installed CLI reported the wrong version: {version_result.stdout.strip()}"
-            )
-        for args in (("--help",), ("help", "dashboard"), ("help", "tui")):
-            result = _run_cli(*args, cwd=cwd)
-            if result.returncode != 0 or "pebra" not in result.stdout.lower():
-                raise DistributionVerificationError(
-                    f"installed CLI failed for {' '.join(args)}: {result.stderr.strip()}"
-                )
-        launcher = shutil.which("pebra")
-        if launcher is None:
-            raise DistributionVerificationError("installed console script was not found on PATH")
-        console = subprocess.run(
-            [launcher, "--help"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=120,
-        )
-        if console.returncode != 0 or "pebra" not in console.stdout.lower():
-            raise DistributionVerificationError(
-                f"installed console script failed: {console.stderr.strip()}"
-            )
+        _verify_installed_cli(cwd, installed_version=installed_version)
         for target in _EXPECTED_AGENT_HOSTS:
             repo_root = cwd / f"agent-{target}"
             if target == "codex":

@@ -10,6 +10,8 @@ from pathlib import Path
 import stat
 from types import SimpleNamespace
 
+import pytest
+
 from e2e.experiments.agent_ab.models import TaskSpec
 from e2e.experiments.agent_ab.runners import preflight
 
@@ -263,13 +265,32 @@ def test_build_did_not_run_is_flagged():
 # ---- graph-freshness assertions ----
 
 def _payload(freshness, resolution):
-    return {"scores": {"symbol_scope_evidence": {"symbol_fanin": {
+    return {"graph_provenance": {"graph_scope_digest": "a" * 64},
+            "scores": {"symbol_scope_evidence": {"symbol_fanin": {
         "graph_freshness": freshness, "resolution_method": resolution,
         "caller_count": 3, "modify_impact_count": 4}}, "expected_loss": 0.2}}
 
 
+def _with_language_capability(payload, **capability):
+    payload["graph_provenance"]["language_capability"] = capability
+    return payload
+
+
 def test_fresh_resolved_graph_is_ok():
     assert preflight._graph_backed_failure(_TRAP, _payload("fresh", "location")) is None
+
+
+@pytest.mark.parametrize("digest", (None, "not-a-digest", "A" * 64))
+def test_graph_preflight_requires_a_canonical_scope_digest(digest):
+    payload = _payload("fresh", "location")
+    if digest is None:
+        payload["graph_provenance"].pop("graph_scope_digest")
+    else:
+        payload["graph_provenance"]["graph_scope_digest"] = digest
+
+    msg = preflight._graph_backed_failure(_TRAP, payload)
+
+    assert msg and "scope digest" in msg
 
 
 def test_name_fallback_is_not_strong_enough_for_ab_preflight():
@@ -278,7 +299,8 @@ def test_name_fallback_is_not_strong_enough_for_ab_preflight():
 
 
 def test_fresh_resolved_but_zero_impact_graph_is_flagged():
-    payload = {"scores": {"symbol_scope_evidence": {"symbol_fanin": {
+    payload = {"graph_provenance": {"graph_scope_digest": "a" * 64},
+        "scores": {"symbol_scope_evidence": {"symbol_fanin": {
         "graph_freshness": "fresh", "resolution_method": "location",
         "caller_count": 0, "modify_impact_count": 0, "modify_transitive_impact_count": 0}}},
         "expected_loss": 0.0}
@@ -302,9 +324,7 @@ def test_missing_evidence_is_flagged():
 
 def test_required_language_tier_fails_when_payload_is_lower():
     payload = _payload("fresh", "location")
-    payload["graph_provenance"] = {
-        "language_capability": {"language": "csharp", "tier": "partial"}
-    }
+    _with_language_capability(payload, language="csharp", tier="partial")
 
     msg = preflight._graph_backed_failure(_FULL_TIER_TRAP, payload)
 
@@ -321,18 +341,14 @@ def test_required_language_tier_fails_when_payload_omits_capability():
 
 def test_required_language_tier_passes_when_payload_meets_requirement():
     payload = _payload("fresh", "location")
-    payload["graph_provenance"] = {
-        "language_capability": {"language": "typescript", "tier": "full"}
-    }
+    _with_language_capability(payload, language="typescript", tier="full")
 
     assert preflight._graph_backed_failure(_FULL_TIER_TRAP, payload) is None
 
 
 def test_required_measured_benefit_rejects_projected_assessment():
     payload = _payload("fresh", "location")
-    payload["graph_provenance"] = {
-        "language_capability": {"language": "typescript", "tier": "full"}
-    }
+    _with_language_capability(payload, language="typescript", tier="full")
     payload["scores"]["benefit_breakdown"] = {"source_type": "projected"}
 
     msg = preflight._graph_backed_failure(_MEASURED_BENEFIT_TRAP, payload)
@@ -342,9 +358,7 @@ def test_required_measured_benefit_rejects_projected_assessment():
 
 def test_required_measured_benefit_accepts_rca_measurement():
     payload = _payload("fresh", "location")
-    payload["graph_provenance"] = {
-        "language_capability": {"language": "typescript", "tier": "full"}
-    }
+    _with_language_capability(payload, language="typescript", tier="full")
     payload["scores"]["benefit_breakdown"] = {"source_type": "measured"}
 
     assert preflight._graph_backed_failure(_MEASURED_BENEFIT_TRAP, payload) is None
@@ -440,8 +454,6 @@ def test_natural_safe_route_rejects_lower_total_benefit():
 
 
 # ---- accumulate-ALL-failures (never first-fail) ----
-
-import pytest  # noqa: E402
 
 
 def test_oracle_preflight_reports_all_missing_patches(tmp_path):
@@ -768,9 +780,34 @@ def test_graph_preflight_fails_on_low_node_count(tmp_path, monkeypatch):
 def test_graph_preflight_passes_with_enough_nodes_and_fresh(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
     # enough C# nodes AND a fresh/resolved target -> no PreflightError raised
-    preflight.run_graph_preflight([_TRAP], None, out_dir=tmp_path,
-                                  assess_fn=_fresh_payload, setup_graph_fn=None,
-                                  node_count_fn=lambda p: {"csharp_callable": 700})
+    digest = preflight.run_graph_preflight([_TRAP], None, out_dir=tmp_path,
+                                           assess_fn=_fresh_payload, setup_graph_fn=None,
+                                           node_count_fn=lambda p: {"csharp_callable": 700})
+
+    assert digest == "a" * 64
+
+
+def test_graph_preflight_rejects_mixed_scope_cohorts(tmp_path, monkeypatch):
+    trap2 = dataclasses.replace(_TRAP, task_id="T2")
+
+    def _assess(_repo_path, spec):
+        payload = _payload("fresh", "location")
+        payload["graph_provenance"]["graph_scope_digest"] = (
+            "a" * 64 if spec.task_id == "T1" else "b" * 64
+        )
+        return payload
+
+    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
+
+    with pytest.raises(preflight.PreflightError, match="mixed graph scope"):
+        preflight.run_graph_preflight(
+            [_TRAP, trap2],
+            None,
+            out_dir=tmp_path,
+            assess_fn=_assess,
+            setup_graph_fn=None,
+            node_count_fn=lambda p: {"csharp_callable": 700},
+        )
 
 
 def test_graph_preflight_checks_safe_task_when_language_tier_is_required(tmp_path, monkeypatch):
@@ -783,9 +820,7 @@ def test_graph_preflight_checks_safe_task_when_language_tier_is_required(tmp_pat
     def _assess(_repo_path, spec):
         calls.append(spec.task_id)
         payload = _payload("fresh", "location")
-        payload["graph_provenance"] = {
-            "language_capability": {"language": "csharp", "tier": "partial"}
-        }
+        _with_language_capability(payload, language="csharp", tier="partial")
         return payload
 
     monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
@@ -810,18 +845,18 @@ def test_graph_preflight_uses_language_node_count_for_non_csharp_tiered_task(tmp
 
     def _assess(_repo_path, _spec):
         payload = _payload("fresh", "location")
-        payload["graph_provenance"] = {
-            "language_capability": {
-                "language": "typescript", "tier": "full", "node_count": 12,
-            }
-        }
+        _with_language_capability(
+            payload, language="typescript", tier="full", node_count=12
+        )
         return payload
 
     monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
 
-    preflight.run_graph_preflight([ts_full], None, out_dir=tmp_path,
-                                  assess_fn=_assess, setup_graph_fn=None,
-                                  node_count_fn=lambda p: {"csharp_callable": 0})
+    digest = preflight.run_graph_preflight([ts_full], None, out_dir=tmp_path,
+                                           assess_fn=_assess, setup_graph_fn=None,
+                                           node_count_fn=lambda p: {"csharp_callable": 0})
+
+    assert digest == "a" * 64
 
 
 def test_graph_preflight_writes_coverage_artifact(tmp_path, monkeypatch):
@@ -837,11 +872,9 @@ def test_graph_preflight_writes_coverage_artifact(tmp_path, monkeypatch):
 
     def _assess(_repo_path, _spec):
         payload = _payload("fresh", "location")
-        payload["graph_provenance"] = {
-            "language_capability": {
-                "language": "typescript", "tier": "full", "node_count": 12,
-            }
-        }
+        _with_language_capability(
+            payload, language="typescript", tier="full", node_count=12
+        )
         return payload
 
     monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
@@ -864,11 +897,9 @@ def test_graph_preflight_fails_non_csharp_tiered_task_with_zero_language_nodes(t
 
     def _assess(_repo_path, _spec):
         payload = _payload("fresh", "location")
-        payload["graph_provenance"] = {
-            "language_capability": {
-                "language": "typescript", "tier": "full", "node_count": 0,
-            }
-        }
+        _with_language_capability(
+            payload, language="typescript", tier="full", node_count=0
+        )
         return payload
 
     monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
@@ -890,20 +921,20 @@ def test_graph_preflight_coverage_write_is_best_effort(tmp_path, monkeypatch):
 
     def _assess(_repo_path, _spec):
         payload = _payload("fresh", "location")
-        payload["graph_provenance"] = {
-            "language_capability": {
-                "language": "typescript", "tier": "full", "node_count": 12,
-            }
-        }
+        _with_language_capability(
+            payload, language="typescript", tier="full", node_count=12
+        )
         return payload
 
     monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", lambda ext, dest: tmp_path)
     monkeypatch.setattr(preflight.run_artifacts, "atomic_write_json",
                         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")))
 
-    preflight.run_graph_preflight([ts_full], None, out_dir=tmp_path,
-                                  assess_fn=_assess, setup_graph_fn=None,
-                                  node_count_fn=lambda p: {"csharp_callable": 0})
+    digest = preflight.run_graph_preflight([ts_full], None, out_dir=tmp_path,
+                                           assess_fn=_assess, setup_graph_fn=None,
+                                           node_count_fn=lambda p: {"csharp_callable": 0})
+
+    assert digest == "a" * 64
 
 
 # ---- revise-safer route calibration -----------------------------------------------------------

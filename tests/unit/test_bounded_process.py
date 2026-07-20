@@ -77,7 +77,7 @@ def test_run_bounded_cancellation_kills_process_tree_promptly(tmp_path) -> None:
     descendant_code = (
         "import sys,time; from pathlib import Path; "
         "Path(sys.argv[1]).write_text('started'); "
-        "time.sleep(2); Path(sys.argv[2]).write_text('survived'); time.sleep(30)"
+        "time.sleep(0.2); Path(sys.argv[2]).write_text('survived'); time.sleep(30)"
     )
     parent_code = (
         "import subprocess,sys,time; "
@@ -116,7 +116,7 @@ def test_run_bounded_cancellation_kills_process_tree_promptly(tmp_path) -> None:
     result = outcome["result"]
     assert outcome["elapsed"] < 2
     assert result.error == "cancelled"
-    time.sleep(0.1)
+    time.sleep(0.35)
     assert survived.exists() is False
 
 

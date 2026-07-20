@@ -12,6 +12,7 @@ It does not run under ordinary CI — the gate stays shut. No pebra import (asse
 from __future__ import annotations
 
 import argparse
+import copy
 import dataclasses
 import hashlib
 import json
@@ -33,6 +34,7 @@ from e2e.experiments.agent_ab.models import (
 )
 from e2e.experiments.agent_ab.reports import render_report
 from e2e.experiments.agent_ab.runners import preflight, run_artifacts, run_gate, run_pair, subject_protocol
+from e2e.experiments.agent_ab.tools import advisory_contract
 from e2e.experiments.agent_ab.specimens import loader as specimen_loader
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness, rca_probe
@@ -313,6 +315,8 @@ def _experiment_design(
         "mode": args.mode,
         "mode_config": mode_config,
         "gate_reason_treatment_version": GATE_REASON_TREATMENT_VERSION,
+        "protocol_version": advisory_contract.EXPERIMENT_PROTOCOL_VERSION,
+        "graph_scope_digest": None,
         "subject_config": cfg.get("subject", {}),
         "thresholds": cfg.get("thresholds", {}),
         "bootstrap_seed": cfg.get("bootstrap_seed", 0),
@@ -403,9 +407,23 @@ def _run_metadata(
         "protocol_file": subject_protocol.INSTRUCTION_REL_PATH,
         "rca": _rca_metadata(cfg),
         "protocol_hashes": design["protocol_hashes"],
+        "graph_scope_digest": design["graph_scope_digest"],
         "experiment_design": design,
         "experiment_design_sha256": _design_sha256(design),
     }
+
+
+def _bind_graph_scope(run_metadata: dict[str, Any], graph_scope_digest: str) -> dict[str, Any]:
+    """Return metadata bound to one validated graph-scope cohort."""
+    if not isinstance(graph_scope_digest, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", graph_scope_digest
+    ):
+        raise ExperimentRunError("graph pre-flight returned an invalid graph scope digest")
+    bound = copy.deepcopy(run_metadata)
+    bound["graph_scope_digest"] = graph_scope_digest
+    bound["experiment_design"]["graph_scope_digest"] = graph_scope_digest
+    bound["experiment_design_sha256"] = _design_sha256(bound["experiment_design"])
+    return bound
 
 
 def _assert_resume_rca_compatible(out_dir: Path, run_metadata: dict[str, Any]) -> None:
@@ -461,6 +479,16 @@ def _authenticated_design_identity(metadata: dict[str, Any]) -> tuple[str]:
         raise ValueError("experiment design hash mismatch")
     if design.get("gate_reason_treatment_version") != GATE_REASON_TREATMENT_VERSION:
         raise ValueError("stale gate reason treatment")
+    if design.get("protocol_version") != advisory_contract.EXPERIMENT_PROTOCOL_VERSION:
+        raise ValueError("stale subject protocol")
+    graph_scope_digest = design.get("graph_scope_digest")
+    if graph_scope_digest is not None and not (
+        isinstance(graph_scope_digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", graph_scope_digest)
+    ):
+        raise ValueError("malformed graph scope digest")
+    if metadata.get("graph_scope_digest") != graph_scope_digest:
+        raise ValueError("graph scope metadata mismatch")
     mode = metadata["mode"]
     mode_config = design["mode_config"]
     seeds_per_arm = metadata["seeds_per_arm"]
@@ -666,12 +694,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     _assert_rca_probe_usable(run_metadata)
     _assert_resume_rca_compatible(out_dir, run_metadata)
-    _assert_resume_design_compatible(out_dir, run_metadata)
     _write_run_status(out_dir, args.mode, "preflight",
                       preflight_status=preflight_status, scoring_mode=scoring_mode,
                       run_metadata=run_metadata)
 
     active_preflight: str | None = None
+    graph_scope_digest: str | None = None
     try:
         if not args.skip_oracle_preflight:
             active_preflight = "oracle"
@@ -679,10 +707,14 @@ def main(argv: list[str] | None = None) -> int:
             preflight_status["oracle"] = "passed"
         if not args.skip_graph_preflight:
             active_preflight = "graph"
-            preflight.run_graph_preflight(planned_specs, external, out_dir=out_dir,
-                                          assess_fn=_live_assess_fn,
-                                          setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
-                                          node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p))
+            graph_scope_digest = preflight.run_graph_preflight(
+                planned_specs,
+                external,
+                out_dir=out_dir,
+                assess_fn=_live_assess_fn,
+                setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
+                node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p),
+            )
             preflight_status["graph"] = "passed"
             if is_assay:
                 active_preflight = "revise_safer"
@@ -712,6 +744,10 @@ def main(argv: list[str] | None = None) -> int:
                           run_metadata=run_metadata,
                           error=f"{type(exc).__name__}: {exc}")
         raise
+
+    if graph_scope_digest is not None:
+        run_metadata = _bind_graph_scope(run_metadata, graph_scope_digest)
+    _assert_resume_design_compatible(out_dir, run_metadata)
 
     if args.preflight_only:
         _write_run_status(out_dir, args.mode, "finished",

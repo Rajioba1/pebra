@@ -15,6 +15,19 @@ from pathlib import Path
 from pebra.adapters.repository_registry import RepositoryRegistry
 
 
+OBSERVATORY_LABEL_ENV = "PEBRA_OBSERVATORY_LABEL"
+
+
+def observatory_display_label() -> str | None:
+    """Return a bounded optional launch label used by isolated developer viewers."""
+    import os
+
+    raw = os.environ.get(OBSERVATORY_LABEL_ENV, "").strip()
+    if not raw or any(ord(character) < 32 for character in raw):
+        return None
+    return raw[:32]
+
+
 class ObservatoryContextError(ValueError):
     """The Observatory launch arguments are invalid: a bad `--read-only` combination, or a missing db."""
 

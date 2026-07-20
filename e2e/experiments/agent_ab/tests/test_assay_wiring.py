@@ -9,7 +9,8 @@ from types import SimpleNamespace
 from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.metrics import scorecard
 from e2e.experiments.agent_ab.reports import render_report
-from e2e.experiments.agent_ab.runners import orchestrator
+from e2e.experiments.agent_ab.runners import orchestrator, subject_protocol
+from e2e.experiments.agent_ab.tools import advisory_contract
 
 _ARMS = [
     models.ARM_SHAM,
@@ -31,6 +32,19 @@ _EFFICACY_METADATA = {
     },
     "human_approval_policy": "always_approve",
 }
+
+
+def test_every_subject_protocol_contains_the_same_no_repeat_understand_phase():
+    for arm in (models.ARM_SHAM, models.ARM_PEBRA):
+        protocol = subject_protocol.protocol_for_arm(arm)
+        assert "reuse equivalent current repository context" in protocol
+        assert "ordinary repository search/read tools" in protocol
+        assert "Do not repeat equivalent exploration" in protocol
+        assert not any(
+            term in protocol.lower()
+            for term in ("pebra", "codegraph", "provider", "oracle", "experiment")
+        )
+    assert advisory_contract.EXPERIMENT_PROTOCOL_VERSION == "no-repeat-understand-v1"
 
 
 def _o(task, arm, seed, harm_label, harm, *, completed=None, over=False):

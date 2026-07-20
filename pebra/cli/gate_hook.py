@@ -17,7 +17,6 @@ import json
 import sys
 from typing import Any
 
-from pebra.adapters import gate_check_adapter as gca
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 from pebra.core.gate_contract import GatePermission
 
@@ -50,6 +49,8 @@ def run_gate_hook(args: Any) -> int:
         }, sort_keys=True))
         return 0
     try:
+        from pebra.adapters import gate_check_adapter as gca  # noqa: PLC0415
+
         raw = sys.stdin.read()
         event = json.loads(raw) if raw.strip() else {}
         if not isinstance(event, dict):

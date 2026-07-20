@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from pebra.cli import main
@@ -74,6 +77,31 @@ def test_explore_help_documents_all_bounds_and_existing_index_reconciliation(cap
     assert "never installs or initializes" in output
 
 
+def test_import_and_parser_construction_do_not_load_codegraph_adapters() -> None:
+    root = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys\n"
+        "from pebra.cli.main import build_parser\n"
+        "build_parser()\n"
+        "loaded = sorted(name for name in sys.modules "
+        "if name.startswith('pebra.adapters.codegraph'))\n"
+        "print('\\n'.join(loaded))\n"
+        "raise SystemExit(bool(loaded))\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout or result.stderr
+
+
 def test_command_reference_inventory_matches_live_parser() -> None:
     reference = (
         Path(__file__).resolve().parents[2] / "docs" / "PEBRA_COMMAND_REFERENCE.md"
@@ -84,3 +112,31 @@ def test_command_reference_inventory_matches_live_parser() -> None:
     assert documented == set(_commands())
     assert f"current tree has {len(_commands())} root CLI commands" in reference
     assert "Planned Commands (Not Yet Shipped)" not in reference
+
+
+def test_command_reference_nox_inventory_matches_live_noxfile() -> None:
+    root = Path(__file__).resolve().parents[2]
+    reference = (root / "docs" / "PEBRA_COMMAND_REFERENCE.md").read_text(encoding="utf-8")
+    section = reference.split("## Nox Sessions", 1)[1].split("## Benchmark Modules", 1)[0]
+    documented = set(re.findall(r"`nox -s ([a-z0-9-]+)(?: [^`]*)?`", section))
+    tree = ast.parse((root / "noxfile.py").read_text(encoding="utf-8"))
+    live: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Attribute) and decorator.attr == "session":
+                live.add(node.name.replace("_", "-"))
+            elif isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
+                if decorator.func.attr != "session":
+                    continue
+                named = next(
+                    (kw.value for kw in decorator.keywords if kw.arg == "name"), None
+                )
+                if isinstance(named, ast.Constant) and isinstance(named.value, str):
+                    live.add(named.value)
+                else:
+                    live.add(node.name.replace("_", "-"))
+
+    assert documented == live
+    assert f"All {len(live)} sessions" in reference

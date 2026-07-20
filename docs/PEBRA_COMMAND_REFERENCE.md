@@ -83,6 +83,17 @@ Core/import-boundary installation without runtime adapter dependencies (PowerShe
 
 After activating the environment, the shorter `python`, `pebra`, `nox`, and `textual` forms are shell-neutral.
 
+## Runtime and Development Modes
+
+| Mode | What runs | Provenance / state |
+| --- | --- | --- |
+| Released | `pip install pebra`; then `pebra ...` | `pebra --version` reports `installed` |
+| Editable source | `pip install -e .`; then `pebra ...` or `python -m pebra ...` | reports `editable` plus checkout revision |
+| Packaged development | `python -m scripts.dev_package` | builds and tests a clean temporary wheel; does not publish |
+| Isolated demo | `python -m scripts.demo_observatory` | temporary synthetic DB, `repo_demo_*`, visible `DEMO`; not a root command |
+| Browser Observatory | `pebra dashboard` | read-only web view of the selected ledger |
+| Terminal Observatory | `pebra tui` | read-only Textual view of the same ledger |
+
 ## Installed Entrypoints
 
 ```text
@@ -506,6 +517,11 @@ Unexpected adapter contract failures return exit 1. Provider queries may perform
 WAL/SHM housekeeping inside the derived cache; source, configuration, `.pebra`, Git content,
 persistent database bytes, graph schema, and logical graph rows must remain unchanged.
 
+`codegraph.json` is operator-owned analysis scope. Its exclusions can remove tracked generated or
+vendored trees from graph results and therefore change the reported graph-scope digest; they do not
+make an index fresh. PEBRA never guesses, scaffolds, or edits exclusions. Results from different scope
+digests are not interchangeable for learning or experiments.
+
 ### `help`
 
 ```text
@@ -517,6 +533,11 @@ pebra help [COMMAND] [--all]
 ## Standard Product Workflows
 
 ### Pre-edit lifecycle
+
+For a significant or unfamiliar edit, first reuse equivalent current repository context already
+provided by the host. If none exists, run `pebra explore` with the task, symbols, or files. Do not
+repeat equivalent exploration. If unavailable, use ordinary repository search/read tools. This
+Understand phase is descriptive only; Assess remains the authorization boundary.
 
 ```console
 pebra assess request.json --json
@@ -607,6 +628,21 @@ Quit
 ```
 
 Inherited bindings and built-ins may change within the allowed `textual>=8.2,<9` range. Product-defined bindings are the stable PEBRA contract.
+
+## Isolated Observatory Demo
+
+This source-only developer utility is intentionally absent from `pebra help`:
+
+```console
+python -m scripts.demo_observatory
+python -m scripts.demo_observatory --dashboard
+python -m scripts.demo_observatory --tui --keep
+```
+
+It creates a dedicated temporary SQLite database containing varied purpose-built rows, binds it to a
+synthetic `repo_demo_*` identity, sets a visible `DEMO` label, and launches the existing surface with
+`--read-only`. It never opens or copies the current checkout ledger. Without `--keep` the temporary
+directory is removed after exit; with `--keep` its retained path is printed.
 
 ## Textual Development Console
 
@@ -861,6 +897,14 @@ python -m venv .venv-package
 .\.venv-package\Scripts\pebra.exe help
 ```
 
+Shell-neutral alternative after creating and activating a clean environment:
+
+```console
+python -m pip install --no-index --find-links dist pebra
+pebra --version
+pebra help
+```
+
 Local package exercise:
 
 ```console
@@ -1028,6 +1072,7 @@ The paid experiment has additional provider credentials and run controls documen
 - `pebra_compare` exists in MCP; there is no `pebra compare` CLI command.
 - Risk acceptance and candidate application exist only as trusted CLI/human workflows, not MCP tools.
 - `gate-hook --capabilities` is internal and hidden from normal CLI help.
+- `python -m scripts.demo_observatory` is a source developer utility, not a root `pebra` command.
 - `pebra help --all` omits the help command's own detailed section; use `pebra help help`.
 - Textual built-in commands and inherited key bindings are dependency behavior, not a stable PEBRA product contract.
 - Benchmarks and agent-assay runners are developer modules/nox sessions, not root `pebra` commands.

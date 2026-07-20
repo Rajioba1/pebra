@@ -12,6 +12,7 @@
     <div class="brand">
       <span class="brand-mark">PEBRA</span>
       <span class="brand-sub">Risk Observatory</span>
+      {% if observatory_label %}<span class="repo-chip">{{ observatory_label }}</span>{% endif %}
     </div>
     <div class="topbar-meta">
       <span class="repo-chip" data-testid="repo-chip" id="repo-chip">no repo</span>

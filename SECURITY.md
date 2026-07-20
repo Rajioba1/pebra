@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-PEBRA is currently in its `0.1.x` development line. Security fixes are made against the latest
+PEBRA is currently in its `0.2.x` development line. Security fixes are made against the latest
 release and the current `main` branch.
 
 | Version | Supported |
 | --- | --- |
-| Latest `0.1.x` / `main` | Yes |
+| Latest `0.2.x` / `main` | Yes |
 | Older versions | No |
 
 ## Reporting A Vulnerability

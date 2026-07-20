@@ -40,7 +40,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pebra.adapters.bounded_process import run_bounded
-from pebra.adapters.codegraph_adapter import CodeGraphAdapter, validate_codegraph_status
 from pebra.core.engine_argv import UnsafeEngineLauncherError, resolve_engine_argv
 from pebra.core.engine_paths import find_engine, managed_install_root
 from pebra.core.graph_version import (
@@ -163,6 +162,8 @@ def _status(repo_root: str) -> object | None:
 
 
 def _healthy(status: object | None) -> bool:
+    from pebra.adapters.codegraph_adapter import validate_codegraph_status  # noqa: PLC0415
+
     if not validate_codegraph_status(status)[0]:
         return False
     assert isinstance(status, dict)
@@ -175,6 +176,8 @@ def _healthy(status: object | None) -> bool:
 
 
 def _diagnosis(status: object | None) -> dict[str, Any]:
+    from pebra.adapters.codegraph_adapter import validate_codegraph_status  # noqa: PLC0415
+
     if status is None:
         return {"initialized": False, "worktree_mismatch": False, "healthy": False,
                 "detail": "no status (engine errored or repo not initialized)"}
@@ -576,6 +579,8 @@ def _prepare_worktree_local_index(
     repo_root: str, expected_config_digest: str | None
 ) -> dict[str, Any] | None:
     """Prepare only after restore and fence the snapshot to that restored config digest."""
+    from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
+
     adapter = CodeGraphAdapter()
     snapshot = adapter.prepare(repo_root)
     if snapshot.status != "available" or snapshot.config_digest != expected_config_digest:

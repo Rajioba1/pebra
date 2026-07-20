@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pebra.adapters import codegraph_adapter
 from pebra.cli import setup_graph as sg
 from pebra.core import engine_argv as ea
 from pebra.core.graph_version import CODEGRAPH_DEFAULT_VERSION
@@ -360,7 +361,7 @@ def test_setup_graph_happy_builds_index(monkeypatch) -> None:
         def prepared_status(self, _repo_root):
             return _FRESH
 
-    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
     assert sg.run_setup_graph(_args()) == 0
     assert any(c[1:] == ["init", "/repo"] for c in eng.calls)  # init ran (cmd[0] = resolved exe)
 
@@ -636,7 +637,7 @@ def test_setup_restores_existing_config_before_prepare_and_snapshot_uses_restore
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
     monkeypatch.setattr(sg, "_restore_graph_config", restore)
-    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
     assert calls[:4] == ["capture", "init", "restore", "prepare"]
@@ -675,7 +676,7 @@ def test_setup_removes_init_created_config_before_preparing_absent_snapshot(
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
     monkeypatch.setattr(sg, "_restore_graph_config", restore)
-    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
     assert calls == ["init", "restore", "prepare"]
@@ -693,7 +694,7 @@ def test_prepare_rejects_snapshot_for_a_different_config_digest(monkeypatch) -> 
         def prepared_status(self, _repo_root):
             pytest.fail("mismatched snapshot status was consumed")
 
-    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
 
     assert sg._prepare_worktree_local_index("/repo", "restored-digest") is None
 
@@ -712,7 +713,7 @@ def test_setup_restore_failure_aborts_before_prepare(tmp_path, monkeypatch) -> N
         sg, "_restore_graph_config", lambda _state: calls.append("restore") or False
     )
     monkeypatch.setattr(
-        sg, "CodeGraphAdapter", lambda: pytest.fail("prepare ran after restore failure")
+        codegraph_adapter, "CodeGraphAdapter", lambda: pytest.fail("prepare ran after restore failure")
     )
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 1
@@ -781,7 +782,7 @@ def test_doctor_fix_restores_config_before_prepare(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(sg, "_status", lambda _root: None)
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
     monkeypatch.setattr(sg, "_restore_graph_config", restore)
-    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
 
     assert sg.run_doctor(
         _args(repo_root=str(tmp_path), as_json=True, fix_graph=True)
@@ -807,7 +808,7 @@ def test_doctor_restore_failure_aborts_before_prepare(tmp_path, monkeypatch) -> 
         sg, "_restore_graph_config", lambda _state: calls.append("restore") or False
     )
     monkeypatch.setattr(
-        sg, "CodeGraphAdapter", lambda: pytest.fail("prepare ran after restore failure")
+        codegraph_adapter, "CodeGraphAdapter", lambda: pytest.fail("prepare ran after restore failure")
     )
 
     assert sg.run_doctor(
@@ -856,7 +857,7 @@ def test_setup_preserves_existing_config_bytes_and_prepares_after_init(
         def prepared_status(self, _repo_root):
             return _FRESH
 
-    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path))) == 0
     assert config.read_bytes() == raw

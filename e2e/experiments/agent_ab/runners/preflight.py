@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import subprocess
 import shutil
 import stat
@@ -42,6 +43,7 @@ _PATCH_DIR = _CORPUS_DIR / "oracle_patches"
 _CORRECT_PATCH_DIR = _CORPUS_DIR / "correct_fix_patches"
 
 _TRUSTED_RESOLUTION = {"location"}
+_GRAPH_SCOPE_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _EXPECTED_SHIPPED_PRIOR_TAG = "zod_single_repo_provisional_v1"
 
 # Independent graph-validity floor: a freshly-built index that parsed no C# must NOT pass the graph
@@ -394,6 +396,12 @@ def run_oracle_preflight(
 # ---- graph-freshness / treatment-integrity preflight ------------------------------------------
 
 
+def _graph_scope_digest(assess_payload: dict[str, Any]) -> str | None:
+    graph_prov = assess_payload.get("graph_provenance") or {}
+    digest = graph_prov.get("graph_scope_digest") if isinstance(graph_prov, dict) else None
+    return digest if isinstance(digest, str) and _GRAPH_SCOPE_DIGEST_RE.fullmatch(digest) else None
+
+
 def _graph_backed_failure(spec: TaskSpec, assess_payload: dict[str, Any]) -> str | None:
     """Pure: return a failure message unless the assess payload proves a FRESH, RESOLVED graph.
 
@@ -406,6 +414,9 @@ def _graph_backed_failure(spec: TaskSpec, assess_payload: dict[str, Any]) -> str
     catches a 'freshly' built index that actually parsed no nodes and could otherwise
     name-fallback-resolve while reporting fresh. Together: target resolves fresh AND the graph
     demonstrably contains real nodes for the task's required language."""
+    graph_prov = assess_payload.get("graph_provenance") or {}
+    if _graph_scope_digest(assess_payload) is None:
+        return f"{spec.task_id}: graph scope digest missing or invalid"
     scores = assess_payload.get("scores") or {}
     sse = scores.get("symbol_scope_evidence") or {}
     fanin = sse.get("symbol_fanin") or {}
@@ -431,7 +442,6 @@ def _graph_backed_failure(spec: TaskSpec, assess_payload: dict[str, Any]) -> str
         )
     required_tier = spec.required_language_tier
     if required_tier:
-        graph_prov = assess_payload.get("graph_provenance") or {}
         cap = graph_prov.get("language_capability") or {}
         measured_tier = cap.get("tier")
         if _LANGUAGE_TIER_RANK.get(str(measured_tier), 0) < _LANGUAGE_TIER_RANK[required_tier]:
@@ -498,7 +508,7 @@ def run_graph_preflight(
     setup_graph_fn: Callable[[Path], None] | None = None,
     node_count_fn: Callable[[Path], dict[str, Any]] | None = None,
     capability_fn: Callable[[Path], dict[str, Any]] | None = None,
-) -> None:
+) -> str | None:
     """Prove each task's target resolves on a fresh CodeGraph and yields graph-backed assess evidence.
 
     ``assess_fn(repo_path, spec)`` returns the treatment assess payload for the task's target; injectable
@@ -510,6 +520,7 @@ def run_graph_preflight(
     node_count_fn = node_count_fn or _live_node_counts
     capability_fn = capability_fn or _live_language_capabilities
     failures: list[str] = []
+    scope_digests: set[str] = set()
     coverage_by_language: dict[str, dict[str, Any]] = {}
 
     def _record_coverage(payload: dict[str, Any] | None) -> None:
@@ -559,11 +570,16 @@ def run_graph_preflight(
             if node_msg:
                 failures.append(node_msg)
                 continue
-            if spec.harm_label != "risky" and spec.required_language_tier:
-                continue
             if payload is None:
                 payload = assess_fn(repo_path, spec)
                 _record_coverage(payload)
+            graph_scope_digest = _graph_scope_digest(payload)
+            if graph_scope_digest is None:
+                failures.append(f"{spec.task_id}: graph scope digest missing or invalid")
+                continue
+            scope_digests.add(graph_scope_digest)
+            if spec.harm_label != "risky" and spec.required_language_tier:
+                continue
             msg = _graph_backed_failure(spec, payload)
             if msg:
                 failures.append(msg)
@@ -579,9 +595,12 @@ def run_graph_preflight(
                                         {"by_language": coverage_by_language})
     except OSError:
         pass
+    if len(scope_digests) > 1:
+        failures.append("mixed graph scope cohorts in graph pre-flight")
     if failures:
         raise PreflightError("graph pre-flight failed (treatment intervention not proven):\n"
                              + "\n".join(failures))
+    return next(iter(scope_digests), None)
 
 
 # ---- revise-safer route calibration -----------------------------------------------------------

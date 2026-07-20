@@ -14,7 +14,10 @@ from e2e.experiments.agent_ab.tools import advisory_check_sham as sham
 from e2e.experiments.agent_ab.tools import advisory_contract
 
 # Vocabulary that would reveal the engine / unblind the treatment arm.
-_FORBIDDEN_VOCAB = ("graph", "fan-in", "fanin", "percentile", "pebra", "codegraph", "blast")
+_FORBIDDEN_VOCAB = (
+    "graph", "fan-in", "fanin", "percentile", "pebra", "codegraph", "blast",
+    "experiment", "oracle", "provider", "treatment arm",
+)
 
 # A representative PEBRA assess result whose raw content is deliberately leaky (summary + provenance).
 _LEAKY_PEBRA_RESULT = {
@@ -68,6 +71,24 @@ def test_host_receipt_is_not_serialized_into_agent_facing_output():
     assert "assessment_id" not in out
     assert "assessment_id" not in json.loads(json.dumps(out))
     assert out.assessment_id == "asm_7"
+
+
+def test_graph_scope_is_host_only_and_never_serialized_to_subject():
+    raw = {
+        **_LEAKY_PEBRA_RESULT,
+        "graph_provenance": {
+            **_LEAKY_PEBRA_RESULT["graph_provenance"],
+            "graph_scope_digest": "a" * 64,
+            "provider_version": "secret-provider-version",
+        },
+    }
+
+    out = real.AdvisoryOutput(real._shape_output(raw), assessment_id="asm_7", raw_payload=raw)
+
+    assert out.graph_scope_digest == "a" * 64
+    serialized = json.dumps(out)
+    assert "graph_scope" not in serialized
+    assert "secret-provider-version" not in serialized
 
 
 def test_real_output_is_vocab_clean_for_every_decision():

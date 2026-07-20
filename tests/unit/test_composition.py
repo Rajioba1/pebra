@@ -7,6 +7,7 @@ adapters work in a plain temp dir, exactly as the worked-example golden runs in 
 from __future__ import annotations
 
 from pebra import composition
+from pebra.adapters import codegraph_adapter
 from pebra.core import candidate_parser
 from pebra.core.graph_snapshot import GraphSnapshot
 
@@ -141,7 +142,7 @@ def test_build_assess_ports_prepares_once_then_reads_assessed_commit_independent
     monkeypatch, tmp_path
 ) -> None:
     graph = _PreparedGraph(_snapshot("b"))
-    monkeypatch.setattr(composition, "CodeGraphAdapter", lambda: graph)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", lambda: graph)
     monkeypatch.setattr(composition.git_adapter, "head_commit", lambda _root: "b")
     req = candidate_parser.parse({"task": "t", "candidate_actions": [{"id": "a1"}]})
     ctx = composition.resolve_repo_and_db(str(tmp_path))
@@ -163,7 +164,7 @@ def test_build_assess_ports_rejects_snapshot_when_independent_assessed_commit_di
     monkeypatch, tmp_path
 ) -> None:
     graph = _PreparedGraph(_snapshot("b"))
-    monkeypatch.setattr(composition, "CodeGraphAdapter", lambda: graph)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", lambda: graph)
     monkeypatch.setattr(composition.git_adapter, "head_commit", lambda _root: "c")
     req = candidate_parser.parse({"task": "t", "candidate_actions": [{"id": "a1"}]})
     ctx = composition.resolve_repo_and_db(str(tmp_path))
@@ -177,7 +178,7 @@ def test_build_assess_ports_rejects_snapshot_when_independent_assessed_commit_di
 
 def test_build_verify_ports_prepares_once_when_repo_root_is_explicit(monkeypatch) -> None:
     graph = _PreparedGraph(_snapshot("b"))
-    monkeypatch.setattr(composition, "CodeGraphAdapter", lambda: graph)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", lambda: graph)
 
     composition.build_verify_ports("/repo")
 
@@ -192,7 +193,7 @@ def test_graph_stats_capabilities_and_dependents_each_prepare_one_adapter(monkey
         graphs.append(graph)
         return graph
 
-    monkeypatch.setattr(composition, "CodeGraphAdapter", factory)
+    monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", factory)
 
     composition.graph_node_counts("/repo")
     composition.probe_language_capabilities("/repo")

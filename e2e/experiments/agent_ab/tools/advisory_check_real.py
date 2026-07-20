@@ -12,6 +12,7 @@ enforces the shape/vocab blinding invariant — IS unit-tested (tests/test_advis
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ _THRESHOLDS = {
     "codegraph_semantic_diff_enabled": 1.0,
 }
 _COLD_CONFIDENCE_P_SUCCESS = 0.50
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class AdvisoryOutput(dict[str, Any]):
@@ -46,6 +48,13 @@ class AdvisoryOutput(dict[str, Any]):
         super().__init__(payload)
         self.assessment_id = assessment_id
         self.raw_payload = raw_payload or {}
+        graph_provenance = self.raw_payload.get("graph_provenance")
+        digest = (
+            graph_provenance.get("graph_scope_digest")
+            if isinstance(graph_provenance, dict)
+            else None
+        )
+        self.graph_scope_digest = digest if isinstance(digest, str) and _SHA256_RE.fullmatch(digest) else None
 
 
 def _build_request(

@@ -21,6 +21,7 @@ import hashlib
 from typing import Any
 
 TOOL_NAME = "advisory_check"
+EXPERIMENT_PROTOCOL_VERSION = "no-repeat-understand-v1"
 
 TOOL_DESCRIPTION = (
     "Get a pre-edit advisory for a proposed change before you make significant edits. "

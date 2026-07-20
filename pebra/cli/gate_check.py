@@ -14,7 +14,6 @@ import json
 import sys
 from typing import Any
 
-from pebra.adapters import gate_check_adapter as gca
 from pebra.core.gate_contract import GatePermission, GateTier
 
 
@@ -34,6 +33,8 @@ def register(subparsers: Any) -> None:
 
 
 def run_gate_check(args: Any) -> int:
+    from pebra.adapters import gate_check_adapter as gca  # noqa: PLC0415
+
     raw = sys.stdin.read()
     try:
         event = json.loads(raw) if raw.strip() else {}
