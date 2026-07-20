@@ -970,7 +970,7 @@ Update all existing docs to:
 - link `docs/PEBRA_COMMAND_REFERENCE.md` as the exhaustive command source;
 - document `pebra explore` and the Understand phase;
 - document that explicit graph-backed commands may reconcile only an existing same-worktree `.codegraph/` cache, while TUI/dashboard timers never do;
-- document custom `codegraph.json` exclusions as operator-owned scope controls, not freshness controls, and explain the graph-scope digest shown in provenance;
+- document effective `codegraph.json` `extensions` and `includeIgnored` as operator-owned scope controls; state that `exclude` is reported but ignored by pinned CodeGraph 1.1.1, that none of these settings is a freshness control, and explain the graph-scope digest shown in provenance;
 - distinguish released, editable, packaged-dev, demo, dashboard, and TUI modes;
 - replace hard-coded `pebra-0.1.1` wheel syntax with a version-independent wheel lookup;
 - update `SECURITY.md` from `0.1.x` to the current supported development line;
