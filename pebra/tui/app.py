@@ -9,14 +9,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from textual.app import App, SystemCommand
 from textual.screen import Screen
 
 from pebra.observatory_context import ObservatoryContext
 from pebra.provenance import provenance_line
-from pebra.ports.repository_explorer_port import RepositoryExplorer
+from pebra.ports.repository_explorer_port import RepositoryExplorerFactory
 from pebra.tui.data import ObservatoryData
+from pebra.tui.exploration import RepositoryExplorationCoordinator
 from pebra.tui.screens.observatory import ObservatoryScreen
 from pebra.tui.theme import css_variables
 
@@ -40,12 +42,15 @@ class ObservatoryApp(App[None]):
     ]
 
     def __init__(
-        self, context: ObservatoryContext, *, explorer: RepositoryExplorer | None = None
+        self,
+        context: ObservatoryContext,
+        *,
+        explorer_factory: RepositoryExplorerFactory | None = None,
     ) -> None:
         super().__init__()
         # NOTE: not `self._context` — that name is a Textual App internal (the app-context manager).
         self.observatory_context = context
-        self.repository_explorer = explorer
+        self.exploration = RepositoryExplorationCoordinator(explorer_factory)
         # Source provenance in the header subtitle, so you can tell the checkout from the released wheel.
         # Computed once here (may shell out to git for an editable install) — never on the 5s refresh.
         self.sub_title = provenance_line(prefix=False)
@@ -54,8 +59,18 @@ class ObservatoryApp(App[None]):
         return ObservatoryScreen(
             ObservatoryData(self.observatory_context),
             repo_root=self.observatory_context.repo_root,
-            explorer=self.repository_explorer,
+            exploration=self.exploration,
         )
+
+    def exit(
+        self,
+        result: None = None,
+        return_code: int = 0,
+        message: Any | None = None,
+    ) -> None:
+        """Cancel an active provider session before Textual begins app shutdown."""
+        self.exploration.cancel(wait=True)
+        super().exit(result=result, return_code=return_code, message=message)
 
     def get_css_variables(self) -> dict[str, str]:
         variables = super().get_css_variables()
@@ -117,7 +132,9 @@ class ObservatoryApp(App[None]):
 
 
 def run_observatory(
-    context: ObservatoryContext, *, explorer: RepositoryExplorer | None = None
+    context: ObservatoryContext,
+    *,
+    explorer_factory: RepositoryExplorerFactory | None = None,
 ) -> None:
     """Run the Observatory with an optional injected descriptive explorer."""
-    ObservatoryApp(context, explorer=explorer).run()
+    ObservatoryApp(context, explorer_factory=explorer_factory).run()

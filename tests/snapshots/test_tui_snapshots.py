@@ -161,7 +161,9 @@ def _app(db: str, *, exploration: bool = False) -> ObservatoryApp:
         repo_root="/repo" if exploration else None,
         read_only=True,
     )
-    return ObservatoryApp(context, explorer=object() if exploration else None)
+    return ObservatoryApp(
+        context, explorer_factory=(lambda: object()) if exploration else None
+    )
 
 
 def test_snapshot_ledger_width_120(snap_compare, tmp_path) -> None:

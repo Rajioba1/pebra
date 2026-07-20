@@ -21,7 +21,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from textual.widgets.data_table import RowDoesNotExist
 
 from pebra.app.observatory_query_controller import AssessmentNotFoundError
-from pebra.ports.repository_explorer_port import RepositoryExplorer
+from pebra.tui.exploration import RepositoryExplorationCoordinator
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot, ObservatoryStoreUnavailable
 from pebra.tui.ledger_groups import LedgerGroup, group_contiguous_assessments
 from pebra.tui.screens.detail import AssessmentDetailScreen
@@ -49,12 +49,12 @@ class ObservatoryScreen(Screen):
         data: ObservatoryData,
         *,
         repo_root: str | None = None,
-        explorer: RepositoryExplorer | None = None,
+        exploration: RepositoryExplorationCoordinator | None = None,
     ) -> None:
         super().__init__()
         self._data = data
         self._repo_root = repo_root
-        self._explorer = explorer
+        self._exploration = exploration
         self._rows: list[dict[str, Any]] = []
         self._overview: dict[str, Any] = {}
         self._ledger_columns: tuple[str, ...] = ()
@@ -408,7 +408,7 @@ class ObservatoryScreen(Screen):
                 detail,
                 assessment_ids=assessment_ids,
                 repo_root=self._repo_root,
-                explorer=self._explorer,
+                exploration=self._exploration,
             )
         )
 

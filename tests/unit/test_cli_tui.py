@@ -127,13 +127,18 @@ def test_default_launch_injects_composed_explorer_for_a_resolved_repository(monk
     monkeypatch.setattr(
         tui_app,
         "run_observatory",
-        lambda context, *, explorer=None: captured.update(context=context, explorer=explorer),
+        lambda context, *, explorer_factory=None: captured.update(
+            context=context, explorer_factory=explorer_factory
+        ),
     )
     context = ObservatoryContext("db", "repo", "/repo", False)
 
     cli_tui._launch(context)
 
-    assert captured == {"context": context, "explorer": explorer}
+    assert captured == {
+        "context": context,
+        "explorer_factory": composition.build_repository_explorer,
+    }
 
 
 def test_default_launch_without_repository_context_does_not_construct_explorer(
@@ -152,13 +157,15 @@ def test_default_launch_without_repository_context_does_not_construct_explorer(
     monkeypatch.setattr(
         tui_app,
         "run_observatory",
-        lambda context, *, explorer=None: captured.update(context=context, explorer=explorer),
+        lambda context, *, explorer_factory=None: captured.update(
+            context=context, explorer_factory=explorer_factory
+        ),
     )
     context = ObservatoryContext("db", "repo", None, True)
 
     cli_tui._launch(context)
 
-    assert captured == {"context": context, "explorer": None}
+    assert captured == {"context": context, "explorer_factory": None}
 
 
 def test_version_flag_prints_provenance_without_a_subcommand() -> None:

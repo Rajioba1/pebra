@@ -26,6 +26,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -240,7 +241,9 @@ def _failed_snapshot(
     )
 
 
-def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | None]:
+def _prepare_default(
+    repo_root: str, *, cancel_event: threading.Event | None = None
+) -> tuple[GraphSnapshot, dict[str, Any] | None]:
     """Reconcile one existing same-worktree index behind stable HEAD/config fences."""
     exe = find_engine()
     initial_config = _config_digest(repo_root)
@@ -262,7 +265,7 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
                 "unavailable", config_before, "repository HEAD unavailable"
             ), None
         try:
-            initial = _run_status(repo_root, exe)
+            initial = _run_status(repo_root, exe, cancel_event=cancel_event)
         except OSError:
             initial = None
         if initial is None:
@@ -294,13 +297,14 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
             timeout=120,
             stdout_limit=_PROVIDER_DIAGNOSTIC_BYTES,
             stderr_limit=_PROVIDER_DIAGNOSTIC_BYTES,
+            cancel_event=cancel_event,
         )
         if sync.error is not None or sync.returncode != 0:
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph sync failed", sync_performed=True
             ), None
         try:
-            post = _run_status(repo_root, exe)
+            post = _run_status(repo_root, exe, cancel_event=cancel_event)
         except OSError:
             post = None
         if post is None:
@@ -368,7 +372,9 @@ def _default_status(repo_root: str) -> dict[str, Any] | None:
     return _prepare_default(repo_root)[1]
 
 
-def _run_status(repo_root: str, exe: str) -> dict[str, Any] | None:
+def _run_status(
+    repo_root: str, exe: str, *, cancel_event: threading.Event | None = None
+) -> dict[str, Any] | None:
     """One ``codegraph status <repo> --json`` probe -> parsed dict, or None on failure/bad JSON.
     ``exe`` is the resolved launcher path (from find_engine) so the Windows .cmd shim is invoked
     correctly — callers must pre-resolve (no bare-name default, which would FileNotFound on Windows)."""
@@ -377,6 +383,7 @@ def _run_status(repo_root: str, exe: str) -> dict[str, Any] | None:
         timeout=30,
         stdout_limit=_STATUS_OUTPUT_BYTES,
         stderr_limit=_PROVIDER_DIAGNOSTIC_BYTES,
+        cancel_event=cancel_event,
     )
     if (
         proc.error is not None
@@ -423,8 +430,14 @@ class CodeGraphAdapter:
     to the real ``codegraph sync`` + ``status --json`` subprocess path.
     """
 
-    def __init__(self, status_fn: Callable[[str], dict[str, Any] | None] | None = None) -> None:
+    def __init__(
+        self,
+        status_fn: Callable[[str], dict[str, Any] | None] | None = None,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         self._status_fn = status_fn
+        self._cancel_event = cancel_event
         self._dist_cache: dict[tuple[str, float], list[int]] = {}
         self._impact_dist_cache: dict[tuple[str, float], list[int]] = {}
         self._transitive_impact_dist_cache: dict[tuple[str, float], list[int]] = {}
@@ -441,7 +454,9 @@ class CodeGraphAdapter:
         if repo_root in self._snapshot_cache:
             return self._snapshot_cache[repo_root]
         if self._status_fn is None:
-            snapshot, status = _prepare_default(repo_root)
+            snapshot, status = _prepare_default(
+                repo_root, cancel_event=self._cancel_event
+            )
         else:
             status = self._status_fn(repo_root)
             config_digest = _config_digest(repo_root)
@@ -514,7 +529,11 @@ class CodeGraphAdapter:
         try:
             if self._status_fn is None:
                 exe = find_engine()
-                status = _run_status(repo_root, exe) if exe is not None else None
+                status = (
+                    _run_status(repo_root, exe, cancel_event=self._cancel_event)
+                    if exe is not None
+                    else None
+                )
             else:
                 status = self._status_fn(repo_root)
         except OSError:

@@ -14,7 +14,7 @@ from ctypes import wintypes
 from typing import BinaryIO, Literal
 
 
-ProcessError = Literal["launch_failed", "timeout"]
+ProcessError = Literal["cancelled", "launch_failed", "timeout"]
 _TERMINATION_GRACE_SECONDS = 0.5
 _CREATE_SUSPENDED = 0x00000004
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
@@ -192,10 +192,13 @@ def run_bounded(
     stderr_limit: int,
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> BoundedProcessResult:
     """Drain both pipes under one deadline while retaining explicit byte limits."""
     stdout_limit = max(0, stdout_limit)
     stderr_limit = max(0, stderr_limit)
+    if cancel_event is not None and cancel_event.is_set():
+        return BoundedProcessResult(None, "", "", False, False, "cancelled")
     deadline = time.monotonic() + max(0.0, timeout)
     try:
         windows_job = _windows_job()
@@ -252,14 +255,30 @@ def run_bounded(
     for thread in threads:
         thread.start()
     error: ProcessError | None = None
-    try:
-        returncode = process.wait(timeout=_remaining(deadline))
-    except subprocess.TimeoutExpired:
-        error = "timeout"
-        returncode = None
-    if error is None and not _join_until(threads, deadline):
-        error = "timeout"
-    if error == "timeout":
+    returncode = process.poll()
+    while returncode is None:
+        if cancel_event is not None and cancel_event.is_set():
+            error = "cancelled"
+            break
+        remaining = _remaining(deadline)
+        if remaining <= 0:
+            error = "timeout"
+            break
+        try:
+            returncode = process.wait(timeout=min(0.05, remaining))
+        except subprocess.TimeoutExpired:
+            returncode = None
+    while error is None and any(thread.is_alive() for thread in threads):
+        if cancel_event is not None and cancel_event.is_set():
+            error = "cancelled"
+            break
+        remaining = _remaining(deadline)
+        if remaining <= 0:
+            error = "timeout"
+            break
+        for thread in threads:
+            thread.join(min(0.05, remaining))
+    if error is not None:
         grace_deadline = time.monotonic() + _TERMINATION_GRACE_SECONDS
         returncode = _terminate_tree(process, windows_job, grace_deadline)
         windows_job = None

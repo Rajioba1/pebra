@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -36,12 +37,16 @@ class CodeGraphExplorer:
         runner: Callable[..., Any] | None = None,
         engine_fn: Callable[[], str | None] | None = None,
     ) -> None:
-        self._graph = graph_adapter or CodeGraphAdapter()
+        self._cancel_event = threading.Event()
+        self._graph = graph_adapter or CodeGraphAdapter(cancel_event=self._cancel_event)
         self._runner = runner
         self._engine_fn = engine_fn or find_engine
 
     def prepare(self, repo_root: str) -> GraphSnapshot:
         return self._graph.prepare(repo_root)
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
 
     @staticmethod
     def _files(repo_root: str, files: tuple[str, ...]) -> tuple[str, ...]:
@@ -69,7 +74,10 @@ class CodeGraphExplorer:
                 timeout=timeout,
                 stdout_limit=stdout_limit,
                 stderr_limit=_DIAGNOSTIC_BYTES,
+                cancel_event=self._cancel_event,
             )
+            if bounded.error == "cancelled":
+                return None, "codegraph query cancelled", bounded.stdout_truncated
             if bounded.error == "timeout":
                 return None, "codegraph query timed out", bounded.stdout_truncated
             if bounded.error == "launch_failed":

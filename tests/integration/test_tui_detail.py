@@ -21,6 +21,7 @@ from pebra.core.graph_snapshot import GraphSnapshot  # noqa: E402
 from pebra.observatory_context import ObservatoryContext  # noqa: E402
 from pebra.tui.app import ObservatoryApp  # noqa: E402
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot  # noqa: E402
+from pebra.tui.exploration import RepositoryExplorationCoordinator  # noqa: E402
 from pebra.tui.screens.detail import (  # noqa: E402
     GATES_UNAVAILABLE_NOTE,
     AssessmentDetailScreen,
@@ -66,6 +67,7 @@ class _RecordingExplorer:
         self.started = Event()
         self.release = Event()
         self.completed = Event()
+        self.cancelled = Event()
 
     def prepare(self, repo_root: str) -> GraphSnapshot:
         self.prepare_calls.append(repo_root)
@@ -81,6 +83,10 @@ class _RecordingExplorer:
         result = _exploration_result()
         self.completed.set()
         return result
+
+    def cancel(self) -> None:
+        self.cancelled.set()
+        self.release.set()
 
 
 async def _pause_until(predicate, pilot, *, attempts: int = 100) -> None:
@@ -367,7 +373,11 @@ def test_grouped_row_opens_latest_assessment_and_shows_all_ids() -> None:
 def test_detail_never_explores_on_mount() -> None:
     async def scenario() -> None:
         explorer = _RecordingExplorer()
-        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        screen = AssessmentDetailScreen(
+            _detail(),
+            repo_root="/repo",
+            exploration=RepositoryExplorationCoordinator(lambda: explorer),
+        )
         async with _Harness(screen).run_test() as pilot:
             await pilot.pause()
             assert explorer.prepare_calls == []
@@ -379,7 +389,11 @@ def test_detail_never_explores_on_mount() -> None:
 def test_detail_without_repository_context_reports_exploration_unavailable() -> None:
     async def scenario() -> None:
         explorer = _RecordingExplorer()
-        screen = AssessmentDetailScreen(_detail(), repo_root=None, explorer=explorer)
+        screen = AssessmentDetailScreen(
+            _detail(),
+            repo_root=None,
+            exploration=RepositoryExplorationCoordinator(lambda: explorer),
+        )
         async with _Harness(screen).run_test() as pilot:
             await pilot.pause()
             status = str(screen.query_one("#exploration-status").render())
@@ -398,7 +412,7 @@ def test_detail_without_repository_context_reports_exploration_unavailable() -> 
 
 def test_detail_without_explorer_reports_exploration_unavailable() -> None:
     async def scenario() -> None:
-        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=None)
+        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", exploration=None)
         async with _Harness(screen).run_test() as pilot:
             await pilot.pause()
             status = str(screen.query_one("#exploration-status").render())
@@ -413,7 +427,11 @@ def test_detail_without_explorer_reports_exploration_unavailable() -> None:
 def test_five_second_refresh_never_calls_explorer() -> None:
     async def scenario() -> None:
         explorer = _RecordingExplorer()
-        screen = ObservatoryScreen(_FakeData(), repo_root="/repo", explorer=explorer)
+        screen = ObservatoryScreen(
+            _FakeData(),
+            repo_root="/repo",
+            exploration=RepositoryExplorationCoordinator(lambda: explorer),
+        )
         async with _Harness(screen).run_test() as pilot:
             screen._tick()
             await _pause_until(lambda: not screen._refreshing, pilot)
@@ -426,7 +444,11 @@ def test_five_second_refresh_never_calls_explorer() -> None:
 def test_explicit_explore_is_single_flight() -> None:
     async def scenario() -> None:
         explorer = _RecordingExplorer(block=True)
-        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        screen = AssessmentDetailScreen(
+            _detail(),
+            repo_root="/repo",
+            exploration=RepositoryExplorationCoordinator(lambda: explorer),
+        )
         async with _Harness(screen).run_test() as pilot:
             await pilot.press("x", "x")
             await _pause_until(explorer.started.is_set, pilot)
@@ -441,7 +463,11 @@ def test_explicit_explore_is_single_flight() -> None:
 def test_explicit_explore_prepares_once_then_queries_snapshot() -> None:
     async def scenario() -> None:
         explorer = _RecordingExplorer()
-        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        screen = AssessmentDetailScreen(
+            _detail(),
+            repo_root="/repo",
+            exploration=RepositoryExplorationCoordinator(lambda: explorer),
+        )
         async with _Harness(screen).run_test() as pilot:
             await pilot.press("x")
             await _pause_until(lambda: not screen.exploring, pilot)
@@ -478,7 +504,11 @@ def test_late_explore_result_cannot_touch_popped_screen() -> None:
 
     async def scenario() -> None:
         explorer = _RecordingExplorer(block=True)
-        screen = _DeliveryObservedDetail(_detail(), repo_root="/repo", explorer=explorer)
+        screen = _DeliveryObservedDetail(
+            _detail(),
+            repo_root="/repo",
+            exploration=RepositoryExplorationCoordinator(lambda: explorer),
+        )
         app = _Harness(Screen())
         async with app.run_test() as pilot:
             await app.push_screen(screen)
@@ -501,7 +531,11 @@ def test_late_explore_result_cannot_touch_popped_screen() -> None:
 def test_explore_failure_preserves_assessment_detail() -> None:
     async def scenario() -> None:
         explorer = _RecordingExplorer()
-        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        screen = AssessmentDetailScreen(
+            _detail(),
+            repo_root="/repo",
+            exploration=RepositoryExplorationCoordinator(lambda: explorer),
+        )
         async with _Harness(screen).run_test() as pilot:
             await pilot.press("x")
             await _pause_until(lambda: not screen.exploring, pilot)
@@ -525,7 +559,7 @@ def test_exploration_result_never_enters_store_or_scores(tmp_path) -> None:
         context = ObservatoryContext(db, "r", "/repo", False)
         before = deepcopy(ObservatoryData(context).detail("asm_1"))
         explorer = _RecordingExplorer()
-        app = ObservatoryApp(context, explorer=explorer)
+        app = ObservatoryApp(context, explorer_factory=lambda: explorer)
         async with app.run_test() as pilot:
             app.query_one("#ledger", DataTable).focus()
             await pilot.press("enter")
@@ -540,3 +574,141 @@ def test_exploration_result_never_enters_store_or_scores(tmp_path) -> None:
         assert "AuthService" not in repr(after["content"]["scores"])
 
     asyncio.run(scenario())
+
+
+def test_each_accepted_exploration_uses_a_fresh_provider_session() -> None:
+    async def scenario() -> None:
+        first = _RecordingExplorer(fail=True)
+        second = _RecordingExplorer()
+        sessions = [first, second]
+        coordinator = RepositoryExplorationCoordinator(lambda: sessions.pop(0))
+        screen = AssessmentDetailScreen(
+            _detail(), repo_root="/repo", exploration=coordinator
+        )
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.press("x")
+            await _pause_until(lambda: not coordinator.busy, pilot)
+            failed = str(screen.query_one("#exploration-status").render()).lower()
+            assert "failed" in failed
+            assert "assessment detail" in failed
+            assert "last good" not in failed
+
+            await pilot.press("x")
+            await _pause_until(lambda: not coordinator.busy, pilot)
+
+            assert first.prepare_calls == ["/repo"]
+            assert second.prepare_calls == ["/repo"]
+            assert len(second.explore_calls) == 1
+            assert "AuthService" in str(screen.query_one("#exploration-result").render())
+
+    asyncio.run(scenario())
+
+
+def test_mismatched_result_snapshot_is_rejected_before_render() -> None:
+    class _MismatchedExplorer(_RecordingExplorer):
+        def explore(
+            self,
+            repo_root,
+            query,
+            *,
+            snapshot,
+            files=(),
+            max_files=8,
+            max_bytes=24_000,
+        ):
+            result = _exploration_result()
+            return ExplorationResult(
+                status=result.status,
+                snapshot=GraphSnapshot(
+                    status="available",
+                    provider="other-graph",
+                    provider_version="9.9.9",
+                    index_version="99",
+                    repo_head="different",
+                    config_digest="different",
+                    graph_scope_digest="different",
+                    sync_performed=False,
+                    fallback_reason=None,
+                ),
+                context="must not render",
+                dependent_files=result.dependent_files,
+                affected_tests=result.affected_tests,
+                warnings=result.warnings,
+                fallback_reason=None,
+                truncated=False,
+            )
+
+    async def scenario() -> None:
+        explorer = _MismatchedExplorer()
+        coordinator = RepositoryExplorationCoordinator(lambda: explorer)
+        screen = AssessmentDetailScreen(
+            _detail(), repo_root="/repo", exploration=coordinator
+        )
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.press("x")
+            await _pause_until(lambda: not coordinator.busy, pilot)
+
+            assert "failed" in str(
+                screen.query_one("#exploration-status").render()
+            ).lower()
+            assert screen.query_one("#exploration-result").render().plain == ""
+
+    asyncio.run(scenario())
+
+
+def test_single_flight_is_shared_across_detail_screens() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer(block=True)
+        coordinator = RepositoryExplorationCoordinator(lambda: explorer)
+        first = AssessmentDetailScreen(_detail(), repo_root="/repo", exploration=coordinator)
+        app = _Harness(Screen())
+        async with app.run_test() as pilot:
+            await app.push_screen(first)
+            await pilot.press("x")
+            await _pause_until(explorer.started.is_set, pilot)
+            await app.pop_screen()
+            second = AssessmentDetailScreen(
+                _detail(), repo_root="/repo", exploration=coordinator
+            )
+            await app.push_screen(second)
+
+            await pilot.press("x")
+            await pilot.pause()
+
+            assert coordinator.busy is True
+            assert explorer.prepare_calls == ["/repo"]
+            assert "already in progress" in str(
+                second.query_one("#exploration-status").render()
+            ).lower()
+            explorer.release.set()
+            await _pause_until(lambda: not coordinator.busy, pilot)
+            assert len(explorer.explore_calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_quit_cancels_active_exploration_session_promptly() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer(block=True)
+        context = ObservatoryContext("unused.db", "r", "/repo", True)
+
+        class _QuitHarness(ObservatoryApp):
+            def __init__(self) -> None:
+                super().__init__(context, explorer_factory=lambda: explorer)
+                self._detail_screen = AssessmentDetailScreen(
+                    _detail(), repo_root="/repo", exploration=self.exploration
+                )
+
+            def get_default_screen(self) -> Screen:
+                return self._detail_screen
+
+        app = _QuitHarness()
+        async with app.run_test() as pilot:
+            await pilot.press("x")
+            await _pause_until(explorer.started.is_set, pilot)
+            app.exit()
+
+        assert explorer.cancelled.is_set()
+        assert app.exploration.busy is False
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=2))

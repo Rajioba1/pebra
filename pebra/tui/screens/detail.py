@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.screen import Screen
@@ -18,7 +18,7 @@ from textual.widgets import Footer, Header, Pretty, Static
 
 from pebra.core.assessment_history import project_assessment_identity
 from pebra.core.exploration import ExplorationResult
-from pebra.ports.repository_explorer_port import RepositoryExplorer
+from pebra.tui.exploration import RepositoryExplorationCoordinator
 from pebra.tui.widgets.ledger_table import short_commit
 
 # gates_fired / high_risk_triggers are composed only for the live MCP response; db._canonical never
@@ -91,25 +91,28 @@ class AssessmentDetailScreen(Screen):
         *,
         assessment_ids: tuple[str, ...] = (),
         repo_root: str | None = None,
-        explorer: RepositoryExplorer | None = None,
+        exploration: RepositoryExplorationCoordinator | None = None,
     ) -> None:
         super().__init__()
         self._detail = detail
         self.assessment_ids = assessment_ids
         self._repo_root = repo_root
-        self._explorer = explorer
-        self._exploration_available = repo_root is not None and explorer is not None
+        self._exploration = exploration
+        self._exploration_available = (
+            repo_root is not None and exploration is not None and exploration.available
+        )
         identity = project_assessment_identity(detail.get("content") or {})
         self._explore_query = identity.task or ""
         self._explore_files = tuple(identity.target_files)
-        self._exploring = False
 
     @property
     def exploring(self) -> bool:
-        return self._exploring
+        return self._exploration is not None and self._exploration.busy
 
     def compose(self) -> ComposeResult:
-        if self._exploration_available:
+        if self._exploration_available and self.exploring:
+            exploration_status = "Another repository exploration is already in progress."
+        elif self._exploration_available:
             exploration_status = (
                 "Press x to prepare the repository graph and explore this assessment's impact."
             )
@@ -140,11 +143,6 @@ class AssessmentDetailScreen(Screen):
     def action_back(self) -> None:
         self.dismiss()
 
-    def on_unmount(self) -> None:
-        # Textual cancels screen-owned worker delivery on pop; release only the UI-thread guard.
-        # A blocking provider thread may still finish, but it has no mounted children to update.
-        self._exploring = False
-
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "explore":
             return self._exploration_available
@@ -152,57 +150,44 @@ class AssessmentDetailScreen(Screen):
 
     def action_explore(self) -> bool:
         """Start one explicit prepare-then-query operation; repeated busy presses are ignored."""
-        if self._exploring or not self._exploration_available:
+        if not self._exploration_available:
             return False
-        self._exploring = True
+        repo_root = self._repo_root
+        exploration = self._exploration
+        if repo_root is None or exploration is None:
+            return False
+        app = self.app
+        started = exploration.start(
+            app,
+            repo_root=repo_root,
+            query=self._explore_query,
+            files=self._explore_files,
+            on_result=self._finish_explore_result,
+            on_error=self._finish_explore_error,
+        )
+        if not started:
+            self.query_one("#exploration-status", Static).update(
+                "Another repository exploration is already in progress."
+            )
+            return False
         self.query_one("#exploration-status", Static).update(
             "Preparing repository graph, then querying its accepted snapshot…"
         )
-        # App ownership is deliberate: Textual cancels screen-owned workers on pop while their backing
-        # threads continue. Keeping this worker app-owned lets its finish callback be delivered, where
-        # _can_update_children() safely rejects a late update to the removed detail screen.
-        app = self.app
-        app.run_worker(
-            lambda: self._explore_worker(app),
-            name="assessment-detail-explore",
-            group=f"assessment-detail-explore-{id(self)}",
-            exit_on_error=False,
-            thread=True,
-        )
         return True
-
-    def _explore_worker(self, app: App[Any]) -> None:
-        repo_root = self._repo_root
-        explorer = self._explorer
-        if repo_root is None or explorer is None:
-            app.call_from_thread(self._finish_explore_error)
-            return
-        try:
-            snapshot = explorer.prepare(repo_root)
-            result = explorer.explore(
-                repo_root,
-                self._explore_query,
-                snapshot=snapshot,
-                files=self._explore_files,
-            )
-        except Exception:  # provider/runtime boundary: fail visibly without damaging detail
-            app.call_from_thread(self._finish_explore_error)
-            return
-        app.call_from_thread(self._finish_explore_result, result)
 
     def _can_update_children(self) -> bool:
         return self.is_mounted and not self._pruning
 
     def _finish_explore_error(self) -> None:
-        self._exploring = False
         if not self._can_update_children():
             return
+        result = self.query_one("#exploration-result", Static)
+        preserved = "last good impact" if result.render().plain else "assessment detail"
         self.query_one("#exploration-status", Static).update(
-            "Exploration failed — existing assessment detail and last good impact are preserved."
+            f"Exploration failed — existing {preserved} is preserved."
         )
 
     def _finish_explore_result(self, result: ExplorationResult) -> None:
-        self._exploring = False
         if not self._can_update_children():
             return
         status = self.query_one("#exploration-status", Static)

@@ -69,6 +69,49 @@ def test_run_bounded_kills_timed_out_process_with_stable_category() -> None:
     assert result.stderr == ""
 
 
+def test_run_bounded_cancellation_kills_process_tree_promptly(tmp_path) -> None:
+    started = tmp_path / "started.txt"
+    survived = tmp_path / "survived.txt"
+    cancel = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def invoke() -> None:
+        began = time.monotonic()
+        outcome["result"] = run_bounded(
+            [
+                sys.executable,
+                "-c",
+                "import sys,time; from pathlib import Path; "
+                "Path(sys.argv[1]).write_text('started'); "
+                "time.sleep(2); Path(sys.argv[2]).write_text('survived'); time.sleep(30)",
+                str(started),
+                str(survived),
+            ],
+            timeout=60,
+            stdout_limit=100,
+            stderr_limit=100,
+            cancel_event=cancel,
+        )
+        outcome["elapsed"] = time.monotonic() - began
+
+    worker = threading.Thread(target=invoke, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + 3
+    while not started.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert started.exists() is True
+
+    cancel.set()
+    worker.join(2)
+
+    assert worker.is_alive() is False
+    result = outcome["result"]
+    assert outcome["elapsed"] < 2
+    assert result.error == "cancelled"
+    time.sleep(0.1)
+    assert survived.exists() is False
+
+
 def test_run_bounded_launch_error_never_exposes_raw_path() -> None:
     result = run_bounded(
         [r"Z:\secret\does-not-exist.exe", "private-query"],

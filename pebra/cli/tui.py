@@ -39,8 +39,10 @@ def _launch(context: ObservatoryContext) -> None:
     from pebra import composition
     from pebra.tui.app import run_observatory
 
-    explorer = composition.build_repository_explorer() if context.repo_root is not None else None
-    run_observatory(context, explorer=explorer)
+    explorer_factory = (
+        composition.build_repository_explorer if context.repo_root is not None else None
+    )
+    run_observatory(context, explorer_factory=explorer_factory)
 
 
 def run(args: Any, *, launch: Callable[[ObservatoryContext], None] = _launch) -> int:

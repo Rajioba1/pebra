@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Callable
+from typing import Protocol, TypeAlias
 
 from pebra.core.exploration import ExplorationResult
 from pebra.core.graph_snapshot import GraphSnapshot
@@ -23,3 +24,9 @@ class RepositoryExplorer(Protocol):
         max_bytes: int = 24_000,
     ) -> ExplorationResult:
         """Return bounded descriptive context for one prepared snapshot."""
+
+    def cancel(self) -> None:
+        """Cooperatively stop this command-scoped provider session."""
+
+
+RepositoryExplorerFactory: TypeAlias = Callable[[], RepositoryExplorer]
