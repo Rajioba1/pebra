@@ -11,6 +11,7 @@ from pebra.app import (
     candidate_apply_controller,
 )
 from pebra.core.constants import Decision, RiskMode
+from pebra.core.candidate_binding_contract import candidate_binding_is_valid
 from pebra.core.human_review import controlling_gate, reject_override_eligible
 from pebra.ports.candidate_replay_port import CandidateReplayPort
 from pebra.ports.store_port import StorePort
@@ -101,6 +102,14 @@ def select_pending_approval(
                     "the requested rejected candidate is not eligible for risk acceptance"
                 )
             continue
+        packet = replay.assessment.get("model_guidance_packet") or {}
+        binding = (packet.get("binding") or {}).get("candidate")
+        if not candidate_binding_is_valid(binding):
+            if assessment_id is not None:
+                raise HumanApprovalError(
+                    "the requested assessment no longer has an applicable candidate"
+                )
+            continue
         digest = str(replay.metadata.get("digest") or current_id)
         candidates_by_digest.setdefault(
             digest, PendingApproval(current_id, replay, _summary(current_id, replay))
@@ -121,7 +130,7 @@ def _sanction_spec(pending: PendingApproval) -> dict[str, Any]:
     packet = assessment.get("model_guidance_packet") or {}
     binding = (packet.get("binding") or {}).get("candidate")
     action_id = pending.replay.request.candidate_actions[0].id
-    if not isinstance(binding, dict):
+    if not candidate_binding_is_valid(binding):
         raise HumanApprovalError("pending assessment has no exact candidate binding")
     spec = {
         "assessment_id": pending.assessment_id,
@@ -165,6 +174,14 @@ def approve_and_apply(
         raise HumanApprovalError("pending candidate is no longer eligible for human risk acceptance")
     if current.get("decision") != pending.replay.assessment.get("decision"):
         raise HumanApprovalError("pending candidate review disposition changed")
+    reviewed_commit = current.get("assessed_commit")
+    fresh_commit = assess_ports.get("assessed_commit")
+    if (
+        not isinstance(reviewed_commit, str)
+        or not reviewed_commit
+        or fresh_commit != reviewed_commit
+    ):
+        raise HumanApprovalError("repository HEAD changed during human review; reassess first")
     sanction_id = accept_risk_controller.accept_risk(
         repo_id,
         _sanction_spec(pending),

@@ -8,15 +8,11 @@ Imports only core/ + ports/.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
+from pebra.core.candidate_binding_contract import candidate_binding_is_valid
 from pebra.core.human_review import SANCTION_CONVERTIBLE_GATES
 from pebra.ports.sanction_port import SanctionPort
-
-_DIGEST = re.compile(r"^[0-9a-f]{64}$")
-
 
 def _validated_binding(
     sanction_spec: dict[str, Any], risk_profile: Any
@@ -34,19 +30,8 @@ def _validated_binding(
     if risk_profile.get("action_id") != action_id:
         raise ValueError("risk_profile action_id does not match the sanction")
     candidate = risk_profile.get("candidate_binding")
-    if not isinstance(candidate, dict) or candidate.get("algorithm") != CANDIDATE_BINDING_ALGORITHM:
+    if not candidate_binding_is_valid(candidate):
         raise ValueError("a sanction must use the normalized-content candidate binding")
-    files = candidate.get("files")
-    if not isinstance(files, dict) or not files:
-        raise ValueError("a sanction candidate binding must contain files")
-    if any(
-        not isinstance(path, str)
-        or not path
-        or not isinstance(digest, str)
-        or _DIGEST.fullmatch(digest) is None
-        for path, digest in files.items()
-    ):
-        raise ValueError("a sanction candidate binding contains an invalid file digest")
     return assessment_id, action_id, candidate
 
 

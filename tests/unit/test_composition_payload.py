@@ -468,7 +468,20 @@ def _reject_outcome(*, gate: int, scores: dict, replay: bool = True) -> Assessme
         scores={**scores, "symbol_scope_evidence": {}},
         repo_id="r",
         repo_root="/repo",
-        gates_fired=[{"gate": gate, "name": "reasoned_reject"}],
+        gates_fired=[{
+            "gate": gate,
+            "name": {
+                3: "expected_loss_over_threshold",
+                4: "negative_rau",
+                9: "revision_has_no_credible_benefit",
+            }.get(gate, "policy_violation"),
+            **(
+                {"expected_loss": 0.73, "threshold": 0.5} if gate == 3
+                else {"rau": -0.61} if gate == 4
+                else {"benefit": 0.0} if gate == 9
+                else {}
+            ),
+        }],
         decision_reason="This candidate has negative risk-adjusted utility.",
         model_guidance_packet={
             "binding": {
@@ -529,6 +542,25 @@ def test_risk_reject_payload_offers_only_bound_interactive_human_override() -> N
             "command": "pebra accept-risk --apply --assessment-id asm_42",
         },
     }
+
+
+def test_reject_payload_with_malformed_candidate_binding_never_advertises_override() -> None:
+    outcome = _reject_outcome(
+        gate=3,
+        scores={
+            "expected_loss": 0.73,
+            "benefit": 0.20,
+            "expected_utility": -0.53,
+            "rau": -0.61,
+        },
+    )
+    outcome.recommended_result.model_guidance_packet["binding"]["candidate"] = {}
+
+    action = composition.assess_payload(outcome)["next_action"]
+
+    assert action["type"] == "request_human_review"
+    assert action["override"]["available"] is False
+    assert "command" not in action["override"]
 
 
 def test_policy_reject_payload_requires_human_route_without_risk_override() -> None:

@@ -27,7 +27,21 @@ def _assessment(assessment_id, *, decision="ask_human", gate=2):
         "decision": decision,
         "assessed_commit": "head-1",
         "scores": {"expected_loss": 0.4, "benefit": 0.3, "rau": -0.1},
-        "gates_fired": [{"gate": gate, "name": "review_gate"}],
+        "gates_fired": [{
+            "gate": gate,
+            "name": {
+                2: "c4_consequential_ask_human",
+                3: "expected_loss_over_threshold",
+                4: "negative_rau",
+                9: "revision_has_no_credible_benefit",
+            }.get(gate, "policy_violation"),
+            **(
+                {"expected_loss": 0.4, "threshold": 0.3} if gate == 3
+                else {"rau": -0.1} if gate == 4
+                else {"benefit": 0.0} if gate == 9
+                else {}
+            ),
+        }],
         "model_guidance_packet": {
             "binding": {"candidate": _BINDING, "required_controls": ["review"]},
             "advisory": {"high_risk_triggers": [{"risk_class": "contract"}]},
@@ -123,6 +137,20 @@ def test_pending_approval_refuses_nonconvertible_policy_reject() -> None:
         )
 
 
+def test_pending_approval_refuses_malformed_exact_candidate_binding() -> None:
+    store = FakeStore(decision="reject", gate=3)
+    store.rows[0]["model_guidance_packet"]["binding"]["candidate"] = {}
+
+    with pytest.raises(controller.HumanApprovalError, match="applicable candidate"):
+        controller.select_pending_approval(
+            repo_id="repo-1",
+            assessed_commit="head-1",
+            assessment_id="asm_1",
+            store=store,
+            replay_cache=FakeReplay(),
+        )
+
+
 def test_approval_revalidates_reject_eligibility_before_sanction(monkeypatch) -> None:
     store = FakeStore(decision="reject", gate=3)
     pending = controller.select_pending_approval(
@@ -153,6 +181,35 @@ def test_approval_revalidates_reject_eligibility_before_sanction(monkeypatch) ->
         )
 
 
+def test_approval_revalidates_current_head_before_sanction(monkeypatch) -> None:
+    store = FakeStore(decision="reject", gate=3)
+    pending = controller.select_pending_approval(
+        repo_id="repo-1",
+        assessed_commit="head-1",
+        assessment_id="asm_1",
+        store=store,
+        replay_cache=FakeReplay(),
+    )
+    monkeypatch.setattr(
+        controller.accept_risk_controller,
+        "accept_risk",
+        lambda *args, **kwargs: pytest.fail("stale review created a sanction"),
+    )
+
+    with pytest.raises(controller.HumanApprovalError, match="HEAD changed"):
+        controller.approve_and_apply(
+            pending,
+            repo_id="repo-1",
+            repo_root="/repo",
+            db_path="/repo/.pebra/pebra.db",
+            store=store,
+            assess_ports={"sanction_port": object(), "assessed_commit": "head-2"},
+            application_ports={
+                "replay_cache": FakeReplay(), "gate": object(), "applier": object(),
+            },
+        )
+
+
 def test_approve_reassesses_controlled_risk_then_applies(monkeypatch) -> None:
     pending = controller.select_pending_approval(
         repo_id="repo-1", assessed_commit="head-1", store=FakeStore(),
@@ -177,7 +234,7 @@ def test_approve_reassesses_controlled_risk_then_applies(monkeypatch) -> None:
         "apply_candidate",
         lambda **kw: SimpleNamespace(changed_files=("src/a.py",)),
     )
-    assess_ports = {"sanction_port": object()}
+    assess_ports = {"sanction_port": object(), "assessed_commit": "head-1"}
 
     outcome = controller.approve_and_apply(
         pending,

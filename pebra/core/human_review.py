@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any, Final
+import math
+from typing import Final
 
 from pebra.core.constants import Decision
 
 
 SANCTION_CONVERTIBLE_GATES: Final[frozenset[int]] = frozenset({2, 3, 4, 9})
+REJECT_OVERRIDE_GATES: Final[frozenset[int]] = SANCTION_CONVERTIBLE_GATES - {2}
+_REJECT_GATE_NAMES: Final[Mapping[int, str]] = {
+    3: "expected_loss_over_threshold",
+    4: "negative_rau",
+    9: "revision_has_no_credible_benefit",
+}
 
 
 def controlling_gate(gates_fired: Iterable[object]) -> int | None:
@@ -28,17 +35,43 @@ def reject_override_eligible(decision: Decision | str, gates_fired: Iterable[obj
         normalized = Decision(decision)
     except (TypeError, ValueError):
         return False
-    return (
-        normalized is Decision.REJECT
-        and controlling_gate(gates_fired) in SANCTION_CONVERTIBLE_GATES
+    if normalized is not Decision.REJECT:
+        return False
+    try:
+        records = tuple(gates_fired)
+    except TypeError:
+        return False
+    controlling: Mapping[object, object] | None = None
+    for record in records:
+        if not isinstance(record, Mapping):
+            return False
+        gate = record.get("gate")
+        name = record.get("name")
+        advisory = record.get("advisory", False)
+        if (
+            type(gate) is not int
+            or gate <= 0
+            or not isinstance(name, str)
+            or not name
+            or not isinstance(advisory, bool)
+        ):
+            return False
+        if controlling is None and not advisory:
+            controlling = record
+    if controlling is None:
+        return False
+    gate = int(controlling["gate"])
+    if gate not in REJECT_OVERRIDE_GATES or controlling.get("name") != _REJECT_GATE_NAMES[gate]:
+        return False
+    if gate == 3:
+        values = (controlling.get("expected_loss"), controlling.get("threshold"))
+    elif gate == 4:
+        values = (controlling.get("rau"),)
+    else:
+        values = (controlling.get("benefit"),)
+    return all(
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+        for value in values
     )
-
-
-def review_gate_evidence(content: Mapping[str, Any]) -> tuple[int | None, bool]:
-    """Extract trusted review disposition from one persisted assessment content object."""
-    gates = content.get("gates_fired")
-    if not isinstance(gates, list):
-        return None, False
-    decision = content.get("recommended_decision") or content.get("decision")
-    gate = controlling_gate(gates)
-    return gate, reject_override_eligible(decision, gates)

@@ -315,6 +315,7 @@ def _finite_risk_benefit(scores: object) -> dict[str, float] | None:
 
 
 def _reject_next_action(outcome: Any) -> dict[str, Any]:
+    from pebra.core.candidate_binding_contract import candidate_binding_is_valid  # noqa: PLC0415
     from pebra.core.human_review import (  # noqa: PLC0415
         controlling_gate,
         reject_override_eligible,
@@ -329,7 +330,8 @@ def _reject_next_action(outcome: Any) -> dict[str, Any]:
     replay_available = outcome.candidate_replay.get("status") == "available"
     eligible = reject_override_eligible(result.recommended_decision, result.gates_fired)
     override_available = (
-        eligible and replay_available and isinstance(candidate, dict) and risk_benefit is not None
+        eligible and replay_available and candidate_binding_is_valid(candidate)
+        and risk_benefit is not None
     )
     if risk_benefit is None:
         unavailable_reason = (
@@ -340,7 +342,7 @@ def _reject_next_action(outcome: Any) -> dict[str, Any]:
             "This rejection is not eligible for generic risk acceptance; revise the candidate or "
             "follow a maintainer-authored policy change, then reassess."
         )
-    elif not replay_available or not isinstance(candidate, dict):
+    elif not replay_available or not candidate_binding_is_valid(candidate):
         unavailable_reason = (
             "Exact candidate replay is unavailable; reassess the candidate before human review."
         )
@@ -359,7 +361,7 @@ def _reject_next_action(outcome: Any) -> dict[str, Any]:
         "status": "pending",
         "assessment_id": outcome.assessment_id,
         "action_id": _recommended_action_id(outcome),
-        "candidate_binding": candidate if isinstance(candidate, dict) else None,
+        "candidate_binding": candidate if candidate_binding_is_valid(candidate) else None,
         "risk_benefit": risk_benefit,
         "reason": result.decision_reason,
         "controlling_gate": gate,
