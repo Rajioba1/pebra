@@ -326,8 +326,11 @@ def test_refresh_preserves_scroll_when_selected_row_is_offscreen() -> None:
         async with app.run_test(size=(120, 18)) as pilot:
             screen = app.screen
             table = app.query_one("#ledger", DataTable)
+            for _ in range(3):
+                await pilot.pause()
             table.focus()
             table.move_cursor(row=0, column=5, scroll=False)
+            await pilot.pause()
             table.scroll_to(x=12, y=12, animate=False, force=True, immediate=True)
             await pilot.pause()
 
