@@ -996,6 +996,56 @@ def test_any_impactful_none_when_no_evidence(tmp_path, monkeypatch):
     assert result.fallback_reason
 
 
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "src/a.py", "old_string": "old", "new_string": "new"},
+        },
+        {
+            "tool_name": "apply_patch",
+            "tool_input": {
+                "command": "*** Begin Patch\n*** Update File: src/a.py\n@@\n-old\n+new\n"
+                "*** Update File: src/b.py\n@@\n-old\n+new\n*** End Patch\n"
+            },
+        },
+    ],
+)
+def test_gate_check_graph_probe_never_prepares_or_syncs(event, tmp_path, monkeypatch):
+    from pebra.adapters import codegraph_adapter as cga
+
+    calls: list[list[str]] = []
+
+    def graph_process(argv, **_kwargs):
+        argv = list(argv)
+        calls.append(argv)
+        if "status" in argv:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "initialized": True,
+                    "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+                    "index": {"reindexRecommended": False},
+                    "version": "1.1.1",
+                }),
+            )
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(cga, "find_engine", lambda: "/tools/codegraph")
+    monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit-b")
+    monkeypatch.setattr(cga.subprocess, "run", graph_process)
+    monkeypatch.setattr(gca, "_head_sha", lambda _root: "commit-b")
+    monkeypatch.setattr(gca, "_query_pending_restriction", lambda *_args: 0)
+    event = {**event, "cwd": str(tmp_path)}
+
+    decision = gca.decide(event)
+
+    assert decision.permission == "allow"
+    assert decision.tier == "fail_open"
+    assert calls == []
+
+
 def test_decide_graph_fail_open_warning_preserves_adapter_reason(tmp_path, monkeypatch):
     monkeypatch.setattr(
         gca,
@@ -1015,6 +1065,9 @@ def test_graph_warning_never_echoes_raw_adapter_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(gca, "_fanin_percentile", lambda target, root: None)
 
     class _Adapter:
+        def __init__(self, **_kwargs):
+            pass
+
         def file_fanin_rollup(self, target, root):
             return SimpleNamespace(
                 fallback_reason=r"codegraph DB could not be opened: C:\\secret\\pebra\\graph.db"

@@ -244,7 +244,8 @@ def test_allow_unsupported_install_is_still_untrusted_at_runtime() -> None:
     assert sg._resolve_version("2.0.0", True, False) == ("2.0.0", None)
 
     # runtime side: that same running version is untrusted -> unresolved (feeds Gate 13)
-    status = {"version": "2.0.0", "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+    status = {"initialized": True, "version": "2.0.0",
+              "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
               "index": {"reindexRecommended": False}}
     ev = cga.CodeGraphAdapter(status_fn=lambda r: status).fanin(
         CandidateAction(id="a1", label="p", action_type="edit"), "/repo")

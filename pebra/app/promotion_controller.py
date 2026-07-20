@@ -170,7 +170,6 @@ def _collect_facts(
     veto_reasons: list[str] = []
     considered = 0
     for target_name, target_rows in by_target.items():
-        provider_v, index_v, graph_scope = _extract_provider_provenance(target_rows)
         target_type = target_rows[0]["target_type"]
         for candidate in _derive_scope_candidates(target_rows, target_name, target_type):
             considered += 1
@@ -184,6 +183,7 @@ def _collect_facts(
                 if pe.scope_matches_features(candidate.scope_kind, candidate.scope_value,
                                              candidate.scope_json, r.get("features") or {})
             ]
+            provider_v, index_v, graph_scope = _extract_provider_provenance(group_rows)
             candidate_graph_scope = _one_graph_scope(group_rows)
             if _is_graph_derived_scope(candidate.scope_kind) and candidate_graph_scope is None:
                 veto_reasons.append("GRAPH_SCOPE_COHORT_MISMATCH")

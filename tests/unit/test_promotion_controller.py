@@ -285,6 +285,35 @@ def test_graph_derived_fact_requires_one_nonempty_scope_digest():
     assert high_fanin[0]["fact_json"]["graph_scope_digest"] == "scope-1"
 
 
+def test_graph_derived_fact_uses_only_its_exact_group_for_provenance():
+    rows = [_row(0.1, 1) for _ in range(8)]
+    for index, row in enumerate(rows):
+        is_high_fanin = index < 3
+        row["features"]["structural"]["is_high_symbol_fan_in"] = is_high_fanin
+        row["features"]["provenance"] = {
+            "provider_version": "group-provider" if is_high_fanin else "outside-majority",
+            "index_version": "group-index" if is_high_fanin else "outside-index",
+            "graph_scope_digest": "group-scope" if is_high_fanin else "outside-scope",
+        }
+    learning = _FakeLearning()
+
+    result = pc.run_promotion(
+        "r",
+        store=_FakeStore(rows),
+        learning_port=learning,
+        config=pe.PromotionConfig(min_calibration_samples=3),
+    )
+
+    assert result.promoted is True
+    facts = learning.calls[0][2]
+    high_fanin = [fact for fact in facts if fact["scope_kind"] == "high_symbol_fan_in"]
+    assert len(high_fanin) == 1
+    provenance = high_fanin[0]["fact_json"]
+    assert provenance["provider_version"] == "group-provider"
+    assert provenance["index_version"] == "group-index"
+    assert provenance["graph_scope_digest"] == "group-scope"
+
+
 @pytest.mark.parametrize("scopes", [["scope-1", "scope-2"], [None, "scope-1"]])
 def test_graph_derived_fact_vetoes_mixed_or_missing_scope_digests(scopes):
     rows = [_row(0.1, 1) for _ in range(6)]

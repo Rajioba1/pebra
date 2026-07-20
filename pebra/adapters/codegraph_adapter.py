@@ -146,14 +146,14 @@ def _changed_after_side_ranges(before: str, after: str) -> list[tuple[int, int]]
     return _merge_contiguous(lines)
 
 
-def _config_digest(repo_root: str) -> str:
+def _config_digest(repo_root: str) -> str | None:
     path = Path(repo_root) / "codegraph.json"
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
         return "absent"
     except OSError:
-        return "error"
+        return None
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -196,9 +196,41 @@ def _scope_digest(
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _valid_status(status: object) -> bool:
+    """Validate the provider payload before it can trigger sync or authorize graph reads."""
+    if not isinstance(status, dict) or status.get("initialized") is not True:
+        return False
+    pending = status.get("pendingChanges")
+    if not isinstance(pending, dict):
+        return False
+    for key in ("added", "modified", "removed"):
+        value = pending.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return False
+    index = status.get("index")
+    if not isinstance(index, dict) or not isinstance(index.get("reindexRecommended"), bool):
+        return False
+    version = status.get("version")
+    if not isinstance(version, str) or not version.strip():
+        return False
+    index_path = status.get("indexPath")
+    if index_path is not None and (not isinstance(index_path, str) or not index_path.strip()):
+        return False
+    for key in ("extractionVersion", "indexVersion", "schemaVersion"):
+        value = index.get(key)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (str, int))
+            or (isinstance(value, str) and not value.strip())
+            or (isinstance(value, int) and value < 0)
+        ):
+            return False
+    return True
+
+
 def _failed_snapshot(
     status: str,
-    config_digest: str,
+    config_digest: str | None,
     reason: str,
     *,
     sync_performed: bool = False,
@@ -220,11 +252,19 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
     """Reconcile one existing same-worktree index behind stable HEAD/config fences."""
     exe = find_engine()
     initial_config = _config_digest(repo_root)
+    if initial_config is None:
+        return _failed_snapshot(
+            "unavailable", None, "codegraph configuration unreadable"
+        ), None
     if exe is None:
         return _failed_snapshot("unavailable", initial_config, "codegraph CLI not found"), None
     for attempt in range(2):
         head_before = git_adapter.head_commit(repo_root)
         config_before = _config_digest(repo_root)
+        if config_before is None:
+            return _failed_snapshot(
+                "unavailable", None, "codegraph configuration unreadable"
+            ), None
         if head_before is None:
             return _failed_snapshot(
                 "unavailable", config_before, "repository HEAD unavailable"
@@ -237,9 +277,9 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph status unavailable"
             ), None
-        if initial.get("initialized") is False:
+        if not _valid_status(initial):
             return _failed_snapshot(
-                "unavailable", config_before, "codegraph index not initialized"
+                "unavailable", config_before, "codegraph status malformed"
             ), None
         if initial.get("worktreeMismatch"):
             return _failed_snapshot(
@@ -272,12 +312,22 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
                 "unavailable", config_before, "codegraph post-sync status unavailable",
                 sync_performed=True,
             ), None
+        if not _valid_status(post):
+            return _failed_snapshot(
+                "unavailable", config_before, "codegraph post-sync status malformed",
+                sync_performed=True,
+            ), None
         if not _is_fresh(post):
             return _failed_snapshot(
                 "stale", config_before, "codegraph index stale after sync", sync_performed=True
             ), None
         head_after = git_adapter.head_commit(repo_root)
         config_after = _config_digest(repo_root)
+        if config_after is None:
+            return _failed_snapshot(
+                "unavailable", None, "codegraph configuration unreadable",
+                sync_performed=True,
+            ), None
         if head_before == head_after and config_before == config_after and head_after is not None:
             provider_version = str(post["version"]) if post.get("version") is not None else None
             index_version = _index_version(repo_root, post)
@@ -380,13 +430,17 @@ class CodeGraphAdapter:
         else:
             status = self._status_fn(repo_root)
             config_digest = _config_digest(repo_root)
-            if status is None:
+            if config_digest is None:
+                snapshot = _failed_snapshot(
+                    "unavailable", None, "codegraph configuration unreadable"
+                )
+            elif status is None:
                 snapshot = _failed_snapshot(
                     "unavailable", config_digest, "codegraph CLI not found"
                 )
-            elif status.get("initialized") is False:
+            elif not _valid_status(status):
                 snapshot = _failed_snapshot(
-                    "unavailable", config_digest, "codegraph index not initialized"
+                    "unavailable", config_digest, "codegraph status malformed"
                 )
             elif status.get("worktreeMismatch") or not _is_fresh(status):
                 snapshot = _failed_snapshot(
@@ -413,7 +467,8 @@ class CodeGraphAdapter:
         self._snapshot_cache[repo_root] = snapshot
         self._status_cache[repo_root] = (
             status
-            if snapshot.status == "available" or self._status_fn is not None
+            if snapshot.status == "available"
+            or (self._status_fn is not None and _valid_status(status))
             else None
         )
         return snapshot

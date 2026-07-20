@@ -17,7 +17,8 @@ from pebra.adapters import codegraph_adapter as cga
 from pebra.cli import dependents as dep_cmd
 from pebra.cli.main import build_parser
 
-_FRESH = {"pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+_FRESH = {"initialized": True,
+          "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
           "index": {"reindexRecommended": False}, "version": "1.1.1"}
 
 

@@ -147,6 +147,80 @@ def test_absent_index_status_never_syncs(tmp_path, monkeypatch) -> None:
     assert runner.sync_calls == []
 
 
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {},
+        {**FRESH, "initialized": 1},
+        {**FRESH, "pendingChanges": []},
+        {**FRESH, "pendingChanges": {"added": -1, "modified": 0, "removed": 0}},
+        {**FRESH, "index": []},
+        {**FRESH, "index": {"reindexRecommended": 0}},
+        {key: value for key, value in FRESH.items() if key != "version"},
+    ],
+)
+def test_malformed_initial_status_is_unavailable_and_never_syncs(
+    tmp_path, monkeypatch, malformed
+) -> None:
+    runner = _Runner([malformed])
+    _patch_runtime(monkeypatch, runner, ["commit-b"])
+
+    snapshot = cga.CodeGraphAdapter().prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert snapshot.sync_performed is False
+    assert runner.sync_calls == []
+
+
+def test_malformed_post_sync_status_is_unavailable_and_never_cached(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _Runner([FRESH, {}])
+    _patch_runtime(monkeypatch, runner, ["commit-b"])
+    adapter = cga.CodeGraphAdapter()
+
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert adapter.prepared_status(str(tmp_path)) is None
+    assert len(runner.sync_calls) == 1
+
+
+def test_injected_malformed_status_is_unavailable_and_never_cached(tmp_path) -> None:
+    adapter = cga.CodeGraphAdapter(status_fn=lambda _root: {})
+
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert adapter.prepared_status(str(tmp_path)) is None
+
+
+def test_unreadable_config_digest_is_unavailable_and_never_spawns(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "codegraph.json"
+    config.write_text("{}", encoding="utf-8")
+    runner = _Runner([])
+    original_read_bytes = Path.read_bytes
+
+    def deny_config_read(path: Path) -> bytes:
+        if path == config:
+            raise PermissionError("denied")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_config_read)
+    monkeypatch.setattr(cga, "find_engine", lambda: "/tools/codegraph")
+    monkeypatch.setattr(cga.subprocess, "run", runner)
+    monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit-b")
+
+    snapshot = cga.CodeGraphAdapter().prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert snapshot.config_digest is None
+    assert snapshot.graph_scope_digest is None
+    assert runner.calls == []
+
+
 @pytest.mark.parametrize("sync_returncode,post_status", [(9, FRESH), (0, None)])
 def test_sync_failure_never_falls_back_to_initial_clean_status(
     tmp_path, monkeypatch, sync_returncode, post_status

@@ -25,9 +25,11 @@ from tests.unit.test_assessment_builder import _worked_example_input
 
 # NB: the real `codegraph status --json` emits INTEGER counts for pendingChanges (changes.*.length),
 # not file lists (references/codegraph/src/bin/codegraph.ts:818-822) — fixtures mirror that shape.
-FRESH = {"pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+FRESH = {"initialized": True,
+         "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
          "index": {"reindexRecommended": False}, "version": "1.1.1"}
-STALE = {"pendingChanges": {"added": 0, "modified": 1, "removed": 0},
+STALE = {"initialized": True,
+         "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
          "index": {"reindexRecommended": False}, "version": "1.1.1"}
 
 
@@ -744,8 +746,9 @@ def test_stale_index_fails_closed(tmp_path) -> None:
 
 def test_reindex_recommended_is_stale(tmp_path) -> None:
     _seed_repo(tmp_path)
-    status = {"pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-              "index": {"reindexRecommended": True}}
+    status = {"initialized": True,
+              "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+              "index": {"reindexRecommended": True}, "version": "1.1.1"}
     action = CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=_PATCH)
     ev = _adapter(status=status).fanin(action, str(tmp_path))
     assert ev.graph_freshness == "stale" and ev.resolution_method == "unresolved"
@@ -755,8 +758,10 @@ def test_reindex_recommended_is_stale(tmp_path) -> None:
 def test_worktree_mismatch_is_stale(tmp_path) -> None:
     _seed_repo(tmp_path)
     status = {
+        "initialized": True,
         "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
         "index": {"reindexRecommended": False},
+        "version": "1.1.1",
         "worktreeMismatch": {"worktreeRoot": "/repo/worktree", "indexRoot": "/repo/main"},
     }
     action = CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=_PATCH)
@@ -781,8 +786,10 @@ def test_status_index_path_selects_non_default_codegraph_dir(tmp_path) -> None:
     con.commit()
     con.close()
     status = {
+        "initialized": True,
         "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
         "index": {"reindexRecommended": False},
+        "version": "1.1.1",
         "indexPath": str(cg_dir),
     }
     action = CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=_PATCH)
@@ -847,7 +854,8 @@ def test_cli_missing_returns_unresolved_with_install_hint(tmp_path) -> None:
     _assert_empty_graph_context(ev)
 
 
-_OUT_OF_RANGE = {"pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+_OUT_OF_RANGE = {"initialized": True,
+                 "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
                  "index": {"reindexRecommended": False}, "version": "2.0.0"}
 
 
@@ -1244,7 +1252,7 @@ def test_default_status_never_syncs_when_uninitialized(monkeypatch) -> None:
 
 def test_default_status_syncs_even_when_initial_status_is_fresh(monkeypatch) -> None:
     fresh = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-             "index": {"reindexRecommended": False}}
+             "index": {"reindexRecommended": False}, "version": "1.1.1"}
     rec = _Recorder([fresh, fresh])
     _patch(monkeypatch, rec)
     out = cga._default_status("/repo")
@@ -1253,9 +1261,9 @@ def test_default_status_syncs_even_when_initial_status_is_fresh(monkeypatch) -> 
 
 def test_default_status_syncs_only_when_stale_initialized_same_worktree(monkeypatch) -> None:
     stale = {"initialized": True, "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
-             "index": {"reindexRecommended": False}}
+             "index": {"reindexRecommended": False}, "version": "1.1.1"}
     fresh = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-             "index": {"reindexRecommended": False}}
+             "index": {"reindexRecommended": False}, "version": "1.1.1"}
     rec = _Recorder([stale, fresh])  # initial=stale -> sync -> re-status=fresh
     _patch(monkeypatch, rec)
     out = cga._default_status("/repo")
@@ -1269,7 +1277,7 @@ def test_default_status_syncs_only_when_stale_initialized_same_worktree(monkeypa
 
 def test_default_status_never_returns_initial_when_post_sync_status_fails(monkeypatch) -> None:
     stale = {"initialized": True, "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
-             "index": {"reindexRecommended": False}}
+             "index": {"reindexRecommended": False}, "version": "1.1.1"}
     rec = _Recorder([stale, None])  # post-sync status probe fails -> fall back to the stale initial
     _patch(monkeypatch, rec)
     out = cga._default_status("/repo")
@@ -1348,7 +1356,7 @@ def test_default_status_invokes_resolved_full_path_not_bare_name(monkeypatch) ->
     # A2/Windows: status/sync must run the resolved full path (shutil.which), never the bare name
     # ("codegraph"), or Windows FileNotFoundErrors on the .cmd shim even when installed.
     fresh = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-             "index": {"reindexRecommended": False}}
+             "index": {"reindexRecommended": False}, "version": "1.1.1"}
     rec = _Recorder([fresh, fresh])
     _patch(monkeypatch, rec)
     cga._default_status("/repo")

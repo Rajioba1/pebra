@@ -488,7 +488,7 @@ def _any_impactful(targets: list[str], repo_root: str) -> ImpactEvidence:
 
 def _fanin_percentile(target: str, repo_root: str) -> float | None:
     try:
-        return CodeGraphAdapter().highest_file_fanin_percentile(target, repo_root)
+        return _gate_graph_adapter().highest_file_fanin_percentile(target, repo_root)
     except Exception:  # noqa: BLE001 - any adapter failure is "no evidence", never a crash
         return None
 
@@ -654,12 +654,21 @@ def _fanin_probe(target: str, repo_root: str) -> tuple[float | None, str | None]
     if pctl is not None:
         return pctl, None
     try:
-        rollup = CodeGraphAdapter().file_fanin_rollup(target, repo_root)
+        rollup = _gate_graph_adapter().file_fanin_rollup(target, repo_root)
     except Exception:  # noqa: BLE001 - gate failure remains fail-open with a useful warning
         return None, "CodeGraph probe failed"
     if rollup.fallback_reason:
         return None, _safe_graph_fallback_reason(rollup.fallback_reason)
     return 0.0, None
+
+
+def _gate_graph_adapter() -> CodeGraphAdapter:
+    """An unfenced universal hook must never reconcile or mutate graph state.
+
+    Gate-check has no prepared snapshot to bind to its independently observed HEAD.  Supplying an
+    explicit unavailable status keeps graph reads fail-open while guaranteeing no status/sync spawn.
+    """
+    return CodeGraphAdapter(status_fn=lambda _repo_root: None)
 
 
 def _safe_graph_fallback_reason(reason: str) -> str:

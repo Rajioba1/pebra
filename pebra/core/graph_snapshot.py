@@ -16,7 +16,7 @@ class GraphSnapshot:
     provider_version: str | None
     index_version: str | None
     repo_head: str | None
-    config_digest: str
+    config_digest: str | None
     graph_scope_digest: str | None
     sync_performed: bool
     fallback_reason: str | None
