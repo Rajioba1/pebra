@@ -19,7 +19,8 @@ from pebra.cli.main import build_parser
 
 _FRESH = {"initialized": True,
           "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-          "index": {"reindexRecommended": False}, "version": "1.1.1"}
+          "index": {"reindexRecommended": False}, "version": "1.1.1",
+          "worktreeMismatch": None}
 
 
 def _make_db(path: Path) -> None:
@@ -94,6 +95,7 @@ def test_dependent_files_result_marks_stale_graph_unavailable(tmp_path):
         "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
         "index": {"reindexRecommended": False},
         "version": "1.1.1",
+        "worktreeMismatch": None,
     }
     adapter = cga.CodeGraphAdapter(status_fn=lambda r: stale)
     result = adapter.dependent_files_result("src/x.cs", str(tmp_path))

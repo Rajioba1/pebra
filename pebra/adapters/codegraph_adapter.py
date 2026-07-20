@@ -213,6 +213,17 @@ def _valid_status(status: object) -> bool:
     version = status.get("version")
     if not isinstance(version, str) or not version.strip():
         return False
+    if "worktreeMismatch" not in status:
+        return False
+    mismatch = status["worktreeMismatch"]
+    if mismatch is not None and (
+        not isinstance(mismatch, dict)
+        or not isinstance(mismatch.get("worktreeRoot"), str)
+        or not mismatch["worktreeRoot"].strip()
+        or not isinstance(mismatch.get("indexRoot"), str)
+        or not mismatch["indexRoot"].strip()
+    ):
+        return False
     index_path = status.get("indexPath")
     if index_path is not None and (not isinstance(index_path, str) or not index_path.strip()):
         return False
@@ -281,7 +292,7 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph status malformed"
             ), None
-        if initial.get("worktreeMismatch"):
+        if initial["worktreeMismatch"] is not None:
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph index belongs to another worktree"
             ), None
@@ -315,6 +326,12 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
         if not _valid_status(post):
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph post-sync status malformed",
+                sync_performed=True,
+            ), None
+        if post["worktreeMismatch"] is not None:
+            return _failed_snapshot(
+                "unavailable", config_before,
+                "codegraph index belongs to another worktree after sync",
                 sync_performed=True,
             ), None
         if not _is_fresh(post):
@@ -380,7 +397,7 @@ def _run_status(repo_root: str, exe: str) -> dict[str, Any] | None:
 def _is_fresh(status: dict[str, Any]) -> bool:
     if status.get("initialized") is False:
         return False
-    if status.get("worktreeMismatch"):
+    if status.get("worktreeMismatch") is not None:
         return False
     pending = status.get("pendingChanges") or {}
     has_pending = any(pending.get(k) for k in ("added", "modified", "removed"))
@@ -442,7 +459,7 @@ class CodeGraphAdapter:
                 snapshot = _failed_snapshot(
                     "unavailable", config_digest, "codegraph status malformed"
                 )
-            elif status.get("worktreeMismatch") or not _is_fresh(status):
+            elif status["worktreeMismatch"] is not None or not _is_fresh(status):
                 snapshot = _failed_snapshot(
                     "stale", config_digest, "codegraph index stale or worktree-mismatched"
                 )

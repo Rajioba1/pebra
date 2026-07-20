@@ -21,6 +21,7 @@ FRESH = {
     "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
     "index": {"reindexRecommended": False},
     "version": "1.1.1",
+    "worktreeMismatch": None,
 }
 
 
@@ -184,6 +185,74 @@ def test_malformed_post_sync_status_is_unavailable_and_never_cached(
     assert snapshot.status == "unavailable"
     assert adapter.prepared_status(str(tmp_path)) is None
     assert len(runner.sync_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        False,
+        0,
+        "",
+        [],
+        {},
+        {"worktreeRoot": "A"},
+        {"worktreeRoot": "A", "indexRoot": ""},
+    ],
+)
+def test_falsey_or_malformed_initial_worktree_mismatch_never_syncs(
+    tmp_path, monkeypatch, mismatch
+) -> None:
+    initial = {**FRESH, "worktreeMismatch": mismatch}
+    runner = _Runner([initial, FRESH])
+    _patch_runtime(monkeypatch, runner, ["commit-b", "commit-b"])
+
+    snapshot = cga.CodeGraphAdapter().prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert snapshot.sync_performed is False
+    assert runner.sync_calls == []
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        False,
+        0,
+        "",
+        [],
+        {},
+        {"worktreeRoot": "A"},
+        {"worktreeRoot": "A", "indexRoot": ""},
+        {"worktreeRoot": "A", "indexRoot": "B"},
+    ],
+)
+def test_any_non_null_post_sync_worktree_mismatch_is_unavailable(
+    tmp_path, monkeypatch, mismatch
+) -> None:
+    post = {**FRESH, "worktreeMismatch": mismatch}
+    runner = _Runner([FRESH, post])
+    _patch_runtime(monkeypatch, runner, ["commit-b", "commit-b"])
+    adapter = cga.CodeGraphAdapter()
+
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert adapter.prepared_status(str(tmp_path)) is None
+    assert len(runner.sync_calls) == 1
+
+
+@pytest.mark.parametrize("phase", ["initial", "post"])
+def test_missing_worktree_mismatch_field_is_unavailable(tmp_path, monkeypatch, phase) -> None:
+    missing = {key: value for key, value in FRESH.items() if key != "worktreeMismatch"}
+    statuses = [missing] if phase == "initial" else [FRESH, missing]
+    runner = _Runner(statuses)
+    heads = ["commit-b"] if phase == "initial" else ["commit-b", "commit-b"]
+    _patch_runtime(monkeypatch, runner, heads)
+
+    snapshot = cga.CodeGraphAdapter().prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert len(runner.sync_calls) == (0 if phase == "initial" else 1)
 
 
 def test_injected_malformed_status_is_unavailable_and_never_cached(tmp_path) -> None:
