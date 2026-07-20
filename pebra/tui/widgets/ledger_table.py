@@ -172,8 +172,8 @@ def ledger_row(
             if group_size > 1
             else assessment.get("assessment_id", "—")
         ),
-        "target": format_target(assessment.get("target_files") or ()),
-        "task": format_task(assessment.get("task")),
+        "target": Content(format_target(assessment.get("target_files") or ())),
+        "task": Content(format_task(assessment.get("task"))),
         "assessed_commit": short_commit(assessment.get("assessed_commit")),
         "gate_lane": Content(render_rau_lane(rau, width=LEDGER_LANE_WIDTH)),
         "decision": decision_cell(str(assessment.get("decision", "")), dark=dark),

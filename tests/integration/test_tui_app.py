@@ -315,6 +315,46 @@ def test_resize_rebuild_preserves_selected_assessment(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_task_and_target_cells_render_brackets_literally_through_textual(tmp_path) -> None:
+    from textual.widgets import DataTable
+    from textual.widgets._data_table import default_cell_formatter
+
+    from pebra.adapters.store.db import SqliteStore
+    from pebra.core.constants import ActionStatus, Decision, RiskMode
+    from pebra.core.models import AssessmentResult
+
+    db = str(tmp_path / "literal-cells.db")
+    store = SqliteStore(db)
+    store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED,
+            requires_confirmation=False,
+            action_status=ActionStatus.PENDING,
+            risk_mode=RiskMode.NORMAL,
+            scores={"rau": 0.31},
+            repo_id="r",
+            repo_root="/x",
+            assessed_commit="abc1234",
+        ),
+        {
+            "task": "refactor Dict[str, Any] and [bold]",
+            "revision_envelope": {"expected_files": ["src/[bold].py"]},
+        },
+    )
+    store.close()
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(120, 30)):
+            table = app.query_one("#ledger", DataTable)
+            target = default_cell_formatter(table.get_cell_at((0, 1)))
+            task = default_cell_formatter(table.get_cell_at((0, 2)))
+            assert target.plain == "[bold].py"
+            assert task.plain == "refactor Dict[str, Any] and…"
+
+    asyncio.run(scenario())
+
+
 def test_breakpoint_rebuild_resets_horizontal_scroll(tmp_path) -> None:
     from textual.widgets import DataTable
 
