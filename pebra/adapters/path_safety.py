@@ -15,7 +15,7 @@ def is_redirect(path: Path) -> bool:
             return True
         attributes = getattr(path.lstat(), "st_file_attributes", 0)
         return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
     except OSError:
         return True
