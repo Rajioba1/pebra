@@ -61,6 +61,7 @@ def _candidate(binding: object) -> tuple[tuple[str, ...], str | None]:
     if not all(
         isinstance(path, str)
         and bool(path)
+        and "::" not in path
         and isinstance(digest, str)
         and _DIGEST_RE.fullmatch(digest) is not None
         for path, digest in files.items()

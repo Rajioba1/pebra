@@ -119,6 +119,29 @@ def test_invalid_file_digest_has_no_fingerprint() -> None:
     assert identity.candidate_fingerprint is None
 
 
+def test_symbol_only_candidate_binding_has_no_fingerprint() -> None:
+    content = _with_binding(_content(), {"src/auth.py::validate_login": _A})
+
+    identity = project_assessment_identity(content)
+
+    assert identity.bound_files == ()
+    assert identity.candidate_fingerprint is None
+
+
+def test_mixed_file_and_symbol_candidate_binding_is_rejected_entirely() -> None:
+    content = _with_binding(
+        _content(revision_envelope={"expected_files": ["src/declared.py"]}),
+        {"src/auth.py": _A, "src/auth.py::validate_login": _B},
+    )
+
+    identity = project_assessment_identity(content)
+
+    assert identity.bound_files == ()
+    assert identity.candidate_fingerprint is None
+    assert identity.target_files == ("src/declared.py",)
+    assert identity.target_provenance == "declared"
+
+
 def test_fingerprint_is_stable_across_dictionary_order() -> None:
     first = _with_binding(
         _content(), {"src/a.py": _A, "src/b.py": _B}, metadata={"z": 2, "a": 1}
