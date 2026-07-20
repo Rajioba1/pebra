@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 import sys
+import threading
+import time
 
+import pytest
+
+from pebra.adapters import bounded_process as bp
 from pebra.adapters.bounded_process import run_bounded
 
 
@@ -48,3 +56,101 @@ def test_run_bounded_launch_error_never_exposes_raw_path() -> None:
 
     assert result.error == "launch_failed"
     assert "secret" not in result.stdout + result.stderr
+
+
+def _force_kill(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+@pytest.mark.parametrize(
+    "containment",
+    ["native", pytest.param("taskkill", marks=pytest.mark.skipif(os.name != "nt", reason="Windows"))],
+)
+def test_run_bounded_times_out_descendant_that_keeps_parent_pipes_open(
+    tmp_path, monkeypatch, containment
+) -> None:
+    if containment == "taskkill":
+        monkeypatch.setattr(bp, "_assign_windows_job", lambda _job, _process: False)
+    started = tmp_path / "descendant-started.txt"
+    parent_exited = tmp_path / "parent-exited.txt"
+    survived = tmp_path / "descendant-survived.txt"
+    child_code = (
+        "import os,sys,time; from pathlib import Path; "
+        "Path(sys.argv[1]).write_text(str(os.getpid()), encoding='utf-8'); "
+        "time.sleep(1.5); Path(sys.argv[2]).write_text('survived', encoding='utf-8'); "
+        "time.sleep(30)"
+    )
+    parent_code = "\n".join(
+        [
+            "import subprocess,sys,time",
+            "from pathlib import Path",
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}, sys.argv[1], sys.argv[2]])",
+            "deadline=time.monotonic()+2",
+            "started=Path(sys.argv[1])",
+            "while not started.exists() and time.monotonic() < deadline:",
+            "    time.sleep(0.01)",
+            "Path(sys.argv[3]).write_text('exited', encoding='utf-8')",
+        ]
+    )
+    outcome: dict[str, object] = {}
+
+    def invoke() -> None:
+        began = time.monotonic()
+        outcome["result"] = run_bounded(
+            [
+                sys.executable, "-c", parent_code, str(started), str(survived), str(parent_exited),
+            ],
+            timeout=1.0,
+            stdout_limit=100,
+            stderr_limit=100,
+        )
+        outcome["elapsed"] = time.monotonic() - began
+
+    worker = threading.Thread(target=invoke, daemon=True)
+    worker.start()
+    worker.join(1.75)
+    exceeded_bound = worker.is_alive()
+    if exceeded_bound and started.exists():
+        _force_kill(int(started.read_text(encoding="utf-8")))
+        worker.join(5)
+
+    assert exceeded_bound is False
+    result = outcome["result"]
+    assert outcome["elapsed"] < 1.75
+    assert result.error == "timeout"
+    assert started.exists() is True
+    assert parent_exited.exists() is True
+    time.sleep(0.6)
+    assert survived.exists() is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object fallback")
+def test_run_bounded_falls_back_when_job_creation_is_unavailable(monkeypatch) -> None:
+    def unavailable():
+        raise OSError(r"private C:\job-policy")
+
+    monkeypatch.setattr(bp, "_windows_job", unavailable)
+
+    result = run_bounded(
+        [sys.executable, "-c", "print('ok')"],
+        timeout=2,
+        stdout_limit=100,
+        stderr_limit=100,
+    )
+
+    assert result.error is None
+    assert result.stdout.strip() == "ok"
+    assert "private" not in result.stdout + result.stderr
