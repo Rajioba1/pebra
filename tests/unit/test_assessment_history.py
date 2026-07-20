@@ -264,6 +264,10 @@ def test_assessed_at_malformed_legacy_values_degrade_to_unavailable() -> None:
         "not-a-timestamp",
         "2026-07-20T12:34:56",
         "2026-07-20T13:34:56+01:00",
+        "2026-07-20\n12:34:56+00:00",
+        "2026-07-20\x1b12:34:56+00:00",
+        "2026-07-20_12:34:56+00:00",
+        "2026-07-20T12:34:56Z",
         123,
         "bad\ud800timestamp",
     )
@@ -271,3 +275,11 @@ def test_assessed_at_malformed_legacy_values_degrade_to_unavailable() -> None:
     for value in invalid_values:
         identity = project_assessment_identity({"request": {}, "assessed_at": value})
         assert identity.assessed_at is None
+
+
+def test_assessed_at_accepts_generated_utc_shape_without_fraction() -> None:
+    identity = project_assessment_identity(
+        {"request": {}, "assessed_at": "2026-07-20T12:34:56+00:00"}
+    )
+
+    assert identity.assessed_at == "2026-07-20T12:34:56+00:00"

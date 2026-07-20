@@ -17,6 +17,10 @@ TargetProvenance = Literal[
     "candidate_bound", "declared", "legacy_guidance", "legacy_graph", "unavailable"
 ]
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+_ASSESSED_AT_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{6})?\+00:00"
+)
 
 
 @dataclass(frozen=True)
@@ -49,7 +53,7 @@ def _label(value: object) -> str | None:
 
 def _assessed_at(value: object) -> str | None:
     timestamp = _label(value)
-    if timestamp is None:
+    if timestamp is None or _ASSESSED_AT_RE.fullmatch(timestamp) is None:
         return None
     try:
         parsed = datetime.datetime.fromisoformat(timestamp)
