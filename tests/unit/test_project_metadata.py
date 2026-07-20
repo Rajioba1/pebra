@@ -90,7 +90,7 @@ def test_readme_documents_cli_and_tui_discovery_commands() -> None:
         assert command in body
 
 
-def test_project_version_is_0_1_1_release_candidate() -> None:
+def test_project_version_is_0_2_0_release_candidate() -> None:
     _, project = _project_metadata()
 
-    assert project["version"] == "0.1.1"
+    assert project["version"] == "0.2.0"

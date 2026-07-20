@@ -1,6 +1,6 @@
 # Releasing PEBRA
 
-This runbook covers the first public `0.1.x` releases. A release is built once in GitHub Actions and
+This runbook covers PEBRA's public `0.x` releases. A release is built once in GitHub Actions and
 published from that exact artifact through PyPI Trusted Publishing. Do not upload a locally-built
 wheel to PyPI.
 
@@ -48,7 +48,7 @@ API token to repository or environment secrets.
 
 4. Confirm the cross-platform installed-wheel, CodeGraph, RCA-degradation, Playwright, and secret-scan
    jobs are green for the release commit.
-5. Create and push an annotated release tag matching `pyproject.toml`, for example `v0.1.1`. Sign
+5. Create and push an annotated release tag matching `pyproject.toml`, for example `v0.2.0`. Sign
    the tag when a maintainer signing key is available; OIDC publishing and artifact attestations
    remain the authoritative automated provenance controls.
 
@@ -77,10 +77,10 @@ and PyPI succeed.
 3. Download the release assets and verify their hashes before installing from PyPI:
 
    ```powershell
-   gh release download v0.1.1 --repo Rajioba1/pebra --dir release-assets
+   gh release download v0.2.0 --repo Rajioba1/pebra --dir release-assets
    python scripts/verify_distribution.py verify-checksums release-assets release-assets/SHA256SUMS
    python -m venv release-smoke
-   .\release-smoke\Scripts\python.exe -m pip install pebra==0.1.1
+   .\release-smoke\Scripts\python.exe -m pip install pebra==0.2.0
    .\release-smoke\Scripts\python.exe -m pebra --help
    .\release-smoke\Scripts\python.exe -m pebra dashboard --port 0
    ```
