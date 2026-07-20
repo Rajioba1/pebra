@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from copy import deepcopy
-from threading import Event
+from dataclasses import replace
+from threading import Event, Lock
 
 import pytest
 
@@ -677,7 +679,7 @@ def test_single_flight_is_shared_across_detail_screens() -> None:
 
             assert coordinator.busy is True
             assert explorer.prepare_calls == ["/repo"]
-            assert "already in progress" in str(
+            assert "only one" in str(
                 second.query_one("#exploration-status").render()
             ).lower()
             explorer.release.set()
@@ -712,3 +714,170 @@ def test_quit_cancels_active_exploration_session_promptly() -> None:
         assert app.exploration.busy is False
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=2))
+
+
+def test_newer_exploration_cannot_be_overwritten_by_blocked_stale_delivery() -> None:
+    class _NamedExplorer(_RecordingExplorer):
+        def __init__(self, context: str) -> None:
+            super().__init__()
+            self.context = context
+
+        def explore(
+            self,
+            repo_root,
+            query,
+            *,
+            snapshot,
+            files=(),
+            max_files=8,
+            max_bytes=24_000,
+        ):
+            self.explore_calls.append((repo_root, query, snapshot, files))
+            self.completed.set()
+            return replace(_exploration_result(), context=self.context)
+
+    async def scenario() -> None:
+        first = _NamedExplorer("first stale impact")
+        second = _NamedExplorer("second current impact")
+        sessions = [first, second]
+        coordinator = RepositoryExplorationCoordinator(lambda: sessions.pop(0))
+        screen = AssessmentDetailScreen(
+            _detail(), repo_root="/repo", exploration=coordinator
+        )
+        app = _Harness(screen)
+        first_delivery_blocked = Event()
+        release_first_delivery = Event()
+        first_delivery_done = Event()
+        delivery_lock = Lock()
+        delivery_count = 0
+
+        async with app.run_test() as pilot:
+            real_call_from_thread = app.call_from_thread
+
+            def controlled_call_from_thread(callback, *args, **kwargs):
+                nonlocal delivery_count
+                with delivery_lock:
+                    delivery_count += 1
+                    this_delivery = delivery_count
+                if this_delivery == 1:
+                    first_delivery_blocked.set()
+                    release_first_delivery.wait(timeout=5)
+                try:
+                    return real_call_from_thread(callback, *args, **kwargs)
+                finally:
+                    if this_delivery == 1:
+                        first_delivery_done.set()
+
+            app.call_from_thread = controlled_call_from_thread  # type: ignore[method-assign]
+            await pilot.press("x")
+            await _pause_until(first_delivery_blocked.is_set, pilot)
+            assert coordinator.busy is True
+
+            await pilot.press("x")
+            await pilot.pause()
+            assert second.prepare_calls == []
+            assert "only one" in str(
+                screen.query_one("#exploration-status").render()
+            ).lower()
+
+            release_first_delivery.set()
+            await _pause_until(first_delivery_done.is_set, pilot)
+            await _pause_until(lambda: not coordinator.busy, pilot)
+            assert "first stale impact" in str(
+                screen.query_one("#exploration-result").render()
+            )
+
+            await pilot.press("x")
+            await _pause_until(
+                lambda: "second current impact"
+                in str(screen.query_one("#exploration-result").render()),
+                pilot,
+            )
+
+            rendered = str(screen.query_one("#exploration-result").render())
+            assert "second current impact" in rendered
+            assert "first stale impact" not in rendered
+
+    asyncio.run(scenario())
+
+
+def test_unavailable_result_may_change_only_snapshot_status_and_reason() -> None:
+    class _UnavailableExplorer(_RecordingExplorer):
+        def explore(
+            self,
+            repo_root,
+            query,
+            *,
+            snapshot,
+            files=(),
+            max_files=8,
+            max_bytes=24_000,
+        ):
+            failed = replace(
+                snapshot,
+                status="error",
+                fallback_reason="provider query failed safely",
+            )
+            return ExplorationResult(
+                status="error",
+                snapshot=failed,
+                context="",
+                dependent_files=(),
+                affected_tests=(),
+                warnings=(),
+                fallback_reason="provider query failed safely",
+                truncated=False,
+            )
+
+    async def scenario() -> None:
+        explorer = _UnavailableExplorer()
+        coordinator = RepositoryExplorationCoordinator(lambda: explorer)
+        screen = AssessmentDetailScreen(
+            _detail(), repo_root="/repo", exploration=coordinator
+        )
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.press("x")
+            await _pause_until(lambda: not coordinator.busy, pilot)
+
+            status = str(screen.query_one("#exploration-status").render())
+            assert "provider query failed safely" in status
+            assert screen.query_one("#exploration-result").render().plain == ""
+
+    asyncio.run(scenario())
+
+
+def test_cancel_invalidates_a_blocked_completed_delivery() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer()
+        coordinator = RepositoryExplorationCoordinator(lambda: explorer)
+        screen = AssessmentDetailScreen(
+            _detail(), repo_root="/repo", exploration=coordinator
+        )
+        app = _Harness(screen)
+        delivery_blocked = Event()
+        release_delivery = Event()
+        delivery_done = Event()
+
+        async with app.run_test() as pilot:
+            real_call_from_thread = app.call_from_thread
+
+            def controlled_call_from_thread(callback, *args, **kwargs):
+                delivery_blocked.set()
+                release_delivery.wait(timeout=5)
+                try:
+                    return real_call_from_thread(callback, *args, **kwargs)
+                finally:
+                    delivery_done.set()
+
+            app.call_from_thread = controlled_call_from_thread  # type: ignore[method-assign]
+            await pilot.press("x")
+            await _pause_until(delivery_blocked.is_set, pilot)
+            began = time.monotonic()
+            coordinator.cancel(wait=True)
+            assert time.monotonic() - began < 0.5
+            release_delivery.set()
+            await _pause_until(delivery_done.is_set, pilot)
+
+            assert screen.query_one("#exploration-result").render().plain == ""
+
+    asyncio.run(scenario())

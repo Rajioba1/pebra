@@ -74,6 +74,16 @@ def test_run_bounded_cancellation_kills_process_tree_promptly(tmp_path) -> None:
     survived = tmp_path / "survived.txt"
     cancel = threading.Event()
     outcome: dict[str, object] = {}
+    descendant_code = (
+        "import sys,time; from pathlib import Path; "
+        "Path(sys.argv[1]).write_text('started'); "
+        "time.sleep(2); Path(sys.argv[2]).write_text('survived'); time.sleep(30)"
+    )
+    parent_code = (
+        "import subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable, '-c', {descendant_code!r}, "
+        "sys.argv[1], sys.argv[2]]); time.sleep(30)"
+    )
 
     def invoke() -> None:
         began = time.monotonic()
@@ -81,9 +91,7 @@ def test_run_bounded_cancellation_kills_process_tree_promptly(tmp_path) -> None:
             [
                 sys.executable,
                 "-c",
-                "import sys,time; from pathlib import Path; "
-                "Path(sys.argv[1]).write_text('started'); "
-                "time.sleep(2); Path(sys.argv[2]).write_text('survived'); time.sleep(30)",
+                parent_code,
                 str(started),
                 str(survived),
             ],

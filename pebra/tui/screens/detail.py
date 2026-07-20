@@ -110,9 +110,7 @@ class AssessmentDetailScreen(Screen):
         return self._exploration is not None and self._exploration.busy
 
     def compose(self) -> ComposeResult:
-        if self._exploration_available and self.exploring:
-            exploration_status = "Another repository exploration is already in progress."
-        elif self._exploration_available:
+        if self._exploration_available:
             exploration_status = (
                 "Press x to prepare the repository graph and explore this assessment's impact."
             )
@@ -167,7 +165,7 @@ class AssessmentDetailScreen(Screen):
         )
         if not started:
             self.query_one("#exploration-status", Static).update(
-                "Another repository exploration is already in progress."
+                "Only one repository exploration can run at a time. Press x to retry this assessment."
             )
             return False
         self.query_one("#exploration-status", Static).update(
