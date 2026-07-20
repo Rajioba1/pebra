@@ -28,6 +28,7 @@ from pebra.adapters.candidate_application import CandidateApplicationAdapter
 from pebra.adapters.candidate_gate import CandidateGateAdapter
 from pebra.adapters.candidate_replay_cache import CandidateReplayCache
 from pebra.adapters.codegraph_adapter import CodeGraphAdapter
+from pebra.adapters.codegraph_explorer import CodeGraphExplorer
 from pebra.adapters.codegraph_materialized_diff import CodeGraphMaterializedDiffAdapter
 from pebra.adapters.import_graph_cache import GraphProvider
 from pebra.adapters.rca_adapter import RustCodeAnalysisAdapter
@@ -36,9 +37,8 @@ from pebra.adapters.sanction_store import SanctionStore
 from pebra.adapters.snapshot_read_store import SnapshotReadStore
 from pebra.adapters.store.db import SqliteStore
 from pebra.adapters.structural_feature_adapter import StructuralFeatureAdapter
-from pebra.app.assess_controller import AssessmentOutcome, ScoredAction
-from pebra.app.verify_controller import VerifyOutcome
 from pebra.core.models import AssessmentRequest, GraphRiskScope
+from pebra.core.exploration import ExplorationResult, clamp_bounds
 from pebra.ports.sanction_port import SanctionPort
 
 
@@ -106,6 +106,28 @@ def dependent_files_result(repo_root: str, target: str) -> dict[str, Any]:
     adapter = CodeGraphAdapter()
     adapter.prepare(repo_root)
     return adapter.dependent_files_result(target, repo_root)
+
+
+def explore_repository(
+    repo_root: str,
+    query: str,
+    *,
+    files: tuple[str, ...] = (),
+    max_files: int = 8,
+    max_bytes: int = 24_000,
+) -> ExplorationResult:
+    """Prepare once, then query that exact fenced snapshot through one explorer instance."""
+    max_files, max_bytes = clamp_bounds(max_files, max_bytes)
+    explorer = CodeGraphExplorer()
+    snapshot = explorer.prepare(repo_root)
+    return explorer.explore(
+        repo_root,
+        query,
+        snapshot=snapshot,
+        files=files,
+        max_files=max_files,
+        max_bytes=max_bytes,
+    )
 
 
 def prepare_dashboard_graph_reader(repo_root: str | None, *, read_only: bool) -> object:
@@ -236,7 +258,7 @@ def build_candidate_apply_ports(ctx: RepoContext) -> dict[str, Any]:
 # --- canonical surface payloads (shared by CLI --json and MCP tool results) ----
 
 
-def _recommended_action_id(outcome: AssessmentOutcome) -> str | None:
+def _recommended_action_id(outcome: Any) -> str | None:
     result = outcome.recommended_result
     for scored in outcome.scored_actions:
         if scored.result is result:
@@ -244,7 +266,7 @@ def _recommended_action_id(outcome: AssessmentOutcome) -> str | None:
     return None
 
 
-def _next_action(outcome: AssessmentOutcome) -> dict[str, Any]:
+def _next_action(outcome: Any) -> dict[str, Any]:
     result = outcome.recommended_result
     decision = result.recommended_decision.value
     reason = result.decision_reason
@@ -292,7 +314,7 @@ def _next_action(outcome: AssessmentOutcome) -> dict[str, Any]:
 
 
 def assess_payload(
-    outcome: AssessmentOutcome, *, include_host_metadata: bool = False,
+    outcome: Any, *, include_host_metadata: bool = False,
 ) -> dict[str, Any]:
     """Build the canonical model-facing assessment result.
 
@@ -381,7 +403,7 @@ def _graph_provenance(r: Any) -> dict[str, Any]:
     }
 
 
-def _scored_action_payload(scored: ScoredAction) -> dict[str, Any]:
+def _scored_action_payload(scored: Any) -> dict[str, Any]:
     r = scored.result
     payload = {
         "action_id": scored.action.id,
@@ -406,7 +428,7 @@ def _scored_action_payload(scored: ScoredAction) -> dict[str, Any]:
     return payload
 
 
-def compare_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
+def compare_payload(outcome: Any) -> dict[str, Any]:
     """The full multi-action comparison: every scored action plus the recommended one (pebra_compare)."""
     return {
         "recommended": assess_payload(outcome),
@@ -414,7 +436,7 @@ def compare_payload(outcome: AssessmentOutcome) -> dict[str, Any]:
     }
 
 
-def verify_payload(outcome: VerifyOutcome) -> dict[str, Any]:
+def verify_payload(outcome: Any) -> dict[str, Any]:
     """The canonical verify result. Identical bytes for `verify --json` and the pebra_verify tool."""
     payload = asdict(outcome.result)
     payload["pre_commit_decision"] = outcome.result.pre_commit_decision.value

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import re
+from pathlib import Path
 
 from pebra.cli import main
 
@@ -59,3 +61,26 @@ def test_every_user_facing_argument_has_meaningful_help_text() -> None:
     ]
 
     assert missing == []
+
+
+def test_explore_help_documents_all_bounds_and_existing_index_reconciliation(capsys) -> None:
+    assert main.main(["help", "explore"]) == 0
+
+    output = capsys.readouterr().out
+    assert "usage: pebra explore" in output
+    for flag in ("--file", "--max-files", "--max-bytes", "--repo-root", "--json"):
+        assert flag in output
+    assert "existing same-worktree graph index" in output
+    assert "never installs or initializes" in output
+
+
+def test_command_reference_inventory_matches_live_parser() -> None:
+    reference = (
+        Path(__file__).resolve().parents[2] / "docs" / "PEBRA_COMMAND_REFERENCE.md"
+    ).read_text(encoding="utf-8")
+    product = reference.split("## Product CLI", 1)[1].split("## Standard Product Workflows", 1)[0]
+    documented = set(re.findall(r"^### `([^`]+)`$", product, flags=re.MULTILINE))
+
+    assert documented == set(_commands())
+    assert f"current tree has {len(_commands())} root CLI commands" in reference
+    assert "Planned Commands (Not Yet Shipped)" not in reference

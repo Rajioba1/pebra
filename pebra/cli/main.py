@@ -14,6 +14,7 @@ from pebra.cli import capabilities as capabilities_cmd
 from pebra.cli import candidate_patch as candidate_patch_cmd
 from pebra.cli import dashboard as dashboard_cmd
 from pebra.cli import dependents as dependents_cmd
+from pebra.cli import explore as explore_cmd
 from pebra.cli import gate_check as gate_check_cmd
 from pebra.cli import finalize_outcome as finalize_outcome_cmd
 from pebra.cli import gate_hook as gate_hook_cmd
@@ -112,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     gate_check_cmd.register(subparsers)
     gate_hook_cmd.register(subparsers)
     dependents_cmd.register(subparsers)
+    explore_cmd.register(subparsers)
     summaries = {
         action.dest: action.help
         for action in subparsers._choices_actions

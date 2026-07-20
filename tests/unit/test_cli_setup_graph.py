@@ -12,6 +12,7 @@ import zipfile
 
 from pebra.cli import setup_graph as sg
 from pebra.core.graph_version import CODEGRAPH_DEFAULT_VERSION
+from pebra.core.graph_snapshot import GraphSnapshot
 
 _FRESH = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
           "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24}}
@@ -277,8 +278,21 @@ class _Engine:
 
 def test_setup_graph_happy_builds_index(monkeypatch) -> None:
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
-    eng = _Engine([_FRESH])
+    eng = _Engine([])
     monkeypatch.setattr(sg, "_run", eng)
+
+    class Adapter:
+        def prepare(self, _repo_root):
+            return GraphSnapshot(
+                status="available", provider="CodeGraph", provider_version="1.1.1",
+                index_version="24", repo_head="commit", config_digest="absent",
+                graph_scope_digest="scope", sync_performed=True, fallback_reason=None,
+            )
+
+        def prepared_status(self, _repo_root):
+            return _FRESH
+
+    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
     assert sg.run_setup_graph(_args()) == 0
     assert any(c[1:] == ["init", "/repo"] for c in eng.calls)  # init ran (cmd[0] = resolved exe)
 
@@ -311,3 +325,96 @@ def test_doctor_out_of_range_is_unhealthy(monkeypatch, capsys) -> None:
 def test_doctor_absent_engine_fails_clear(monkeypatch) -> None:
     monkeypatch.setattr(sg, "_installed", lambda: False)
     assert sg.run_doctor(_args()) == 1
+
+
+def test_doctor_reports_config_even_when_engine_is_absent(tmp_path, monkeypatch, capsys) -> None:
+    (tmp_path / "codegraph.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sg, "_installed", lambda: False)
+
+    assert sg.run_doctor(_args(repo_root=str(tmp_path), as_json=True)) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["graph_config"]["exists"] is True
+    assert payload["graph_config"]["digest"] == hashlib.sha256(b"{}").hexdigest()
+
+
+def test_graph_config_reports_supported_fields_and_exclude_as_unsupported(tmp_path) -> None:
+    raw = json.dumps({
+        "extensions": {".extx": "python"},
+        "includeIgnored": ["vendor/**"],
+        "exclude": ["generated/**"],
+    }).encode()
+    (tmp_path / "codegraph.json").write_bytes(raw)
+
+    config = sg._graph_config(str(tmp_path))
+
+    assert config == {
+        "exists": True,
+        "digest": hashlib.sha256(raw).hexdigest(),
+        "valid": True,
+        "extensions": {".extx": "python"},
+        "include_ignored": ["vendor/**"],
+        "supported_fields": ["extensions", "includeIgnored"],
+        "unsupported_fields": ["exclude"],
+        "error": None,
+    }
+
+
+def test_graph_config_reports_absent_and_malformed_without_repair(tmp_path) -> None:
+    assert sg._graph_config(str(tmp_path))["digest"] == "absent"
+    malformed = tmp_path / "codegraph.json"
+    malformed.write_bytes(b"{not json")
+
+    config = sg._graph_config(str(tmp_path))
+
+    assert config["exists"] is True
+    assert config["valid"] is False
+    assert config["error"] == "malformed JSON"
+    assert malformed.read_bytes() == b"{not json"
+
+
+def test_doctor_json_includes_graph_configuration(tmp_path, monkeypatch, capsys) -> None:
+    (tmp_path / "codegraph.json").write_text(
+        json.dumps({"includeIgnored": ["vendor/**"]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_run", _Engine([_FRESH]))
+
+    assert sg.run_doctor(_args(repo_root=str(tmp_path), as_json=True)) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["graph_config"]["exists"] is True
+    assert payload["graph_config"]["include_ignored"] == ["vendor/**"]
+    assert payload["graph_config"]["supported_fields"] == ["extensions", "includeIgnored"]
+
+
+def test_setup_preserves_existing_config_bytes_and_prepares_after_init(
+    tmp_path, monkeypatch
+) -> None:
+    raw = b'{"extensions":{".extx":"python"}}\n'
+    config = tmp_path / "codegraph.json"
+    config.write_bytes(raw)
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    engine = _Engine([])
+    monkeypatch.setattr(sg, "_run", engine)
+    calls: list[str] = []
+
+    class Adapter:
+        def prepare(self, repo_root):
+            calls.append(repo_root)
+            return GraphSnapshot(
+                status="available", provider="CodeGraph", provider_version="1.1.1",
+                index_version="24", repo_head="commit", config_digest="digest",
+                graph_scope_digest="scope", sync_performed=True, fallback_reason=None,
+            )
+
+        def prepared_status(self, _repo_root):
+            return _FRESH
+
+    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+
+    assert sg.run_setup_graph(_args(repo_root=str(tmp_path))) == 0
+    assert config.read_bytes() == raw
+    assert calls == [str(tmp_path)]
+    assert any(call[1:] == ["init", str(tmp_path)] for call in engine.calls)

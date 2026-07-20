@@ -560,6 +560,47 @@ def test_graph_scope_digest_survives_ordinary_commit_changes(tmp_path, monkeypat
     assert first.graph_scope_digest == second.graph_scope_digest
 
 
+def test_revalidate_snapshot_accepts_matching_post_query_fences(tmp_path, monkeypatch) -> None:
+    statuses = iter([FRESH, FRESH])
+    adapter = cga.CodeGraphAdapter(status_fn=lambda _root: next(statuses))
+    monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit-b")
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert adapter.revalidate_snapshot(str(tmp_path), snapshot) is True
+
+
+@pytest.mark.parametrize(
+    "post_status",
+    [
+        {**FRESH, "pendingChanges": {"added": 0, "modified": 1, "removed": 0}},
+        {
+            **FRESH,
+            "index": {**FRESH["index"], "builtWithExtractionVersion": 25},
+        },
+        {**FRESH, "version": "2.0.0"},
+    ],
+)
+def test_revalidate_snapshot_rejects_changed_or_untrusted_provider_status(
+    tmp_path, monkeypatch, post_status
+) -> None:
+    statuses = iter([FRESH, post_status])
+    adapter = cga.CodeGraphAdapter(status_fn=lambda _root: next(statuses))
+    monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit-b")
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert adapter.revalidate_snapshot(str(tmp_path), snapshot) is False
+
+
+def test_revalidate_snapshot_rejects_post_query_head_change(tmp_path, monkeypatch) -> None:
+    statuses = iter([FRESH, FRESH])
+    heads = iter(["commit-b", "commit-c"])
+    adapter = cga.CodeGraphAdapter(status_fn=lambda _root: next(statuses))
+    monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: next(heads))
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert adapter.revalidate_snapshot(str(tmp_path), snapshot) is False
+
+
 def test_windows_cmd_launcher_is_used_for_status_and_sync(tmp_path, monkeypatch) -> None:
     from pebra.core import engine_argv
 

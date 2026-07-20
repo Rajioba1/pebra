@@ -154,6 +154,29 @@ forbidden_modules =
     pebra.adapters.learning_store
     pebra.adapters.calibration_store
 
+[importlinter:contract:repository-exploration-provider-neutral]
+name = repository exploration core and port stay provider neutral
+type = forbidden
+source_modules =
+    pebra.core.graph_snapshot
+    pebra.core.exploration
+    pebra.ports.repository_explorer_port
+forbidden_modules =
+    pebra.adapters
+    pebra.app
+    pebra.cli
+    pebra.composition
+
+[importlinter:contract:cli-explore-no-assessment]
+name = CLI exploration never enters assessment scoring
+type = forbidden
+source_modules =
+    pebra.cli.explore
+forbidden_modules =
+    pebra.app.assess_controller
+    pebra.core.assessment_builder
+    pebra.core.decision_engine
+
 [importlinter:contract:layers]
 name = layered architecture (surfaces > app > ports > core)
 type = layers

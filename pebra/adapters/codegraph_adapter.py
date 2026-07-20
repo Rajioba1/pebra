@@ -496,6 +496,45 @@ class CodeGraphAdapter:
         """Return cached accepted status without running preparation."""
         return self._status_cache.get(repo_root)
 
+    def revalidate_snapshot(self, repo_root: str, snapshot: GraphSnapshot) -> bool:
+        """Recheck non-mutating provider and repository fences after an explicit query."""
+        prepared_status = self._status_cache.get(repo_root)
+        if (
+            snapshot.status != "available"
+            or self._snapshot_cache.get(repo_root) != snapshot
+            or prepared_status is None
+        ):
+            return False
+        try:
+            if self._status_fn is None:
+                exe = find_engine()
+                status = _run_status(repo_root, exe) if exe is not None else None
+            else:
+                status = self._status_fn(repo_root)
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return False
+        if (
+            not _valid_status(status)
+            or not in_accepted_range(status["version"])
+            or status["worktreeMismatch"] is not None
+            or not _is_fresh(status)
+            or status.get("indexPath") != prepared_status.get("indexPath")
+        ):
+            return False
+        config_digest = _config_digest(repo_root)
+        provider_version = str(status["version"])
+        index_version = _index_version(status)
+        return (
+            git_adapter.head_commit(repo_root) == snapshot.repo_head
+            and config_digest == snapshot.config_digest
+            and provider_version == snapshot.provider_version
+            and index_version == snapshot.index_version
+            and config_digest is not None
+            and _scope_digest(
+                "CodeGraph", provider_version, index_version, config_digest
+            ) == snapshot.graph_scope_digest
+        )
+
     def bind_assessed_commit(self, repo_root: str, assessed_commit: str | None) -> bool:
         """Keep prepared graph reads trusted only for the independently observed assessment HEAD."""
         snapshot = self.prepare(repo_root)

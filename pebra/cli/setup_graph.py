@@ -2,7 +2,7 @@
 
 EXPLICIT operator actions, deliberately separate from `pebra assess` (which never installs and only does
 a safe repair-sync of an existing index). Product language is "graph engine"; default provider is
-codegraph. Stdlib + subprocess only; imports neither the assess path nor the codegraph adapter.
+codegraph. It does not import or invoke the assessment path.
 
 Install policy (ratified):
   - Default install = an EXACT pinned version (core.graph_version.CODEGRAPH_DEFAULT_VERSION), never
@@ -37,6 +37,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from pebra.adapters.codegraph_adapter import CodeGraphAdapter
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine, managed_install_root
 from pebra.core.graph_version import (
@@ -149,6 +150,70 @@ def _diagnosis(status: dict[str, Any] | None) -> dict[str, Any]:
         "pending_changes": status.get("pendingChanges"),
         "reindex_recommended": bool((status.get("index") or {}).get("reindexRecommended")),
         "healthy": _healthy(status),
+    }
+
+
+def _graph_config(repo_root: str) -> dict[str, Any]:
+    path = Path(repo_root) / "codegraph.json"
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return {
+            "exists": False,
+            "digest": "absent",
+            "valid": True,
+            "extensions": {},
+            "include_ignored": [],
+            "supported_fields": ["extensions", "includeIgnored"],
+            "unsupported_fields": [],
+            "error": None,
+        }
+    except OSError as exc:
+        return {
+            "exists": True,
+            "digest": None,
+            "valid": False,
+            "extensions": {},
+            "include_ignored": [],
+            "supported_fields": ["extensions", "includeIgnored"],
+            "unsupported_fields": [],
+            "error": str(exc),
+        }
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    if not isinstance(payload, dict):
+        return {
+            "exists": True,
+            "digest": digest,
+            "valid": False,
+            "extensions": {},
+            "include_ignored": [],
+            "supported_fields": ["extensions", "includeIgnored"],
+            "unsupported_fields": [],
+            "error": "malformed JSON",
+        }
+    extensions = payload.get("extensions", {})
+    include_ignored = payload.get("includeIgnored", [])
+    valid_extensions = isinstance(extensions, dict) and all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in extensions.items()
+    )
+    valid_ignored = isinstance(include_ignored, list) and all(
+        isinstance(value, str) for value in include_ignored
+    )
+    valid = valid_extensions and valid_ignored
+    return {
+        "exists": True,
+        "digest": digest,
+        "valid": valid,
+        "extensions": extensions if valid_extensions else {},
+        "include_ignored": include_ignored if valid_ignored else [],
+        "supported_fields": ["extensions", "includeIgnored"],
+        "unsupported_fields": ["exclude"] if "exclude" in payload else [],
+        "error": None if valid else "supported fields have invalid types",
     }
 
 
@@ -392,15 +457,25 @@ def _ensure_installed(
 
 
 def _build_worktree_local_index(repo_root: str) -> dict[str, Any] | None:
-    """init (worktree-local; indexes by default) + sync, then return the fresh status."""
+    """Initialize a worktree-local index, then reconcile it through the trusted preparation path."""
     exe = _engine_exe()
-    _run([exe, "init", repo_root], timeout=600)
-    _run([exe, "sync", repo_root], timeout=300)
-    return _status(repo_root)
+    rc, _, _ = _run([exe, "init", repo_root], timeout=600)
+    if rc != 0:
+        return None
+    adapter = CodeGraphAdapter()
+    snapshot = adapter.prepare(repo_root)
+    return adapter.prepared_status(repo_root) if snapshot.status == "available" else None
 
 
 def run_setup_graph(args: Any) -> int:
     repo = args.repo_root
+    config_path = Path(repo) / "codegraph.json"
+    try:
+        config_before = config_path.read_bytes()
+    except FileNotFoundError:
+        config_before = None
+    except OSError:
+        config_before = None
     version, verr = _resolve_version(args.version, args.allow_unsupported, args.as_json)
     if verr is not None:
         return verr
@@ -410,8 +485,15 @@ def run_setup_graph(args: Any) -> int:
     if install_err is not None:
         return install_err
     status = _build_worktree_local_index(repo)
+    try:
+        config_after = config_path.read_bytes()
+    except FileNotFoundError:
+        config_after = None
+    except OSError:
+        config_after = None
     diag = _diagnosis(status)
-    ok = diag["healthy"]
+    config_preserved = config_before == config_after
+    ok = diag["healthy"] and config_preserved
     intent = "repair worktree-local index" if args.fix else "initialize graph index"
     lines = [f"setup-graph ({intent}) — repo: {repo}, codegraph {version}",
              f"  initialized:       {diag.get('initialized')}",
@@ -419,16 +501,31 @@ def run_setup_graph(args: Any) -> int:
              f"  healthy:           {ok}"]
     if not ok and diag.get("worktree_mismatch"):
         lines.append("  worktree mismatch persists — ensure you run this inside the target worktree.")
+    if not config_preserved:
+        lines.append("  codegraph.json changed during initialization; refusing prepared status.")
     _emit({"ok": ok, "command": "setup-graph", "repo_root": repo, "version": version,
-           "diagnosis": diag}, args.as_json, lines)
+           "config_preserved": config_preserved, "diagnosis": diag}, args.as_json, lines)
     return 0 if ok else 1
 
 
 def run_doctor(args: Any) -> int:
     repo = args.repo_root
+    graph_config = _graph_config(repo)
     if not _installed():
-        _emit({"ok": False, "step": "engine", "error": "not found"}, args.as_json,
-              [f"graph engine '{_ENGINE}' not found; {_MANUAL_HINT} (or run: pebra setup-graph)"])
+        _emit(
+            {
+                "ok": False,
+                "step": "engine",
+                "error": "not found",
+                "graph_config": graph_config,
+            },
+            args.as_json,
+            [
+                f"graph engine '{_ENGINE}' not found; {_MANUAL_HINT} "
+                "(or run: pebra setup-graph)",
+                f"codegraph.json: {graph_config['digest']}",
+            ],
+        )
         return 1
     runtime_ver = _installed_version()
     in_range = bool(runtime_ver) and in_accepted_range(runtime_ver)
@@ -439,19 +536,28 @@ def run_doctor(args: Any) -> int:
         status = _build_worktree_local_index(repo)
         diag = _diagnosis(status)
         repaired = True
-    ok = diag["healthy"] and in_range
+    ok = diag["healthy"] and in_range and graph_config["valid"]
     lines = [f"doctor — repo: {repo}",
              f"  codegraph version: {runtime_ver or 'unknown'} (accepted {CODEGRAPH_ACCEPTED_RANGE})",
              f"  version_in_range:  {in_range}",
              f"  initialized:       {diag.get('initialized')}",
              f"  worktree_mismatch: {diag.get('worktree_mismatch')}",
              f"  reindex_needed:    {diag.get('reindex_recommended')}",
+             f"  config exists:     {graph_config['exists']}",
+             f"  config digest:     {graph_config['digest']}",
+             f"  config valid:      {graph_config['valid']}",
+             "  config support:    extensions, includeIgnored (exclude unsupported)",
              f"  healthy:           {ok}"]
+    if graph_config["unsupported_fields"]:
+        lines.append("  unsupported config fields: " + ", ".join(graph_config["unsupported_fields"]))
+    if graph_config["error"]:
+        lines.append(f"  config error: {graph_config['error']}")
     if not in_range:
         lines.append("  version outside accepted range — run: pebra setup-graph --fix")
     elif not ok and not args.fix_graph:
         lines.append("  run `pebra doctor --fix-graph` (or `pebra setup-graph --fix`) to repair.")
     _emit({"ok": ok, "command": "doctor", "repo_root": repo, "repaired": repaired,
            "codegraph_version": runtime_ver, "version_in_range": in_range,
-           "accepted_range": CODEGRAPH_ACCEPTED_RANGE, "diagnosis": diag}, args.as_json, lines)
+           "accepted_range": CODEGRAPH_ACCEPTED_RANGE, "graph_config": graph_config,
+           "diagnosis": diag}, args.as_json, lines)
     return 0 if ok else 1

@@ -7,9 +7,7 @@ pebra help --all
 pebra --version
 ```
 
-The current tree has 21 root CLI commands, two installed console entrypoints, four MCP tools, 17 nox sessions, repository packaging utilities, and three GitHub Actions workflows.
-
-> `pebra explore` is specified in `docs/superpowers/plans/2026-07-20-observatory-identity-and-exploration.md` but is not implemented in the current CLI. It must not be presented as shipped until that milestone lands.
+The current tree has 22 root CLI commands, two installed console entrypoints, four MCP tools, 17 nox sessions, repository packaging utilities, and three GitHub Actions workflows.
 
 ## Shell Compatibility
 
@@ -113,25 +111,6 @@ pebra help help
 ```
 
 Every subcommand also accepts `-h` or `--help`.
-
-## Planned Commands (Not Yet Shipped)
-
-These interfaces exist only in the implementation plan. They are not part of the current 21-command parser and must not be used in automation or described as installed behavior yet.
-
-Milestone 5 plans one new root command:
-
-```text
-pebra explore QUERY [--file PATH]... [--max-files N] [--max-bytes N]
-                    [--repo-root PATH] [--json]
-```
-
-Milestone 7 plans one repository-development helper, not a root `pebra` command:
-
-```text
-python -m scripts.demo_observatory [--tui | --dashboard] [--keep]
-```
-
-Milestone 6 may add an `x` key to assessment detail for explicit impact exploration, but only if Milestone 5 proves graph preparation confinement and query non-mutation. It is not a current key binding.
 
 ## Product CLI
 
@@ -383,6 +362,9 @@ pebra setup-graph --version 1.1.1 --repo-root .
 
 `PEBRA_CODEGRAPH_BIN` overrides graph-engine discovery.
 
+Initialization preserves an existing `codegraph.json` byte-for-byte, then runs the same fenced graph
+preparation used by assessment and exploration. It does not scaffold graph configuration.
+
 ### `doctor`
 
 Diagnose graph availability; add `--fix-graph` for an explicitly mutating repair.
@@ -395,6 +377,11 @@ pebra doctor [--repo-root PATH] [--fix-graph] [--json]
 pebra doctor --repo-root .
 pebra doctor --repo-root . --fix-graph --json
 ```
+
+Doctor reports whether `codegraph.json` exists, its raw-byte SHA-256 digest (or `absent`), the
+structurally valid `extensions` and `includeIgnored` values supported by managed CodeGraph 1.1.1, and
+any `exclude` key as unsupported. Malformed configuration is reported and never repaired. Without
+`--fix-graph`, doctor is read-only.
 
 ### `graph-stats`
 
@@ -488,6 +475,36 @@ pebra dependents --target PATH [--repo-root PATH] [--json]
 pebra dependents --target pebra/observatory_context.py --repo-root .
 pebra dependents --target pebra/observatory_context.py --repo-root . --json
 ```
+
+### `explore`
+
+Return bounded, descriptive repository context from an existing same-worktree graph index.
+
+```text
+pebra explore [QUERY] [--file PATH]... [--max-files N] [--max-bytes N]
+              [--repo-root PATH] [--json]
+```
+
+`QUERY` is required unless at least one `--file` is supplied. `--max-files` is clamped to `1..32`
+and `--max-bytes` to `1000..100000`. The default bounds are 8 files and 24000 UTF-8 bytes.
+
+```console
+pebra explore "repository resolution" --repo-root .
+pebra explore --file pebra/observatory_context.py --repo-root . --json
+```
+
+The command explicitly reconciles an already-initialized index before querying it, then revalidates
+the repository HEAD, raw `codegraph.json` digest, provider version, extraction version, and graph scope
+after the query. It never installs an engine, initializes an index, repairs a worktree mismatch, or
+creates/edits `codegraph.json`. Free-text context is opaque descriptive output and never becomes
+trusted assessment evidence. Affected tests come only from the structurally validated provider JSON;
+dependent files use the existing prepared dependency-reader path.
+
+An unavailable or stale provider is a handled result: the command returns exit 0 with
+`status != "available"` and empty context/file/test fields. Invalid arguments return argparse exit 2.
+Unexpected adapter contract failures return exit 1. Provider queries may perform transient SQLite
+WAL/SHM housekeeping inside the derived cache; source, configuration, `.pebra`, Git content,
+persistent database bytes, graph schema, and logical graph rows must remain unchanged.
 
 ### `help`
 
