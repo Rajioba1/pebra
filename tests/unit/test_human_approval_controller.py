@@ -16,7 +16,7 @@ _BINDING = {
 }
 
 
-def _assessment(assessment_id):
+def _assessment(assessment_id, *, decision="ask_human", gate=2):
     replay_metadata = {
         **_META,
         "digest": ("a" if assessment_id == "asm_1" else "c") * 64,
@@ -24,9 +24,10 @@ def _assessment(assessment_id):
     return {
         "assessment_id": assessment_id,
         "repo_id": "repo-1",
-        "decision": "ask_human",
+        "decision": decision,
         "assessed_commit": "head-1",
         "scores": {"expected_loss": 0.4, "benefit": 0.3, "rau": -0.1},
+        "gates_fired": [{"gate": gate, "name": "review_gate"}],
         "model_guidance_packet": {
             "binding": {"candidate": _BINDING, "required_controls": ["review"]},
             "advisory": {"high_risk_triggers": [{"risk_class": "contract"}]},
@@ -38,8 +39,10 @@ def _assessment(assessment_id):
 
 
 class FakeStore:
-    def __init__(self, ids=("asm_1",)):
-        self.rows = [_assessment(value) for value in ids]
+    def __init__(self, ids=("asm_1",), *, decision="ask_human", gate=2):
+        self.rows = [
+            _assessment(value, decision=decision, gate=gate) for value in ids
+        ]
 
     def validate_chain(self):
         return True
@@ -93,6 +96,61 @@ def test_pending_approval_can_select_explicit_assessment() -> None:
         "expected_loss": 0.4, "benefit": 0.3, "expected_utility": None, "rau": -0.1,
     }
     assert pending.summary["files"] == ["src/a.py"]
+
+
+def test_pending_approval_accepts_sanction_convertible_reject() -> None:
+    pending = controller.select_pending_approval(
+        repo_id="repo-1",
+        assessed_commit="head-1",
+        assessment_id="asm_1",
+        store=FakeStore(decision="reject", gate=3),
+        replay_cache=FakeReplay(),
+    )
+
+    assert pending.assessment_id == "asm_1"
+    assert pending.summary["decision"] == "reject"
+    assert pending.summary["controlling_gate"] == 3
+
+
+def test_pending_approval_refuses_nonconvertible_policy_reject() -> None:
+    with pytest.raises(controller.HumanApprovalError, match="not eligible for risk acceptance"):
+        controller.select_pending_approval(
+            repo_id="repo-1",
+            assessed_commit="head-1",
+            assessment_id="asm_1",
+            store=FakeStore(decision="reject", gate=1),
+            replay_cache=FakeReplay(),
+        )
+
+
+def test_approval_revalidates_reject_eligibility_before_sanction(monkeypatch) -> None:
+    store = FakeStore(decision="reject", gate=3)
+    pending = controller.select_pending_approval(
+        repo_id="repo-1",
+        assessed_commit="head-1",
+        assessment_id="asm_1",
+        store=store,
+        replay_cache=FakeReplay(),
+    )
+    store.rows[0]["gates_fired"] = [{"gate": 1, "name": "policy_violation"}]
+    monkeypatch.setattr(
+        controller.accept_risk_controller,
+        "accept_risk",
+        lambda *args, **kwargs: pytest.fail("ineligible rejection created a sanction"),
+    )
+
+    with pytest.raises(controller.HumanApprovalError, match="no longer eligible"):
+        controller.approve_and_apply(
+            pending,
+            repo_id="repo-1",
+            repo_root="/repo",
+            db_path="/repo/.pebra/pebra.db",
+            store=store,
+            assess_ports={"sanction_port": object()},
+            application_ports={
+                "replay_cache": FakeReplay(), "gate": object(), "applier": object(),
+            },
+        )
 
 
 def test_approve_reassesses_controlled_risk_then_applies(monkeypatch) -> None:

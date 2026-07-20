@@ -418,7 +418,7 @@ def test_candidate_commands_are_not_advertised_without_replay_data() -> None:
     assert "assessment_id" not in proceed_action
 
 
-def test_non_review_payload_does_not_claim_human_approval_is_required() -> None:
+def test_unscoped_reject_payload_requests_review_without_claiming_override() -> None:
     result = AssessmentResult(
         recommended_decision=Decision.REJECT,
         requires_confirmation=False,
@@ -442,4 +442,137 @@ def test_non_review_payload_does_not_claim_human_approval_is_required() -> None:
 
     payload = composition.assess_payload(outcome)
 
-    assert payload["next_action"] == {"type": "stop", "reason": result.decision_reason}
+    action = payload["next_action"]
+    assert action["type"] == "request_human_review"
+    assert action["reason"] == result.decision_reason
+    assert action["override"]["available"] is False
+    assert "command" not in action["override"]
+
+
+def _reject_outcome(*, gate: int, scores: dict, replay: bool = True) -> AssessmentOutcome:
+    explanation = Explanation(
+        risk_level_band="High", value_after_risk_band="Negative", confidence_band="high",
+        confidence_percent=90, code_sensitivity_label="High",
+        code_sensitivity_descriptor="shared code", expected_damage=0.73,
+        risk_budget_percent=200, affected_area="shared code",
+    )
+    candidate_binding = {
+        "algorithm": "sha256-normalized-content-v1",
+        "files": {"src/api.ts": "a" * 64},
+    }
+    result = AssessmentResult(
+        recommended_decision=Decision.REJECT,
+        requires_confirmation=False,
+        action_status=ActionStatus.REJECTED,
+        risk_mode=RiskMode.NORMAL,
+        scores={**scores, "symbol_scope_evidence": {}},
+        repo_id="r",
+        repo_root="/repo",
+        gates_fired=[{"gate": gate, "name": "reasoned_reject"}],
+        decision_reason="This candidate has negative risk-adjusted utility.",
+        model_guidance_packet={
+            "binding": {
+                "candidate": candidate_binding,
+                "required_controls": ["human_review", "targeted_tests"],
+            },
+            "advisory": {},
+        },
+    )
+    action = CandidateAction(
+        id="edit-api", label="edit api", action_type="modify",
+        expected_files=["src/api.ts"],
+    )
+    return AssessmentOutcome(
+        recommended_result=result,
+        recommended_explanation=explanation,
+        assessment_id="asm_42",
+        repo_id="r",
+        repo_root="/repo",
+        scored_actions=[ScoredAction(action=action, result=result, explanation=explanation)],
+        candidate_replay={"status": "available"} if replay else {},
+    )
+
+
+def test_risk_reject_payload_offers_only_bound_interactive_human_override() -> None:
+    payload = composition.assess_payload(_reject_outcome(
+        gate=3,
+        scores={
+            "expected_loss": 0.73,
+            "benefit": 0.20,
+            "expected_utility": -0.53,
+            "rau": -0.61,
+        },
+    ))
+
+    assert payload["next_action"] == {
+        "type": "request_human_approval",
+        "origin_decision": "reject",
+        "status": "pending",
+        "assessment_id": "asm_42",
+        "action_id": "edit-api",
+        "candidate_binding": {
+            "algorithm": "sha256-normalized-content-v1",
+            "files": {"src/api.ts": "a" * 64},
+        },
+        "risk_benefit": {
+            "expected_loss": 0.73,
+            "benefit": 0.20,
+            "expected_utility": -0.53,
+            "rau": -0.61,
+        },
+        "reason": "This candidate has negative risk-adjusted utility.",
+        "controlling_gate": 3,
+        "required_controls": ["human_review", "targeted_tests"],
+        "trusted_actor_required": True,
+        "override": {
+            "available": True,
+            "command": "pebra accept-risk --apply --assessment-id asm_42",
+        },
+    }
+
+
+def test_policy_reject_payload_requires_human_route_without_risk_override() -> None:
+    payload = composition.assess_payload(_reject_outcome(
+        gate=1,
+        scores={
+            "expected_loss": 0.73,
+            "benefit": 0.20,
+            "expected_utility": -0.53,
+            "rau": -0.61,
+        },
+    ))
+
+    action = payload["next_action"]
+    assert action["type"] == "request_human_review"
+    assert action["origin_decision"] == "reject"
+    assert action["controlling_gate"] == 1
+    assert action["override"] == {
+        "available": False,
+        "unavailable_reason": (
+            "This rejection is not eligible for generic risk acceptance; revise the candidate or "
+            "follow a maintainer-authored policy change, then reassess."
+        ),
+    }
+    assert "command" not in action["override"]
+
+
+def test_reject_payload_with_untrusted_scores_never_advertises_override() -> None:
+    payload = composition.assess_payload(_reject_outcome(
+        gate=3,
+        scores={
+            "expected_loss": float("nan"),
+            "benefit": 0.20,
+            "expected_utility": -0.53,
+            "rau": -0.61,
+        },
+    ))
+
+    action = payload["next_action"]
+    assert action["type"] == "request_human_review"
+    assert action["risk_benefit"] is None
+    assert action["override"] == {
+        "available": False,
+        "unavailable_reason": (
+            "Risk-benefit evidence is unavailable or malformed; reassess before human review."
+        ),
+    }

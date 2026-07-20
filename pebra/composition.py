@@ -294,6 +294,81 @@ def _recommended_action_id(outcome: Any) -> str | None:
     return None
 
 
+def _finite_risk_benefit(scores: object) -> dict[str, float] | None:
+    import math
+
+    if not isinstance(scores, dict):
+        return None
+    values: dict[str, float] = {}
+    for key in ("expected_loss", "benefit", "expected_utility", "rau"):
+        value = scores.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            normalized = float(value)
+        except OverflowError:
+            return None
+        if not math.isfinite(normalized):
+            return None
+        values[key] = normalized
+    return values
+
+
+def _reject_next_action(outcome: Any) -> dict[str, Any]:
+    from pebra.core.human_review import (  # noqa: PLC0415
+        controlling_gate,
+        reject_override_eligible,
+    )
+
+    result = outcome.recommended_result
+    packet = result.model_guidance_packet or {}
+    binding = packet.get("binding") or {}
+    candidate = binding.get("candidate")
+    gate = controlling_gate(result.gates_fired)
+    risk_benefit = _finite_risk_benefit(result.scores)
+    replay_available = outcome.candidate_replay.get("status") == "available"
+    eligible = reject_override_eligible(result.recommended_decision, result.gates_fired)
+    override_available = (
+        eligible and replay_available and isinstance(candidate, dict) and risk_benefit is not None
+    )
+    if risk_benefit is None:
+        unavailable_reason = (
+            "Risk-benefit evidence is unavailable or malformed; reassess before human review."
+        )
+    elif not eligible:
+        unavailable_reason = (
+            "This rejection is not eligible for generic risk acceptance; revise the candidate or "
+            "follow a maintainer-authored policy change, then reassess."
+        )
+    elif not replay_available or not isinstance(candidate, dict):
+        unavailable_reason = (
+            "Exact candidate replay is unavailable; reassess the candidate before human review."
+        )
+    else:  # pragma: no cover - the conditions above exhaust false availability
+        unavailable_reason = "Human override is unavailable; reassess the candidate."
+    override: dict[str, Any] = {"available": override_available}
+    if override_available:
+        override["command"] = (
+            "pebra accept-risk --apply --assessment-id " + outcome.assessment_id
+        )
+    else:
+        override["unavailable_reason"] = unavailable_reason
+    return {
+        "type": "request_human_approval" if override_available else "request_human_review",
+        "origin_decision": "reject",
+        "status": "pending",
+        "assessment_id": outcome.assessment_id,
+        "action_id": _recommended_action_id(outcome),
+        "candidate_binding": candidate if isinstance(candidate, dict) else None,
+        "risk_benefit": risk_benefit,
+        "reason": result.decision_reason,
+        "controlling_gate": gate,
+        "required_controls": list(binding.get("required_controls") or []),
+        "trusted_actor_required": True,
+        "override": override,
+    }
+
+
 def _next_action(outcome: Any) -> dict[str, Any]:
     result = outcome.recommended_result
     decision = result.recommended_decision.value
@@ -338,6 +413,8 @@ def _next_action(outcome: Any) -> dict[str, Any]:
                 "command": "pebra apply-candidate --assessment-id " + outcome.assessment_id,
             })
         return application
+    if decision == "reject":
+        return _reject_next_action(outcome)
     return {"type": "stop", "reason": reason}
 
 

@@ -50,6 +50,9 @@ def _canonical(
         "repo_id": result.repo_id,
         "repo_root": result.repo_root,
         "assessed_commit": result.assessed_commit,
+        "gates_fired": result.gates_fired,
+        "high_risk_triggers": result.high_risk_triggers,
+        "decision_reason": result.decision_reason,
         "model_guidance_packet": result.model_guidance_packet,
         "request": request_payload,
     }
@@ -1997,14 +2000,22 @@ class SqliteStore:
     def pending_review_assessments(
         self, repo_id: str, assessed_commit: str
     ) -> list[dict[str, Any]]:
+        from pebra.core.human_review import reject_override_eligible  # noqa: PLC0415
+
         rows: list[dict[str, Any]] = []
         for row_id, content_json in self._con.execute(
             "SELECT id, content_json FROM assessments "
-            "WHERE repo_id = ? AND decision = 'ask_human' ORDER BY id DESC LIMIT 200",
+            "WHERE repo_id = ? AND decision IN ('ask_human', 'reject') "
+            "ORDER BY id DESC LIMIT 200",
             (repo_id,),
         ):
             content = json.loads(content_json)
             if content.get("assessed_commit") != assessed_commit:
+                continue
+            decision = content.get("decision")
+            if decision == "reject" and not reject_override_eligible(
+                decision, content.get("gates_fired") or ()
+            ):
                 continue
             content["assessment_id"] = f"asm_{row_id}"
             rows.append(content)

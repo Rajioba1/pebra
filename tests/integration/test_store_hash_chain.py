@@ -20,6 +20,7 @@ def _result(
     *,
     decision: Decision = Decision.PROCEED,
     assessed_commit: str | None = None,
+    gate: int | None = None,
 ) -> AssessmentResult:
     return AssessmentResult(
         recommended_decision=decision,
@@ -30,6 +31,7 @@ def _result(
         repo_id="repo_local_example",
         repo_root="/abs/path",
         assessed_commit=assessed_commit,
+        gates_fired=([{"gate": gate, "name": "review_gate"}] if gate is not None else []),
         model_guidance_packet={"guidance_packet_id": "gp_a1", "decision": "proceed"},
     )
 
@@ -53,6 +55,44 @@ def test_pending_review_assessments_are_scoped_to_repo_and_head(tmp_path) -> Non
 
     assert [row["assessment_id"] for row in rows] == [expected]
     assert rows[0]["request"]["task"] == "current"
+
+
+def test_pending_review_includes_only_override_eligible_rejects(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    eligible = store.persist_assessment(
+        _result(
+            -0.2, decision=Decision.REJECT, assessed_commit="head-1", gate=3,
+        ),
+        {"task": "risk reject", "candidate_replay": {"status": "available"}},
+    )
+    store.persist_assessment(
+        _result(
+            -0.2, decision=Decision.REJECT, assessed_commit="head-1", gate=1,
+        ),
+        {"task": "policy reject", "candidate_replay": {"status": "available"}},
+    )
+
+    rows = store.pending_review_assessments("repo_local_example", "head-1")
+
+    assert [row["assessment_id"] for row in rows] == [eligible]
+
+
+def test_reject_review_reason_and_gate_are_hash_covered(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    result = _result(
+        -0.2, decision=Decision.REJECT, assessed_commit="head-1", gate=3,
+    )
+    result.decision_reason = "Negative risk-adjusted utility."
+    assessment_id = store.persist_assessment(
+        result,
+        {"task": "risk reject", "candidate_replay": {"status": "available"}},
+    )
+
+    row = store.load_assessment(assessment_id)
+
+    assert row["gates_fired"] == [{"gate": 3, "name": "review_gate"}]
+    assert row["decision_reason"] == "Negative risk-adjusted utility."
+    assert store.validate_chain() is True
 
 
 def test_two_inserts_validate(tmp_path) -> None:

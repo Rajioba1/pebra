@@ -28,6 +28,7 @@ from pebra.core.constants import (
     Z_ALPHA_90,
 )
 from pebra.core.graph_trust import is_trusted_fanin
+from pebra.core.human_review import SANCTION_CONVERTIBLE_GATES
 from pebra.core.models import AssessmentResult
 from pebra.core.patch_paths import touched_files
 
@@ -683,7 +684,7 @@ def decide(
     if (
         sanction
         and provisional in {Decision.ASK_HUMAN, Decision.REJECT}
-        and fired_gate in {2, 3, 4, 9}
+        and fired_gate in SANCTION_CONVERTIBLE_GATES
         and sanction.get("valid")
         and sanction.get("pre_edit_authorization_controls_satisfied")
         and fired_gate in set(sanction.get("converts_gates", []))

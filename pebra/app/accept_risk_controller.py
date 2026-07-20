@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
+from pebra.core.human_review import SANCTION_CONVERTIBLE_GATES
 from pebra.ports.sanction_port import SanctionPort
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -66,7 +67,9 @@ def accept_risk(
         "pre_edit_authorization_controls_satisfied": bool(
             sanction_spec.get("pre_edit_authorization_controls_satisfied", False)
         ),
-        "converts_gates": list(sanction_spec.get("converts_gates", [2, 3, 4, 9])),
+        "converts_gates": list(
+            sanction_spec.get("converts_gates", sorted(SANCTION_CONVERTIBLE_GATES))
+        ),
         "pre_commit_required_controls": list(
             sanction_spec.get("pre_commit_required_controls", [])
         ),

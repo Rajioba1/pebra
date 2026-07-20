@@ -32,7 +32,7 @@ class StorePort(Protocol):
     def pending_review_assessments(
         self, repo_id: str, assessed_commit: str
     ) -> list[dict[str, Any]]:
-        """Current-HEAD ask-human assessments, newest first."""
+        """Current-HEAD ask-human and override-eligible reject assessments, newest first."""
         ...
 
     def revise_safer_attempt_count(

@@ -11,6 +11,7 @@ from pebra.app import (
     candidate_apply_controller,
 )
 from pebra.core.constants import Decision, RiskMode
+from pebra.core.human_review import controlling_gate, reject_override_eligible
 from pebra.ports.candidate_replay_port import CandidateReplayPort
 from pebra.ports.store_port import StorePort
 
@@ -42,6 +43,8 @@ def _summary(
     action = replay.request.candidate_actions[0]
     return {
         "assessment_id": assessment_id,
+        "decision": assessment.get("decision"),
+        "controlling_gate": controlling_gate(assessment.get("gates_fired") or ()),
         "task": replay.request.task,
         "action_id": action.id,
         "files": list(action.expected_files),
@@ -53,6 +56,13 @@ def _summary(
         or "; ".join(str(value) for value in (packet.get("advisory") or {}).get("why", [])),
         "required_controls": list((packet.get("binding") or {}).get("required_controls") or []),
     }
+
+
+def _review_eligible(assessment: dict[str, Any]) -> bool:
+    decision = assessment.get("decision")
+    if decision == Decision.ASK_HUMAN.value:
+        return True
+    return reject_override_eligible(decision, assessment.get("gates_fired") or ())
 
 
 def select_pending_approval(
@@ -85,6 +95,12 @@ def select_pending_approval(
                     "the requested assessment no longer has an applicable candidate"
                 ) from None
             continue
+        if not _review_eligible(replay.assessment):
+            if assessment_id is not None:
+                raise HumanApprovalError(
+                    "the requested rejected candidate is not eligible for risk acceptance"
+                )
+            continue
         digest = str(replay.metadata.get("digest") or current_id)
         candidates_by_digest.setdefault(
             digest, PendingApproval(current_id, replay, _summary(current_id, replay))
@@ -107,7 +123,7 @@ def _sanction_spec(pending: PendingApproval) -> dict[str, Any]:
     action_id = pending.replay.request.candidate_actions[0].id
     if not isinstance(binding, dict):
         raise HumanApprovalError("pending assessment has no exact candidate binding")
-    return {
+    spec = {
         "assessment_id": pending.assessment_id,
         "action_id": action_id,
         "risk_profile": {
@@ -123,6 +139,10 @@ def _sanction_spec(pending: PendingApproval) -> dict[str, Any]:
             (packet.get("advisory") or {}).get("high_risk_triggers") or []
         ),
     }
+    gate = controlling_gate(assessment.get("gates_fired") or ())
+    if gate is not None:
+        spec["converts_gates"] = [gate]
+    return spec
 
 
 def approve_and_apply(
@@ -135,6 +155,16 @@ def approve_and_apply(
     assess_ports: dict[str, Any],
     application_ports: dict[str, Any],
 ) -> HumanApprovalOutcome:
+    if not store.validate_chain():
+        raise HumanApprovalError("assessment ledger integrity check failed")
+    try:
+        current = store.load_assessment(pending.assessment_id)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HumanApprovalError("pending assessment could not be revalidated") from exc
+    if current.get("repo_id") != repo_id or not _review_eligible(current):
+        raise HumanApprovalError("pending candidate is no longer eligible for human risk acceptance")
+    if current.get("decision") != pending.replay.assessment.get("decision"):
+        raise HumanApprovalError("pending candidate review disposition changed")
     sanction_id = accept_risk_controller.accept_risk(
         repo_id,
         _sanction_spec(pending),
