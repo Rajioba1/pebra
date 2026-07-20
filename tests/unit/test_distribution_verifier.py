@@ -290,6 +290,8 @@ def test_installed_verifier_measures_cli_module_imports_for_eager_adapters() -> 
     assert source.index("before_parser = set(sys.modules)") < source.index(
         "from pebra.cli.main import build_parser"
     )
+    assert "before parser import" in source
+    assert "after parser construction" in source
 
 
 def test_installed_registry_matches_independent_five_field_oracle() -> None:

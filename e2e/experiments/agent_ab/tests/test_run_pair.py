@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from e2e.experiments.agent_ab import models
-from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec
+from e2e.experiments.agent_ab.models import SubjectResult, TaskSpec, ToolCallRecord
 from e2e.experiments.agent_ab.runners import (
     agent_loop, arm_prep, evaluator, model_client, run_control, run_gate, run_pair,
     subject_protocol,
@@ -1134,6 +1134,102 @@ def test_real_advisory_backend_threads_revise_attempts(monkeypatch, tmp_path):
 
     # plain pebra arm: attempts advance 0 -> 1, cap stays 1
     assert attempts == [(0, 1), (1, 1)]
+
+
+def test_real_advisory_captures_each_graph_scope_without_model_leak(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry()
+    scopes = iter(("a" * 64, None))
+
+    def _advise(payload, **kwargs):
+        del payload, kwargs
+        digest = next(scopes)
+        raw = {
+            "recommended_decision": "proceed",
+            "scores": {},
+            "graph_provenance": {"graph_scope_digest": digest},
+        }
+        return run_pair.advisory_check_real.AdvisoryOutput(
+            run_pair.advisory_check_real._shape_output(raw),
+            assessment_id="asm_7",
+            raw_payload=raw,
+        )
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA,
+        tmp_path,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+    payload = {"target_file": "a.ts", "proposed_patch": "diff"}
+
+    first = backend(payload)
+    second = backend(payload)
+    record = ToolCallRecord(0, "advisory_check", payload, first)
+
+    assert telemetry.real_advisory_graph_scope_digests == ["a" * 64, None]
+    assert tuple(first) == advisory_contract.OUTPUT_KEYS
+    assert tuple(second) == advisory_contract.OUTPUT_KEYS
+    assert "graph_scope" not in str(record.result)
+
+
+@pytest.mark.parametrize(
+    "arm",
+    (models.ARM_CONTROL, models.ARM_SHAM, models.ARM_ORACLE_POSITIVE),
+)
+def test_non_real_advisories_do_not_invent_graph_scope_receipts(arm, tmp_path):
+    telemetry = run_pair.ArmTelemetry()
+    backend = run_pair._advisory_backend(
+        arm,
+        tmp_path,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+
+    result = backend({"target_file": "a.ts", "proposed_patch": "diff"})
+
+    assert tuple(result) == advisory_contract.OUTPUT_KEYS
+    assert telemetry.real_advisory_graph_scope_digests == []
+
+
+def test_subject_result_carries_host_graph_scope_receipts(monkeypatch, tmp_path):
+    setup = _dummy_setup(tmp_path)
+    setup.arm = models.ARM_TREATMENT
+    setup.telemetry.real_advisory_graph_scope_digests.extend(("a" * 64, "a" * 64))
+    monkeypatch.setenv("E2E_AB_RUN", "1")
+    monkeypatch.setenv("E2E_EXTERNAL", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(run_pair, "_load_config", lambda: {
+        "subject": {
+            "model": "test-model",
+            "max_tool_calls_per_run": 5,
+            "max_wall_seconds_per_run": 10,
+            "max_output_tokens_per_turn": 100,
+            "tools": ["read_file"],
+        }
+    })
+    monkeypatch.setattr(model_client, "AnthropicClient", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        agent_loop,
+        "run",
+        lambda setup, spec, seed, **_kwargs: SubjectResult(
+            task_id=spec.task_id, arm=setup.arm, seed=seed
+        ),
+    )
+    monkeypatch.setattr(
+        evaluator,
+        "run_evaluator",
+        lambda _repo, _spec: (
+            SimpleNamespace(ran=True, passed=True, error_summary=""),
+            SimpleNamespace(ran=True, passed=True, error_summary=""),
+            False,
+        ),
+    )
+    monkeypatch.setattr(evaluator, "run_completion_test", lambda *_args, **_kwargs: None)
+
+    result = run_pair._invoke_subject_agent(setup, _SPEC, 0)
+
+    assert result.real_advisory_graph_scope_digests == ("a" * 64, "a" * 64)
 
 
 def test_real_advisory_backend_counts_cross_file_resubmission_per_run(monkeypatch, tmp_path):

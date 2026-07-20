@@ -403,6 +403,63 @@ def test_resume_rejects_different_graph_scope_cohort(tmp_path):
         orchestrator._assert_resume_design_compatible(run_dir, current)
 
 
+def test_trial_graph_scope_accepts_matching_real_advisories_and_ignores_sham():
+    metadata = orchestrator._bind_graph_scope(_run_meta(), "a" * 64)
+    results = (
+        SubjectResult(task_id="T1", arm=models.ARM_SHAM, seed=0),
+        SubjectResult(
+            task_id="T1",
+            arm=models.ARM_PEBRA,
+            seed=0,
+            real_advisory_graph_scope_digests=("a" * 64, "a" * 64),
+        ),
+        SubjectResult(task_id="T1", arm=models.ARM_ORACLE_POSITIVE, seed=0),
+    )
+
+    orchestrator._assert_trial_graph_scope_compatible(results, metadata)
+
+
+@pytest.mark.parametrize(
+    ("digests", "message"),
+    [
+        ((None,), "missing or invalid"),
+        (("b" * 64,), "does not match"),
+        (("a" * 64, "b" * 64), "does not match"),
+    ],
+)
+def test_trial_graph_scope_fails_closed_before_scoring(digests, message):
+    metadata = orchestrator._bind_graph_scope(_run_meta(), "a" * 64)
+    result = SubjectResult(
+        task_id="T1",
+        arm=models.ARM_PEBRA,
+        seed=0,
+        real_advisory_graph_scope_digests=digests,
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match=message) as caught:
+        orchestrator._assert_trial_graph_scope_compatible((result,), metadata)
+
+    assert "fresh run-id" in str(caught.value)
+
+
+def test_trial_scope_is_checked_before_oracle_scoring(monkeypatch):
+    metadata = orchestrator._bind_graph_scope(_run_meta(), "a" * 64)
+    result = SubjectResult(
+        task_id="T1",
+        arm=models.ARM_PEBRA,
+        seed=0,
+        real_advisory_graph_scope_digests=("b" * 64,),
+    )
+    monkeypatch.setattr(
+        orchestrator.oracle,
+        "score_run",
+        lambda *_args: pytest.fail("oracle scoring ran before the graph-scope fence"),
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="does not match"):
+        orchestrator._score_trial_results((result,), _T1, metadata)
+
+
 @pytest.mark.parametrize("stored_version", (None, "candidate-risk-summary-v0"))
 def test_resume_rejects_changed_gate_reason_treatment(tmp_path, stored_version):
     run_dir = tmp_path / "run"
@@ -512,10 +569,11 @@ def test_seed_count_override_is_bound_into_metadata_and_design(monkeypatch):
 
 def test_aligned_live_run_documentation_uses_fresh_one_seed_run_id():
     readme = (orchestrator._CONFIG_PATH.parent / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(readme.split())
 
-    assert "candidate-risk-summary-v1" in readme
-    assert "no-repeat-understand-v1" in readme
-    assert "different graph-scope digests" in readme
+    assert "candidate-risk-summary-v1" in normalized
+    assert "no-repeat-understand-v1" in normalized
+    assert "different graph-scope digests" in normalized
     assert 'E2E_AB_SEEDS_PER_ARM="1"' in readme
     assert 'E2E_AB_RUN_ID="js4_schema1_1seed_20260719_001"' in readme
     assert "js4_v4pro_sp_3seed_001" not in readme

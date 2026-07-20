@@ -435,16 +435,24 @@ def verify_installed() -> None:
     _validate_agent_host_registry(AGENT_HOSTS)
 
     before_parser = set(sys.modules)
+    eager_codegraph = sorted(
+        name for name in before_parser if name.startswith("pebra.adapters.codegraph")
+    )
+    if eager_codegraph:
+        raise DistributionVerificationError(
+            "installed package loaded CodeGraph adapters before parser import: "
+            + ", ".join(eager_codegraph)
+        )
     from pebra.cli.main import build_parser
 
     parser = build_parser()
     eager_codegraph = sorted(
-        name for name in set(sys.modules) - before_parser
-        if name.startswith("pebra.adapters.codegraph")
+        name for name in sys.modules if name.startswith("pebra.adapters.codegraph")
     )
     if eager_codegraph:
         raise DistributionVerificationError(
-            "installed parser eagerly imported CodeGraph adapters: " + ", ".join(eager_codegraph)
+            "installed package loaded CodeGraph adapters after parser construction: "
+            + ", ".join(eager_codegraph)
         )
     if "explore" not in parser._subparsers._group_actions[0].choices:
         raise DistributionVerificationError("installed parser is missing pebra explore")

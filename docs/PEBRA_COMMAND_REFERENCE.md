@@ -391,7 +391,8 @@ pebra doctor --repo-root . --fix-graph --json
 
 Doctor reports whether `codegraph.json` exists, its raw-byte SHA-256 digest (or `absent`), the
 structurally valid `extensions` and `includeIgnored` values supported by managed CodeGraph 1.1.1, and
-any `exclude` key as unsupported. Malformed configuration is reported and never repaired. Without
+any `exclude` key as unsupported. `extensions` and `includeIgnored` affect analysis scope; `exclude`
+is reported but ignored by pinned CodeGraph 1.1.1. Malformed configuration is reported and never repaired. Without
 `--fix-graph`, doctor is read-only.
 
 ### `graph-stats`
@@ -517,10 +518,10 @@ Unexpected adapter contract failures return exit 1. Provider queries may perform
 WAL/SHM housekeeping inside the derived cache; source, configuration, `.pebra`, Git content,
 persistent database bytes, graph schema, and logical graph rows must remain unchanged.
 
-`codegraph.json` is operator-owned analysis scope. Its exclusions can remove tracked generated or
-vendored trees from graph results and therefore change the reported graph-scope digest; they do not
-make an index fresh. PEBRA never guesses, scaffolds, or edits exclusions. Results from different scope
-digests are not interchangeable for learning or experiments.
+`codegraph.json` is operator-owned analysis scope. `extensions` and `includeIgnored` affect analysis
+scope; `exclude` is reported but ignored by pinned CodeGraph 1.1.1. None of these settings makes an
+index fresh. PEBRA never guesses, scaffolds, or edits graph configuration. Results from different
+scope digests are not interchangeable for learning or experiments.
 
 ### `help`
 
@@ -890,7 +891,9 @@ Build:
 Install the single built wheel without hard-coding a version:
 
 ```powershell
-$wheel = Get-ChildItem dist\pebra-*.whl | Select-Object -Single
+$wheels = @(Get-ChildItem dist\pebra-*.whl)
+if ($wheels.Count -ne 1) { throw "Expected exactly one PEBRA wheel; found $($wheels.Count)." }
+$wheel = $wheels[0]
 python -m venv .venv-package
 .\.venv-package\Scripts\python.exe -m pip install $wheel.FullName
 .\.venv-package\Scripts\pebra.exe --version

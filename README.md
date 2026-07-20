@@ -218,7 +218,9 @@ hotspots. Graph views are fail-soft when no trusted graph index is bound to the 
 graph routes are repo-scoped to avoid replaying one repo's graph under another repo id.
 
 Explicit graph-backed commands may reconcile an already-initialized, same-worktree `.codegraph/`
-cache. They never create or edit `codegraph.json`; its exclusions are operator-owned scope controls,
+cache. They never install or initialize CodeGraph and never create or edit `codegraph.json`.
+With pinned CodeGraph 1.1.1, `extensions` and `includeIgnored` affect analysis scope; `exclude` is
+reported but ignored by pinned CodeGraph 1.1.1. These settings are operator-owned scope controls,
 not freshness controls. PEBRA binds accepted graph evidence to the repository HEAD, configuration
 digest, provider/extraction version, and graph-scope digest. Dashboard/TUI timers never prepare or
 sync the graph; TUI exploration occurs only when the user presses `x` in assessment detail.

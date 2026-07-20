@@ -142,6 +142,9 @@ class SubjectResult:
     turn_count: int = 0
     served_models: tuple[str, ...] = ()
     protocol_file_read: bool = False
+    # Host-only receipts from actual real-advisory calls. ``None`` records a call whose result did not
+    # carry a canonical graph-scope digest. Never copied into ToolCallRecord or model-facing output.
+    real_advisory_graph_scope_digests: tuple[str | None, ...] = ()
     post_edit_verify_ran: bool = False
     post_edit_verify_passed: bool | None = None
     post_edit_verify_assessment_id: str | None = None

@@ -29,6 +29,7 @@ from e2e.experiments.agent_ab.models import (
     ARM_CONTROL,
     ARM_SHAM,
     ARM_TREATMENT,
+    REAL_ADVISORY_ARMS,
     RunOutcome,
     TaskSpec,
 )
@@ -541,6 +542,34 @@ def _assert_active_harness_compatible(run_metadata: dict[str, Any]) -> None:
         )
 
 
+def _assert_trial_graph_scope_compatible(
+    results: tuple[Any, ...] | list[Any], run_metadata: dict[str, Any]
+) -> None:
+    """Fence every real advisory receipt to the preflight-authenticated graph cohort."""
+    expected = run_metadata.get("graph_scope_digest")
+    for result in results:
+        if result.arm not in REAL_ADVISORY_ARMS:
+            continue
+        for digest in result.real_advisory_graph_scope_digests:
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ExperimentRunError(
+                    "real advisory graph scope was missing or invalid; outcomes were not scored or "
+                    "persisted; use a fresh run-id"
+                )
+            if digest != expected:
+                raise ExperimentRunError(
+                    "real advisory graph scope does not match the run preflight cohort; outcomes "
+                    "were not scored or persisted; use a fresh run-id"
+                )
+
+
+def _score_trial_results(
+    results: tuple[Any, ...] | list[Any], spec: TaskSpec, run_metadata: dict[str, Any]
+) -> list[RunOutcome]:
+    _assert_trial_graph_scope_compatible(results, run_metadata)
+    return [oracle.score_run(result, spec) for result in results]
+
+
 def _outcome_from_dict(d: dict[str, Any]) -> RunOutcome:
     d = dict(d)
     if d.get("blinding_terms") is not None:
@@ -790,7 +819,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ExperimentRunError(
                         f"sham run for {spec.task_id} seed {seed} errored: {subject.error}"
                     )
-                outcomes.append(oracle.score_run(subject, spec))
+                outcomes.extend(_score_trial_results((subject,), spec, run_metadata))
                 present_sham.add(key)
                 _assert_active_harness_compatible(run_metadata)
                 _assert_active_rca_compatible(run_metadata, cfg)
@@ -832,8 +861,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"{res.arm} run for {spec.task_id} seed {seed} errored: {res.error}. "
                         "Fix the cause (e.g. ANTHROPIC_API_KEY) and re-run — resume skips completed units."
                     )
-            for res in results:
-                outcomes.append(oracle.score_run(res, spec))
+            outcomes.extend(_score_trial_results(results, spec, run_metadata))
             _assert_active_harness_compatible(run_metadata)
             _assert_active_rca_compatible(run_metadata, cfg)
             _write_outcomes(

@@ -2,13 +2,17 @@
 
 ## Supported Versions
 
-PEBRA is currently in its `0.2.x` development line. Security fixes are made against the latest
-release and the current `main` branch.
+PEBRA's latest published release is `0.1.1`; `0.2.x` is the current development line on `main`.
+Security fixes are made against the published release and the current development branch.
 
 | Version | Supported |
 | --- | --- |
-| Latest `0.2.x` / `main` | Yes |
+| Latest published: `0.1.1` | Yes |
+| Development: `0.2.x` / `main` | Yes |
 | Older versions | No |
+
+Update this table only after the corresponding PyPI release is verified; a version bump on `main`
+does not make that version a published release.
 
 ## Reporting A Vulnerability
 

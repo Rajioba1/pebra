@@ -22,12 +22,16 @@ def test_repository_contains_canonical_apache_2_license() -> None:
 
 
 def test_security_policy_defines_private_reporting_and_response_targets() -> None:
-    policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8").lower()
+    body = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    policy = body.lower()
 
     assert "supported versions" in policy
     assert "private vulnerability reporting" in policy
     assert "do not open a public issue" in policy
     assert "business days" in policy
+    assert "Latest published: `0.1.1`" in body
+    assert "Development: `0.2.x` / `main`" in body
+    assert "Update this table only after the corresponding PyPI release is verified" in body
 
 
 def test_contribution_terms_cover_rights_license_and_private_security_reports() -> None:

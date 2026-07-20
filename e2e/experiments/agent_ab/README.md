@@ -100,9 +100,12 @@ ordinary repository search/read tools, and do not repeat equivalent exploration.
 never names the product, graph provider, oracle, or experiment to the subject.
 
 The deterministic graph preflight requires one canonical graph-scope digest across the planned task
-cohort. The digest is stored only in host-side run metadata and included in the canonical design hash;
-it is never serialized to the coding model. Runs from different graph-scope digests cannot be resumed
-or pooled under one run ID.
+cohort. Every real advisory call also returns a host-only scope receipt. Before outcomes are scored or
+persisted, every receipt must be present, canonical, and equal to the preflight digest; multiple real
+calls with mixed scopes fail closed with fresh-run-id guidance. Sham, control, and positive-control
+arms do not invent receipts. The digest is included in host-side run metadata and the canonical design
+hash, but is never serialized to the coding model or a tool-call record. Runs from different
+graph-scope digests cannot be resumed or pooled under one run ID.
 
 Held candidates do not write, receive applied/proceeded-edit assessment attribution, or count as edit
 cycles; they remain visible only as intervention/unresolved observations. The `ask_human` review arm

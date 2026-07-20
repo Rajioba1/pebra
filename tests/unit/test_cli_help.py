@@ -140,3 +140,19 @@ def test_command_reference_nox_inventory_matches_live_noxfile() -> None:
 
     assert documented == live
     assert f"All {len(live)} sessions" in reference
+
+
+def test_public_docs_state_codegraph_1_1_1_scope_and_wheel_cardinality_honestly() -> None:
+    root = Path(__file__).resolve().parents[2]
+    paths = (root / "README.md", root / "docs" / "PEBRA_COMMAND_REFERENCE.md")
+    bodies = [path.read_text(encoding="utf-8") for path in paths]
+
+    for body in bodies:
+        normalized = " ".join(body.split())
+        assert "`extensions` and `includeIgnored` affect analysis scope" in normalized
+        assert "`exclude` is reported but ignored by pinned CodeGraph 1.1.1" in normalized
+    reference = bodies[1]
+    assert "Select-Object -Single" not in reference
+    assert "$wheels = @(Get-ChildItem dist\\pebra-*.whl)" in reference
+    assert "if ($wheels.Count -ne 1)" in reference
+    assert "$wheel = $wheels[0]" in reference

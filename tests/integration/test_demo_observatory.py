@@ -14,7 +14,9 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_prepare_demo_uses_dedicated_store_without_touching_checkout(tmp_path: Path) -> None:
+def test_prepare_demo_uses_dedicated_store_without_touching_checkout(
+    tmp_path: Path, monkeypatch
+) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     (checkout / ".git").mkdir()
@@ -23,8 +25,10 @@ def test_prepare_demo_uses_dedicated_store_without_touching_checkout(tmp_path: P
     (checkout / "tracked.py").write_text("REAL = True\n", encoding="utf-8")
     before = _tree_bytes(checkout)
     workspace = tmp_path / "demo-workspace"
+    monkeypatch.chdir(checkout)
 
     demo = demo_observatory.prepare_demo(workspace)
+    command, _env = demo_observatory.launch_spec(demo, surface="tui")
 
     assert _tree_bytes(checkout) == before
     assert demo.db_path == workspace / "pebra-demo.db"
@@ -33,6 +37,7 @@ def test_prepare_demo_uses_dedicated_store_without_touching_checkout(tmp_path: P
     assert demo.repo_id.startswith("repo_demo_")
     assert demo.label == "DEMO"
     assert demo.assessment_count >= 5
+    assert str(checkout) not in command
 
 
 def test_demo_rows_are_varied_and_include_terminal_outcomes(tmp_path: Path) -> None:

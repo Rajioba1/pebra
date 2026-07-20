@@ -163,6 +163,9 @@ class ArmTelemetry:
     applied_graph_refinement: dict[str, Any] | None = None
     applied_required_checks: tuple[str, ...] = ()
     candidate_lineage_invalidated: bool = False
+    real_advisory_graph_scope_digests: list[str | None] = dataclasses.field(
+        default_factory=list
+    )
 
 
 @dataclass
@@ -885,7 +888,21 @@ def _advisory_backend(
                         "detail": {},
                     }
                 advise_kwargs["timeout_seconds"] = remaining_for_assess
+            scope_receipt_index: int | None = None
+            if telemetry is not None:
+                scope_receipt_index = len(telemetry.real_advisory_graph_scope_digests)
+                telemetry.real_advisory_graph_scope_digests.append(None)
             result = advisory_check_real.advise(payload, **advise_kwargs)
+            graph_scope_digest = getattr(result, "graph_scope_digest", None)
+            if (
+                telemetry is not None
+                and scope_receipt_index is not None
+                and isinstance(graph_scope_digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", graph_scope_digest)
+            ):
+                telemetry.real_advisory_graph_scope_digests[
+                    scope_receipt_index
+                ] = graph_scope_digest
             assessment_id = getattr(result, "assessment_id", None)
             if telemetry is not None and isinstance(assessment_id, str):
                 telemetry.last_assessment_id = assessment_id
@@ -1500,6 +1517,9 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         human_assisted_write_applied=setup.telemetry.human_assisted_write_applied,
         write_before_approval=setup.telemetry.write_before_approval,
         write_before_reassessment=setup.telemetry.write_before_reassessment,
+        real_advisory_graph_scope_digests=tuple(
+            setup.telemetry.real_advisory_graph_scope_digests
+        ),
         **_graph_refinement_result_fields(setup.telemetry),
         **_calibration_result_fields(setup.telemetry),
     )
