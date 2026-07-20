@@ -9,6 +9,7 @@ logic here).
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Any
 
 from textual import events, work
@@ -21,6 +22,7 @@ from textual.widgets.data_table import RowDoesNotExist
 
 from pebra.app.observatory_query_controller import AssessmentNotFoundError
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot, ObservatoryStoreUnavailable
+from pebra.tui.ledger_groups import LedgerGroup, group_contiguous_assessments
 from pebra.tui.screens.detail import AssessmentDetailScreen
 from pebra.tui.widgets.banner import PebraBanner
 from pebra.tui.widgets.ledger_table import (
@@ -39,7 +41,7 @@ _REFRESH_INTERVAL = 5.0  # seconds; SQLite-only poll — never the graph/RCA eng
 
 
 class ObservatoryScreen(Screen):
-    BINDINGS = [("r", "refresh", "Refresh")]
+    BINDINGS = [("r", "refresh", "Refresh"), ("g", "toggle_grouping", "Group repeats")]
 
     def __init__(self, data: ObservatoryData) -> None:
         super().__init__()
@@ -47,6 +49,8 @@ class ObservatoryScreen(Screen):
         self._rows: list[dict[str, Any]] = []
         self._overview: dict[str, Any] = {}
         self._ledger_columns: tuple[str, ...] = ()
+        self.group_repeats = False
+        self._selected_underlying_id: str | None = None
         self.message_text = ""  # current empty-state / error text ("" when the ledger has rows)
         self._refreshing = False  # single-flight guard, only read/written on the UI thread
         self._refresh_started_at = 0.0  # monotonic clock, for dev-console refresh-duration logging
@@ -63,6 +67,7 @@ class ObservatoryScreen(Screen):
         yield StatusHeader(id="status")
         # fixed_columns=1 pins the asm-id column so it stays visible when the table is scrolled right.
         yield DataTable(id="ledger", cursor_type="row", zebra_stripes=True, fixed_columns=1)
+        yield Static("", id="ledger-caption")
         yield Static("", id="scroll-hint")
         yield ScoreSparklines(id="trends")
         yield Static("", id="ledger-message")
@@ -96,13 +101,56 @@ class ObservatoryScreen(Screen):
             return None
         return table.coordinate_to_cell_key(Coordinate(row, 0)).row_key.value
 
+    @property
+    def selected_underlying_assessment_id(self) -> str | None:
+        return self._selected_underlying_id
+
+    def _visible_groups(self) -> tuple[LedgerGroup, ...]:
+        if self.group_repeats:
+            return group_contiguous_assessments(self._rows)
+        return tuple(
+            LedgerGroup(
+                primary_assessment_id=str(row["assessment_id"]),
+                assessment_ids=(str(row["assessment_id"]),),
+                latest_row=row,
+            )
+            for row in self._rows
+        )
+
+    def _capture_selected_underlying(self, table: DataTable) -> str | None:
+        displayed_id = self._selected_assessment_id(table)
+        if displayed_id is None:
+            return self._selected_underlying_id
+        if not self.group_repeats:
+            self._selected_underlying_id = displayed_id
+            return displayed_id
+        for group in self._visible_groups():
+            if group.primary_assessment_id == displayed_id:
+                if self._selected_underlying_id not in group.assessment_ids:
+                    self._selected_underlying_id = group.primary_assessment_id
+                return self._selected_underlying_id
+        self._selected_underlying_id = displayed_id
+        return displayed_id
+
+    def _displayed_id_for(self, assessment_id: str | None) -> str | None:
+        if assessment_id is None or not self.group_repeats:
+            return assessment_id
+        for group in self._visible_groups():
+            if assessment_id in group.assessment_ids:
+                return group.primary_assessment_id
+        return assessment_id
+
     def _add_ledger_rows(self, table: DataTable) -> None:
         dark = self._is_dark()
-        for row in self._rows:
-            assessment_id = row.get("assessment_id")
+        for group in self._visible_groups():
             table.add_row(
-                *ledger_row(row, columns=self._ledger_columns, dark=dark),
-                key=str(assessment_id) if assessment_id else None,
+                *ledger_row(
+                    group.latest_row,
+                    columns=self._ledger_columns,
+                    dark=dark,
+                    group_size=len(group.assessment_ids),
+                ),
+                key=group.primary_assessment_id,
             )
 
     def _restore_cursor(
@@ -116,7 +164,8 @@ class ObservatoryScreen(Screen):
         if not table.row_count:
             return
         try:
-            restored_row = table.get_row_index(assessment_id) if assessment_id else fallback_row
+            displayed_id = self._displayed_id_for(assessment_id)
+            restored_row = table.get_row_index(displayed_id) if displayed_id else fallback_row
         except RowDoesNotExist:
             restored_row = fallback_row
         table.move_cursor(
@@ -134,7 +183,7 @@ class ObservatoryScreen(Screen):
     def _rebuild_ledger_columns(self, columns: tuple[str, ...]) -> None:
         """Rebuild only across a width breakpoint; retain row identity/focus, reset horizontal view."""
         table = self.query_one("#ledger", DataTable)
-        selected_id = self._selected_assessment_id(table)
+        selected_id = self._capture_selected_underlying(table)
         old_row = table.cursor_coordinate.row
         old_column = table.cursor_coordinate.column
         old_scroll_y = table.scroll_y
@@ -158,6 +207,48 @@ class ObservatoryScreen(Screen):
         table.call_after_refresh(
             self._restore_ledger_scroll, table, x=0, y=old_scroll_y
         )
+
+    def action_toggle_grouping(self) -> None:
+        table = self.query_one("#ledger", DataTable)
+        selected_id = self._capture_selected_underlying(table)
+        old_row = table.cursor_coordinate.row
+        old_column = table.cursor_coordinate.column
+        old_scroll_x = table.scroll_x
+        old_scroll_y = table.scroll_y
+        had_focus = table.has_focus
+        self.group_repeats = not self.group_repeats
+        table.clear()
+        self._add_ledger_rows(table)
+        self._restore_cursor(
+            table,
+            assessment_id=selected_id,
+            fallback_row=old_row,
+            column=old_column,
+        )
+        if had_focus:
+            table.focus(scroll_visible=False)
+        table.scroll_to(
+            x=old_scroll_x, y=old_scroll_y, animate=False, force=True, immediate=True
+        )
+        table.call_after_refresh(
+            self._restore_ledger_scroll, table, x=old_scroll_x, y=old_scroll_y
+        )
+        self._update_ledger_caption()
+        bindings = self._bindings.key_to_bindings.get("g", [])
+        description = "Show raw" if self.group_repeats else "Group repeats"
+        self._bindings.key_to_bindings["g"] = [
+            replace(binding, description=description) for binding in bindings
+        ]
+        self.refresh_bindings()
+        self.call_after_refresh(self._update_scroll_hint)
+
+    def _update_ledger_caption(self) -> None:
+        caption = self.query_one("#ledger-caption", Static)
+        if self.group_repeats:
+            caption.update(
+                f"{len(self._visible_groups())} groups / {len(self._rows)} assessments"
+            )
+        caption.display = self.group_repeats
 
     def _update_scroll_hint(self) -> None:
         # Show the affordance only when the active breakpoint's columns actually overflow the pane.
@@ -236,6 +327,13 @@ class ObservatoryScreen(Screen):
 
     def _apply_snapshot(self, snapshot: ObservatorySnapshot) -> None:  # not `_render`: Textual internal
         rows = snapshot.assessments
+        table = self.query_one("#ledger", DataTable)
+        old_row = table.cursor_coordinate.row
+        old_column = table.cursor_coordinate.column
+        old_row_key = self._capture_selected_underlying(table)
+        old_scroll_x = table.scroll_x
+        old_scroll_y = table.scroll_y
+        had_focus = table.has_focus
         self._rows = rows
         self._overview = snapshot.overview
         latest_commit = rows[0].get("assessed_commit") if rows else None
@@ -245,13 +343,6 @@ class ObservatoryScreen(Screen):
             chain_valid=bool(snapshot.chain.get("valid")),
             total=int(snapshot.overview.get("total", 0)),
         )
-        table = self.query_one("#ledger", DataTable)
-        old_row = table.cursor_coordinate.row
-        old_column = table.cursor_coordinate.column
-        old_row_key = self._selected_assessment_id(table)
-        old_scroll_x = table.scroll_x
-        old_scroll_y = table.scroll_y
-        had_focus = table.has_focus
         table.clear()
         self._add_ledger_rows(table)
         self._restore_cursor(
@@ -276,6 +367,7 @@ class ObservatoryScreen(Screen):
             y=old_scroll_y,
         )
         self.query_one("#trends", ScoreSparklines).update_series(snapshot.scores_series)
+        self._update_ledger_caption()
         self._set_message("" if rows else _EMPTY)
         # Auto-sized columns may become wider or narrower when new rows arrive, even though the
         # terminal itself did not resize. Recompute the overflow affordance after layout settles.
@@ -294,15 +386,25 @@ class ObservatoryScreen(Screen):
         except ObservatoryStoreUnavailable as exc:
             self.notify(f"Assessment store unavailable — {exc}", severity="error")
             return
-        self.app.push_screen(AssessmentDetailScreen(detail))
+        assessment_ids = (assessment_id,)
+        if self.group_repeats:
+            for group in self._visible_groups():
+                if group.primary_assessment_id == assessment_id:
+                    assessment_ids = group.assessment_ids
+                    break
+        if self._selected_underlying_id not in assessment_ids:
+            self._selected_underlying_id = assessment_id
+        self.app.push_screen(
+            AssessmentDetailScreen(detail, assessment_ids=assessment_ids)
+        )
 
     def _on_theme_changed(self, theme: Theme) -> None:
         table = self.query_one("#ledger", DataTable)
         decision_column = self._ledger_columns.index("decision")
-        for row_index, row in enumerate(self._rows):
+        for row_index, group in enumerate(self._visible_groups()):
             table.update_cell_at(
                 Coordinate(row_index, decision_column),
-                decision_cell(str(row.get("decision", "")), dark=theme.dark),
+                decision_cell(str(group.latest_row.get("decision", "")), dark=theme.dark),
             )
 
     def _is_dark(self) -> bool:

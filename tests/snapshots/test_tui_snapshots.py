@@ -104,7 +104,7 @@ def test_snapshot_normalizer_requires_supported_plugin_hook() -> None:
         _require_normalize_svg(SimpleNamespace())
 
 
-def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False) -> str:
+def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False, groupable: bool = False) -> str:
     db = str(tmp_path / "pebra.db")
     store = SqliteStore(db)
     for decision, commit, scores in specs:
@@ -117,7 +117,21 @@ def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False) -> str:
                 scores=scores,
                 repo_id="r",
                 repo_root="/x",
-                model_guidance_packet={"decision": decision.value},
+                model_guidance_packet={
+                    "decision": decision.value,
+                    **(
+                        {
+                            "binding": {
+                                "candidate": {
+                                    "algorithm": "sha256-normalized-content-v1",
+                                    "files": {"src/auth.py": "a" * 64},
+                                }
+                            }
+                        }
+                        if groupable
+                        else {}
+                    ),
+                },
                 assessed_commit=commit,
             ),
             {
@@ -186,4 +200,22 @@ async def _open_first_detail(pilot) -> None:
 def test_snapshot_detail_screen(snap_compare, tmp_path) -> None:
     assert snap_compare(
         _app(_seed(tmp_path)), terminal_size=(110, 36), run_before=_open_first_detail
+    )
+
+
+async def _toggle_grouping(pilot) -> None:
+    await pilot.press("g")
+    await pilot.pause()
+
+
+def test_snapshot_grouped_ledger(snap_compare, tmp_path) -> None:
+    repeated = [
+        (Decision.PROCEED, "aaaa111", {"rau": 0.21, "expected_loss": 0.05, "benefit": 0.55}),
+        (Decision.PROCEED, "aaaa111", {"rau": 0.21, "expected_loss": 0.05, "benefit": 0.55}),
+        (Decision.REJECT, "dddd444", {"rau": -0.31, "expected_loss": 0.36, "benefit": 0.20}),
+    ]
+    assert snap_compare(
+        _app(_seed(tmp_path, specs=repeated, groupable=True)),
+        terminal_size=(100, 30),
+        run_before=_toggle_grouping,
     )

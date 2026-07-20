@@ -492,3 +492,138 @@ def test_theme_change_recolors_existing_decision_cells_without_reloading(tmp_pat
             assert light_cell.spans[0].style == decision_cell("proceed", dark=False).spans[0].style
 
     asyncio.run(scenario())
+
+
+def test_grouping_toggle_is_raw_by_default_dynamic_and_reversible() -> None:
+    from textual.app import App
+    from textual.coordinate import Coordinate
+    from textual.screen import Screen
+    from textual.widgets import DataTable, Static
+
+    from pebra.tui.data import ObservatorySnapshot
+    from pebra.tui.screens.observatory import ObservatoryScreen
+
+    def row(assessment_id: str, fingerprint: str) -> dict:
+        return {
+            "assessment_id": assessment_id,
+            "candidate_fingerprint": fingerprint,
+            "decision": "proceed",
+            "assessed_commit": "abc1234",
+            "terminal_status": None,
+            "task": "Fix authentication",
+            "action_id": "edit-auth",
+            "target_files": ["src/auth.py"],
+            "scores": {"rau": 0.2, "expected_loss": 0.1, "benefit": 0.3},
+        }
+
+    rows = [row("asm_3", "a" * 64), row("asm_2", "a" * 64), row("asm_1", "b" * 64)]
+
+    class _Data:
+        repo_id = "r"
+
+        def refresh_snapshot(self) -> ObservatorySnapshot:
+            return ObservatorySnapshot(
+                overview={"total": 3, "by_decision": {"proceed": 3}},
+                assessments=rows,
+                scores_series=[{"rau": 0.2}],
+                chain={"valid": True},
+            )
+
+        def detail(self, assessment_id: str) -> dict:
+            return {}
+
+    class _Harness(App):
+        def get_default_screen(self) -> Screen:
+            return ObservatoryScreen(_Data())
+
+    async def scenario() -> None:
+        app = _Harness()
+        async with app.run_test(size=(100, 24)) as pilot:
+            screen = app.screen
+            table = app.query_one("#ledger", DataTable)
+            caption = app.query_one("#ledger-caption", Static)
+            assert screen.group_repeats is False
+            assert table.row_count == 3
+            assert caption.display is False
+            assert app.active_bindings["g"].binding.description == "Group repeats"
+
+            table.focus()
+            table.move_cursor(row=1, scroll=False)
+            assert table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value == "asm_2"
+            await pilot.press("g")
+            await pilot.pause()
+
+            assert screen.group_repeats is True
+            assert table.row_count == 2
+            assert table.get_cell_at(Coordinate(0, 0)) == "asm_3 ×2"
+            assert "2 groups / 3 assessments" in str(caption.render())
+            assert app.active_bindings["g"].binding.description == "Show raw"
+
+            await pilot.press("g")
+            await pilot.pause()
+
+            assert screen.group_repeats is False
+            assert table.row_count == 3
+            assert table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value == "asm_2"
+            assert caption.display is False
+            assert app.active_bindings["g"].binding.description == "Group repeats"
+
+    asyncio.run(scenario())
+
+
+def test_grouping_keeps_overview_and_trends_on_raw_assessments() -> None:
+    from textual.app import App
+    from textual.screen import Screen
+
+    from pebra.tui.data import ObservatorySnapshot
+    from pebra.tui.screens.observatory import ObservatoryScreen
+    from pebra.tui.widgets.score_sparklines import ScoreSparklines
+
+    rows = [
+        {
+            "assessment_id": assessment_id,
+            "candidate_fingerprint": "a" * 64,
+            "decision": "proceed",
+            "assessed_commit": "abc1234",
+            "terminal_status": None,
+            "task": "Fix authentication",
+            "action_id": "edit-auth",
+            "target_files": ["src/auth.py"],
+            "scores": {"rau": 0.2, "expected_loss": 0.1, "benefit": 0.3},
+        }
+        for assessment_id in ("asm_2", "asm_1")
+    ]
+    series = [{"scores": {"rau": 0.2}}, {"scores": {"rau": 0.2}}]
+
+    class _Data:
+        repo_id = "r"
+
+        def refresh_snapshot(self) -> ObservatorySnapshot:
+            return ObservatorySnapshot(
+                overview={"total": 2, "by_decision": {"proceed": 2}},
+                assessments=rows,
+                scores_series=series,
+                chain={"valid": True},
+            )
+
+        def detail(self, assessment_id: str) -> dict:
+            return {}
+
+    class _Harness(App):
+        def get_default_screen(self) -> Screen:
+            return ObservatoryScreen(_Data())
+
+    async def scenario() -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.press("g")
+            await pilot.pause()
+            assert app.screen.group_repeats is True
+            assert app.screen.overview_summary() == "2 assessments — proceed 2"
+            assert app.screen._rows == rows
+            assert list(app.query_one("#trends", ScoreSparklines).query_one("#spark-rau").data) == [
+                0.2,
+                0.2,
+            ]
+
+    asyncio.run(scenario())

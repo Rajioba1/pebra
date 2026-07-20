@@ -363,3 +363,75 @@ def test_late_scroll_restore_ignores_unmounted_screen(monkeypatch) -> None:
     monkeypatch.setattr(table, "scroll_to", fail_if_called)
 
     screen._restore_ledger_scroll(table, x=12, y=12)
+
+
+def test_grouped_refresh_preserves_exact_selection_focus_scroll_and_open_detail() -> None:
+    def grouped_row(group: int, member: int) -> dict:
+        return {
+            "assessment_id": f"asm_{group}_{member}",
+            "candidate_fingerprint": f"{group:064x}",
+            "decision": "proceed",
+            "assessed_commit": f"commit-{group}",
+            "terminal_status": None,
+            "task": f"Task {group}",
+            "action_id": f"action-{group}",
+            "target_files": [f"src/file_{group}.py"],
+            "scores": {"rau": 0.2, "expected_loss": 0.1, "benefit": 0.3},
+        }
+
+    original_rows = [grouped_row(group, member) for group in range(15) for member in range(2)]
+
+    class _GroupedData(_FakeData):
+        def __init__(self) -> None:
+            self.rows = original_rows
+
+        def refresh_snapshot(self) -> ObservatorySnapshot:
+            return ObservatorySnapshot(
+                overview={"total": len(self.rows)},
+                assessments=self.rows,
+                scores_series=[{"rau": row["scores"]["rau"]} for row in self.rows],
+                chain={"valid": True},
+            )
+
+    async def scenario() -> None:
+        data = _GroupedData()
+        screen = ObservatoryScreen(data)
+        app = _Harness(screen)
+        async with app.run_test(size=(120, 18)) as pilot:
+            table = app.query_one("#ledger", DataTable)
+            table.focus()
+            table.move_cursor(row=21, column=5, scroll=False)
+            await pilot.press("g")
+            await pilot.pause()
+            assert screen.group_repeats is True
+            assert screen.selected_underlying_assessment_id == "asm_10_1"
+
+            table.scroll_to(x=12, y=8, animate=False, force=True, immediate=True)
+            await pilot.pause()
+            old_scroll_x = table.scroll_x
+            old_scroll_y = table.scroll_y
+            assert old_scroll_x > 0 and old_scroll_y > 0 and table.has_focus
+
+            await pilot.press("enter")
+            await pilot.pause()
+            detail_screen = app.screen
+            data.rows = [grouped_row(0, 2), *original_rows]
+            screen._refreshing = True
+            screen._finish_ok(data.refresh_snapshot())
+            await pilot.pause()
+
+            assert app.screen is detail_screen
+            assert screen.group_repeats is True
+            assert screen.selected_underlying_assessment_id == "asm_10_1"
+            assert table.has_focus
+            assert table.scroll_x == old_scroll_x
+            assert table.scroll_y == old_scroll_y
+
+            app.pop_screen()
+            await pilot.pause()
+            await pilot.press("g")
+            await pilot.pause()
+            assert screen.group_repeats is False
+            assert table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value == "asm_10_1"
+
+    asyncio.run(scenario())

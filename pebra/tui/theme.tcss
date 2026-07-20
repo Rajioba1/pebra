@@ -37,6 +37,14 @@ Screen {
     overflow-y: auto;
 }
 
+#ledger-caption {
+    display: none;
+    height: 1;
+    color: $observatory-muted;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
 /* Horizontal-scroll affordance — shown by the screen only when the ledger overflows the pane. */
 #scroll-hint {
     display: none;

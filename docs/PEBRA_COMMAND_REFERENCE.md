@@ -1,0 +1,1002 @@
+# PEBRA Command Reference
+
+This is the exhaustive operator and contributor command reference for the current source tree. The authoritative product parser is `pebra/cli/main.py`; verify the installed version at any time with:
+
+```console
+pebra help --all
+pebra --version
+```
+
+The current tree has 21 root CLI commands, two installed console entrypoints, four MCP tools, 17 nox sessions, repository packaging utilities, and three GitHub Actions workflows.
+
+> `pebra explore` is specified in `docs/superpowers/plans/2026-07-20-observatory-identity-and-exploration.md` but is not implemented in the current CLI. It must not be presented as shipped until that milestone lands.
+
+## Shell Compatibility
+
+PEBRA's product commands are terminal-agnostic. Once `pebra` is installed and on `PATH`, commands such as `pebra assess`, `pebra tui`, `pebra dashboard`, and `pebra help` use the same arguments in PowerShell, Command Prompt, Bash, zsh, and other ordinary terminals on the supported operating systems.
+
+Code fences labelled `console` contain shell-neutral commands. A `powershell`, `cmd`, or `bash` label means that the example contains shell-specific activation, environment-variable, path, piping, globbing, or command-substitution syntax; it does **not** mean PEBRA itself is restricted to that shell.
+
+| Operation | PowerShell | Command Prompt | Bash / zsh |
+| --- | --- | --- | --- |
+| Virtual-environment executable directory | `.venv\Scripts` | `.venv\Scripts` | `.venv/bin` |
+| Activate the virtual environment | `.\.venv\Scripts\Activate.ps1` | `.venv\Scripts\activate.bat` | `source .venv/bin/activate` |
+| Set one environment variable | `$env:NAME = "value"` | `set NAME=value` | `export NAME="value"` |
+| Pipe a JSON file to stdin | `Get-Content -Raw event.json \| pebra gate-check` | `type event.json \| pebra gate-check` | `cat event.json \| pebra gate-check` |
+
+Forward-slash paths used in shell-neutral examples are accepted by Python on Windows as well as on Linux and macOS. If a path contains spaces, quote it in every shell.
+
+## Installation
+
+### Install the released package
+
+```console
+python -m pip install --upgrade pip
+python -m pip install pebra
+pebra --version
+pebra help
+```
+
+For an isolated command installation:
+
+```console
+pipx install pebra
+pebra --version
+```
+
+### Editable source installation
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+Command Prompt:
+
+```cmd
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -e .
+```
+
+Bash or zsh on Linux/macOS:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e .
+```
+
+Full UI and agent-experiment extras (shown for PowerShell; substitute the executable path from the table above in another shell):
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[ui-e2e,agent-ab]"
+.\.venv\Scripts\python.exe -m pip install nox textual-dev
+```
+
+Core/import-boundary installation without runtime adapter dependencies (PowerShell):
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e . --no-deps
+```
+
+After activating the environment, the shorter `python`, `pebra`, `nox`, and `textual` forms are shell-neutral.
+
+## Installed Entrypoints
+
+```text
+pebra       Main CLI
+pebra-mcp   MCP stdio server
+```
+
+Equivalent Python module forms:
+
+```console
+python -m pebra
+python -m pebra.mcp_server
+```
+
+## Root Help and Version
+
+```console
+pebra -h
+pebra --help
+pebra --version
+pebra -V
+pebra help
+pebra help COMMAND
+pebra help --all
+pebra help help
+```
+
+Every subcommand also accepts `-h` or `--help`.
+
+## Planned Commands (Not Yet Shipped)
+
+These interfaces exist only in the implementation plan. They are not part of the current 21-command parser and must not be used in automation or described as installed behavior yet.
+
+Milestone 5 plans one new root command:
+
+```text
+pebra explore QUERY [--file PATH]... [--max-files N] [--max-bytes N]
+                    [--repo-root PATH] [--json]
+```
+
+Milestone 7 plans one repository-development helper, not a root `pebra` command:
+
+```text
+python -m scripts.demo_observatory [--tui | --dashboard] [--keep]
+```
+
+Milestone 6 may add an `x` key to assessment detail for explicit impact exploration, but only if Milestone 5 proves graph preparation confinement and query non-mutation. It is not a current key binding.
+
+## Product CLI
+
+### `assess`
+
+Assess one candidate edit from a JSON request file.
+
+```text
+pebra assess REQUEST_FILE
+  [--json]
+  [--repo-root PATH]
+  [--db PATH]
+  [--include-host-metadata]
+  [--trusted-candidate-verification-file PATH]
+  [--trusted-task-obligations-file PATH]
+```
+
+Typical use:
+
+```console
+pebra assess examples/login_patch.json
+pebra assess request.json --repo-root . --json
+```
+
+The trusted files and host-metadata option are host integration inputs, not model-controlled request evidence.
+
+### `accept-risk`
+
+Create a sanction from JSON, or interactively approve, reassess, and apply an exact pending candidate.
+
+```text
+pebra accept-risk [SANCTION_FILE]
+  [--apply]
+  [--assessment-id ID]
+  [--repo-root PATH]
+  [--db PATH]
+```
+
+```console
+pebra accept-risk sanction.json --repo-root .
+pebra accept-risk --apply --assessment-id asm_12 --repo-root .
+```
+
+The interactive `--apply` route requires a real TTY and human approval.
+
+### `apply-candidate`
+
+Apply the exact cached candidate for an authorized assessment.
+
+```text
+pebra apply-candidate --assessment-id ID
+  [--repo-root PATH]
+  [--db PATH]
+```
+
+```console
+pebra apply-candidate --assessment-id asm_12 --repo-root .
+```
+
+### `agent-init`
+
+Install or inspect PEBRA instructions and optional host hooks.
+
+```text
+pebra agent-init --target {claude,codex}
+  [--repo-root PATH]
+  [--with-hook]
+  [--check]
+  [--json]
+```
+
+```console
+pebra agent-init --target claude --repo-root .
+pebra agent-init --target claude --repo-root . --with-hook
+pebra agent-init --target codex --repo-root . --check
+pebra agent-init --target codex --repo-root . --check --json
+```
+
+`--json` requires `--check`. Inspection mode is non-mutating and intentionally does not invoke CodeGraph.
+
+### `verify`
+
+Compare the actual diff with a stored assessment's approved envelope.
+
+```text
+pebra verify --assessment-id ID
+  [--scope {staged,all,branch}]
+  [--completed-check CHECK=STATUS]...
+  [--dry-run-preview]
+  [--repo-root PATH]
+  [--db PATH]
+  [--json]
+```
+
+```console
+pebra verify --assessment-id asm_12 --scope staged --json
+pebra verify --assessment-id asm_12 --completed-check "pytest -q=passed" --json
+```
+
+`branch` currently behaves as working-tree-versus-HEAD, not true branch-base comparison.
+
+### `record-outcome`
+
+Record a terminal action outcome.
+
+```text
+pebra record-outcome --assessment-id ID
+  --status {completed,skipped,rejected}
+  [--detail JSON]
+  [--repo-root PATH]
+  [--db PATH]
+```
+
+```console
+pebra record-outcome --assessment-id asm_12 --status completed
+pebra record-outcome --assessment-id asm_12 --status completed --detail '{"actual_success":true}'
+```
+
+Recognized detail labels include `actual_success`, `event_outcomes`, `benefit_realized`, `actual_review_cost`, and `actual_rework_cost`. Missing labels remain censored.
+
+### `finalize-outcome`
+
+Preferred trusted-host lifecycle path: record outcome, measure, and run gated promotion.
+
+```text
+pebra finalize-outcome --trusted-outcome-file PATH
+  [--repo-root PATH]
+  [--db PATH]
+  [--json]
+```
+
+```console
+pebra finalize-outcome --trusted-outcome-file outcome.json --repo-root . --json
+```
+
+### `learn`
+
+Record shadow learning measurement without changing decisions.
+
+```text
+pebra learn --assessment-id ID
+  [--repo-root PATH]
+  [--db PATH]
+  [--json]
+```
+
+```console
+pebra learn --assessment-id asm_12 --repo-root . --json
+```
+
+### `promote`
+
+Run shadow-to-active learned-fact promotion.
+
+```text
+pebra promote
+  [--repo-root PATH]
+  [--db PATH]
+  [--drift-freeze-threshold FLOAT]
+  [--json]
+```
+
+```console
+pebra promote --repo-root . --json
+```
+
+### `scorecard`
+
+Read calibration and benefit metrics.
+
+```text
+pebra scorecard
+  [--repo-root PATH]
+  [--db PATH]
+  [--json]
+```
+
+```console
+pebra scorecard --repo-root . --json
+```
+
+### `dashboard`
+
+Launch the browser-based read-only Risk Observatory.
+
+```text
+pebra dashboard
+  [--repo-root PATH]
+  [--db PATH]
+  [--repo-id ID]
+  [--read-only]
+  [--host HOST]
+  [--port PORT]
+  [--instance N]
+  [--auth {auto,token,none}]
+  [--token]
+  [--open]
+```
+
+```console
+pebra dashboard --port 4500 --open
+pebra dashboard --host 127.0.0.1 --port 0
+pebra dashboard --auth token --open
+pebra dashboard --host 0.0.0.0 --auth token
+pebra dashboard --read-only --db path/to/pebra.db --repo-id repo_example
+```
+
+`--token` is an alias for forcing `--auth token`; it does not accept a token value. Non-loopback binds require token authentication.
+
+### `tui`
+
+Launch the Textual read-only Observatory.
+
+```text
+pebra tui
+  [--repo-root PATH]
+  [--db PATH]
+  [--repo-id ID]
+  [--read-only]
+```
+
+```console
+pebra tui --repo-root .
+python -m pebra tui --repo-root .
+pebra tui --read-only --db path/to/pebra.db --repo-id repo_example
+```
+
+`--repo-root` requires a value. Use `--repo-root .` for the current directory.
+
+### `setup-graph`
+
+Install or initialize the graph engine for a repository/worktree.
+
+```text
+pebra setup-graph
+  [--repo-root PATH]
+  [--fix]
+  [--version VERSION]
+  [--allow-unsupported]
+  [--via {auto,standalone,npm}]
+  [--json]
+```
+
+```console
+pebra setup-graph --fix --repo-root .
+pebra setup-graph --via npm --repo-root .
+pebra setup-graph --version 1.1.1 --repo-root .
+```
+
+`PEBRA_CODEGRAPH_BIN` overrides graph-engine discovery.
+
+### `doctor`
+
+Diagnose graph availability; add `--fix-graph` for an explicitly mutating repair.
+
+```text
+pebra doctor [--repo-root PATH] [--fix-graph] [--json]
+```
+
+```console
+pebra doctor --repo-root .
+pebra doctor --repo-root . --fix-graph --json
+```
+
+### `graph-stats`
+
+Report CodeGraph node counts.
+
+```text
+pebra graph-stats [--repo-root PATH] [--json]
+```
+
+```console
+pebra graph-stats --repo-root . --json
+```
+
+### `capabilities`
+
+Report measured language support and observed host-enforcement posture.
+
+```text
+pebra capabilities [--repo-root PATH] [--json]
+```
+
+```console
+pebra capabilities --repo-root . --json
+```
+
+Unlike `agent-init --check`, this command may repair a stale graph index.
+
+### `candidate-patch`
+
+Build a deterministic unified diff from structured replacements.
+
+```text
+pebra candidate-patch EDITS_FILE [--repo-root PATH] [--json]
+```
+
+```console
+pebra candidate-patch edits.json --repo-root . --json
+```
+
+### `gate-check`
+
+Read one host edit event from stdin and print a versioned gate decision.
+
+```text
+pebra gate-check
+  [--db PATH]
+  [--consult-only]
+  [--include-host-metadata]
+```
+
+```powershell
+Get-Content -Raw event.json | pebra gate-check
+Get-Content -Raw event.json | pebra gate-check --consult-only
+```
+
+```cmd
+type event.json | pebra gate-check
+```
+
+```bash
+cat event.json | pebra gate-check
+```
+
+`--consult-only` is for hosts/runners without a trusted human approver. Host metadata includes the matched assessment ID and is not model-facing treatment content.
+
+### `gate-hook`
+
+Claude PreToolUse compatibility/enforcement shim.
+
+```text
+pebra gate-hook [--db PATH]
+```
+
+Internal handshake, deliberately hidden from normal help:
+
+```text
+pebra gate-hook --capabilities
+```
+
+Do not treat `--capabilities` output as candidate authorization.
+
+### `dependents`
+
+List files that depend on one target file.
+
+```text
+pebra dependents --target PATH [--repo-root PATH] [--json]
+```
+
+```console
+pebra dependents --target pebra/observatory_context.py --repo-root .
+pebra dependents --target pebra/observatory_context.py --repo-root . --json
+```
+
+### `help`
+
+```text
+pebra help [COMMAND] [--all]
+```
+
+`pebra help --all` prints all visible command syntax. `pebra help help` prints the help command's own syntax.
+
+## Standard Product Workflows
+
+### Pre-edit lifecycle
+
+```console
+pebra assess request.json --json
+pebra apply-candidate --assessment-id asm_12
+pebra verify --assessment-id asm_12 --completed-check "pytest -q=passed" --json
+pebra record-outcome --assessment-id asm_12 --status completed
+pebra learn --assessment-id asm_12
+pebra promote --repo-root .
+pebra scorecard --repo-root .
+```
+
+Trusted hosts should prefer `finalize-outcome` over manually chaining `record-outcome`, `learn`, and `promote`.
+
+### Agent integration inspection
+
+```console
+pebra agent-init --target claude --repo-root . --with-hook
+pebra agent-init --target codex --repo-root . --with-hook
+pebra agent-init --target claude --repo-root . --check --json
+pebra agent-init --target codex --repo-root . --check --json
+pebra capabilities --repo-root . --json
+```
+
+## TUI Keys and Commands
+
+Product-defined keys:
+
+| Key | Action |
+| --- | --- |
+| `q` | Quit |
+| `Ctrl+Q` | Priority quit inherited from Textual |
+| `?` | Toggle key-help panel |
+| `Escape` | Close help panel or return from assessment detail |
+| `r` | Refresh the Observatory ledger |
+| `g` | Toggle contiguous exact-candidate grouping (`Group repeats` / `Show raw`) |
+| `Enter` | Open the selected assessment |
+| `Ctrl+P` | Open command palette |
+
+Ledger/DataTable navigation under the current Textual 8.2.x environment:
+
+| Key | Action |
+| --- | --- |
+| Arrow keys | Move cursor or pan |
+| `Home` / `End` | Horizontal endpoints |
+| `PageUp` / `PageDown` | Vertical paging |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Horizontal paging |
+| `Ctrl+Home` / `Ctrl+End` | First/last row |
+| `Tab` / `Shift+Tab` | Move focus |
+| `Ctrl+C` / `Super+C` | Copy selected text |
+
+PEBRA command-palette commands:
+
+```text
+Refresh
+Overview
+Group repeats / Show raw
+Help
+```
+
+Raw assessment history is the default. Grouping collapses only adjacent rows with the same validated
+candidate fingerprint and identical displayed assessment semantics. A grouped `×N` row opens its latest
+assessment and lists every contained assessment ID in detail. The caption distinguishes groups from raw
+assessment count; overview counts and trends always remain based on raw assessments. Toggling back to
+raw restores the previously selected exact assessment when it is still present.
+
+Current Textual built-ins include:
+
+```text
+Theme
+Keys
+Maximize
+Screenshot
+Quit
+```
+
+Inherited bindings and built-ins may change within the allowed `textual>=8.2,<9` range. Product-defined bindings are the stable PEBRA contract.
+
+## Textual Development Console
+
+Run from the repository root in two terminals. The development console is wired through `textual-dev`; it is not a separate PEBRA build.
+
+Windows PowerShell:
+
+```powershell
+# Terminal 1
+.\.venv\Scripts\textual.exe console
+```
+
+```powershell
+# Terminal 2
+$env:PATH = "$PWD\.venv\Scripts;$env:PATH"
+.\.venv\Scripts\textual.exe run --dev -c "pebra tui --repo-root ."
+```
+
+Command Prompt:
+
+```cmd
+rem Terminal 1
+.venv\Scripts\textual.exe console
+```
+
+```cmd
+rem Terminal 2
+set "PATH=%CD%\.venv\Scripts;%PATH%"
+.venv\Scripts\textual.exe run --dev -c "pebra tui --repo-root ."
+```
+
+Bash or zsh on Linux/macOS:
+
+```bash
+# Terminal 1
+.venv/bin/textual console
+```
+
+```bash
+# Terminal 2
+PATH="$PWD/.venv/bin:$PATH" .venv/bin/textual run --dev -c "pebra tui --repo-root ."
+```
+
+Regenerate visual baselines only after an intentional UI change:
+
+```console
+python -m pytest tests/snapshots --snapshot-update
+python -m pytest tests/snapshots -q
+```
+
+## MCP Server and Tools
+
+Start the stdio server with either entrypoint:
+
+```console
+pebra-mcp
+python -m pebra.mcp_server
+```
+
+MCP tools:
+
+### `pebra_assess`
+
+Required:
+
+```text
+task: string
+action: object
+```
+
+Optional: `evidence`, `thresholds`, `repo_root`, `db`.
+
+### `pebra_compare`
+
+Required:
+
+```text
+task: string
+candidate_actions: array<object>
+```
+
+Optional: `evidence`, `thresholds`, `repo_root`, `db`.
+
+There is currently no root `pebra compare` CLI command.
+
+### `pebra_verify`
+
+Required: `assessment_id`.
+
+Optional: `scope`, `completed_checks`, `dry_run_preview`, `repo_root`, `db`.
+
+### `pebra_record_outcome`
+
+Required: `assessment_id`, `status`.
+
+Optional: `detail`, `repo_root`, `db`.
+
+MCP intentionally does not expose risk acceptance or candidate application.
+
+## Local Validation
+
+Direct tools:
+
+```console
+python -m pytest -q
+python -m ruff check .
+lint-imports
+python -m pytest e2e/test_boundary_discipline.py -q
+```
+
+Normal source checkout gate:
+
+```console
+python -m nox -s tests lint e2e-fast
+```
+
+## Nox Sessions
+
+List sessions:
+
+```console
+python -m nox --list
+```
+
+All 17 sessions:
+
+| Command | Purpose / gate |
+| --- | --- |
+| `nox -s dev-package` | Build, install, and smoke-test the exact local wheel and sdist |
+| `nox -s dev-package -- --open` | Same, then keep the installed dashboard open |
+| `nox -s tests` | Full default test suite |
+| `nox -s lint` | Ruff and import-linter architecture contracts |
+| `nox -s bench-math` | Deterministic math/oracle benchmark |
+| `nox -s bench-math-regen` | Regenerate frozen math fixtures |
+| `nox -s bench-flow` | Deterministic learning-loop replay benchmark |
+| `nox -s bench-flow-regen` | Regenerate flow corpus and frozen artifacts |
+| `nox -s bench-continuity-smoke` | Unpaid multi-owner continuity evidence capture; requires `E2E_ZOD_REPO` |
+| `nox -s bench-continuity-warm` | Pure-core cold/shipped/local prior check |
+| `nox -s e2e` | Full deterministic product E2E including seeded learning |
+| `nox -s e2e-fast` | Fast deterministic CLI/product boundary lane |
+| `nox -s e2e-learning` | Seeded 100+ cycle learning/promotion/dashboard lane |
+| `nox -s e2e-external` | Gated real external repository + CodeGraph proof; requires `E2E_EXTERNAL=1` |
+| `nox -s e2e-ab` | Paid/provider-backed blinded agent assay; never run without explicit authorization |
+| `nox -s e2e-ui` | Playwright browser-dashboard lane |
+| `nox -s mcp-smoke` | Real MCP SDK and stdio server smoke |
+| `nox -s core-only` | Base package/core import check without adapters |
+
+External graph lane example:
+
+```powershell
+$env:E2E_EXTERNAL = "1"
+$env:E2E_TEMPLATE_BLUEPRINT_REPO = "C:\path\to\external-repo"
+.\.venv\Scripts\nox.exe -s e2e-external
+```
+
+```cmd
+set E2E_EXTERNAL=1
+set E2E_TEMPLATE_BLUEPRINT_REPO=C:\path\to\external-repo
+.venv\Scripts\nox.exe -s e2e-external
+```
+
+```bash
+export E2E_EXTERNAL=1
+export E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/external-repo
+.venv/bin/nox -s e2e-external
+```
+
+## Benchmark Modules
+
+Math benchmark:
+
+```console
+python -m benchmarks.math.export_fixture
+python -m benchmarks.math.reference_metrics
+python -m benchmarks.math.pebra_metrics
+python -m benchmarks.math.compare
+python -m benchmarks.math.run
+python -m benchmarks.math.run --write
+```
+
+Learning-flow benchmark:
+
+```console
+python -m pytest benchmarks/flow -q
+python -m benchmarks.flow.corpus.export_fixture
+python -m benchmarks.flow.replay
+python -m benchmarks.flow.compare
+```
+
+Continuity benchmark:
+
+```text
+python -m benchmarks.continuity.smoke --repo PATH [--output PATH]
+python -m benchmarks.continuity.fit --input PATH --output PATH
+  [--minimum-owner-clusters N] [--verify-frozen]
+python -m benchmarks.continuity.warm [--output PATH]
+```
+
+There is no `pebra benchmark` command.
+
+## Agent A/B Development Utilities
+
+These are developer modules, not shipped product commands.
+
+```text
+python -m e2e.experiments.agent_ab.runners.orchestrator
+  --run-id ID
+  [--mode {smoke,pilot,powered,assay,assay_js}]
+  [--preflight-only]
+  [--skip-oracle-preflight]
+  [--skip-graph-preflight]
+
+python -m e2e.experiments.agent_ab.runners.watch_dashboard
+  [--run-id ID]
+  [--mode MODE]
+  [--host HOST]
+  [--port PORT]
+  [--open]
+  [--once]
+
+python -m e2e.experiments.agent_ab.runners.launch_dashboard
+  --run-id ID
+  [--port PORT]
+  [--index N]
+```
+
+Deterministic tests only:
+
+```console
+python -m pytest e2e/experiments/agent_ab/tests -q
+```
+
+`nox -s e2e-ab` invokes real providers and may incur cost. A passing deterministic suite is not authorization to run it.
+
+## Packaging and Distribution Utilities
+
+Build:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install build twine
+.\.venv\Scripts\python.exe -m build
+.\.venv\Scripts\twine.exe check dist\*
+```
+
+Install the single built wheel without hard-coding a version:
+
+```powershell
+$wheel = Get-ChildItem dist\pebra-*.whl | Select-Object -Single
+python -m venv .venv-package
+.\.venv-package\Scripts\python.exe -m pip install $wheel.FullName
+.\.venv-package\Scripts\pebra.exe --version
+.\.venv-package\Scripts\pebra.exe help
+```
+
+Local package exercise:
+
+```console
+python -m scripts.dev_package
+python -m scripts.dev_package --open
+```
+
+Distribution verifier:
+
+```text
+python scripts/verify_distribution.py archives DIST_DIR
+python scripts/verify_distribution.py installed
+python scripts/verify_distribution.py codegraph
+python scripts/verify_distribution.py checksums DIST_DIR
+python scripts/verify_distribution.py verify-checksums DIST_DIR MANIFEST
+python scripts/verify_distribution.py candidate-manifest DIST_DIR OUTPUT --tag TAG --commit SHA
+python scripts/verify_distribution.py verify-candidate DIST_DIR MANIFEST --tag TAG --commit SHA
+python scripts/verify_distribution.py index-digests DIST_DIR INDEX_JSON
+python scripts/verify_distribution.py release-tag TAG [--pyproject PATH]
+```
+
+Regenerate the release dependency lock:
+
+```console
+pip-compile --allow-unsafe --generate-hashes --output-file=requirements-release.txt --strip-extras requirements-release.in
+```
+
+## GitHub Actions Jobs
+
+### CI workflow
+
+Runs on pushes to `main`, pull requests, or manual dispatch:
+
+```text
+Tests (ubuntu-latest)
+Tests (windows-latest)
+Tests (macos-latest)
+Lint and architecture contracts
+Build distributions
+Installed wheel and CodeGraph (ubuntu-latest)
+Installed wheel and CodeGraph (windows-latest)
+Installed wheel and CodeGraph (macos-latest)
+Playwright dashboard
+```
+
+Manual dispatch:
+
+```console
+gh workflow run ci.yml --ref main
+```
+
+### Secret scan workflow
+
+```text
+Gitleaks event/full-history scan
+```
+
+Manual dispatch:
+
+```console
+gh workflow run security.yml --ref main
+```
+
+### Release workflow
+
+Inputs:
+
+```text
+release_tag       Required annotated tag on main
+candidate_run_id  Optional prior release run to recover already-tested artifacts
+```
+
+Jobs:
+
+```text
+Build release candidate
+Publish candidate to TestPyPI
+Verify and publish tested bytes to PyPI
+Create GitHub release
+```
+
+Dispatch—only after explicit maintainer release authorization:
+
+```console
+gh workflow run release.yml --ref main -f release_tag=vX.Y.Z
+```
+
+Recovery of an already-tested candidate—also requires explicit authorization:
+
+```console
+gh workflow run release.yml --ref main -f release_tag=vX.Y.Z -f candidate_run_id=RUN_ID
+```
+
+Passing tests, an approved milestone, a clean release candidate, or an existing tag does not itself authorize workflow dispatch, environment approval, PyPI publication, GitHub release creation, or rerunning a failed release.
+
+## Release Verification Commands
+
+Create an annotated tag only after the complete required matrix passes and the maintainer explicitly authorizes release:
+
+```console
+git tag -a vX.Y.Z -m "PEBRA X.Y.Z"
+git push origin vX.Y.Z
+```
+
+Inspect workflows:
+
+```console
+gh run list --workflow ci.yml
+gh run list --workflow security.yml
+gh run list --workflow release.yml
+gh run view RUN_ID --json status,conclusion,jobs,url
+```
+
+Download and verify a GitHub release:
+
+```console
+gh release download vX.Y.Z --dir release-download
+python scripts/verify_distribution.py verify-checksums release-download release-download/SHA256SUMS
+```
+
+Clean PyPI install smoke:
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv-release-smoke
+.\.venv-release-smoke\Scripts\python.exe -m pip install --index-url https://pypi.org/simple/ pebra==X.Y.Z
+.\.venv-release-smoke\Scripts\pebra.exe --version
+.\.venv-release-smoke\Scripts\pebra.exe help
+```
+
+Command Prompt:
+
+```cmd
+python -m venv .venv-release-smoke
+.venv-release-smoke\Scripts\python.exe -m pip install --index-url https://pypi.org/simple/ pebra==X.Y.Z
+.venv-release-smoke\Scripts\pebra.exe --version
+.venv-release-smoke\Scripts\pebra.exe help
+```
+
+Bash or zsh on Linux/macOS:
+
+```bash
+python3 -m venv .venv-release-smoke
+.venv-release-smoke/bin/python -m pip install --index-url https://pypi.org/simple/ pebra==X.Y.Z
+.venv-release-smoke/bin/pebra --version
+.venv-release-smoke/bin/pebra help
+```
+
+## Environment Variables Used by Maintained Lanes
+
+| Variable | Purpose |
+| --- | --- |
+| `PEBRA_CODEGRAPH_BIN` | Override CodeGraph launcher/bin discovery |
+| `E2E_EXTERNAL=1` | Enable the gated external-repository E2E lane |
+| `E2E_TEMPLATE_BLUEPRINT_REPO` | External repository used by the graph E2E lane |
+| `E2E_UI_INSTALL_DEPS=1` | Allow browser lane to install Playwright system dependencies |
+| `E2E_ZOD_REPO` | Repository used by continuity smoke capture |
+| `TEXTUAL_ANIMATIONS=none` | Disable Textual animations/reveal effects |
+
+The paid experiment has additional provider credentials and run controls documented in `e2e/experiments/agent_ab/README.md`; do not copy secrets into commands, logs, or documentation.
+
+## Current Intentional Asymmetries
+
+- `pebra_compare` exists in MCP; there is no `pebra compare` CLI command.
+- Risk acceptance and candidate application exist only as trusted CLI/human workflows, not MCP tools.
+- `gate-hook --capabilities` is internal and hidden from normal CLI help.
+- `pebra help --all` omits the help command's own detailed section; use `pebra help help`.
+- Textual built-in commands and inherited key bindings are dependency behavior, not a stable PEBRA product contract.
+- Benchmarks and agent-assay runners are developer modules/nox sessions, not root `pebra` commands.

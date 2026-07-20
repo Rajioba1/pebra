@@ -88,6 +88,12 @@ class ObservatoryApp(App[None]):
                 "Refresh", "Reload the ledger from the store now", self._command_refresh
             )
             yield SystemCommand("Overview", "Show decision/status counts", self._command_overview)
+            grouping_title = "Show raw" if screen.group_repeats else "Group repeats"
+            yield SystemCommand(
+                grouping_title,
+                "Toggle contiguous exact-candidate grouping",
+                screen.action_toggle_grouping,
+            )
         yield SystemCommand("Help", "Show the key bindings", self.action_show_help_panel)
 
     def _command_refresh(self) -> None:

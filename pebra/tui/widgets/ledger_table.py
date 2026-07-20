@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from pathlib import PurePosixPath
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from textual.content import Content
 
@@ -157,13 +157,21 @@ def decision_cell(decision: str, *, dark: bool = True) -> Content:
 
 
 def ledger_row(
-    assessment: dict[str, Any], *, columns: Sequence[str] = WIDE_COLUMNS, dark: bool = True
+    assessment: Mapping[str, Any],
+    *,
+    columns: Sequence[str] = WIDE_COLUMNS,
+    dark: bool = True,
+    group_size: int = 1,
 ) -> tuple[Any, ...]:
     """One display-only row from a controller summary, projected into the active column set."""
     scores = assessment.get("scores") or {}
     rau = _num(scores.get("rau"))
     cells = {
-        "assessment_id": assessment.get("assessment_id", "—"),
+        "assessment_id": (
+            f"{assessment.get('assessment_id', '—')} ×{group_size}"
+            if group_size > 1
+            else assessment.get("assessment_id", "—")
+        ),
         "target": format_target(assessment.get("target_files") or ()),
         "task": format_task(assessment.get("task")),
         "assessed_commit": short_commit(assessment.get("assessed_commit")),

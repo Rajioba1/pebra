@@ -44,7 +44,9 @@ def header_line(detail: dict[str, Any]) -> str:
     )
 
 
-def detail_sections(detail: dict[str, Any]) -> list[tuple[str, Any]]:
+def detail_sections(
+    detail: dict[str, Any], *, assessment_ids: tuple[str, ...] = ()
+) -> list[tuple[str, Any]]:
     """Split the persisted detail into labelled sections. Evidence sub-dicts are pulled out of scores so
     the Scores section stays the scalar risk/benefit numbers."""
     content = detail.get("content") or {}
@@ -63,6 +65,8 @@ def detail_sections(detail: dict[str, Any]) -> list[tuple[str, Any]]:
         "Chosen targets": list(identity.target_files) or ["target unavailable"],
         "Target provenance": _PROVENANCE_LABELS[identity.target_provenance],
     }
+    if len(assessment_ids) > 1:
+        identity_payload["Contained assessment IDs"] = list(assessment_ids)
     return [
         ("Assessment identity", identity_payload),
         ("Scores", plain_scores),
@@ -76,16 +80,19 @@ def detail_sections(detail: dict[str, Any]) -> list[tuple[str, Any]]:
 class AssessmentDetailScreen(Screen):
     BINDINGS = [Binding("escape", "back", "Back")]
 
-    def __init__(self, detail: dict[str, Any]) -> None:
+    def __init__(self, detail: dict[str, Any], *, assessment_ids: tuple[str, ...] = ()) -> None:
         super().__init__()
         self._detail = detail
+        self.assessment_ids = assessment_ids
 
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll(id="detail-body"):
             yield Static(header_line(self._detail), id="detail-header")
             yield Static(GATES_UNAVAILABLE_NOTE, id="gates-note")
-            for title, payload in detail_sections(self._detail):
+            for title, payload in detail_sections(
+                self._detail, assessment_ids=self.assessment_ids
+            ):
                 yield Static(title, classes="section-title")
                 yield Pretty(payload, classes="section-body")
         yield Footer()

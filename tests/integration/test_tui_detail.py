@@ -106,6 +106,16 @@ def test_gates_note_says_unavailable_and_is_not_reconstructed() -> None:
     assert "gate" in GATES_UNAVAILABLE_NOTE.lower()
 
 
+def test_grouped_detail_lists_every_contained_assessment_id() -> None:
+    sections = dict(detail_sections(_detail(), assessment_ids=("asm_3", "asm_2", "asm_1")))
+
+    assert sections["Assessment identity"]["Contained assessment IDs"] == [
+        "asm_3",
+        "asm_2",
+        "asm_1",
+    ]
+
+
 # --- integration ---
 
 
@@ -239,5 +249,50 @@ def test_row_selection_event_keeps_assessment_identity_across_refresh() -> None:
             screen.on_data_table_row_selected(old_event)
 
             assert data.detail_ids == ["asm_1"]
+
+    asyncio.run(scenario())
+
+
+def test_grouped_row_opens_latest_assessment_and_shows_all_ids() -> None:
+    class _GroupedData(_RecordingData):
+        def refresh_snapshot(self) -> ObservatorySnapshot:
+            rows = []
+            for assessment_id in ("asm_2", "asm_1"):
+                rows.append(
+                    {
+                        "assessment_id": assessment_id,
+                        "candidate_fingerprint": "a" * 64,
+                        "decision": "proceed",
+                        "assessed_commit": "abc1234",
+                        "terminal_status": None,
+                        "task": "Fix authentication",
+                        "action_id": "edit-auth",
+                        "target_files": ["src/auth.py"],
+                        "scores": {"rau": 0.2, "expected_loss": 0.1, "benefit": 0.3},
+                    }
+                )
+            return ObservatorySnapshot(
+                overview={"total": 2},
+                assessments=rows,
+                scores_series=[],
+                chain={"valid": True},
+            )
+
+    async def scenario() -> None:
+        data = _GroupedData()
+        app = _Harness(ObservatoryScreen(data))
+        async with app.run_test() as pilot:
+            await pilot.press("g")
+            app.query_one("#ledger", DataTable).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, AssessmentDetailScreen)
+            assert data.detail_ids == ["asm_2"]
+            assert app.screen.assessment_ids == ("asm_2", "asm_1")
+            identity = dict(detail_sections(_detail(), assessment_ids=app.screen.assessment_ids))[
+                "Assessment identity"
+            ]
+            assert identity["Contained assessment IDs"] == ["asm_2", "asm_1"]
 
     asyncio.run(scenario())
