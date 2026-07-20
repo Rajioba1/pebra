@@ -324,6 +324,8 @@ def test_breakpoint_rebuild_resets_horizontal_scroll(tmp_path) -> None:
         app = ObservatoryApp(_ctx_for(db))
         async with app.run_test(size=(120, 24)) as pilot:
             table = app.query_one("#ledger", DataTable)
+            for _ in range(3):
+                await pilot.pause()
             table.scroll_to(x=20, animate=False, force=True, immediate=True)
             await pilot.pause()
             assert table.scroll_x > 0

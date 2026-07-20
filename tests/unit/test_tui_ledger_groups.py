@@ -58,6 +58,28 @@ def test_same_candidate_different_scores_do_not_group() -> None:
     assert [group.assessment_ids for group in groups] == [("asm_2",), ("asm_1",)]
 
 
+def test_boolean_score_does_not_group_with_visually_different_zero() -> None:
+    groups = group_contiguous_assessments(
+        [
+            _row("asm_2", scores={"rau": False, "expected_loss": 0.1, "benefit": 0.3}),
+            _row("asm_1", scores={"rau": 0.0, "expected_loss": 0.1, "benefit": 0.3}),
+        ]
+    )
+
+    assert [group.assessment_ids for group in groups] == [("asm_2",), ("asm_1",)]
+
+
+def test_matching_malformed_scores_are_never_grouped() -> None:
+    for malformed in (False, "0.0", None, float("inf"), float("nan")):
+        scores = {"rau": malformed, "expected_loss": 0.1, "benefit": 0.3}
+
+        groups = group_contiguous_assessments(
+            [_row("asm_2", scores=scores), _row("asm_1", scores=scores.copy())]
+        )
+
+        assert [group.assessment_ids for group in groups] == [("asm_2",), ("asm_1",)]
+
+
 def test_same_candidate_different_task_does_not_group() -> None:
     groups = group_contiguous_assessments(
         [_row("asm_2"), _row("asm_1", task="Fix authorization")]

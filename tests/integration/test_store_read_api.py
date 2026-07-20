@@ -99,6 +99,26 @@ def _persist_scoped(
     return store.persist_assessment(res, request)
 
 
+def test_list_assessments_can_preserve_malformed_score_values(tmp_path) -> None:
+    store = _store(tmp_path)
+    result = AssessmentResult(
+        recommended_decision=Decision.PROCEED,
+        requires_confirmation=False,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.NORMAL,
+        scores={"rau": False, "expected_loss": "0.1", "benefit": None},
+        repo_id="r",
+        repo_root="/x",
+    )
+    store.persist_assessment(result, {"task": "t"})
+
+    assert store.list_assessments("r")[0]["scores"] == {
+        "rau": False,
+        "expected_loss": "0.1",
+        "benefit": None,
+    }
+
+
 def test_revise_safer_attempt_count_matches_repo_head_and_safe_scope(tmp_path) -> None:
     store = _store(tmp_path)
     _persist_scoped(store, decision=Decision.REVISE_SAFER, files=["src/Gamma.cs", "src/Gamma.cs::Gamma"])

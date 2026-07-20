@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from itertools import groupby
@@ -22,6 +23,14 @@ def _grouping_key(row: Mapping[str, Any], index: int) -> tuple[Any, ...]:
     if not isinstance(fingerprint, str) or _FINGERPRINT.fullmatch(fingerprint) is None:
         return ("unique", index)
     scores = row.get("scores") or {}
+    score_values = tuple(scores.get(name) for name in ("rau", "expected_loss", "benefit"))
+    if not all(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+        for value in score_values
+    ):
+        return ("unique", index)
     return (
         "candidate",
         fingerprint,
@@ -31,9 +40,7 @@ def _grouping_key(row: Mapping[str, Any], index: int) -> tuple[Any, ...]:
         row.get("task"),
         row.get("action_id"),
         tuple(row.get("target_files") or ()),
-        scores.get("rau"),
-        scores.get("expected_loss"),
-        scores.get("benefit"),
+        *score_values,
     )
 
 
