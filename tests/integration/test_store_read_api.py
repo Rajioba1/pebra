@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from pebra.adapters.store.db import SqliteStore
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 from pebra.core.constants import ActionStatus, Decision, RiskMode
 from pebra.core.models import AssessmentResult
 
@@ -493,6 +494,115 @@ def test_list_assessments_newest_first_scoped_to_repo(tmp_path) -> None:
     assert [r["assessment_id"] for r in rows] == [b, a]  # DESC by id
     assert rows[0]["decision"] == "proceed"
     assert rows[0]["scores"]["edit_confidence"] == 0.83
+
+
+def _persist_history_identity(
+    store: SqliteStore,
+    *,
+    repo_id: str = "r",
+    request: dict | None = None,
+    packet: dict | None = None,
+) -> str:
+    result = AssessmentResult(
+        recommended_decision=Decision.PROCEED,
+        requires_confirmation=False,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.NORMAL,
+        scores={
+            "symbol_scope_evidence": {
+                "symbol_fanin": {"resolved_file_paths": ["src/graph.py"]}
+            }
+        },
+        repo_id=repo_id,
+        repo_root="/x",
+        assessed_commit="abc123",
+        model_guidance_packet=packet,
+    )
+    return store.persist_assessment(result, request or {"task": "History task"})
+
+
+def test_list_assessments_projects_modern_declared_and_bound_identity(tmp_path) -> None:
+    store = _store(tmp_path)
+    digest = "a" * 64
+    asm = _persist_history_identity(
+        store,
+        request={
+            "task": "Fix authentication",
+            "action_id": "edit-auth",
+            "revision_envelope": {"expected_files": ["src/declared.py"]},
+        },
+        packet={
+            "binding": {
+                "candidate": {
+                    "algorithm": CANDIDATE_BINDING_ALGORITHM,
+                    "files": {"src/bound.py": digest},
+                },
+                "safe_scope": {"files": ["src/legacy.py"]},
+            }
+        },
+    )
+
+    row = store.list_assessments("r")[0]
+
+    assert row["assessment_id"] == asm
+    assert row["task"] == "Fix authentication"
+    assert row["action_id"] == "edit-auth"
+    assert row["declared_files"] == ["src/declared.py"]
+    assert row["bound_files"] == ["src/bound.py"]
+    assert row["target_files"] == ["src/bound.py"]
+    assert row["target_provenance"] == "candidate_bound"
+    assert len(row["candidate_fingerprint"]) == 64
+
+
+def test_list_assessments_projects_legacy_guidance_identity(tmp_path) -> None:
+    store = _store(tmp_path)
+    _persist_history_identity(
+        store,
+        request={"task": "Legacy task", "action_id": "legacy-action"},
+        packet={
+            "binding": {
+                "safe_scope": {
+                    "files": ["src/legacy.py", "src/other.py::symbol"]
+                }
+            }
+        },
+    )
+
+    row = store.list_assessments("r")[0]
+
+    assert row["task"] == "Legacy task"
+    assert row["action_id"] == "legacy-action"
+    assert row["declared_files"] == []
+    assert row["bound_files"] == []
+    assert row["target_files"] == ["src/legacy.py"]
+    assert row["target_provenance"] == "legacy_guidance"
+    assert row["candidate_fingerprint"] is None
+
+
+def test_list_assessments_keeps_malformed_binding_visible_without_fingerprint(tmp_path) -> None:
+    store = _store(tmp_path)
+    asm = _persist_history_identity(
+        store,
+        request={
+            "task": "Malformed binding",
+            "revision_envelope": {"expected_files": ["src/declared.py"]},
+        },
+        packet={
+            "binding": {
+                "candidate": {
+                    "algorithm": CANDIDATE_BINDING_ALGORITHM,
+                    "files": {"src/bound.py": "not-a-digest"},
+                }
+            }
+        },
+    )
+
+    row = store.list_assessments("r")[0]
+
+    assert row["assessment_id"] == asm
+    assert row["target_files"] == ["src/declared.py"]
+    assert row["target_provenance"] == "declared"
+    assert row["candidate_fingerprint"] is None
 
 
 def test_list_assessments_pagination(tmp_path) -> None:

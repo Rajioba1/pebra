@@ -60,6 +60,13 @@ def _row(**over: Any) -> dict[str, Any]:
         "assessed_commit": "abc123",
         "terminal_status": None,
         "scores": {"rau": 0.2, "benefit": 0.4},
+        "task": "Fix login",
+        "action_id": "edit-auth",
+        "declared_files": ["src/auth.py"],
+        "bound_files": ["src/auth.py"],
+        "target_files": ["src/auth.py"],
+        "target_provenance": "candidate_bound",
+        "candidate_fingerprint": "a" * 64,
     }
     base.update(over)
     return base
@@ -73,6 +80,13 @@ def test_list_assessments_delegates_and_forwards_limit_offset() -> None:
 
     assert [r["assessment_id"] for r in out] == ["asm_1", "asm_2"]
     assert ("list_assessments", ("r", 2, 1)) in port.calls
+
+
+def test_list_assessments_preserves_projected_identity_fields() -> None:
+    projected = _row()
+    port = _FakePort([projected])
+
+    assert oqc.list_assessments("r", port=port)[0] == projected
 
 
 def test_overview_counts_decisions_status_and_includes_chain() -> None:

@@ -21,8 +21,7 @@ class ObservatoryReadPort(Protocol):
     def list_assessments(
         self, repo_id: str, limit: int = 50, offset: int = 0
     ) -> list[dict[str, Any]]:
-        """Newest-first assessment summaries for a repo (each carries its current terminal status,
-        None = pending)."""
+        """Newest-first summaries with terminal status and projected assessment identity."""
         ...
 
     def assessment_detail(self, assessment_id: str) -> dict[str, Any]:

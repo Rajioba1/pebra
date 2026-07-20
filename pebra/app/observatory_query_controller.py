@@ -31,7 +31,7 @@ class AssessmentNotFoundError(Exception):
 def list_assessments(
     repo_id: str, limit: int = 50, offset: int = 0, *, port: ObservatoryReadPort
 ) -> list[dict[str, Any]]:
-    """Newest-first assessment summaries for a repo (pass-through; the store clamps limit/offset)."""
+    """Newest-first summaries, including store-projected identity (pass-through, no reshaping)."""
     return port.list_assessments(repo_id, limit, offset)
 
 

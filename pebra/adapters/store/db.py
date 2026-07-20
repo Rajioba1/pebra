@@ -21,6 +21,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from pebra.core.assessment_history import project_assessment_identity
 from pebra.core.constants import MIN_CALIBRATION_SAMPLES
 from pebra.core.models import AssessmentResult
 from pebra.core.prediction_capture import summarize_prior_provenance
@@ -1439,6 +1440,7 @@ class SqliteStore:
             # foreign row must never become visible merely by changing that unhashed duplicate.
             if content.get("repo_id") != repo_id:
                 continue
+            identity = project_assessment_identity(content)
             summaries.append(
                 {
                     "assessment_id": f"asm_{row_id}",
@@ -1448,6 +1450,13 @@ class SqliteStore:
                     "assessed_commit": content.get("assessed_commit"),
                     "terminal_status": terminal_status,  # None until an outcome is recorded
                     "outcome_recorded_at": recorded_at,
+                    "task": identity.task,
+                    "action_id": identity.action_id,
+                    "declared_files": list(identity.declared_files),
+                    "bound_files": list(identity.bound_files),
+                    "target_files": list(identity.target_files),
+                    "target_provenance": identity.target_provenance,
+                    "candidate_fingerprint": identity.candidate_fingerprint,
                 }
             )
         return summaries

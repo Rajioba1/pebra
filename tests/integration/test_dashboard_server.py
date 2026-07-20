@@ -10,6 +10,7 @@ import importlib.util
 import pytest
 
 from pebra.adapters.store.db import SqliteStore
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 from pebra.core.constants import ActionStatus, Decision, RiskMode
 from pebra.core.models import AssessmentResult
 
@@ -99,6 +100,48 @@ def test_assessments_route_lists_seeded(tmp_path) -> None:
     resp = _client(db).get("/api/repos/r/assessments", headers=_AUTH)
     assert resp.status_code == 200
     assert resp.json()["items"][0]["assessment_id"] == asm
+
+
+def test_dashboard_and_tui_return_identical_assessment_identity_fields(tmp_path) -> None:
+    from pebra.observatory_context import ObservatoryContext
+    from pebra.tui.data import ObservatoryData
+
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED,
+            requires_confirmation=False,
+            action_status=ActionStatus.PENDING,
+            risk_mode=RiskMode.NORMAL,
+            scores={},
+            repo_id="r",
+            repo_root="/x",
+            model_guidance_packet={
+                "binding": {
+                    "candidate": {
+                        "algorithm": CANDIDATE_BINDING_ALGORITHM,
+                        "files": {"src/auth.py": "a" * 64},
+                    }
+                }
+            },
+        ),
+        {
+            "task": "Fix authentication",
+            "action_id": "edit-auth",
+            "revision_envelope": {"expected_files": ["src/auth.py"]},
+        },
+    )
+    store.close()
+
+    dashboard_row = _client(db).get("/api/repos/r/assessments", headers=_AUTH).json()["items"][0]
+    tui_row = ObservatoryData(
+        ObservatoryContext(db_path=db, repo_id="r", repo_root=None, read_only=True)
+    ).refresh_snapshot().assessments[0]
+
+    assert dashboard_row == tui_row
+    assert dashboard_row["target_files"] == ["src/auth.py"]
+    assert dashboard_row["target_provenance"] == "candidate_bound"
 
 
 def test_overview_route_counts_decisions(tmp_path) -> None:

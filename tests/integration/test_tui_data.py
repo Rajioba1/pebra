@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from pebra.adapters.store.db import SqliteStore
+from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 from pebra.core.constants import ActionStatus, Decision, RiskMode
 from pebra.core.models import AssessmentResult
 from pebra.observatory_context import ObservatoryContext
@@ -71,6 +72,44 @@ def test_refresh_snapshot_returns_overview_rows_series_and_chain(tmp_path) -> No
     series_ids = {item["assessment_id"] for item in snap.scores_series}
     assert series_ids == {r["assessment_id"] for r in snap.assessments}
     assert snap.scores_series[0]["scores"]["rau"] == 0.14
+
+
+def test_refresh_snapshot_exposes_projected_assessment_identity(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED,
+            requires_confirmation=False,
+            action_status=ActionStatus.PENDING,
+            risk_mode=RiskMode.NORMAL,
+            scores={},
+            repo_id="r",
+            repo_root="/x",
+            model_guidance_packet={
+                "binding": {
+                    "candidate": {
+                        "algorithm": CANDIDATE_BINDING_ALGORITHM,
+                        "files": {"src/auth.py": "a" * 64},
+                    }
+                }
+            },
+        ),
+        {
+            "task": "Fix authentication",
+            "action_id": "edit-auth",
+            "revision_envelope": {"expected_files": ["src/auth.py"]},
+        },
+    )
+    store.close()
+
+    row = ObservatoryData(_ctx(db)).refresh_snapshot().assessments[0]
+
+    assert row["task"] == "Fix authentication"
+    assert row["action_id"] == "edit-auth"
+    assert row["target_files"] == ["src/auth.py"]
+    assert row["target_provenance"] == "candidate_bound"
+    assert len(row["candidate_fingerprint"]) == 64
 
 
 def test_detail_is_repo_scoped(tmp_path) -> None:
