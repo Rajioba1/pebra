@@ -1034,7 +1034,7 @@ def test_gate_check_graph_probe_never_prepares_or_syncs(event, tmp_path, monkeyp
 
     monkeypatch.setattr(cga, "find_engine", lambda: "/tools/codegraph")
     monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit-b")
-    monkeypatch.setattr(cga.subprocess, "run", graph_process)
+    monkeypatch.setattr(cga, "run_bounded", graph_process)
     monkeypatch.setattr(gca, "_head_sha", lambda _root: "commit-b")
     monkeypatch.setattr(gca, "_query_pending_restriction", lambda *_args: 0)
     event = {**event, "cwd": str(tmp_path)}

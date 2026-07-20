@@ -29,16 +29,19 @@ import json
 import os
 import platform
 import shutil
-import subprocess
+import stat
 import tarfile
+import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pebra.adapters.codegraph_adapter import CodeGraphAdapter
-from pebra.core.engine_argv import resolve_engine_argv
+from pebra.adapters.bounded_process import run_bounded
+from pebra.adapters.codegraph_adapter import CodeGraphAdapter, validate_codegraph_status
+from pebra.core.engine_argv import UnsafeEngineLauncherError, resolve_engine_argv
 from pebra.core.engine_paths import find_engine, managed_install_root
 from pebra.core.graph_version import (
     CODEGRAPH_ACCEPTED_RANGE,
@@ -55,6 +58,15 @@ _MANUAL_HINT = (
     "install Node.js + npm and run: npm install -g @colbymchenry/codegraph@"
     f"{CODEGRAPH_DEFAULT_VERSION}"
 )
+
+ConfigStateName = Literal["absent", "readable", "unreadable", "nonregular"]
+
+
+@dataclass(frozen=True)
+class _ConfigState:
+    path: Path
+    state: ConfigStateName
+    raw: bytes | None
 
 
 def register(subparsers: Any) -> None:
@@ -98,19 +110,24 @@ def _engine_exe() -> str:
 
 
 def _run(cmd: list[str], timeout: int) -> tuple[int, str, str]:
-    # resolve_engine_argv handles the Windows .cmd shim (codegraph/npm have no .exe) — a bare
-    # ["codegraph", ...] FileNotFoundErrors on Windows even when on PATH. Also handles full launcher paths.
     try:
         argv = resolve_engine_argv(cmd[0], cmd[1:])
-        # force UTF-8 decode: codegraph emits UTF-8 progress output; the Windows default cp1252 raises
-        # UnicodeDecodeError on it (A2 finding).
-        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout, check=False)
-        return p.returncode, p.stdout, p.stderr
-    except FileNotFoundError:
-        return 127, "", f"{cmd[0]} not found on PATH"
-    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - defensive
-        return 1, "", str(exc)
+    except UnsafeEngineLauncherError as exc:
+        return 127, "", str(exc)
+    except OSError:
+        return 127, "", "process launch failed"
+    result = run_bounded(
+        argv, timeout=timeout, stdout_limit=256_000, stderr_limit=16_384
+    )
+    if result.error == "timeout":
+        return 1, "", "process timed out"
+    if result.error == "launch_failed":
+        return 127, "", "process launch failed"
+    if result.returncode != 0:
+        return int(result.returncode or 1), result.stdout, "process failed"
+    if result.stdout_truncated:
+        return 1, "", "process output exceeded byte limit"
+    return 0, result.stdout, ""
 
 
 def _installed_version() -> str | None:
@@ -121,7 +138,7 @@ def _installed_version() -> str | None:
     return out.strip() if rc == 0 and out.strip() else None
 
 
-def _status(repo_root: str) -> dict[str, Any] | None:
+def _status(repo_root: str) -> object | None:
     rc, out, _ = _run([_engine_exe(), "status", repo_root, "--json"], timeout=30)
     if rc != 0 or not out.strip():
         return None
@@ -131,8 +148,11 @@ def _status(repo_root: str) -> dict[str, Any] | None:
         return None
 
 
-def _healthy(status: dict[str, Any] | None) -> bool:
-    if not status or status.get("initialized") is False or status.get("worktreeMismatch"):
+def _healthy(status: object | None) -> bool:
+    if not validate_codegraph_status(status)[0]:
+        return False
+    assert isinstance(status, dict)
+    if status.get("worktreeMismatch"):
         return False
     pending = status.get("pendingChanges") or {}
     has_pending = any(pending.get(k) for k in ("added", "modified", "removed"))
@@ -140,10 +160,19 @@ def _healthy(status: dict[str, Any] | None) -> bool:
     return not has_pending and not reindex
 
 
-def _diagnosis(status: dict[str, Any] | None) -> dict[str, Any]:
+def _diagnosis(status: object | None) -> dict[str, Any]:
     if status is None:
         return {"initialized": False, "worktree_mismatch": False, "healthy": False,
                 "detail": "no status (engine errored or repo not initialized)"}
+    valid, reason = validate_codegraph_status(status)
+    if not valid:
+        return {
+            "initialized": False,
+            "worktree_mismatch": False,
+            "healthy": False,
+            "detail": reason,
+        }
+    assert isinstance(status, dict)
     return {
         "initialized": status.get("initialized") is not False,
         "worktree_mismatch": bool(status.get("worktreeMismatch")),
@@ -153,12 +182,68 @@ def _diagnosis(status: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _graph_config(repo_root: str) -> dict[str, Any]:
+def _capture_graph_config(repo_root: str) -> _ConfigState:
     path = Path(repo_root) / "codegraph.json"
     try:
-        raw = path.read_bytes()
+        mode = path.lstat().st_mode
     except FileNotFoundError:
+        return _ConfigState(path, "absent", None)
+    except OSError:
+        return _ConfigState(path, "unreadable", None)
+    if not stat.S_ISREG(mode):
+        return _ConfigState(path, "nonregular", None)
+    try:
+        return _ConfigState(path, "readable", path.read_bytes())
+    except OSError:
+        return _ConfigState(path, "unreadable", None)
+
+
+def _restore_graph_config(original: _ConfigState) -> bool:
+    current = _capture_graph_config(str(original.path.parent))
+    if original.state == "absent":
+        if current.state == "absent":
+            return True
+        if current.state != "readable":
+            return False
+        try:
+            original.path.unlink()
+        except OSError:
+            return False
+        return _capture_graph_config(str(original.path.parent)).state == "absent"
+    if original.state != "readable" or original.raw is None:
+        return False
+    if current.state == "readable" and current.raw == original.raw:
+        return True
+    if current.state == "nonregular":
+        return False
+    temp_name: str | None = None
+    try:
+        fd, temp_name = tempfile.mkstemp(
+            prefix=".codegraph.json.pebra-restore-", dir=str(original.path.parent)
+        )
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(original.raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, original.path)
+        temp_name = None
+    except OSError:
+        return False
+    finally:
+        if temp_name is not None:
+            try:
+                Path(temp_name).unlink()
+            except OSError:
+                pass
+    restored = _capture_graph_config(str(original.path.parent))
+    return restored.state == "readable" and restored.raw == original.raw
+
+
+def _graph_config(repo_root: str, captured: _ConfigState | None = None) -> dict[str, Any]:
+    state = captured or _capture_graph_config(repo_root)
+    if state.state == "absent":
         return {
+            "state": "absent",
             "exists": False,
             "digest": "absent",
             "valid": True,
@@ -168,8 +253,14 @@ def _graph_config(repo_root: str) -> dict[str, Any]:
             "unsupported_fields": [],
             "error": None,
         }
-    except OSError as exc:
+    if state.state in {"unreadable", "nonregular"}:
+        error = (
+            "codegraph configuration unreadable"
+            if state.state == "unreadable"
+            else "codegraph configuration is not a regular file"
+        )
         return {
+            "state": state.state,
             "exists": True,
             "digest": None,
             "valid": False,
@@ -177,8 +268,10 @@ def _graph_config(repo_root: str) -> dict[str, Any]:
             "include_ignored": [],
             "supported_fields": ["extensions", "includeIgnored"],
             "unsupported_fields": [],
-            "error": str(exc),
+            "error": error,
         }
+    assert state.raw is not None
+    raw = state.raw
     digest = hashlib.sha256(raw).hexdigest()
     try:
         payload = json.loads(raw)
@@ -186,6 +279,7 @@ def _graph_config(repo_root: str) -> dict[str, Any]:
         payload = None
     if not isinstance(payload, dict):
         return {
+            "state": "readable",
             "exists": True,
             "digest": digest,
             "valid": False,
@@ -206,6 +300,7 @@ def _graph_config(repo_root: str) -> dict[str, Any]:
     )
     valid = valid_extensions and valid_ignored
     return {
+        "state": "readable",
         "exists": True,
         "digest": digest,
         "valid": valid,
@@ -469,13 +564,21 @@ def _build_worktree_local_index(repo_root: str) -> dict[str, Any] | None:
 
 def run_setup_graph(args: Any) -> int:
     repo = args.repo_root
-    config_path = Path(repo) / "codegraph.json"
-    try:
-        config_before = config_path.read_bytes()
-    except FileNotFoundError:
-        config_before = None
-    except OSError:
-        config_before = None
+    config_before = _capture_graph_config(repo)
+    if config_before.state in {"unreadable", "nonregular"}:
+        graph_config = _graph_config(repo, config_before)
+        _emit(
+            {
+                "ok": False,
+                "command": "setup-graph",
+                "step": "config",
+                "graph_config": graph_config,
+                "config_error": graph_config["error"],
+            },
+            args.as_json,
+            [f"setup-graph refused: {graph_config['error']}"],
+        )
+        return 1
     version, verr = _resolve_version(args.version, args.allow_unsupported, args.as_json)
     if verr is not None:
         return verr
@@ -485,15 +588,10 @@ def run_setup_graph(args: Any) -> int:
     if install_err is not None:
         return install_err
     status = _build_worktree_local_index(repo)
-    try:
-        config_after = config_path.read_bytes()
-    except FileNotFoundError:
-        config_after = None
-    except OSError:
-        config_after = None
+    config_restored = _restore_graph_config(config_before)
+    graph_config = _graph_config(repo)
     diag = _diagnosis(status)
-    config_preserved = config_before == config_after
-    ok = diag["healthy"] and config_preserved
+    ok = diag["healthy"] and config_restored
     intent = "repair worktree-local index" if args.fix else "initialize graph index"
     lines = [f"setup-graph ({intent}) — repo: {repo}, codegraph {version}",
              f"  initialized:       {diag.get('initialized')}",
@@ -501,16 +599,19 @@ def run_setup_graph(args: Any) -> int:
              f"  healthy:           {ok}"]
     if not ok and diag.get("worktree_mismatch"):
         lines.append("  worktree mismatch persists — ensure you run this inside the target worktree.")
-    if not config_preserved:
-        lines.append("  codegraph.json changed during initialization; refusing prepared status.")
+    if not config_restored:
+        lines.append("  codegraph configuration restore failed.")
     _emit({"ok": ok, "command": "setup-graph", "repo_root": repo, "version": version,
-           "config_preserved": config_preserved, "diagnosis": diag}, args.as_json, lines)
+           "config_preserved": config_restored, "config_restored": config_restored,
+           "config_error": None if config_restored else "codegraph configuration restore failed",
+           "graph_config": graph_config, "diagnosis": diag}, args.as_json, lines)
     return 0 if ok else 1
 
 
 def run_doctor(args: Any) -> int:
     repo = args.repo_root
-    graph_config = _graph_config(repo)
+    config_before = _capture_graph_config(repo)
+    graph_config = _graph_config(repo, config_before)
     if not _installed():
         _emit(
             {
@@ -532,11 +633,19 @@ def run_doctor(args: Any) -> int:
     status = _status(repo)
     diag = _diagnosis(status)
     repaired = False
+    config_restored = True
+    post_fix_config_digest: str | None = None
     if args.fix_graph and not diag["healthy"]:
-        status = _build_worktree_local_index(repo)
-        diag = _diagnosis(status)
-        repaired = True
-    ok = diag["healthy"] and in_range and graph_config["valid"]
+        if config_before.state in {"unreadable", "nonregular"}:
+            config_restored = False
+        else:
+            status = _build_worktree_local_index(repo)
+            config_restored = _restore_graph_config(config_before)
+            diag = _diagnosis(status)
+            repaired = True
+        graph_config = _graph_config(repo)
+        post_fix_config_digest = graph_config["digest"]
+    ok = diag["healthy"] and in_range and graph_config["valid"] and config_restored
     lines = [f"doctor — repo: {repo}",
              f"  codegraph version: {runtime_ver or 'unknown'} (accepted {CODEGRAPH_ACCEPTED_RANGE})",
              f"  version_in_range:  {in_range}",
@@ -559,5 +668,8 @@ def run_doctor(args: Any) -> int:
     _emit({"ok": ok, "command": "doctor", "repo_root": repo, "repaired": repaired,
            "codegraph_version": runtime_ver, "version_in_range": in_range,
            "accepted_range": CODEGRAPH_ACCEPTED_RANGE, "graph_config": graph_config,
+           "post_fix_config_digest": post_fix_config_digest,
+           "config_restored": config_restored,
+           "config_error": None if config_restored else "codegraph configuration restore failed",
            "diagnosis": diag}, args.as_json, lines)
     return 0 if ok else 1

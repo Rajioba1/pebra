@@ -1221,9 +1221,11 @@ class _Recorder:
         if argv[1] == "status":
             payload = self._status.pop(0)
             if payload is None:
-                return SimpleNamespace(returncode=1, stdout="")
-            return SimpleNamespace(returncode=0, stdout=_json.dumps(payload))
-        return SimpleNamespace(returncode=0, stdout="")  # sync
+                return SimpleNamespace(returncode=1, stdout="", error=None, stdout_truncated=False)
+            return SimpleNamespace(
+                returncode=0, stdout=_json.dumps(payload), error=None, stdout_truncated=False
+            )
+        return SimpleNamespace(returncode=0, stdout="", error=None, stdout_truncated=False)
 
     @property
     def sync_calls(self):
@@ -1237,7 +1239,7 @@ class _Recorder:
 def _patch(monkeypatch, recorder, *, on_path=True):
     # _default_status resolves the engine via find_engine() (not shutil.which directly), so mock that
     monkeypatch.setattr(cga, "find_engine", lambda: "/usr/bin/codegraph" if on_path else None)
-    monkeypatch.setattr(cga.subprocess, "run", recorder)
+    monkeypatch.setattr(cga, "run_bounded", recorder)
     monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit")
 
 
@@ -1306,7 +1308,7 @@ def test_default_status_never_returns_initial_when_post_sync_status_fails(monkey
 @pytest.mark.parametrize("payload", (None, [], 42, "status"))
 def test_run_status_rejects_non_object_json(monkeypatch, payload) -> None:
     rec = _Recorder([payload])
-    monkeypatch.setattr(cga.subprocess, "run", rec)
+    monkeypatch.setattr(cga, "run_bounded", rec)
 
     assert cga._run_status("/repo", "/usr/bin/codegraph") is None
 

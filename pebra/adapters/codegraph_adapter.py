@@ -26,11 +26,12 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pebra.adapters.bounded_process import run_bounded
+from pebra.adapters import git_adapter
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
 from pebra.core.graph_snapshot import GraphSnapshot
@@ -38,7 +39,6 @@ from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range
 from pebra.core.language_capability import EXPORT_AS_VISIBILITY_LANGUAGES, LanguageCapability
 from pebra.core.models import CandidateAction, FanInEvidence, FileFanInRollup, OwnerRiskEvidence
 from pebra.core.score_math import fractional_rank
-from pebra.adapters import git_adapter
 
 # Edge kinds that constitute per-symbol fan-in. 'imports' is deliberately excluded (file/module-level).
 _FANIN_EDGE_KINDS = ("calls", "references", "instantiates")
@@ -53,6 +53,8 @@ _CONTRACT_CONTAINER_KINDS = ("class", "struct", "interface", "trait", "protocol"
 _CONTAINER_HIERARCHY_KINDS = _CONTRACT_CONTAINER_KINDS + ("namespace", "module", "file", "component", "route")
 _TRANSITIVE_REACH_MAX_DEPTH = 3
 _MIN_SCHEMA_VERSION = 5
+_STATUS_OUTPUT_BYTES = 256_000
+_PROVIDER_DIAGNOSTIC_BYTES = 16_384
 
 _INSTALL_HINT = "install with: npm install -g @colbymchenry/codegraph (or run: pebra setup-graph)"
 _INIT_HINT = "run: pebra setup-graph"
@@ -177,25 +179,25 @@ def _scope_digest(
     return hashlib.sha256(canonical).hexdigest()
 
 
-def _valid_status(status: object) -> bool:
+def validate_codegraph_status(status: object) -> tuple[bool, str | None]:
     """Validate the provider payload before it can trigger sync or authorize graph reads."""
     if not isinstance(status, dict) or status.get("initialized") is not True:
-        return False
+        return False, "codegraph status malformed"
     pending = status.get("pendingChanges")
     if not isinstance(pending, dict):
-        return False
+        return False, "codegraph status malformed"
     for key in ("added", "modified", "removed"):
         value = pending.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            return False
+            return False, "codegraph status malformed"
     index = status.get("index")
     if not isinstance(index, dict) or not isinstance(index.get("reindexRecommended"), bool):
-        return False
+        return False, "codegraph status malformed"
     version = status.get("version")
     if not isinstance(version, str) or not version.strip():
-        return False
+        return False, "codegraph status malformed"
     if "worktreeMismatch" not in status:
-        return False
+        return False, "codegraph status malformed"
     mismatch = status["worktreeMismatch"]
     if mismatch is not None and (
         not isinstance(mismatch, dict)
@@ -204,18 +206,18 @@ def _valid_status(status: object) -> bool:
         or not isinstance(mismatch.get("indexRoot"), str)
         or not mismatch["indexRoot"].strip()
     ):
-        return False
+        return False, "codegraph status malformed"
     index_path = status.get("indexPath")
     if index_path is not None and (not isinstance(index_path, str) or not index_path.strip()):
-        return False
+        return False, "codegraph status malformed"
     extraction_version = index.get("builtWithExtractionVersion")
     if (
         isinstance(extraction_version, bool)
         or not isinstance(extraction_version, int)
         or extraction_version < 0
     ):
-        return False
-    return True
+        return False, "codegraph status malformed"
+    return True, None
 
 
 def _failed_snapshot(
@@ -261,13 +263,13 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
             ), None
         try:
             initial = _run_status(repo_root, exe)
-        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        except OSError:
             initial = None
         if initial is None:
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph status unavailable"
             ), None
-        if not _valid_status(initial):
+        if not validate_codegraph_status(initial)[0]:
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph status malformed"
             ), None
@@ -282,33 +284,31 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
                 "unavailable", config_before, "codegraph index belongs to another worktree"
             ), None
         try:
-            sync = subprocess.run(
-                resolve_engine_argv(exe, ["sync", repo_root]),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=120,
-                check=False,
-            )
-        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            sync_argv = resolve_engine_argv(exe, ["sync", repo_root])
+        except OSError:
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph sync failed", sync_performed=True
             ), None
-        if sync.returncode != 0:
+        sync = run_bounded(
+            sync_argv,
+            timeout=120,
+            stdout_limit=_PROVIDER_DIAGNOSTIC_BYTES,
+            stderr_limit=_PROVIDER_DIAGNOSTIC_BYTES,
+        )
+        if sync.error is not None or sync.returncode != 0:
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph sync failed", sync_performed=True
             ), None
         try:
             post = _run_status(repo_root, exe)
-        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        except OSError:
             post = None
         if post is None:
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph post-sync status unavailable",
                 sync_performed=True,
             ), None
-        if not _valid_status(post):
+        if not validate_codegraph_status(post)[0]:
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph post-sync status malformed",
                 sync_performed=True,
@@ -372,12 +372,18 @@ def _run_status(repo_root: str, exe: str) -> dict[str, Any] | None:
     """One ``codegraph status <repo> --json`` probe -> parsed dict, or None on failure/bad JSON.
     ``exe`` is the resolved launcher path (from find_engine) so the Windows .cmd shim is invoked
     correctly — callers must pre-resolve (no bare-name default, which would FileNotFound on Windows)."""
-    proc = subprocess.run(
+    proc = run_bounded(
         resolve_engine_argv(exe, ["status", repo_root, "--json"]),
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=30, check=False,
+        timeout=30,
+        stdout_limit=_STATUS_OUTPUT_BYTES,
+        stderr_limit=_PROVIDER_DIAGNOSTIC_BYTES,
     )
-    if proc.returncode != 0 or not proc.stdout.strip():
+    if (
+        proc.error is not None
+        or proc.returncode != 0
+        or proc.stdout_truncated
+        or not proc.stdout.strip()
+    ):
         return None
     try:
         payload = json.loads(proc.stdout)
@@ -447,7 +453,7 @@ class CodeGraphAdapter:
                 snapshot = _failed_snapshot(
                     "unavailable", config_digest, "codegraph CLI not found"
                 )
-            elif not _valid_status(status):
+            elif not validate_codegraph_status(status)[0]:
                 snapshot = _failed_snapshot(
                     "unavailable", config_digest, "codegraph status malformed"
                 )
@@ -485,7 +491,7 @@ class CodeGraphAdapter:
             if snapshot.status == "available"
             or (
                 self._status_fn is not None
-                and _valid_status(status)
+                and validate_codegraph_status(status)[0]
                 and in_accepted_range(status["version"])
             )
             else None
@@ -511,10 +517,10 @@ class CodeGraphAdapter:
                 status = _run_status(repo_root, exe) if exe is not None else None
             else:
                 status = self._status_fn(repo_root)
-        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        except OSError:
             return False
         if (
-            not _valid_status(status)
+            not validate_codegraph_status(status)[0]
             or not in_accepted_range(status["version"])
             or status["worktreeMismatch"] is not None
             or not _is_fresh(status)

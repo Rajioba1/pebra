@@ -10,12 +10,16 @@ import json
 import tarfile
 import zipfile
 
+import pytest
+
 from pebra.cli import setup_graph as sg
 from pebra.core.graph_version import CODEGRAPH_DEFAULT_VERSION
 from pebra.core.graph_snapshot import GraphSnapshot
 
-_FRESH = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-          "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24}}
+_FRESH = {"initialized": True, "version": "1.1.1",
+          "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+          "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+          "worktreeMismatch": None}
 _MISMATCH = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
              "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
              "worktreeMismatch": {"worktreeRoot": "/wt", "indexRoot": "/main"}}
@@ -164,6 +168,19 @@ def test_install_npm_uses_pinned_spec(monkeypatch) -> None:
 def test_install_npm_absent_fails_clear(monkeypatch) -> None:
     monkeypatch.setattr(sg.shutil, "which", lambda n: None)
     assert sg._install_npm(True, "1.1.1") == 1
+
+
+def test_run_never_leaks_raw_launcher_exception(monkeypatch) -> None:
+    def fail(_exe, _args):
+        raise OSError(r"private C:\repo setup-graph --fix query")
+
+    monkeypatch.setattr(sg, "resolve_engine_argv", fail)
+
+    rc, out, error = sg._run(["codegraph", "status", "private-query"], timeout=1)
+
+    assert rc == 127
+    assert out == ""
+    assert error == "process launch failed"
 
 
 def test_ensure_installed_standalone_then_npm_fallback(monkeypatch) -> None:
@@ -322,6 +339,30 @@ def test_doctor_out_of_range_is_unhealthy(monkeypatch, capsys) -> None:
     assert rc == 1 and payload["version_in_range"] is False
 
 
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        [],
+        {**_FRESH, "pendingChanges": {"added": True, "modified": 0, "removed": 0}},
+        {**_FRESH, "pendingChanges": {"added": 0, "modified": 0}},
+        {**_FRESH, "index": {"reindexRecommended": False}},
+        {**_FRESH, "index": {"reindexRecommended": 0, "builtWithExtractionVersion": 24}},
+    ],
+)
+def test_doctor_rejects_malformed_status_without_crash_or_partial_health(
+    malformed, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_run", _Engine([malformed]))
+
+    assert sg.run_doctor(_args(as_json=True)) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["diagnosis"]["healthy"] is False
+    assert payload["diagnosis"]["detail"] == "codegraph status malformed"
+
+
 def test_doctor_absent_engine_fails_clear(monkeypatch) -> None:
     monkeypatch.setattr(sg, "_installed", lambda: False)
     assert sg.run_doctor(_args()) == 1
@@ -349,6 +390,7 @@ def test_graph_config_reports_supported_fields_and_exclude_as_unsupported(tmp_pa
     config = sg._graph_config(str(tmp_path))
 
     assert config == {
+        "state": "readable",
         "exists": True,
         "digest": hashlib.sha256(raw).hexdigest(),
         "valid": True,
@@ -361,7 +403,7 @@ def test_graph_config_reports_supported_fields_and_exclude_as_unsupported(tmp_pa
 
 
 def test_graph_config_reports_absent_and_malformed_without_repair(tmp_path) -> None:
-    assert sg._graph_config(str(tmp_path))["digest"] == "absent"
+    assert sg._graph_config(str(tmp_path))["state"] == "absent"
     malformed = tmp_path / "codegraph.json"
     malformed.write_bytes(b"{not json")
 
@@ -371,6 +413,123 @@ def test_graph_config_reports_absent_and_malformed_without_repair(tmp_path) -> N
     assert config["valid"] is False
     assert config["error"] == "malformed JSON"
     assert malformed.read_bytes() == b"{not json"
+
+
+def test_graph_config_distinguishes_nonregular_state(tmp_path) -> None:
+    (tmp_path / "codegraph.json").mkdir()
+
+    config = sg._graph_config(str(tmp_path))
+
+    assert config["state"] == "nonregular"
+    assert config["valid"] is False
+    assert config["error"] == "codegraph configuration is not a regular file"
+
+
+def test_setup_rejects_unreadable_config_before_install_or_init(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "codegraph.json"
+    config.write_bytes(b"{}")
+    original_read = sg.Path.read_bytes
+
+    def unreadable(path):
+        if path == config:
+            raise PermissionError("private path")
+        return original_read(path)
+
+    monkeypatch.setattr(sg.Path, "read_bytes", unreadable)
+    calls: list[str] = []
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: calls.append("install"))
+    monkeypatch.setattr(sg, "_build_worktree_local_index", lambda _root: calls.append("init"))
+
+    assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 1
+    assert calls == []
+
+
+def test_setup_rejects_nonregular_config_before_install_or_init(tmp_path, monkeypatch) -> None:
+    (tmp_path / "codegraph.json").mkdir()
+    calls: list[str] = []
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: calls.append("install"))
+    monkeypatch.setattr(sg, "_build_worktree_local_index", lambda _root: calls.append("init"))
+
+    assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 1
+    assert calls == []
+
+
+def test_setup_atomically_restores_provider_mutation_of_existing_config(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    raw = b'{"includeIgnored":["vendor/**"]}\n'
+    config = tmp_path / "codegraph.json"
+    config.write_bytes(raw)
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+
+    def mutate(_root):
+        config.write_bytes(b'{"provider":"changed"}')
+        return _FRESH
+
+    monkeypatch.setattr(sg, "_build_worktree_local_index", mutate)
+
+    assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert config.read_bytes() == raw
+    assert payload["config_restored"] is True
+    assert payload["graph_config"]["digest"] == hashlib.sha256(raw).hexdigest()
+
+
+def test_setup_removes_provider_created_config_when_initially_absent(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "codegraph.json"
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+
+    def create(_root):
+        config.write_bytes(b"{}")
+        return _FRESH
+
+    monkeypatch.setattr(sg, "_build_worktree_local_index", create)
+
+    assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
+    assert not config.exists()
+
+
+def test_setup_restore_failure_is_stable_and_unhealthy(tmp_path, monkeypatch, capsys) -> None:
+    config = tmp_path / "codegraph.json"
+    config.write_bytes(b"before")
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sg, "_build_worktree_local_index", lambda _root: config.write_bytes(b"after") or _FRESH
+    )
+    monkeypatch.setattr(sg, "_restore_graph_config", lambda _state: False)
+
+    assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["config_restored"] is False
+    assert payload["config_error"] == "codegraph configuration restore failed"
+
+
+def test_doctor_fix_restores_config_and_reports_post_fix_digest(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    raw = b'{"extensions":{}}\n'
+    config = tmp_path / "codegraph.json"
+    config.write_bytes(raw)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: None)
+
+    def mutate(_root):
+        config.unlink()
+        return _FRESH
+
+    monkeypatch.setattr(sg, "_build_worktree_local_index", mutate)
+
+    assert sg.run_doctor(
+        _args(repo_root=str(tmp_path), as_json=True, fix_graph=True)
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    digest = hashlib.sha256(raw).hexdigest()
+    assert config.read_bytes() == raw
+    assert payload["post_fix_config_digest"] == digest
+    assert payload["graph_config"]["digest"] == digest
 
 
 def test_doctor_json_includes_graph_configuration(tmp_path, monkeypatch, capsys) -> None:

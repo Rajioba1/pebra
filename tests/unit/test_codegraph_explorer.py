@@ -31,6 +31,7 @@ class _Graph:
         self.prepare_calls: list[str] = []
         self.dependent_calls: list[tuple[str, str]] = []
         self.revalidate_calls: list[tuple[str, GraphSnapshot]] = []
+        self.dependent_files = ["src/z.py", "src/a.py", "src/z.py"]
 
     def prepare(self, repo_root: str) -> GraphSnapshot:
         self.prepare_calls.append(repo_root)
@@ -41,8 +42,8 @@ class _Graph:
         return {
             "available": True,
             "graph_freshness": "fresh",
-            "dependent_files": ["src/z.py", "src/a.py", "src/z.py"],
-            "count": 2,
+            "dependent_files": self.dependent_files,
+            "count": len(self.dependent_files),
             "fallback_reason": None,
         }
 
@@ -171,6 +172,7 @@ def test_oversized_context_is_utf8_safe_and_explicitly_truncated() -> None:
     assert result.context == "a" * 999
     assert len(result.context.encode("utf-8")) <= 1_000
     assert result.truncated is True
+    assert "provider context truncated to byte limit" in result.warnings
 
 
 @pytest.mark.parametrize(
@@ -257,3 +259,58 @@ def test_post_query_fence_failure_discards_all_provider_output() -> None:
     assert result.dependent_files == ()
     assert result.affected_tests == ()
     assert "changed during exploration" in (result.fallback_reason or "")
+
+
+def test_result_collections_are_count_and_string_bounded_by_max_files() -> None:
+    graph = _Graph()
+    graph.dependent_files = [
+        "src/z.py", "src/a.py", "src/b.py", "x" * 5_000,
+    ]
+    runner = _Runner(affected={
+        "changedFiles": ["src/target.py"],
+        "affectedTests": ["tests/z.py", "tests/a.py", "tests/b.py", "y" * 5_000],
+        "totalDependentsTraversed": 100,
+    })
+    explorer = _explorer(graph, runner)
+
+    result = explorer.explore(
+        "/repo", "q", snapshot=explorer.prepare("/repo"),
+        files=("src/target.py",), max_files=2,
+    )
+
+    assert result.affected_tests == ("tests/a.py", "tests/b.py")
+    assert result.dependent_files == ("src/a.py", "src/b.py")
+    assert result.truncated is True
+    assert "affected tests truncated to result limit" in result.warnings
+    assert "dependent files truncated to result limit" in result.warnings
+
+
+def test_fake_runner_oversized_affected_json_is_rejected_at_independent_cap() -> None:
+    graph = _Graph()
+    runner = _Runner(affected={
+        "changedFiles": ["src/target.py"],
+        "affectedTests": ["tests/" + "x" * 300_000],
+        "totalDependentsTraversed": 1,
+    })
+    explorer = _explorer(graph, runner)
+
+    result = explorer.explore(
+        "/repo", "", snapshot=explorer.prepare("/repo"), files=("src/target.py",),
+    )
+
+    assert result.affected_tests == ()
+    assert "affected output exceeded byte limit" in result.warnings
+    assert result.truncated is True
+
+
+def test_provider_exception_is_reported_without_raw_query_or_path() -> None:
+    graph = _Graph()
+    runner = _Runner()
+    runner.exception = OSError("SECRET query /private/repo")
+    explorer = _explorer(graph, runner)
+
+    result = explorer.explore("/private/repo", "SECRET query", snapshot=explorer.prepare("/private/repo"))
+
+    assert result.status == "error"
+    assert result.fallback_reason == "codegraph query launch failed"
+    assert "SECRET" not in (result.fallback_reason or "")

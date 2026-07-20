@@ -52,6 +52,28 @@ def test_cli_exploration_never_imports_assessment_or_scoring() -> None:
     assert imports.isdisjoint(forbidden)
 
 
+def test_graph_provider_paths_never_use_unbounded_subprocess_run() -> None:
+    files = (
+        ROOT / "pebra" / "adapters" / "codegraph_adapter.py",
+        ROOT / "pebra" / "adapters" / "codegraph_explorer.py",
+        ROOT / "pebra" / "cli" / "setup_graph.py",
+    )
+    violations: list[str] = []
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "subprocess"
+                and node.func.attr == "run"
+            ):
+                violations.append(f"{path.name}:{node.lineno}")
+
+    assert violations == []
+
+
 def test_import_linter_declares_exploration_boundaries() -> None:
     config = (ROOT / ".importlinter").read_text(encoding="utf-8")
 
@@ -87,9 +109,42 @@ def _repo(path: Path) -> str:
 
 def _launcher(tmp_path: Path) -> tuple[Path, Path]:
     log = tmp_path / "engine-log.jsonl"
-    script = tmp_path / "fake_codegraph.py"
-    script.write_text(
-        """#!/usr/bin/env python3
+    if os.name == "nt":
+        launcher = tmp_path / "codegraph.cmd"
+        script = (
+            tmp_path / "node_modules" / "@colbymchenry" / "codegraph"
+            / "dist" / "bin" / "codegraph.js"
+        )
+        script.parent.mkdir(parents=True)
+        launcher.write_text("@echo unsafe shim must never run\r\n", encoding="utf-8")
+        script.write_text(
+            """const fs = require('fs');
+const path = require('path');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_CODEGRAPH_LOG, JSON.stringify(args) + '\\n');
+const command = args.length ? args[0] : '';
+if (command === 'status') {
+  const repo = args[1];
+  console.log(JSON.stringify({
+    initialized: true, version: '1.1.1', indexPath: path.join(repo, '.codegraph'),
+    pendingChanges: {added: 0, modified: 0, removed: 0}, worktreeMismatch: null,
+    index: {reindexRecommended: false, builtWithExtractionVersion: 24}
+  }));
+} else if (command === 'explore') {
+  console.log('opaque current repository context');
+} else if (command === 'affected') {
+  console.log(JSON.stringify({
+    changedFiles: args.slice(1, args.indexOf('--path')),
+    affectedTests: [], totalDependentsTraversed: 0
+  }));
+}
+""",
+            encoding="utf-8",
+        )
+    else:
+        script = tmp_path / "fake_codegraph.py"
+        script.write_text(
+            """#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
@@ -119,14 +174,8 @@ elif command == 'affected':
     }))
 sys.exit(0)
 """,
-        encoding="utf-8",
-    )
-    if os.name == "nt":
-        launcher = tmp_path / "codegraph.cmd"
-        launcher.write_text(
-            f'@echo off\r\n"{PY}" "{script}" %*\r\n', encoding="utf-8"
+            encoding="utf-8",
         )
-    else:
         launcher = script
         launcher.chmod(0o755)
     return launcher, log

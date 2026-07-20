@@ -1,34 +1,60 @@
-"""resolve_engine_argv — build a runnable argv for the external graph engine CLI. Pure stdlib.
-
-Windows hazard (found in A2 real-binary validation): codegraph (and npm) install as a `.cmd` shim, not
-a `.exe`. Python's subprocess CANNOT spawn a `.cmd` by BARE name (it doesn't apply PATHEXT without a
-shell -> FileNotFoundError), and spawning a `.cmd` by full path under shell=False is fragile on CPython
-3.12.4+ (the gh-99781 / CVE-2024-3219 `.bat`/`.cmd` argument-injection guard can raise). So we:
-  1. resolve the tool via shutil.which (honors PATHEXT -> returns the real `.CMD` path on Windows), and
-  2. on Windows, run a resolved `.cmd`/`.bat` through `cmd /c` (cmd.exe handles `.cmd` quoting natively).
-Never `shell=True`. Lives in `core` (stdlib `os`/`shutil` only — not on the impure-libs banlist) so BOTH
-the adapter and the CLI surface can import it without breaching import-linter.
-"""
+"""Resolve CodeGraph launchers without executing Windows command shims."""
 
 from __future__ import annotations
 
 import os
 import shutil
+from pathlib import Path
+
+
+_GUIDANCE = "unsupported CodeGraph launcher; run: pebra setup-graph --fix"
+
+
+class UnsafeEngineLauncherError(OSError):
+    """A Windows command shim did not match a trusted direct-Node layout."""
+
+    def __init__(self) -> None:
+        super().__init__(_GUIDANCE)
+
+
+def _node_file(path: Path) -> str | None:
+    if not path.is_file() or (os.name == "nt" and path.name.lower() != "node.exe"):
+        return None
+    return str(path)
+
+
+def _windows_codegraph_argv(launcher: Path, args: list[str]) -> list[str]:
+    if launcher.name.lower() != "codegraph.cmd" or not launcher.is_file():
+        raise UnsafeEngineLauncherError()
+
+    root = launcher.parent.parent
+    managed_node = root / "node.exe"
+    managed_script = root / "lib" / "dist" / "bin" / "codegraph.js"
+    if launcher.parent.name.lower() == "bin" and managed_node.is_file() and managed_script.is_file():
+        return [str(managed_node), "--liftoff-only", str(managed_script), *args]
+
+    npm_script = (
+        launcher.parent / "node_modules" / "@colbymchenry" / "codegraph"
+        / "dist" / "bin" / "codegraph.js"
+    )
+    sibling_node = launcher.parent / "node.exe"
+    resolved_node = _node_file(sibling_node)
+    if resolved_node is None:
+        found_node = shutil.which("node")
+        resolved_node = _node_file(Path(found_node)) if found_node else None
+    if npm_script.is_file() and resolved_node is not None:
+        return [resolved_node, str(npm_script), *args]
+    raise UnsafeEngineLauncherError()
 
 
 def resolve_engine_argv(exe: str, args: list[str]) -> list[str]:
-    """Return a runnable argv for ``exe`` + ``args``.
-
-    ``exe`` may be a BARE tool name (resolved on PATH via shutil.which) or a FULL path (used as-is).
-    A resolved Windows ``.cmd``/``.bat`` is wrapped as ``["cmd", "/c", path, *args]`` — the only
-    reliable way to spawn it without ``shell=True``. A bare name that is NOT on PATH is returned
-    unresolved so ``subprocess`` raises ``FileNotFoundError`` naturally (preserving the
-    'engine absent -> degrade' contract callers already rely on).
-    """
+    """Return a shell-free argv, rejecting unknown Windows ``.cmd``/``.bat`` launchers."""
     is_bare = not (os.path.isabs(exe) or "/" in exe or "\\" in exe)
     resolved = shutil.which(exe) if is_bare else exe
     if resolved is None:
-        return [exe, *args]  # not on PATH -> let subprocess fail with FileNotFoundError
+        if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+            raise UnsafeEngineLauncherError()
+        return [exe, *args]
     if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
-        return ["cmd", "/c", resolved, *args]
+        return _windows_codegraph_argv(Path(resolved), args)
     return [resolved, *args]

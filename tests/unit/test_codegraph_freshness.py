@@ -8,6 +8,7 @@ stable repository/config fences.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -47,14 +48,26 @@ class _Runner:
         if "status" in argv:
             payload = self.statuses.pop(0)
             if payload is None:
-                return SimpleNamespace(returncode=1, stdout="")
-            return SimpleNamespace(returncode=0, stdout=json.dumps(payload))
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="", error=None,
+                    stdout_truncated=False, stderr_truncated=False,
+                )
+            return SimpleNamespace(
+                returncode=0, stdout=json.dumps(payload), stderr="", error=None,
+                stdout_truncated=False, stderr_truncated=False,
+            )
         if "sync" in argv:
             if self.on_sync is not None:
                 self.on_sync(len(self.sync_calls))
             if self.sync_exception is not None:
-                raise self.sync_exception
-            return SimpleNamespace(returncode=self.sync_returncode, stdout="")
+                return SimpleNamespace(
+                    returncode=None, stdout="", stderr="", error="timeout",
+                    stdout_truncated=False, stderr_truncated=False,
+                )
+            return SimpleNamespace(
+                returncode=self.sync_returncode, stdout="", stderr="", error=None,
+                stdout_truncated=False, stderr_truncated=False,
+            )
         raise AssertionError(argv)
 
     @property
@@ -69,7 +82,7 @@ class _Runner:
 def _patch_runtime(monkeypatch, runner: _Runner, heads: list[str | None]) -> None:
     head_values = iter(heads)
     monkeypatch.setattr(cga, "find_engine", lambda: "/tools/codegraph")
-    monkeypatch.setattr(cga.subprocess, "run", runner)
+    monkeypatch.setattr(cga, "run_bounded", runner)
     monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: next(head_values))
 
 
@@ -170,7 +183,7 @@ def test_uninitialized_or_worktree_mismatched_index_never_syncs(
 def test_absent_engine_never_spawns_or_syncs(tmp_path, monkeypatch) -> None:
     runner = _Runner([])
     monkeypatch.setattr(cga, "find_engine", lambda: None)
-    monkeypatch.setattr(cga.subprocess, "run", runner)
+    monkeypatch.setattr(cga, "run_bounded", runner)
     monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit-b")
 
     snapshot = cga.CodeGraphAdapter().prepare(str(tmp_path))
@@ -271,6 +284,23 @@ def test_malformed_initial_status_is_unavailable_and_never_syncs(
     assert snapshot.status == "unavailable"
     assert snapshot.sync_performed is False
     assert runner.sync_calls == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {**FRESH, "pendingChanges": {"added": True, "modified": 0, "removed": 0}},
+        {**FRESH, "pendingChanges": {"added": 0, "modified": 0}},
+        {**FRESH, "index": {"reindexRecommended": False}},
+    ],
+)
+def test_public_status_validator_is_strict_and_stable(payload) -> None:
+    assert cga.validate_codegraph_status(payload) == (False, "codegraph status malformed")
+
+
+def test_public_status_validator_accepts_preparation_payload() -> None:
+    assert cga.validate_codegraph_status(FRESH) == (True, None)
 
 
 def test_malformed_post_sync_status_is_unavailable_and_never_cached(
@@ -434,7 +464,7 @@ def test_unreadable_config_digest_is_unavailable_and_never_spawns(
 
     monkeypatch.setattr(Path, "read_bytes", deny_config_read)
     monkeypatch.setattr(cga, "find_engine", lambda: "/tools/codegraph")
-    monkeypatch.setattr(cga.subprocess, "run", runner)
+    monkeypatch.setattr(cga, "run_bounded", runner)
     monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit-b")
 
     snapshot = cga.CodeGraphAdapter().prepare(str(tmp_path))
@@ -464,7 +494,7 @@ def test_sync_failure_never_falls_back_to_initial_clean_status(
 def test_sync_timeout_never_falls_back_to_initial_clean_status(tmp_path, monkeypatch) -> None:
     runner = _Runner(
         [FRESH],
-        sync_exception=cga.subprocess.TimeoutExpired(["codegraph", "sync"], 120),
+        sync_exception=subprocess.TimeoutExpired(["codegraph", "sync"], 120),
     )
     _patch_runtime(monkeypatch, runner, ["commit-b"])
 
@@ -604,13 +634,22 @@ def test_revalidate_snapshot_rejects_post_query_head_change(tmp_path, monkeypatc
 def test_windows_cmd_launcher_is_used_for_status_and_sync(tmp_path, monkeypatch) -> None:
     from pebra.core import engine_argv
 
+    root = tmp_path / "managed"
+    launcher = root / "bin" / "codegraph.cmd"
+    node = root / "node.exe"
+    script = root / "lib" / "dist" / "bin" / "codegraph.js"
+    launcher.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    launcher.write_text("shim", encoding="utf-8")
+    node.write_bytes(b"node")
+    script.write_text("script", encoding="utf-8")
     runner = _Runner([FRESH, FRESH])
-    monkeypatch.setattr(cga, "find_engine", lambda: r"C:\tools\codegraph.cmd")
-    monkeypatch.setattr(cga.subprocess, "run", runner)
+    monkeypatch.setattr(cga, "find_engine", lambda: str(launcher))
+    monkeypatch.setattr(cga, "run_bounded", runner)
     monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "b")
     monkeypatch.setattr(engine_argv.os, "name", "nt")
 
     snapshot = cga.CodeGraphAdapter().prepare(str(tmp_path))
 
     assert snapshot.status == "available"
-    assert all(call[:3] == ["cmd", "/c", r"C:\tools\codegraph.cmd"] for call in runner.calls)
+    assert all(call[:3] == [str(node), "--liftoff-only", str(script)] for call in runner.calls)

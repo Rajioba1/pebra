@@ -1,10 +1,8 @@
-"""M5c.5 / A2 — resolve_engine_argv: cross-platform invocation of the graph engine CLI.
-
-The Windows hazard: codegraph/npm install as `.cmd` shims (no `.exe`); a bare name fails to spawn and a
-full-path `.cmd` under shell=False is fragile on CPython 3.12.4+. The resolver wraps `.cmd`/`.bat` in
-`cmd /c`. Pure — mocks shutil.which + os.name, no subprocess."""
+"""Safe direct CodeGraph launcher resolution; Windows command shims are never executed."""
 
 from __future__ import annotations
+
+import pytest
 
 from pebra.core import engine_argv as ea
 
@@ -16,17 +14,68 @@ def test_posix_bare_name_resolved_not_wrapped(monkeypatch) -> None:
         ["/usr/local/bin/codegraph", "status", "/repo", "--json"]
 
 
-def test_windows_cmd_suffix_wraps_with_cmd_c(monkeypatch) -> None:
+def test_windows_managed_cmd_resolves_direct_node_layout(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "managed"
+    launcher = root / "bin" / "codegraph.cmd"
+    node = root / "node.exe"
+    script = root / "lib" / "dist" / "bin" / "codegraph.js"
+    launcher.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    launcher.write_text("shim", encoding="utf-8")
+    node.write_bytes(b"node")
+    script.write_text("script", encoding="utf-8")
     monkeypatch.setattr(ea.os, "name", "nt")
-    monkeypatch.setattr(ea.shutil, "which", lambda n: r"C:\tools\bin\codegraph.CMD")
+    monkeypatch.setattr(ea.shutil, "which", lambda name: str(launcher) if name == "codegraph" else None)
+
     assert ea.resolve_engine_argv("codegraph", ["status", "/repo"]) == \
-        ["cmd", "/c", r"C:\tools\bin\codegraph.CMD", "status", "/repo"]
+        [str(node), "--liftoff-only", str(script), "status", "/repo"]
 
 
-def test_windows_bat_suffix_also_wraps(monkeypatch) -> None:
+def test_windows_npm_codegraph_shim_resolves_sibling_node_and_script(tmp_path, monkeypatch) -> None:
+    launcher = tmp_path / "npm" / "codegraph.cmd"
+    node = launcher.parent / "node.exe"
+    script = launcher.parent / "node_modules" / "@colbymchenry" / "codegraph" / "dist" / "bin" / "codegraph.js"
+    script.parent.mkdir(parents=True)
+    launcher.write_text("shim", encoding="utf-8")
+    node.write_bytes(b"node")
+    script.write_text("script", encoding="utf-8")
     monkeypatch.setattr(ea.os, "name", "nt")
-    monkeypatch.setattr(ea.shutil, "which", lambda n: r"C:\tools\npm.bat")
-    assert ea.resolve_engine_argv("npm", ["install"]) == ["cmd", "/c", r"C:\tools\npm.bat", "install"]
+
+    assert ea.resolve_engine_argv(str(launcher), ["explore", "a&b"]) == [
+        str(node), str(script), "explore", "a&b",
+    ]
+
+
+def test_windows_npm_codegraph_shim_can_use_resolved_node(tmp_path, monkeypatch) -> None:
+    launcher = tmp_path / "npm" / "codegraph.cmd"
+    script = launcher.parent / "node_modules" / "@colbymchenry" / "codegraph" / "dist" / "bin" / "codegraph.js"
+    resolved_node = tmp_path / "nodejs" / "node.exe"
+    script.parent.mkdir(parents=True)
+    resolved_node.parent.mkdir()
+    launcher.write_text("shim", encoding="utf-8")
+    script.write_text("script", encoding="utf-8")
+    resolved_node.write_bytes(b"node")
+    monkeypatch.setattr(ea.os, "name", "nt")
+    monkeypatch.setattr(ea.shutil, "which", lambda name: str(resolved_node) if name == "node" else None)
+
+    assert ea.resolve_engine_argv(str(launcher), ["status"]) == [
+        str(resolved_node), str(script), "status",
+    ]
+
+
+def test_windows_npm_layout_rejects_resolved_node_command_shim(tmp_path, monkeypatch) -> None:
+    launcher = tmp_path / "npm" / "codegraph.cmd"
+    script = launcher.parent / "node_modules" / "@colbymchenry" / "codegraph" / "dist" / "bin" / "codegraph.js"
+    unsafe_node = tmp_path / "node.cmd"
+    script.parent.mkdir(parents=True)
+    launcher.write_text("shim", encoding="utf-8")
+    script.write_text("script", encoding="utf-8")
+    unsafe_node.write_text("shim", encoding="utf-8")
+    monkeypatch.setattr(ea.os, "name", "nt")
+    monkeypatch.setattr(ea.shutil, "which", lambda name: str(unsafe_node) if name == "node" else None)
+
+    with pytest.raises(ea.UnsafeEngineLauncherError):
+        ea.resolve_engine_argv(str(launcher), ["status"])
 
 
 def test_bare_name_not_on_path_returns_unresolved(monkeypatch) -> None:
@@ -35,15 +84,36 @@ def test_bare_name_not_on_path_returns_unresolved(monkeypatch) -> None:
     assert ea.resolve_engine_argv("codegraph", ["status"]) == ["codegraph", "status"]
 
 
-def test_full_windows_cmd_path_skips_which_and_wraps(monkeypatch) -> None:
+@pytest.mark.parametrize("suffix", [".cmd", ".bat"])
+def test_unknown_windows_command_shim_fails_with_stable_guidance(tmp_path, monkeypatch, suffix) -> None:
+    launcher = tmp_path / f"arbitrary{suffix}"
+    launcher.write_text("echo unsafe", encoding="utf-8")
     monkeypatch.setattr(ea.os, "name", "nt")
 
-    def _boom(_n):
-        raise AssertionError("which must not be called for a full path")
+    with pytest.raises(ea.UnsafeEngineLauncherError) as exc:
+        ea.resolve_engine_argv(str(launcher), ["query&whoami"])
 
-    monkeypatch.setattr(ea.shutil, "which", _boom)
-    assert ea.resolve_engine_argv(r"C:\tools\bin\codegraph.cmd", ["--version"]) == \
-        ["cmd", "/c", r"C:\tools\bin\codegraph.cmd", "--version"]
+    assert str(exc.value) == "unsupported CodeGraph launcher; run: pebra setup-graph --fix"
+    assert str(launcher) not in str(exc.value)
+
+
+def test_windows_metacharacters_remain_literal_argv_for_safe_layout(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "managed & root"
+    launcher = root / "bin" / "codegraph.cmd"
+    node = root / "node.exe"
+    script = root / "lib" / "dist" / "bin" / "codegraph.js"
+    launcher.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    launcher.write_text("shim", encoding="utf-8")
+    node.write_bytes(b"node")
+    script.write_text("script", encoding="utf-8")
+    monkeypatch.setattr(ea.os, "name", "nt")
+    values = ["q&|<>^()%!", "file&|<>^()%!.py", r"C:\repo &|<>^()%!"]
+
+    argv = ea.resolve_engine_argv(str(launcher), values)
+
+    assert argv == [str(node), "--liftoff-only", str(script), *values]
+    assert "cmd" not in [part.lower() for part in argv]
 
 
 def test_full_posix_path_passed_through(monkeypatch) -> None:
