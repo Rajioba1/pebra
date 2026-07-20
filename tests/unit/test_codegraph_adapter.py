@@ -1313,6 +1313,26 @@ def test_run_status_rejects_non_object_json(monkeypatch, payload) -> None:
     assert cga._run_status("/repo", "/usr/bin/codegraph") is None
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"number":' + ("9" * 5_000) + "}",
+        ("[" * 2_000) + "0" + ("]" * 2_000),
+    ],
+    ids=("oversized-integer", "deep-nesting"),
+)
+def test_run_status_pathological_json_fails_soft(monkeypatch, raw) -> None:
+    monkeypatch.setattr(
+        cga,
+        "run_bounded",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=raw, error=None, stdout_truncated=False
+        ),
+    )
+
+    assert cga._run_status("/repo", "/usr/bin/codegraph") is None
+
+
 def test_default_status_no_subprocess_when_binary_absent(monkeypatch) -> None:
     rec = _Recorder([])
     _patch(monkeypatch, rec, on_path=False)

@@ -115,7 +115,7 @@ class CodeGraphExplorer:
     def _affected_tests(raw: str, limit: int) -> tuple[tuple[str, ...], str | None, bool]:
         try:
             payload = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, ValueError, RecursionError, TypeError):
             return (), "codegraph affected output was malformed", False
         if not isinstance(payload, dict) or set(payload) != _AFFECTED_KEYS:
             return (), "codegraph affected output was malformed", False

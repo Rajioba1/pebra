@@ -303,6 +303,16 @@ def test_public_status_validator_accepts_preparation_payload() -> None:
     assert cga.validate_codegraph_status(FRESH) == (True, None)
 
 
+@pytest.mark.parametrize(
+    "version",
+    ["1." + ("9" * 5_000), "1.1.1 || private-command", " 1.1.1 ", "1.1.1-rc.1"],
+)
+def test_public_status_validator_rejects_oversized_or_nonrelease_version(version) -> None:
+    payload = {**FRESH, "version": version}
+
+    assert cga.validate_codegraph_status(payload) == (False, "codegraph status malformed")
+
+
 def test_malformed_post_sync_status_is_unavailable_and_never_cached(
     tmp_path, monkeypatch
 ) -> None:

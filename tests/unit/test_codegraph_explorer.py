@@ -206,6 +206,22 @@ def test_malformed_or_wrong_affected_schema_never_populates_affected_tests(affec
     assert "must-not-be-trusted.py" not in result.dependent_files
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"number":' + ("9" * 5_000) + "}",
+        ("[" * 2_000) + "0" + ("]" * 2_000),
+    ],
+    ids=("oversized-integer", "deep-nesting"),
+)
+def test_pathological_affected_json_fails_soft(raw) -> None:
+    tests, warning, truncated = CodeGraphExplorer._affected_tests(raw, 8)
+
+    assert tests == ()
+    assert warning == "codegraph affected output was malformed"
+    assert truncated is False
+
+
 @pytest.mark.parametrize("failure", ["missing", "timeout", "nonzero"])
 def test_provider_failures_return_structured_empty_results(failure) -> None:
     graph = _Graph()

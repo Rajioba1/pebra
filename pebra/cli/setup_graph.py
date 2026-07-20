@@ -144,7 +144,7 @@ def _status(repo_root: str) -> object | None:
         return None
     try:
         return json.loads(out)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError, RecursionError):
         return None
 
 
@@ -275,7 +275,7 @@ def _graph_config(repo_root: str, captured: _ConfigState | None = None) -> dict[
     digest = hashlib.sha256(raw).hexdigest()
     try:
         payload = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, ValueError, RecursionError, UnicodeDecodeError):
         payload = None
     if not isinstance(payload, dict):
         return {
@@ -551,15 +551,22 @@ def _ensure_installed(
     return _install_npm(as_json, version)
 
 
-def _build_worktree_local_index(repo_root: str) -> dict[str, Any] | None:
-    """Initialize a worktree-local index, then reconcile it through the trusted preparation path."""
+def _initialize_worktree_local_index(repo_root: str) -> bool:
+    """Initialize only; callers must restore captured config before preparing the index."""
     exe = _engine_exe()
     rc, _, _ = _run([exe, "init", repo_root], timeout=600)
-    if rc != 0:
-        return None
+    return rc == 0
+
+
+def _prepare_worktree_local_index(
+    repo_root: str, expected_config_digest: str | None
+) -> dict[str, Any] | None:
+    """Prepare only after restore and fence the snapshot to that restored config digest."""
     adapter = CodeGraphAdapter()
     snapshot = adapter.prepare(repo_root)
-    return adapter.prepared_status(repo_root) if snapshot.status == "available" else None
+    if snapshot.status != "available" or snapshot.config_digest != expected_config_digest:
+        return None
+    return adapter.prepared_status(repo_root)
 
 
 def run_setup_graph(args: Any) -> int:
@@ -587,9 +594,14 @@ def run_setup_graph(args: Any) -> int:
     )
     if install_err is not None:
         return install_err
-    status = _build_worktree_local_index(repo)
+    initialized = _initialize_worktree_local_index(repo)
     config_restored = _restore_graph_config(config_before)
     graph_config = _graph_config(repo)
+    status = (
+        _prepare_worktree_local_index(repo, graph_config["digest"])
+        if initialized and config_restored
+        else None
+    )
     diag = _diagnosis(status)
     ok = diag["healthy"] and config_restored
     intent = "repair worktree-local index" if args.fix else "initialize graph index"
@@ -639,11 +651,18 @@ def run_doctor(args: Any) -> int:
         if config_before.state in {"unreadable", "nonregular"}:
             config_restored = False
         else:
-            status = _build_worktree_local_index(repo)
+            initialized = _initialize_worktree_local_index(repo)
             config_restored = _restore_graph_config(config_before)
+            graph_config = _graph_config(repo)
+            status = (
+                _prepare_worktree_local_index(repo, graph_config["digest"])
+                if initialized and config_restored
+                else None
+            )
             diag = _diagnosis(status)
             repaired = True
-        graph_config = _graph_config(repo)
+        if config_before.state in {"unreadable", "nonregular"}:
+            graph_config = _graph_config(repo)
         post_fix_config_digest = graph_config["digest"]
     ok = diag["healthy"] and in_range and graph_config["valid"] and config_restored
     lines = [f"doctor — repo: {repo}",

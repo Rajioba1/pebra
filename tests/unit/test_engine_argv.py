@@ -63,6 +63,38 @@ def test_windows_npm_codegraph_shim_can_use_resolved_node(tmp_path, monkeypatch)
     ]
 
 
+def test_windows_npm_shim_resolves_direct_node_and_npm_cli(tmp_path, monkeypatch) -> None:
+    launcher = tmp_path / "nodejs" / "npm.cmd"
+    node = launcher.parent / "node.exe"
+    script = launcher.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    script.parent.mkdir(parents=True)
+    launcher.write_text("shim", encoding="utf-8")
+    node.write_bytes(b"node")
+    script.write_text("script", encoding="utf-8")
+    monkeypatch.setattr(ea.os, "name", "nt")
+
+    assert ea.resolve_engine_argv(str(launcher), ["install", "a&|<>^()%!"]) == [
+        str(node), str(script), "install", "a&|<>^()%!",
+    ]
+
+
+def test_windows_npm_shim_can_use_path_node_for_prefix_layout(tmp_path, monkeypatch) -> None:
+    launcher = tmp_path / "prefix" / "npm.cmd"
+    script = launcher.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    node = tmp_path / "nodejs" / "node.exe"
+    script.parent.mkdir(parents=True)
+    node.parent.mkdir()
+    launcher.write_text("shim", encoding="utf-8")
+    script.write_text("script", encoding="utf-8")
+    node.write_bytes(b"node")
+    monkeypatch.setattr(ea.os, "name", "nt")
+    monkeypatch.setattr(ea.shutil, "which", lambda name: str(node) if name == "node" else None)
+
+    assert ea.resolve_engine_argv(str(launcher), ["--version"]) == [
+        str(node), str(script), "--version",
+    ]
+
+
 def test_windows_npm_layout_rejects_resolved_node_command_shim(tmp_path, monkeypatch) -> None:
     launcher = tmp_path / "npm" / "codegraph.cmd"
     script = launcher.parent / "node_modules" / "@colbymchenry" / "codegraph" / "dist" / "bin" / "codegraph.js"

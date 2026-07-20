@@ -9,10 +9,12 @@ import io
 import json
 import tarfile
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
 from pebra.cli import setup_graph as sg
+from pebra.core import engine_argv as ea
 from pebra.core.graph_version import CODEGRAPH_DEFAULT_VERSION
 from pebra.core.graph_snapshot import GraphSnapshot
 
@@ -170,6 +172,37 @@ def test_install_npm_absent_fails_clear(monkeypatch) -> None:
     assert sg._install_npm(True, "1.1.1") == 1
 
 
+def test_install_npm_windows_uses_direct_node_argv(tmp_path, monkeypatch) -> None:
+    launcher = tmp_path / "nodejs" / "npm.cmd"
+    node = launcher.parent / "node.exe"
+    npm_cli = launcher.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    npm_cli.parent.mkdir(parents=True)
+    launcher.write_text("shim", encoding="utf-8")
+    node.write_bytes(b"node")
+    npm_cli.write_text("script", encoding="utf-8")
+    monkeypatch.setattr(ea.os, "name", "nt")
+    monkeypatch.setattr(
+        sg.shutil,
+        "which",
+        lambda name: str(launcher) if name == "npm" else str(node) if name == "node" else None,
+    )
+    calls: list[list[str]] = []
+
+    def bounded(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(
+            returncode=0, stdout="", stderr="", error=None, stdout_truncated=False
+        )
+
+    monkeypatch.setattr(sg, "run_bounded", bounded)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+
+    assert sg._install_npm(True, "1.1.1") is None
+    assert calls == [[
+        str(node), str(npm_cli), "install", "-g", "@colbymchenry/codegraph@1.1.1",
+    ]]
+
+
 def test_run_never_leaks_raw_launcher_exception(monkeypatch) -> None:
     def fail(_exe, _args):
         raise OSError(r"private C:\repo setup-graph --fix query")
@@ -193,6 +226,20 @@ def test_ensure_installed_standalone_then_npm_fallback(monkeypatch) -> None:
     monkeypatch.setattr(sg, "_install_npm", lambda aj, v: (npm.append(v), None)[1])
     assert sg._ensure_installed(True, version="1.1.1", via="auto", explicit_version=False) is None
     assert npm == ["1.1.1"]
+
+
+def test_ensure_installed_via_npm_never_attempts_standalone(monkeypatch) -> None:
+    monkeypatch.setattr(sg, "_installed", lambda: False)
+    called: list[str] = []
+    monkeypatch.setattr(
+        sg, "_install_standalone", lambda *a, **k: called.append("standalone") or True
+    )
+    monkeypatch.setattr(sg, "_install_npm", lambda *a, **k: called.append("npm") or None)
+
+    assert sg._ensure_installed(
+        True, version="1.1.1", via="npm", explicit_version=False
+    ) is None
+    assert called == ["npm"]
 
 
 def test_ensure_installed_musl_fails_clear_when_standalone_only(monkeypatch) -> None:
@@ -415,6 +462,37 @@ def test_graph_config_reports_absent_and_malformed_without_repair(tmp_path) -> N
     assert malformed.read_bytes() == b"{not json"
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"number":' + (b"9" * 5_000) + b"}",
+        (b"[" * 2_000) + b"0" + (b"]" * 2_000),
+    ],
+    ids=("oversized-integer", "deep-nesting"),
+)
+def test_graph_config_pathological_json_is_malformed_not_exception(tmp_path, raw) -> None:
+    (tmp_path / "codegraph.json").write_bytes(raw)
+
+    config = sg._graph_config(str(tmp_path))
+
+    assert config["valid"] is False
+    assert config["error"] == "malformed JSON"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"number":' + ("9" * 5_000) + "}",
+        ("[" * 2_000) + "0" + ("]" * 2_000),
+    ],
+    ids=("oversized-integer", "deep-nesting"),
+)
+def test_status_pathological_json_fails_soft(monkeypatch, raw) -> None:
+    monkeypatch.setattr(sg, "_run", lambda *_args, **_kwargs: (0, raw, ""))
+
+    assert sg._status("/repo") is None
+
+
 def test_graph_config_distinguishes_nonregular_state(tmp_path) -> None:
     (tmp_path / "codegraph.json").mkdir()
 
@@ -438,7 +516,7 @@ def test_setup_rejects_unreadable_config_before_install_or_init(tmp_path, monkey
     monkeypatch.setattr(sg.Path, "read_bytes", unreadable)
     calls: list[str] = []
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: calls.append("install"))
-    monkeypatch.setattr(sg, "_build_worktree_local_index", lambda _root: calls.append("init"))
+    monkeypatch.setattr(sg, "_initialize_worktree_local_index", lambda _root: calls.append("init"))
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 1
     assert calls == []
@@ -448,7 +526,7 @@ def test_setup_rejects_nonregular_config_before_install_or_init(tmp_path, monkey
     (tmp_path / "codegraph.json").mkdir()
     calls: list[str] = []
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: calls.append("install"))
-    monkeypatch.setattr(sg, "_build_worktree_local_index", lambda _root: calls.append("init"))
+    monkeypatch.setattr(sg, "_initialize_worktree_local_index", lambda _root: calls.append("init"))
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 1
     assert calls == []
@@ -464,9 +542,10 @@ def test_setup_atomically_restores_provider_mutation_of_existing_config(
 
     def mutate(_root):
         config.write_bytes(b'{"provider":"changed"}')
-        return _FRESH
+        return True
 
-    monkeypatch.setattr(sg, "_build_worktree_local_index", mutate)
+    monkeypatch.setattr(sg, "_initialize_worktree_local_index", mutate)
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_args: _FRESH)
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -483,9 +562,10 @@ def test_setup_removes_provider_created_config_when_initially_absent(
 
     def create(_root):
         config.write_bytes(b"{}")
-        return _FRESH
+        return True
 
-    monkeypatch.setattr(sg, "_build_worktree_local_index", create)
+    monkeypatch.setattr(sg, "_initialize_worktree_local_index", create)
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_args: _FRESH)
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
     assert not config.exists()
@@ -496,7 +576,7 @@ def test_setup_restore_failure_is_stable_and_unhealthy(tmp_path, monkeypatch, ca
     config.write_bytes(b"before")
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
     monkeypatch.setattr(
-        sg, "_build_worktree_local_index", lambda _root: config.write_bytes(b"after") or _FRESH
+        sg, "_initialize_worktree_local_index", lambda _root: config.write_bytes(b"after") or True
     )
     monkeypatch.setattr(sg, "_restore_graph_config", lambda _state: False)
 
@@ -504,6 +584,135 @@ def test_setup_restore_failure_is_stable_and_unhealthy(tmp_path, monkeypatch, ca
     payload = json.loads(capsys.readouterr().out)
     assert payload["config_restored"] is False
     assert payload["config_error"] == "codegraph configuration restore failed"
+
+
+def test_setup_restores_existing_config_before_prepare_and_snapshot_uses_restored_digest(
+    tmp_path, monkeypatch
+) -> None:
+    raw = b'{"includeIgnored":["vendor/**"]}\n'
+    config = tmp_path / "codegraph.json"
+    config.write_bytes(raw)
+    expected_digest = hashlib.sha256(raw).hexdigest()
+    calls: list[str] = []
+    snapshots: list[GraphSnapshot] = []
+    original_capture = sg._capture_graph_config
+    original_restore = sg._restore_graph_config
+
+    def capture(root):
+        if "capture" not in calls:
+            calls.append("capture")
+        return original_capture(root)
+
+    def initialize(_root):
+        calls.append("init")
+        config.write_bytes(b'{"provider":"mutated"}')
+        return True
+
+    def restore(state):
+        calls.append("restore")
+        return original_restore(state)
+
+    class Adapter:
+        def prepare(self, repo_root):
+            calls.append("prepare")
+            assert repo_root == str(tmp_path)
+            assert config.read_bytes() == raw
+            snapshot = GraphSnapshot(
+                status="available", provider="CodeGraph", provider_version="1.1.1",
+                index_version="24", repo_head="commit", config_digest=expected_digest,
+                graph_scope_digest="scope", sync_performed=True, fallback_reason=None,
+            )
+            snapshots.append(snapshot)
+            return snapshot
+
+        def prepared_status(self, _repo_root):
+            return _FRESH
+
+    monkeypatch.setattr(sg, "_capture_graph_config", capture)
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
+    monkeypatch.setattr(sg, "_restore_graph_config", restore)
+    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+
+    assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
+    assert calls[:4] == ["capture", "init", "restore", "prepare"]
+    assert snapshots[0].config_digest == hashlib.sha256(config.read_bytes()).hexdigest()
+
+
+def test_setup_removes_init_created_config_before_preparing_absent_snapshot(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "codegraph.json"
+    calls: list[str] = []
+    original_restore = sg._restore_graph_config
+
+    def initialize(_root):
+        calls.append("init")
+        config.write_bytes(b"{}")
+        return True
+
+    def restore(state):
+        calls.append("restore")
+        return original_restore(state)
+
+    class Adapter:
+        def prepare(self, _repo_root):
+            calls.append("prepare")
+            assert not config.exists()
+            return GraphSnapshot(
+                status="available", provider="CodeGraph", provider_version="1.1.1",
+                index_version="24", repo_head="commit", config_digest="absent",
+                graph_scope_digest="scope", sync_performed=True, fallback_reason=None,
+            )
+
+        def prepared_status(self, _repo_root):
+            return _FRESH
+
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
+    monkeypatch.setattr(sg, "_restore_graph_config", restore)
+    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+
+    assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
+    assert calls == ["init", "restore", "prepare"]
+
+
+def test_prepare_rejects_snapshot_for_a_different_config_digest(monkeypatch) -> None:
+    class Adapter:
+        def prepare(self, _repo_root):
+            return GraphSnapshot(
+                status="available", provider="CodeGraph", provider_version="1.1.1",
+                index_version="24", repo_head="commit", config_digest="provider-digest",
+                graph_scope_digest="scope", sync_performed=True, fallback_reason=None,
+            )
+
+        def prepared_status(self, _repo_root):
+            pytest.fail("mismatched snapshot status was consumed")
+
+    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+
+    assert sg._prepare_worktree_local_index("/repo", "restored-digest") is None
+
+
+def test_setup_restore_failure_aborts_before_prepare(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "codegraph.json"
+    config.write_bytes(b"before")
+    calls: list[str] = []
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda _root: calls.append("init") or config.write_bytes(b"after") or True,
+    )
+    monkeypatch.setattr(
+        sg, "_restore_graph_config", lambda _state: calls.append("restore") or False
+    )
+    monkeypatch.setattr(
+        sg, "CodeGraphAdapter", lambda: pytest.fail("prepare ran after restore failure")
+    )
+
+    assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 1
+    assert calls == ["init", "restore"]
 
 
 def test_doctor_fix_restores_config_and_reports_post_fix_digest(
@@ -518,9 +727,10 @@ def test_doctor_fix_restores_config_and_reports_post_fix_digest(
 
     def mutate(_root):
         config.unlink()
-        return _FRESH
+        return True
 
-    monkeypatch.setattr(sg, "_build_worktree_local_index", mutate)
+    monkeypatch.setattr(sg, "_initialize_worktree_local_index", mutate)
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_args: _FRESH)
 
     assert sg.run_doctor(
         _args(repo_root=str(tmp_path), as_json=True, fix_graph=True)
@@ -530,6 +740,76 @@ def test_doctor_fix_restores_config_and_reports_post_fix_digest(
     assert config.read_bytes() == raw
     assert payload["post_fix_config_digest"] == digest
     assert payload["graph_config"]["digest"] == digest
+
+
+def test_doctor_fix_restores_config_before_prepare(tmp_path, monkeypatch, capsys) -> None:
+    raw = b'{"extensions":{}}\n'
+    config = tmp_path / "codegraph.json"
+    config.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    calls: list[str] = []
+    original_restore = sg._restore_graph_config
+
+    def initialize(_root):
+        calls.append("init")
+        config.unlink()
+        return True
+
+    def restore(state):
+        calls.append("restore")
+        return original_restore(state)
+
+    class Adapter:
+        def prepare(self, _repo_root):
+            calls.append("prepare")
+            assert config.read_bytes() == raw
+            return GraphSnapshot(
+                status="available", provider="CodeGraph", provider_version="1.1.1",
+                index_version="24", repo_head="commit", config_digest=digest,
+                graph_scope_digest="scope", sync_performed=True, fallback_reason=None,
+            )
+
+        def prepared_status(self, _repo_root):
+            return _FRESH
+
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: None)
+    monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
+    monkeypatch.setattr(sg, "_restore_graph_config", restore)
+    monkeypatch.setattr(sg, "CodeGraphAdapter", Adapter)
+
+    assert sg.run_doctor(
+        _args(repo_root=str(tmp_path), as_json=True, fix_graph=True)
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert calls == ["init", "restore", "prepare"]
+    assert payload["post_fix_config_digest"] == digest
+
+
+def test_doctor_restore_failure_aborts_before_prepare(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "codegraph.json"
+    config.write_bytes(b"before")
+    calls: list[str] = []
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: None)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda _root: calls.append("init") or config.write_bytes(b"after") or True,
+    )
+    monkeypatch.setattr(
+        sg, "_restore_graph_config", lambda _state: calls.append("restore") or False
+    )
+    monkeypatch.setattr(
+        sg, "CodeGraphAdapter", lambda: pytest.fail("prepare ran after restore failure")
+    )
+
+    assert sg.run_doctor(
+        _args(repo_root=str(tmp_path), as_json=True, fix_graph=True)
+    ) == 1
+    assert calls == ["init", "restore"]
 
 
 def test_doctor_json_includes_graph_configuration(tmp_path, monkeypatch, capsys) -> None:
@@ -564,7 +844,8 @@ def test_setup_preserves_existing_config_bytes_and_prepares_after_init(
             calls.append(repo_root)
             return GraphSnapshot(
                 status="available", provider="CodeGraph", provider_version="1.1.1",
-                index_version="24", repo_head="commit", config_digest="digest",
+                index_version="24", repo_head="commit",
+                config_digest=hashlib.sha256(raw).hexdigest(),
                 graph_scope_digest="scope", sync_performed=True, fallback_reason=None,
             )
 

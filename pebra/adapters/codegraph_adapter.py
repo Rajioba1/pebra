@@ -35,7 +35,7 @@ from pebra.adapters import git_adapter
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
 from pebra.core.graph_snapshot import GraphSnapshot
-from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range
+from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range, is_release_version
 from pebra.core.language_capability import EXPORT_AS_VISIBILITY_LANGUAGES, LanguageCapability
 from pebra.core.models import CandidateAction, FanInEvidence, FileFanInRollup, OwnerRiskEvidence
 from pebra.core.score_math import fractional_rank
@@ -194,7 +194,7 @@ def validate_codegraph_status(status: object) -> tuple[bool, str | None]:
     if not isinstance(index, dict) or not isinstance(index.get("reindexRecommended"), bool):
         return False, "codegraph status malformed"
     version = status.get("version")
-    if not isinstance(version, str) or not version.strip():
+    if not is_release_version(version):
         return False, "codegraph status malformed"
     if "worktreeMismatch" not in status:
         return False, "codegraph status malformed"
@@ -387,7 +387,7 @@ def _run_status(repo_root: str, exe: str) -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(proc.stdout)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError, RecursionError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -1616,7 +1616,7 @@ class CodeGraphAdapter:
             return 0
         try:
             parsed = json.loads(str(value))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, RecursionError):
             return 1
         if isinstance(parsed, list):
             return len(parsed)

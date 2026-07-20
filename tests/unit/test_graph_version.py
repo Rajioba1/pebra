@@ -41,3 +41,17 @@ def test_malformed_range_raises() -> None:
     # a bad range string is a programming error (not user input) -> raise, don't silently pass
     with pytest.raises(ValueError):
         gv.in_accepted_range("1.1.1", ">=1.1")
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "1." + ("9" * 5_000),
+        "1.1.1 || private-command",
+        " 1.1.1 ",
+        "1.1.1\x00",
+        None,
+    ],
+)
+def test_in_accepted_range_fails_soft_for_malformed_or_oversized_version(version) -> None:
+    assert gv.in_accepted_range(version) is False
