@@ -1067,6 +1067,44 @@ Claude and Codex receive one concise lifecycle:
 Interpret -> Understand -> Design -> Assess -> PEBRA decides -> Apply -> Verify
 ```
 
+This is the required cognitive model, mirroring “think before acting”:
+
+1. **Interpret.** The coding model interprets the maintainer's request and classifies the intended work as
+   read-only investigation or repository mutation. A read-only explanation or investigation may stop after
+   understanding. Any actual file creation, edit, rename, or deletion continues through assessment before
+   a write is attempted.
+2. **Understand.** The model first reuses equivalent, current repository context already supplied by the
+   host. When that is missing for significant or unfamiliar work, it runs `pebra explore` with the task,
+   relevant symbols, or candidate files. `pebra explore` invokes PEBRA's repository-graph interface—whose
+   current production adapter is CodeGraph—to retrieve bounded source context, call relationships,
+   dependents, and affected tests from one freshness-fenced snapshot. Exploration is descriptive only and
+   never authorizes an edit. If unavailable, the model uses ordinary repository search/read tools. It does
+   not repeat equivalent exploration.
+3. **Design.** Using the retrieved knowledge, the model selects the files and symbols that need to change,
+   chooses the smallest suitable route, identifies affected tests, and drafts the exact candidate patch.
+   PEBRA does not invent the candidate: the model supplies `expected_files` and `proposed_patch`, and PEBRA
+   validates and analyzes them.
+4. **Assess.** Before mutation, `pebra assess` binds the exact candidate to repository state and combines
+   the patch with structural evidence, fan-in/blast radius, expected loss, expected benefit, expected
+   utility, RAU, uncertainty, policy, and required controls. CodeGraph may contribute structural evidence
+   here as well as during Understand, but CodeGraph never makes the authorization decision.
+5. **PEBRA decides.** The model follows PEBRA's returned `next_action`; it does not substitute its own risk
+   judgment. `proceed` authorizes only the exact candidate; `inspect_first` and `test_first` require their
+   prerequisites and reassessment; `revise_safer` requires a changed candidate; `ask_human` holds the exact
+   candidate for trusted review; and `reject` strongly warns against the exact candidate while preserving
+   the maintainer's goal and exposing conditional human-review eligibility.
+6. **Apply.** Only `next_action.type=apply_exact_candidate_then_verify` permits application. The model uses
+   the returned `pebra apply-candidate` command and never reconstructs or silently expands the assessed
+   candidate. A human-overridden high-risk candidate must first receive a fresh exact-candidate reassessment
+   yielding `proceed` with `risk_mode=controlled_high_risk`.
+7. **Verify.** The model runs `pebra verify`, resolves scope drift or failed checks, and records the verified
+   outcome. Recording an outcome makes it eligible for PEBRA's controlled learning path; the model must not
+   claim that learning or calibration occurred merely because it recorded a result.
+
+The concise generated protocol carries these executable obligations. The longer rationale and the explicit
+“current graph adapter = CodeGraph” traceability remain in public architecture/command documentation so
+the host instructions stay provider-neutral and token-efficient.
+
 The lifecycle retains every existing safety mechanism. `reject` remains one of the six persisted
 decisions, but product surfaces explain that it holds the exact candidate rather than rejecting the
 maintainer's goal. A sanction-convertible risk rejection may be presented for trusted, interactive human
@@ -1190,6 +1228,12 @@ instructions for:
 - `risk_mode=controlled_high_risk`;
 - verification and outcome recording.
 
+Add an order/semantics test that fails unless the generated protocol states: read-only work may stop after
+Understand; mutation continues to pre-edit Assess; `pebra explore` precedes candidate Design when needed;
+the model supplies the exact files/patch; PEBRA—not the model—decides; and Apply precedes Verify. The test
+must also prove the generated provider-neutral body contains none of `codegraph`, `mcp`,
+`provider selector`, or another backend-specific invocation.
+
 The `reject` instruction must say:
 
 > This exact candidate is rejected, not the maintainer's goal. Present the recorded reasons and
@@ -1273,7 +1317,7 @@ alignment, and full local gates. Do not proceed to push or release without maint
 | Exploration is provider-neutral | Public port/result and `pebra explore` contain no CodeGraph-only schema. |
 | Exploration cannot authorize edits | No imports/data flow into scoring, gate, sanction, verification, learning, or promotion. |
 | TUI read-only promise holds | No graph call on refresh/mount; explicit impact is enabled only after preparation confinement and query byte-stability proofs. |
-| Agents learn the workflow without duplicate work | Generated Claude/Codex protocols share the versioned no-repeat Understand phase and fallback. |
+| Agents follow the cognitive lifecycle without duplicate work | Generated Claude/Codex protocols enforce Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify, including the versioned no-repeat Understand phase and fallback. |
 | Demo data cannot contaminate real state | Temporary explicit DB and byte-identical checkout-tree test. |
 | Experiments reflect production | Deterministic assay tests run last with a new design hash; no paid run is implied. |
 | `reject` honors maintainer authority without weakening policy | Every rejection explains the exact candidate reason; only trusted, replay-bound, sanction-convertible cases advertise interactive override, while policy conflicts require a compliant route or deliberate policy change. |

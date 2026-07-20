@@ -170,6 +170,26 @@ the exact assessed candidate.
 
 ### 4. Always-loaded Claude non-negotiables
 
+Protocol v3 organizes the full host guidance around one cognitive lifecycle:
+
+```text
+Interpret -> Understand -> Design -> Assess -> PEBRA decides -> Apply -> Verify
+```
+
+Interpret separates read-only investigation from mutation. Understand reuses equivalent current host
+context or invokes `pebra explore` for bounded graph-backed repository knowledge, falling back to ordinary
+read/search tools without repeating work. Design remains the model's responsibility: it chooses the exact
+files and drafts the candidate; PEBRA does not invent it. Assess binds that candidate and computes the
+risk-benefit evidence. PEBRA decides and the model follows `next_action`. Apply is exact-candidate-only;
+Verify checks scope and records the outcome. Every actual creation, edit, rename, or deletion reaches
+Assess before mutation, while exploration is required only when significant or unfamiliar work lacks
+equivalent current context.
+
+The generated host text calls this PEBRA's repository-graph interface and remains provider-neutral. Public
+architecture and command documentation state separately that CodeGraph is the current adapter and is used
+both for bounded Understand-phase retrieval and for structural evidence during Assess. CodeGraph never
+authorizes an edit.
+
 The Claude target writes a concise, fully managed `.claude/rules/pebra-safe-edit.md` in addition to the
 existing detailed skill. An unconditional rule is loaded every session without modifying or duplicating a
 user-owned `CLAUDE.md`.
