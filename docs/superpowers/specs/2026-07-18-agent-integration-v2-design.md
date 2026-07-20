@@ -83,10 +83,11 @@ Create a dependency-free core contract containing:
   `GatePermission.REQUEST_HUMAN = "ask"`;
 - `GateTier`: `pass`, `fail_open`, `must_consult`, `candidate_unverifiable`, `candidate_unbound`,
   `candidate_mismatch`, `candidate_incomplete`, `consulted`, `consulted_revise`,
-  `consulted_prerequisite`, `consulted_review`, and `consulted_review_unavailable`;
+  `consulted_prerequisite`, `consulted_review`, `consulted_reject_review`, and
+  `consulted_review_unavailable`;
 - a nullable `risk_summary` object containing the exact matched assessment's `decision`,
   `expected_loss`, `benefit`, and `rau`;
-- `GATE_SCHEMA_VERSION = 1`;
+- `GATE_SCHEMA_VERSION = 2` after the Milestone 8 reject-review extension;
 - the allowed permission/tier matrix.
 
 `GateDecision` normalizes values into those enums and rejects an undeclared pair. Its JSON output includes
@@ -101,7 +102,8 @@ even when an untrusted serialized surface omits host-only attribution.
 The contract also validates the summary decision against the permission/tier pair: `allow/consulted`
 accepts only `proceed`; `deny/consulted_revise` only `revise_safer`;
 `deny/consulted_prerequisite` only `inspect_first`/`test_first`; `ask/consulted_review` only
-`ask_human`; `deny/consulted_review` only `reject`; and
+`ask_human`; `ask/consulted_reject_review` only override-eligible `reject`;
+`deny/consulted_review` only non-convertible `reject`; and
 `deny/consulted_review_unavailable` only `ask_human`. Non-consulted pairs cannot carry a
 summary, and every restrictive permission requires a nonblank actionable reason.
 
@@ -119,18 +121,37 @@ workflow (`pebra accept-risk --apply`) on interactive installed hooks only when 
 metadata is structurally valid: status `available`, exact algorithm `sha256-candidate-replay-v1`, and a
 64-character lowercase hexadecimal digest. Missing, malformed, or unavailable replay keeps the candidate held and requests reassessment
 or another route; it must not promise an inapplicable approval command. A consult-only surface states that
-no trusted approver is available without exposing product/experiment identity. `reject` returns the
-candidate and asks the human to choose a different candidate or route;
-persisted `reject` is not eligible for the current sanction workflow. The persisted six-value assessment
-`Decision` enum is unchanged for storage and learning compatibility; only the gate-facing semantics stop
-presenting it as rejection of the user's intent.
+no trusted approver is available without exposing product/experiment identity.
+
+Maintainer decision (2026-07-20): `reject` remains a persisted assessment decision, but it is always
+presented as a strong warning about the exact candidate, never as rejection of the maintainer's requested
+goal. The response must include the recorded reason, risk/benefit values, controlling gate, required
+controls, and an explicit human-review disposition. A `reject` originating from a sanction-convertible
+risk gate (3, 4, or 9) may enter the same exact-candidate, interactive human approval and fresh
+reassessment flow as `ask_human` when valid replay is available. A policy violation from gate 1, an
+incomplete non-waivable obligation, missing replay, or another non-convertible condition must still ask the
+maintainer to choose a compliant candidate or deliberately change the governing policy; generic risk
+acceptance must not silently waive it. Eligibility is derived from one shared core constant and persisted
+gate evidence, never from the agent's claim. The persisted six-value assessment `Decision` enum remains
+unchanged for storage, API, dashboard, experiment, and learning compatibility.
+
+This follow-up is a gate-wire schema change, not a reinterpretation of the existing tier. It bumps
+`GATE_SCHEMA_VERSION` to 2 and adds `consulted_reject_review`: only
+`REQUEST_HUMAN/consulted_reject_review` may carry an override-eligible `reject`. The existing
+`REQUEST_HUMAN/consulted_review` remains exclusive to `ask_human`, and an ineligible `reject` remains
+`RETURN_CANDIDATE/consulted_review`. This makes eligibility structural and prevents a malformed producer
+from turning an arbitrary persisted rejection into an approval path. A deliberate policy change must be
+made by the maintainer outside the held candidate and followed by fresh assessment; an agent must never
+edit policy merely to bypass the rejection.
 
 Host shims act on permission subject to a tested host-capability projection. Claude supports native
 `ask`, but approving that prompt runs the tool without creating PEBRA's exact sanction or reassessment.
 Codex `PreToolUse` does not support `ask` at all: emitting it marks the hook failed and continues the tool
 call. Therefore both installed hook projections translate `REQUEST_HUMAN` into a blocking `deny` carrying
-the candidate-hold reason. For `ask_human`, the reason directs the agent to the bound sanction/reassessment
-workflow; for `reject`, it directs the agent to a different candidate or route. Native wire `ask` remains
+the candidate-hold reason. For `ask_human` and an override-eligible `reject`, the reason directs the agent
+to the bound sanction/reassessment workflow. A non-convertible `reject` directs the agent to present the
+reasons to the maintainer and obtain a compliant candidate or explicit policy change, without advertising
+an unavailable `accept-risk` command. Native wire `ask` remains
 in the universal contract only for a future trusted adapter that proves an exact PEBRA approval callback.
 Installed shims must never silently convert a candidate hold into a warning-only write. `pebra gate-hook`
 remains the installed command; this design does not change the locked hook signature.
@@ -242,9 +263,10 @@ an unresolved review outcome remains a conservative candidate hold. The experime
 `schema_version`, tier, warning, risk summary, and host-only attribution internally, but the coding agent
 sees exactly the normalized `{ok, blocked, reason}` fields in every arm. A held candidate produces no
 write and no post-write assessment attribution. An allowed exact candidate is attributed only after a
-successful write. For `ask_human`, the existing human-review arm continues to prove approval, exact
-sanction, and fresh reassessment before a formerly held candidate may proceed. Persisted `reject` is not
-sanctionable and must take a different route.
+successful write. For `ask_human` and an override-eligible `reject`, the existing human-review arm
+continues to prove approval, exact sanction, and fresh reassessment before a formerly held candidate may
+proceed. A non-convertible `reject` remains held and exposes its reason without suggesting that generic
+risk acceptance can waive policy.
 
 The reason now includes neutral candidate-bound assessment evidence when available. That is an intentional
 treatment-content change even though the JSON field set is stable. The experiment's blinding validator

@@ -1057,6 +1057,208 @@ Report demo tree byte-preservation, documentation parity, installed-wheel verifi
 
 ---
 
+## Milestone 8 — Agent Protocol v3 and Reasoned `reject` Human Review
+
+### Deliverable
+
+Claude and Codex receive one concise lifecycle:
+
+```text
+Interpret -> Understand -> Design -> Assess -> PEBRA decides -> Apply -> Verify
+```
+
+The lifecycle retains every existing safety mechanism. `reject` remains one of the six persisted
+decisions, but product surfaces explain that it holds the exact candidate rather than rejecting the
+maintainer's goal. A sanction-convertible risk rejection may be presented for trusted, interactive human
+override and fresh reassessment. Non-convertible policy or obligation failures still reach the maintainer
+with reasons, but cannot advertise or accept a generic risk override.
+
+No score, threshold, gate ordering, candidate binding, audit-chain format, or historical decision value
+changes in this milestone.
+
+### Tasks
+
+- [ ] **Step 1: Lock override eligibility with failing core tests**
+
+Modify `pebra/core/decision_engine.py`, `tests/unit/test_decision_engine.py`, and
+`tests/unit/test_composition_payload.py`. First prove:
+
+1. the six-value `Decision` enum is unchanged;
+2. gates 3, 4, and 9 are the only current risk gates whose `reject` may be converted by an ordinary
+   bound risk sanction;
+3. gate 1 policy violations and incomplete host-declared obligations remain non-convertible;
+4. agent-supplied data cannot manufacture override eligibility; and
+5. every `reject` payload identifies the exact controlling reason and gate before any command is offered.
+
+Extract the existing sanction-convertible gate set into one immutable dependency-free core constant and
+use it in decision resolution and presentation. Do not duplicate `{2, 3, 4, 9}` in adapters or UI code.
+Gate 2 remains in the shared sanction set for existing `ask_human` behavior; `reject` eligibility is
+expected only from gates 3, 4, and 9 under current rules.
+
+Run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_decision_engine.py tests/unit/test_composition_payload.py -q
+```
+
+Expected before implementation: the new tests fail. Expected afterward: pass with score and decision
+goldens otherwise unchanged.
+
+- [ ] **Step 2: Give `reject` an honest canonical `next_action`**
+
+Modify `pebra/composition.py`, `tests/unit/test_composition_payload.py`, and the assess CLI goldens.
+Replace the generic `{"type": "stop"}` fallback for a valid `reject`. An eligible rejection uses
+`request_human_approval`; an ineligible rejection uses `request_human_review`. Both carry
+`origin_decision=reject` and the same reason envelope:
+
+```json
+{
+  "type": "request_human_approval",
+  "origin_decision": "reject",
+  "assessment_id": "asm_N",
+  "action_id": "...",
+  "reason": "...",
+  "controlling_gate": 3,
+  "risk_benefit": {
+    "expected_loss": 0.73,
+    "benefit": 0.20,
+    "expected_utility": -0.53,
+    "rau": -0.61
+  },
+  "required_controls": [],
+  "trusted_actor_required": true,
+  "override": {
+    "available": true,
+    "command": "pebra accept-risk --apply --assessment-id asm_N"
+  }
+}
+```
+
+Include the command only when the rejection is sanction-convertible and exact candidate replay is
+available. Values must be the exact finite persisted values; never substitute example/default numbers.
+If the summary is missing or malformed, set `risk_benefit=null`, make override unavailable, and state that
+the evidence cannot be trusted. Otherwise set `override.available=false`, omit `command`, use
+`type=request_human_review`, and provide an actionable `unavailable_reason`. Existing `ask_human` and
+`proceed` shapes remain backward compatible.
+
+- [ ] **Step 3: Extend human approval without widening policy authority**
+
+Modify `pebra/ports/store_port.py`, `pebra/adapters/store/db.py`,
+`pebra/app/human_approval_controller.py`, and their unit/integration tests. Rename the store query concept
+from ask-human-only to pending human review and include only current-HEAD `ask_human` rows plus current-HEAD
+`reject` rows whose persisted controlling gate is sanction-convertible.
+
+Revalidate eligibility after loading the hash-covered assessment and immediately before sanction creation.
+A gate-1 policy rejection, incomplete obligation, malformed gate record, stale HEAD, missing binding,
+unavailable replay, or mixed candidate must fail before the prompt and before any sanction write. After
+typed `APPROVE`, retain the existing requirement for a fresh exact-candidate reassessment yielding:
+
+```text
+decision=proceed
+risk_mode=controlled_high_risk
+```
+
+Any other result invalidates the sanction and applies nothing.
+
+- [ ] **Step 4: Project eligible rejection through the gate contract safely**
+
+Modify `pebra/core/gate_contract.py`, `pebra/adapters/gate_check_adapter.py`,
+`docs/GATE_CONTRACT.md`, and the gate-contract unit/E2E suites. Bump `GATE_SCHEMA_VERSION` from 1 to 2 and
+add `consulted_reject_review`. Only `REQUEST_HUMAN/consulted_reject_review` may carry an
+override-eligible `reject`; `REQUEST_HUMAN/consulted_review` remains exclusive to `ask_human`. Keep a
+non-convertible `reject` as `RETURN_CANDIDATE/consulted_review`.
+
+Installed Claude and Codex hooks must continue demoting universal `REQUEST_HUMAN` to a blocking host
+`deny`; the reason points the trusted operator to PEBRA's interactive flow and never lets an agent answer a
+native approval prompt. Add the full cross-product proof that malformed, unbound, or ineligible rejection
+cannot become `allow`, a native host approval, or a claimed override.
+
+- [ ] **Step 5: Rewrite the generated agent protocol as version 3**
+
+Modify `pebra/cli/agent_init.py`, its unit/conformance tests, and
+`e2e/test_agent_integration_explore.py`. Create one shared `_NON_NEGOTIABLES` string used by the
+always-loaded Claude rule and full protocol preamble. Keep the complete Claude and Codex skills
+byte-identical. Organize `_PROTOCOL_BODY` as the seven-phase lifecycle while preserving literal tested
+instructions for:
+
+- all six decisions;
+- `expected_files` and `proposed_patch`;
+- stable revision lineage;
+- no self-reported candidate verification;
+- exact-candidate application;
+- human-only typed approval;
+- `risk_mode=controlled_high_risk`;
+- verification and outcome recording.
+
+The `reject` instruction must say:
+
+> This exact candidate is rejected, not the maintainer's goal. Present the recorded reasons and
+> risk-benefit evidence to the maintainer. If `next_action.override.available` is true, a trusted human
+> may run the returned interactive command; never answer it yourself. Otherwise revise the candidate or
+> follow the stated policy-resolution route. Never edit governing policy merely to bypass a rejection;
+> only follow a maintainer-authored policy change and then reassess from fresh repository state.
+
+Use provider-neutral agent wording: `pebra explore` retrieves bounded current context through PEBRA's
+repository-graph interface. Do not claim that a provider is user-selectable. Bump `PROTOCOL_VERSION` from
+2 to 3.
+
+- [ ] **Step 6: Update human-facing CLI/TUI language without rewriting history**
+
+Modify the assess/verify CLI presentation, TUI verdict/detail presentation, and relevant snapshots. Keep
+the canonical JSON and stored value `reject`. Human surfaces show `Reject candidate` and place the recorded
+reason beside override availability. Do not relabel historical rows as `ask_human`, rewrite ledger content,
+or hide a policy conflict.
+
+- [ ] **Step 7: Update independent distribution and documentation oracles**
+
+Modify `scripts/verify_distribution.py`, its tests, `README.md`,
+`docs/PEBRA_COMMAND_REFERENCE.md`, `docs/PEBRA_Architecture.md`, and the agent-integration design. Keep the
+verifier's obligations and expected skill SHA-256 independent of production constants. Update its expected
+agent protocol version to 3, gate schema version to 2, and recompute the installed-skill digest from the
+built artifact.
+
+Document the seven-phase lifecycle, exact-candidate meaning of `reject`, conditional human override, and
+that CodeGraph is the current implementation behind PEBRA's provider-neutral repository-graph interface.
+
+- [ ] **Step 8: Align deterministic experiments last**
+
+Modify the agent A/B advisory contract, subject protocol, experiment README, and deterministic tests only
+after production behavior and E2E are approved. The consult-only experiment has no trusted approver, so
+both `ask_human` and `reject` remain blocked and never expose a usable approval command to the subject.
+Because the supported gate schema and model-facing reason semantics change, update the external experiment
+consumer to schema 2, bump the experiment protocol/design identifier, and reject old checkpoints/run IDs.
+Preserve the identical blinded Understand instruction in every arm. Do not run a provider-backed or paid
+experiment.
+
+- [ ] **Step 9: Run local gates and independent safety/protocol reviews**
+
+Run:
+
+```powershell
+.\.venv\Scripts\nox.exe -s tests lint e2e-fast
+.\.venv\Scripts\nox.exe -s dev-package
+.\.venv\Scripts\nox.exe -s mcp-smoke core-only
+```
+
+Also run focused gate-contract, human-approval, installed-agent, TUI snapshot, and deterministic experiment
+suites. Require one safety review of override eligibility and one protocol/distribution review. Stop on any
+path that lets an agent approve itself, waive policy, change candidate bytes, use stale replay, or present a
+non-convertible rejection as sanctionable.
+
+- [ ] **Step 10: Commit without push, release, or paid execution**
+
+Commit the reviewed milestone on `main` using the GitHub noreply identity. Do not push until explicitly
+authorized. Remote three-OS CI remains a separate gate; tagging, publishing, and paid experiments require
+new explicit authorization.
+
+### STOP FOR REVIEW 8
+
+Report the decision/gate matrix, every override-eligible and ineligible rejection case, human-approval
+freshness/binding evidence, generated Claude/Codex bytes, distribution proof, deterministic experiment
+alignment, and full local gates. Do not proceed to push or release without maintainer review.
+
+---
+
 ## Final Acceptance Matrix
 
 | Requirement | Proof |
@@ -1074,6 +1276,7 @@ Report demo tree byte-preservation, documentation parity, installed-wheel verifi
 | Agents learn the workflow without duplicate work | Generated Claude/Codex protocols share the versioned no-repeat Understand phase and fallback. |
 | Demo data cannot contaminate real state | Temporary explicit DB and byte-identical checkout-tree test. |
 | Experiments reflect production | Deterministic assay tests run last with a new design hash; no paid run is implied. |
+| `reject` honors maintainer authority without weakening policy | Every rejection explains the exact candidate reason; only trusted, replay-bound, sanction-convertible cases advertise interactive override, while policy conflicts require a compliant route or deliberate policy change. |
 | Cross-platform artifact is proven | Three-OS source and installed-wheel jobs plus Playwright and Gitleaks succeed. |
 
 ## Deliberate Non-Goals
@@ -1088,4 +1291,6 @@ Report demo tree byte-preservation, documentation parity, installed-wheel verifi
 - No exploration-derived risk score.
 - No TUI approval or mutation workflow.
 - No efficacy claim from deterministic tests or a small number of seeds.
+- No removal, rename, or historical migration of the persisted six-value `Decision` enum.
+- No generic risk sanction that waives a gate-1 policy violation or incomplete host-declared obligation.
 - No release or paid experiment as an implicit consequence of completing this plan.
