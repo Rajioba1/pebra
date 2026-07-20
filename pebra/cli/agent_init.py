@@ -36,78 +36,82 @@ _CLAUDE_HOOK_MATCHER = AGENT_HOSTS["claude"].hook_matcher
 _CODEX_HOOK_MATCHER = AGENT_HOSTS["codex"].hook_matcher
 _MARK_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MARK_END = "<!-- END pebra-safe-edit -->"
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
-# The protocol body — shared by the SKILL.md (with frontmatter) and the AGENTS.md managed block.
-# Must-consult wording only; no enforcement claim in Phase 1.
-_PROTOCOL_BODY = """\
-Assess before every significant edit, rename, or delete: you must consult PEBRA first. This is a pre-edit
-obligation, not optional. Do not skip these steps:
+_NON_NEGOTIABLES = """\
+1. Assess before every repository file creation, edit, rename, or deletion.
+2. Never apply a mismatched or incomplete candidate; apply only the exact assessed candidate.
+3. A PEBRA candidate hold or human review overrides an earlier advisory proceed for that exact
+   candidate; it does not cancel the user's requested goal.
+4. Never create, claim, or answer your own human sanction.
+5. After application, verify and record the outcome."""
 
-Understand — For a significant or unfamiliar edit, first use equivalent current repository context
-already supplied by the host. If none is available, run `pebra explore` with the task, relevant symbols,
-or target files before assessment. Do not repeat equivalent exploration. Treat the result as descriptive
-repository context only: it does not authorize an edit and is not trusted PEBRA scoring evidence. If
-exploration is unavailable, continue with the host's ordinary repository search/read tools, then assess
-the exact candidate.
+# Shared by the host skills and the AGENTS.md managed block. Keep provider details out of these
+# token-sensitive instructions; public architecture documentation names the current implementation.
+_PROTOCOL_BODY = f"""\
+PEBRA safe-edit non-negotiables:
 
-1. **Assess (pre-edit).** Draft the intended change, then run
-   `pebra assess <request.json> --json` with the target file(s) in `expected_files` and the intended
-   unified diff in `proposed_patch`. Read the returned decision, `scores.expected_loss`, safe edit
-   scope, and required checks before touching the code. If the decision is `inspect_first`, inspect
-   the reported dependents before resubmitting. If it is `test_first`, add or run the required tests
-   before resubmitting.
-2. **Revise when asked.** If the decision is `revise_safer`, do not apply the original patch. Use
-   `model_guidance_packet.advisory.safer_route` (its `summary` and `constraints`) to draft a safer or
-   compatibility-preserving candidate. For public contract changes, consider retaining the existing
-   entry point through an alias, wrapper, adapter, default implementation, or deprecation bridge.
-   Then resubmit by running `pebra assess` again with that new `proposed_patch`. Keep
-   the same task text and stable action ID across these revision requests, even when the safer route
-   moves to a different file, so the bounded revision lineage cannot reset. Keep reducing risk and resubmitting
-   until the reassessment permits editing and shows lower risk (for example, lower
-   `scores.expected_loss` or a less severe decision). PEBRA does not accept
-   self-reported candidate verification in the request, so revise the change until the risk drops on
-   its own; if it will not, escalate as in step 3.
-3. **Escalate when asked.** Treat the assess JSON `next_action` as authoritative. If the decision is
-   `ask_human`, present its reason, risk/benefit values, remaining uncertainty, required controls, and
-   exact candidate to the user. Launch `pebra accept-risk --apply`; a trusted human or host operator must review the
-   displayed risk/benefit evidence and type the approval in its interactive terminal. Do not answer the
-   approval prompt yourself. Do not create or claim the sanction yourself. PEBRA creates the bound
-   sanction, then will reassess the exact candidate. A PEBRA candidate hold or human review overrides
-   an earlier advisory proceed for that exact candidate; it does not cancel the user's requested goal.
-   PEBRA will apply it only after a
-   `proceed` with `risk_mode=controlled_high_risk`. If the decision is `reject`, stop and ask for a different route.
-   Never treat either decision as permission to edit.
-4. **Edit.** When `next_action.type` is `apply_exact_candidate_then_verify`, run its returned command
-   (`pebra apply-candidate --assessment-id <returned-id>`). Apply only the exact assessed candidate;
-   do not manually retype or reconstruct the patch. Keep all later edits within the safe scope PEBRA reports.
-5. **Verify.** After application, verify and record the outcome. Run
-   `pebra verify --assessment-id <id> --scope staged` and resolve any scope drift or build failures it reports.
-6. **Record.** Run `pebra record-outcome --assessment-id <id> --status completed`.
+{_NON_NEGOTIABLES}
 
-Consulting PEBRA before editing high-impact code is how you avoid breaking dependents you cannot see
-from local context.
+Lifecycle: Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify
+
+1. **Interpret.** Interpret the maintainer's request and classify the work. A Read-only explanation or
+   investigation may stop after Understand. Any repository mutation—file creation, edit, rename, or
+   deletion—must continue through pre-edit assessment before any write.
+2. **Understand.** For significant or unfamiliar work, first reuse equivalent current repository context
+   already supplied by the host. If none is available, run `pebra explore` with the task, relevant symbols,
+   or target files. `pebra explore` retrieves bounded current context through PEBRA's repository-graph
+   interface. Do not repeat equivalent exploration. Treat the result as descriptive repository context
+   only: it does not authorize an edit and is not trusted PEBRA scoring evidence. If exploration is
+   unavailable, use the host's ordinary repository search/read tools.
+3. **Design.** Use that knowledge to choose the smallest suitable route, exact files and symbols, affected
+   tests, and exact candidate patch. PEBRA does not invent the candidate: the model supplies `expected_files`
+   and `proposed_patch`.
+4. **Assess (pre-edit).** Run `pebra assess <request.json> --json` before touching code. Read the returned
+   decision, `scores.expected_loss`, risk-benefit evidence, safe scope, and required checks. Across a
+   `revise_safer` lineage, keep the same task text and stable action ID while changing `proposed_patch`.
+   Use `model_guidance_packet.advisory.safer_route` to draft a safer or compatibility-preserving candidate;
+   for public contracts consider an alias, wrapper, adapter, default implementation, or deprecation bridge.
+   Resubmit until the reassessment permits editing and shows lower risk. PEBRA does not accept
+   self-reported candidate verification in the request.
+5. **PEBRA decides.** PEBRA—not the model—decides. Follow the returned `next_action`:
+   - `proceed` applies only to the exact assessed candidate.
+   - `inspect_first` requires inspection and reassessment; `test_first` requires tests and reassessment.
+   - `revise_safer` requires a changed, lower-risk candidate; resubmit it for reassessment.
+     Do not apply the original patch.
+   - `ask_human` holds the exact candidate. Present its reasons, risk-benefit values, uncertainty, and controls.
+     A trusted human or host operator may run `pebra accept-risk --apply` and type approval interactively.
+     Never answer the approval prompt yourself. Do not create or claim the sanction yourself. PEBRA creates
+     the bound sanction and will reassess the exact candidate.
+   - `reject` means: This exact candidate is rejected, not the maintainer's goal. Present the recorded reasons
+     and risk-benefit evidence to the maintainer. If `next_action.override.available` is true, a trusted human
+     may run the returned interactive command; never answer it yourself. Otherwise revise the candidate or
+     follow the stated policy-resolution route. Never edit governing policy merely to bypass a rejection;
+     only follow a maintainer-authored policy change and then reassess from fresh repository state.
+   Never treat a held candidate as permission to edit.
+6. **Apply.** Only `next_action.type=apply_exact_candidate_then_verify` permits application. Run its returned
+   `pebra apply-candidate --assessment-id <returned-id>` command. Do not retype, reconstruct, or expand the
+   patch. A human-reviewed candidate must first receive a fresh exact-candidate `proceed` reassessment with
+   `risk_mode=controlled_high_risk`.
+7. **Verify.** Run `pebra verify --assessment-id <id> --scope staged`, resolve scope drift or failed checks,
+   then run `pebra record-outcome --assessment-id <id> --status completed`. Recording makes the result eligible
+   for controlled learning; never claim learning or calibration occurred merely because it was recorded.
 """
 
 _SKILL_MD = f"""\
 ---
 name: pebra-safe-edit
-description: Use BEFORE editing, renaming, or deleting any function, class, or file. Consult PEBRA's pre-edit risk assessment first to avoid breaking dependents.
+description: Use BEFORE every repository file creation, edit, rename, or deletion. Consult PEBRA's pre-edit risk assessment first to avoid breaking dependents.
 ---
 
 # PEBRA safe edit
 
 {_PROTOCOL_BODY}"""
 
-_CLAUDE_RULE_MD = """\
+_CLAUDE_RULE_MD = f"""\
 # PEBRA safe-edit non-negotiables
 
-1. Assess before every significant edit, rename, or delete.
-2. Never apply a mismatched or incomplete candidate; apply only the exact assessed candidate.
-3. A PEBRA candidate hold or human review overrides an earlier advisory proceed for that exact
-   candidate; it does not cancel the user's requested goal.
-4. Never create, claim, or answer your own human sanction.
-5. After application, verify and record the outcome.
+{_NON_NEGOTIABLES}
 """
 
 _AGENTS_HEADING = "## PEBRA safe-edit protocol"

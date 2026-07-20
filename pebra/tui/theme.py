@@ -52,7 +52,7 @@ VERDICT_PALETTE: dict[str, Verdict] = {
     "test_first": Verdict("test_first", "Test first", "◎", "t", "#B8B84A", "#6E7A1E"),
     "revise_safer": Verdict("revise_safer", "Revise safer", "↩", "~", "#E3B341", "#9A6D00"),
     "ask_human": Verdict("ask_human", "Ask human", "‖", "?", "#E8873B", "#B5560F"),
-    "reject": Verdict("reject", "Reject", "✕", "x", "#F85149", "#C4271C"),
+    "reject": Verdict("reject", "Reject candidate", "✕", "x", "#F85149", "#C4271C"),
 }
 
 _UNKNOWN_VERDICT = Verdict("unknown", "Unknown", "·", ".", "#8B929C", "#5A616B")

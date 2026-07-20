@@ -77,31 +77,43 @@ _AGENT_CHECK_KEYS = {
     "declared_support",
     "effective_enforcement",
 }
-_EXPECTED_AGENT_SKILL_SHA256 = "5a9dcb6f560296ecfcba639a0782d8f59dcebef71544eedb8cdef78a8fe36d0b"
+_EXPECTED_AGENT_SKILL_SHA256 = "baa618b6bff9f4c5efb045e29088b063422c88efea72231f9a2c4de3a411ca84"
 _CODEX_SENTINEL = "# Pre-existing Codex distribution-verifier sentinel\nPreserve this instruction.\n"
 _MANAGED_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MANAGED_END = "<!-- END pebra-safe-edit -->"
 _AGENT_SEMANTIC_OBLIGATIONS = (
-    "Understand — For a significant or unfamiliar edit",
+    "Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify",
+    "Read-only explanation or",
+    "investigation may stop after Understand.",
+    "file creation, edit, rename, or",
+    "before any write.",
+    "PEBRA does not invent the candidate: the model supplies `expected_files`",
+    "PEBRA—not the model—decides.",
+    "This exact candidate is rejected, not the maintainer's goal.",
+    "Never edit governing policy merely to bypass a rejection",
     "Do not repeat equivalent exploration.",
     "it does not authorize an edit and is not trusted PEBRA scoring evidence.",
     "ordinary repository search/read tools",
-    "Assess before every significant edit, rename, or delete",
-    "Never treat either decision as permission to edit.",
-    "exact assessed candidate;",
+    "Assess before every repository file creation, edit, rename, or deletion",
+    "Never treat a held candidate as permission to edit.",
+    "apply only the exact assessed candidate.",
     "approval prompt yourself.",
     "pebra verify --assessment-id <id> --scope staged",
     "pebra record-outcome --assessment-id <id> --status completed",
 )
 _AGENT_SEMANTIC_RELATIONS = (
-    ("Understand —", "**Assess (pre-edit).**"),
-    ("**Assess (pre-edit).**", "**Revise when asked.**"),
+    ("**Interpret.**", "**Understand.**"),
+    ("**Understand.**", "**Design.**"),
+    ("**Design.**", "**Assess (pre-edit).**"),
+    ("**Assess (pre-edit).**", "**PEBRA decides.**"),
+    ("**PEBRA decides.**", "**Apply.**"),
+    ("**Apply.**", "**Verify.**"),
     ("pebra accept-risk --apply", "apply_exact_candidate_then_verify"),
     ("apply_exact_candidate_then_verify", "pebra verify --assessment-id"),
     ("pebra verify --assessment-id", "pebra record-outcome --assessment-id"),
 )
 _CLAUDE_RULE_OBLIGATIONS = (
-    "Assess before every significant edit, rename, or delete.",
+    "Assess before every repository file creation, edit, rename, or deletion.",
     "Never apply a mismatched or incomplete candidate",
     "candidate hold or human review overrides an earlier advisory proceed",
     "Never create, claim, or answer your own human sanction.",
@@ -225,9 +237,9 @@ def _validate_agent_init_check(raw: str, *, target: str) -> dict[str, object]:
         )
     if (
         type(payload["protocol_version"]) is not int
-        or payload["protocol_version"] != 2
+        or payload["protocol_version"] != 3
         or type(payload["gate_schema_version"]) is not int
-        or payload["gate_schema_version"] != 1
+        or payload["gate_schema_version"] != 2
     ):
         raise DistributionVerificationError(
             f"installed agent-init check protocol mismatch for {target}"

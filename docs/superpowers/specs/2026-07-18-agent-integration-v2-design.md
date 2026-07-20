@@ -368,14 +368,15 @@ claims remain forbidden.
   sanction/reassessment through native prompt approval, and Codex never receives unsupported `ask`.
   The Claude and Codex event paths are proved across their subprocess boundaries.
 - Documentation rows derived from live contract values.
-- A focused production subprocess E2E proves the schema-1 envelope before the Milestone 1 review.
+- A focused production subprocess E2E proves the schema-2 envelope and reject-review tier before review.
 - In the final milestone, the A/B subprocess harness rejects unsupported or malformed envelopes without
   importing PEBRA.
 - The A/B treatment still forwards `consult_only=True`, preserves post-write-only assessment attribution,
   and exposes only `{ok, blocked, reason}` to the model when gate metadata is present.
 - Held candidates produce neither a file write nor applied/proceeded assessment attribution; they may
   remain intervention-only observations. The `ask_human` path proves approval, exact sanction, and
-  reassessment before a formerly held candidate proceeds, while `reject` requires a different route.
+  reassessment before a formerly held candidate proceeds. An eligible risk `reject` may use the same
+  trusted bound flow; a policy or otherwise non-convertible `reject` requires a compliant route.
 - The candidate-bound reason treatment uses a fresh design hash/run ID and rejects resume or pooling with
   pre-change experiment results.
 - `positive_control` remains experiment-local and absent from the production `GateTier` contract.

@@ -20,7 +20,7 @@ _DECISION_TITLE = {
     Decision.TEST_FIRST: "Test First",
     Decision.REVISE_SAFER: "Revise Safer",
     Decision.ASK_HUMAN: "Ask Human",
-    Decision.REJECT: "Reject",
+    Decision.REJECT: "Reject candidate",
 }
 
 

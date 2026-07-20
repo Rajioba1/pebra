@@ -35,16 +35,19 @@ def reject_override_eligible(decision: Decision | str, gates_fired: Iterable[obj
         normalized = Decision(decision)
     except (TypeError, ValueError):
         return False
-    if normalized is not Decision.REJECT:
-        return False
+    return normalized is Decision.REJECT and reject_override_gate(gates_fired) is not None
+
+
+def reject_override_gate(gates_fired: Iterable[object]) -> Mapping[object, object] | None:
+    """Return validated canonical reject gate evidence, otherwise fail closed."""
     try:
         records = tuple(gates_fired)
     except TypeError:
-        return False
+        return None
     controlling: Mapping[object, object] | None = None
     for record in records:
         if not isinstance(record, Mapping):
-            return False
+            return None
         gate = record.get("gate")
         name = record.get("name")
         advisory = record.get("advisory", False)
@@ -55,23 +58,25 @@ def reject_override_eligible(decision: Decision | str, gates_fired: Iterable[obj
             or not name
             or not isinstance(advisory, bool)
         ):
-            return False
+            return None
         if controlling is None and not advisory:
             controlling = record
     if controlling is None:
-        return False
+        return None
     gate = int(controlling["gate"])
     if gate not in REJECT_OVERRIDE_GATES or controlling.get("name") != _REJECT_GATE_NAMES[gate]:
-        return False
+        return None
     if gate == 3:
         values = (controlling.get("expected_loss"), controlling.get("threshold"))
     elif gate == 4:
         values = (controlling.get("rau"),)
     else:
         values = (controlling.get("benefit"),)
-    return all(
+    if not all(
         not isinstance(value, bool)
         and isinstance(value, (int, float))
         and math.isfinite(float(value))
         for value in values
-    )
+    ):
+        return None
+    return controlling

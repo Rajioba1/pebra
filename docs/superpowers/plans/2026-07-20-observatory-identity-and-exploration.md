@@ -1111,12 +1111,20 @@ maintainer's goal. A sanction-convertible risk rejection may be presented for tr
 override and fresh reassessment. Non-convertible policy or obligation failures still reach the maintainer
 with reasons, but cannot advertise or accept a generic risk override.
 
-No score, threshold, gate ordering, candidate binding, audit-chain format, or historical decision value
-changes in this milestone.
+No score, threshold, gate ordering, candidate binding, or historical decision value changes in this
+milestone. New assessment rows add `gates_fired`, `high_risk_triggers`, and `decision_reason` to their
+hash-covered canonical content so review eligibility is provable after persistence. Legacy row bytes and
+their validation rule remain unchanged, so existing chains stay readable without migration.
 
 ### Tasks
 
-- [ ] **Step 1: Lock override eligibility with failing core tests**
+Implementation status (2026-07-20): Steps 1–7 are implemented and locally verified. Step 8 is the
+only feature work intentionally deferred. The production suite, lint/import contracts, non-experiment
+E2E, installed-wheel verification, MCP smoke, and core-only smoke pass. The complete `e2e-fast` session
+currently stops only where the deferred A/B orchestrator (schema 1) rejects the production gate contract
+(schema 2); aligning that consumer and rerunning the complete gate belongs to Step 8.
+
+- [x] **Step 1: Lock override eligibility with failing core tests**
 
 Modify `pebra/core/decision_engine.py`, `tests/unit/test_decision_engine.py`, and
 `tests/unit/test_composition_payload.py`. First prove:
@@ -1142,7 +1150,7 @@ Run:
 Expected before implementation: the new tests fail. Expected afterward: pass with score and decision
 goldens otherwise unchanged.
 
-- [ ] **Step 2: Give `reject` an honest canonical `next_action`**
+- [x] **Step 2: Give `reject` an honest canonical `next_action`**
 
 Modify `pebra/composition.py`, `tests/unit/test_composition_payload.py`, and the assess CLI goldens.
 Replace the generic `{"type": "stop"}` fallback for a valid `reject`. An eligible rejection uses
@@ -1179,7 +1187,7 @@ the evidence cannot be trusted. Otherwise set `override.available=false`, omit `
 `type=request_human_review`, and provide an actionable `unavailable_reason`. Existing `ask_human` and
 `proceed` shapes remain backward compatible.
 
-- [ ] **Step 3: Extend human approval without widening policy authority**
+- [x] **Step 3: Extend human approval without widening policy authority**
 
 Modify `pebra/ports/store_port.py`, `pebra/adapters/store/db.py`,
 `pebra/app/human_approval_controller.py`, and their unit/integration tests. Rename the store query concept
@@ -1198,7 +1206,7 @@ risk_mode=controlled_high_risk
 
 Any other result invalidates the sanction and applies nothing.
 
-- [ ] **Step 4: Project eligible rejection through the gate contract safely**
+- [x] **Step 4: Project eligible rejection through the gate contract safely**
 
 Modify `pebra/core/gate_contract.py`, `pebra/adapters/gate_check_adapter.py`,
 `docs/GATE_CONTRACT.md`, and the gate-contract unit/E2E suites. Bump `GATE_SCHEMA_VERSION` from 1 to 2 and
@@ -1211,7 +1219,7 @@ Installed Claude and Codex hooks must continue demoting universal `REQUEST_HUMAN
 native approval prompt. Add the full cross-product proof that malformed, unbound, or ineligible rejection
 cannot become `allow`, a native host approval, or a claimed override.
 
-- [ ] **Step 5: Rewrite the generated agent protocol as version 3**
+- [x] **Step 5: Rewrite the generated agent protocol as version 3**
 
 Modify `pebra/cli/agent_init.py`, its unit/conformance tests, and
 `e2e/test_agent_integration_explore.py`. Create one shared `_NON_NEGOTIABLES` string used by the
@@ -1246,14 +1254,14 @@ Use provider-neutral agent wording: `pebra explore` retrieves bounded current co
 repository-graph interface. Do not claim that a provider is user-selectable. Bump `PROTOCOL_VERSION` from
 2 to 3.
 
-- [ ] **Step 6: Update human-facing CLI/TUI language without rewriting history**
+- [x] **Step 6: Update human-facing CLI/TUI language without rewriting history**
 
 Modify the assess/verify CLI presentation, TUI verdict/detail presentation, and relevant snapshots. Keep
 the canonical JSON and stored value `reject`. Human surfaces show `Reject candidate` and place the recorded
 reason beside override availability. Do not relabel historical rows as `ask_human`, rewrite ledger content,
 or hide a policy conflict.
 
-- [ ] **Step 7: Update independent distribution and documentation oracles**
+- [x] **Step 7: Update independent distribution and documentation oracles**
 
 Modify `scripts/verify_distribution.py`, its tests, `README.md`,
 `docs/PEBRA_COMMAND_REFERENCE.md`, `docs/PEBRA_Architecture.md`, and the agent-integration design. Keep the
@@ -1289,7 +1297,7 @@ suites. Require one safety review of override eligibility and one protocol/distr
 path that lets an agent approve itself, waive policy, change candidate bytes, use stale replay, or present a
 non-convertible rejection as sanctionable.
 
-- [ ] **Step 10: Commit without push, release, or paid execution**
+- [x] **Step 10: Commit without push, release, or paid execution**
 
 Commit the reviewed milestone on `main` using the GitHub noreply identity. Do not push until explicitly
 authorized. Remote three-OS CI remains a separate gate; tagging, publishing, and paid experiments require

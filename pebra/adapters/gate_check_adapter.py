@@ -56,6 +56,7 @@ from pebra.core.gate_contract import (
     GateRiskSummary,
     GateTier,
 )
+from pebra.core.human_review import controlling_gate, reject_override_gate
 
 _IMPACT_THRESHOLD = 0.90  # matches modify_risk_model._HIGH_FANIN_THRESHOLD
 _ANCHOR_THRESHOLD = 0.75  # matches destructive_op_model._GOD_NODE_THRESHOLD (import-graph god_node)
@@ -92,6 +93,8 @@ class GateDecision:
             ALLOWED_RISK_DECISIONS.get((permission, tier), frozenset())
         ):
             raise ValueError("gate risk summary decision does not match its permission/tier")
+        if tier is GateTier.CONSULTED_REJECT_REVIEW and self.risk_summary is None:
+            raise ValueError("consulted reject review requires finite exact risk evidence")
         if self.risk_summary is not None and (
             not isinstance(self.matched_assessment_id, str)
             or _ASSESSMENT_ID_RE.fullmatch(self.matched_assessment_id) is None
@@ -331,10 +334,44 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
             matched_assessment_id=matched_id,
         )
     if assessment_decision is Decision.REJECT:
+        replay_available = _candidate_replay_available(matched)
+        gate, gate_name, recorded_reason, override_eligible = _reject_context(matched)
+        can_offer_override = override_eligible and risk_summary is not None
+        if (
+            not consult_only
+            and replay_available
+            and can_offer_override
+        ):
+            return GateDecision(
+                GatePermission.REQUEST_HUMAN,
+                GateTier.CONSULTED_REJECT_REVIEW,
+                reason=_exact_restrictive_reason(
+                    assessment_decision.value,
+                    risk_summary,
+                    replay_available=True,
+                    override_eligible=True,
+                    assessment_id=matched_id,
+                    controlling_gate_number=gate,
+                    controlling_gate_name=gate_name,
+                    recorded_reason=recorded_reason,
+                ),
+                risk_summary=risk_summary,
+                matched_assessment_id=matched_id,
+            )
         return GateDecision(
             GatePermission.RETURN_CANDIDATE,
             GateTier.CONSULTED_REVIEW,
-            reason=_exact_restrictive_reason(assessment_decision.value, risk_summary),
+            reason=_exact_restrictive_reason(
+                assessment_decision.value,
+                risk_summary,
+                consult_only=consult_only,
+                replay_available=replay_available,
+                override_eligible=can_offer_override,
+                assessment_id=matched_id,
+                controlling_gate_number=gate,
+                controlling_gate_name=gate_name,
+                recorded_reason=recorded_reason,
+            ),
             risk_summary=risk_summary,
             matched_assessment_id=matched_id,
         )
@@ -424,12 +461,50 @@ def _candidate_replay_available(row: dict[str, Any]) -> bool:
         return False
 
 
+def _reject_context(
+    row: dict[str, Any],
+) -> tuple[int | None, str | None, str | None, bool]:
+    """Read reason, gate, and eligibility only from matched persisted content."""
+    try:
+        content = json.loads(row["content_json"])
+        gates_fired = content["gates_fired"]
+    except (KeyError, TypeError, ValueError):
+        return None, None, None, False
+    if not isinstance(gates_fired, list):
+        return None, None, None, False
+    gate = controlling_gate(gates_fired)
+    gate_name = None
+    for record in gates_fired:
+        if (
+            isinstance(record, dict)
+            and record.get("advisory") is not True
+            and record.get("gate") == gate
+        ):
+            name = record.get("name")
+            gate_name = name if isinstance(name, str) and name else None
+            break
+    reason = content.get("decision_reason")
+    recorded_reason = reason.strip() if isinstance(reason, str) and reason.strip() else None
+    eligible_gate = reject_override_gate(gates_fired)
+    eligible = (
+        row.get("decision") == Decision.REJECT.value
+        and eligible_gate is not None
+        and recorded_reason is not None
+    )
+    return gate, gate_name, recorded_reason, eligible
+
+
 def _exact_restrictive_reason(
     decision: str,
     summary: GateRiskSummary | None,
     *,
     consult_only: bool = False,
     replay_available: bool = False,
+    override_eligible: bool = False,
+    assessment_id: str | None = None,
+    controlling_gate_number: int | None = None,
+    controlling_gate_name: str | None = None,
+    recorded_reason: str | None = None,
 ) -> str:
     prefix = "This exact candidate is held—not your requested goal. "
     if summary is None:
@@ -440,14 +515,42 @@ def _exact_restrictive_reason(
             f"Expected loss: {summary.expected_loss:.6g}; benefit: {summary.benefit:.6g}; "
             f"RAU: {summary.rau:+.6g}. "
         )
+    if decision == "reject":
+        gate_label = (
+            f"{controlling_gate_number} ({controlling_gate_name})"
+            if controlling_gate_number is not None and controlling_gate_name
+            else "unavailable"
+        )
+        evidence += f"Controlling gate: {gate_label}. "
+        evidence += f"Recorded reason: {recorded_reason or 'unavailable'}. "
     if decision == "revise_safer":
         action = "Next action: revise this candidate to be safer, then reassess it."
     elif decision == "inspect_first":
         action = "Next action: inspect the affected behavior, then reassess this candidate."
     elif decision == "test_first":
         action = "Next action: test the affected behavior, then reassess this candidate."
+    elif decision == "reject" and summary is None:
+        action = (
+            "Risk evidence is unavailable; reassess this candidate or choose a different candidate "
+            "or route."
+        )
+    elif decision == "reject" and consult_only:
+        action = (
+            "No trusted human approver is available; revise this candidate or follow the stated "
+            "policy-resolution route."
+        )
+    elif decision == "reject" and override_eligible and replay_available and assessment_id:
+        action = (
+            "Next action: a trusted human may run the bound interactive workflow: "
+            f"pebra accept-risk --apply --assessment-id {assessment_id}."
+        )
+    elif decision == "reject" and override_eligible:
+        action = "Bound application is unavailable; reassess this candidate before human review."
     elif decision == "reject":
-        action = "Next action: choose a different candidate or route."
+        action = (
+            "Next action: revise this candidate, choose a different candidate or route, or follow "
+            "the stated policy-resolution route."
+        )
     elif consult_only:
         action = (
             "No trusted human approver is available; reassess this candidate or choose another route."

@@ -59,10 +59,18 @@ def test_pending_review_assessments_are_scoped_to_repo_and_head(tmp_path) -> Non
 
 def test_pending_review_includes_only_override_eligible_rejects(tmp_path) -> None:
     store = SqliteStore(str(tmp_path / "pebra.db"))
+    eligible_result = _result(
+        -0.2, decision=Decision.REJECT, assessed_commit="head-1",
+    )
+    eligible_result.gates_fired = [{
+        "gate": 3,
+        "name": "expected_loss_over_threshold",
+        "expected_loss": 0.73,
+        "threshold": 0.5,
+    }]
+    eligible_result.decision_reason = "Expected loss exceeds the configured threshold."
     eligible = store.persist_assessment(
-        _result(
-            -0.2, decision=Decision.REJECT, assessed_commit="head-1", gate=3,
-        ),
+        eligible_result,
         {"task": "risk reject", "candidate_replay": {"status": "available"}},
     )
     store.persist_assessment(

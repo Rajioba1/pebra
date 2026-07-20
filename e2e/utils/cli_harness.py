@@ -43,6 +43,10 @@ _GATE_PERMISSION_TIERS = {
         "consulted_review_unavailable",
     }),
 }
+_GATE_PERMISSION_TIERS_V2 = {
+    **_GATE_PERMISSION_TIERS,
+    "ask": frozenset({"consulted_review", "consulted_reject_review"}),
+}
 
 
 class GateContractError(CLIError):
@@ -61,10 +65,15 @@ _RISK_DECISIONS_BY_PAIR = {
     ("deny", "consulted_review"): frozenset({"reject"}),
     ("deny", "consulted_review_unavailable"): frozenset({"ask_human"}),
 }
+_RISK_DECISIONS_BY_PAIR_V2 = {
+    **_RISK_DECISIONS_BY_PAIR,
+    ("ask", "consulted_reject_review"): frozenset({"reject"}),
+}
 
 
 def _validate_risk_summary(
     value: object, permission: str, tier: str, cmd: list[str],
+    *, risk_decisions_by_pair: dict[tuple[str, str], frozenset[str]] | None = None,
 ) -> None:
     if value is None:
         return
@@ -75,7 +84,8 @@ def _validate_risk_summary(
     decision = value["decision"]
     if not isinstance(decision, str) or decision not in _DECISIONS:
         raise GateContractError(f"command {cmd!r} returned an invalid gate contract risk decision")
-    if decision not in _RISK_DECISIONS_BY_PAIR.get(
+    decisions = risk_decisions_by_pair or _RISK_DECISIONS_BY_PAIR
+    if decision not in decisions.get(
         (permission, tier), frozenset()
     ):
         raise GateContractError(f"command {cmd!r} returned inconsistent gate contract risk evidence")
@@ -91,19 +101,27 @@ def _validate_risk_summary(
             raise GateContractError(f"command {cmd!r} returned a non-finite gate contract risk value")
 
 
-def _validate_gate_envelope(payload: object, cmd: list[str]) -> dict:
+def _validate_gate_envelope_for(
+    payload: object,
+    cmd: list[str],
+    *,
+    schema_version: int,
+    permission_tiers: dict[str, frozenset[str]],
+    risk_decisions_by_pair: dict[tuple[str, str], frozenset[str]],
+    required_summary_pairs: frozenset[tuple[str, str]] = frozenset(),
+) -> dict:
     if not isinstance(payload, dict):
         raise GateContractError(f"command {cmd!r} returned a non-object gate contract")
     schema = payload.get("schema_version")
-    if type(schema) is not int or schema != SUPPORTED_GATE_SCHEMA_VERSION:
+    if type(schema) is not int or schema != schema_version:
         raise GateContractError(
             f"command {cmd!r} returned unsupported gate contract schema {schema!r}"
         )
     permission = payload.get("permission")
     tier = payload.get("tier")
-    if not isinstance(permission, str) or permission not in _GATE_PERMISSION_TIERS:
+    if not isinstance(permission, str) or permission not in permission_tiers:
         raise GateContractError(f"command {cmd!r} returned an invalid gate contract permission")
-    if not isinstance(tier, str) or tier not in _GATE_PERMISSION_TIERS[permission]:
+    if not isinstance(tier, str) or tier not in permission_tiers[permission]:
         raise GateContractError(f"command {cmd!r} returned an invalid gate contract tier pair")
     reason = payload.get("reason")
     if permission in {"deny", "ask"} and (
@@ -121,12 +139,45 @@ def _validate_gate_envelope(payload: object, cmd: list[str]) -> dict:
         raise GateContractError(f"command {cmd!r} returned an invalid gate contract assessment id")
     if "risk_summary" not in payload:
         raise GateContractError(f"command {cmd!r} omitted gate contract risk_summary")
-    _validate_risk_summary(payload["risk_summary"], permission, tier, cmd)
+    _validate_risk_summary(
+        payload["risk_summary"],
+        permission,
+        tier,
+        cmd,
+        risk_decisions_by_pair=risk_decisions_by_pair,
+    )
+    if (permission, tier) in required_summary_pairs and payload["risk_summary"] is None:
+        raise GateContractError(
+            f"command {cmd!r} returned an evidence-free gate contract review tier"
+        )
     if payload["risk_summary"] is not None and payload["matched_assessment_id"] is None:
         raise GateContractError(
             f"command {cmd!r} returned gate contract risk evidence without an exact assessment"
         )
     return payload
+
+
+def _validate_gate_envelope(payload: object, cmd: list[str]) -> dict:
+    """Experiment-pinned schema-1 consumer; Step 8 deliberately updates this last."""
+    return _validate_gate_envelope_for(
+        payload,
+        cmd,
+        schema_version=SUPPORTED_GATE_SCHEMA_VERSION,
+        permission_tiers=_GATE_PERMISSION_TIERS,
+        risk_decisions_by_pair=_RISK_DECISIONS_BY_PAIR,
+    )
+
+
+def _validate_gate_envelope_v2(payload: object, cmd: list[str]) -> dict:
+    """Independent production E2E validator for the current schema-2 contract."""
+    return _validate_gate_envelope_for(
+        payload,
+        cmd,
+        schema_version=2,
+        permission_tiers=_GATE_PERMISSION_TIERS_V2,
+        risk_decisions_by_pair=_RISK_DECISIONS_BY_PAIR_V2,
+        required_summary_pairs=frozenset({("ask", "consulted_reject_review")}),
+    )
 
 
 def _python() -> str:
@@ -293,12 +344,43 @@ def gate_check(
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict:
     """`pebra gate-check` — the pure pre-edit gate DECISION for a proposed edit. The host event
-    (``tool_name``/``tool_input``/``cwd``) goes in on STDIN; a complete versioned schema-1 gate
+    (``tool_name``/``tool_input``/``cwd``) goes in on STDIN; the experiment-pinned schema-1 gate
     envelope comes out. gate-check always exits 0 (allow/deny/ask as data) — the caller enforces. The event
     carries ``cwd=repo_root``; the store is the shared clone db written by ``pebra assess``.
 
     ``consult_only`` skips the ask verdict tier — the A/B runner has NO human approver, so an ``ask``
     would be an un-resolvable block that conflates "PEBRA escalated" with "no approver present"."""
+    return _run_gate_check(
+        event,
+        db=db,
+        consult_only=consult_only,
+        timeout=timeout,
+        validator=_validate_gate_envelope,
+    )
+
+
+def gate_check_v2(
+    event: dict, *, db: Path | str, consult_only: bool = False,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> dict:
+    """Production E2E gate-check consumer for schema 2; experiment callers remain on ``gate_check``."""
+    return _run_gate_check(
+        event,
+        db=db,
+        consult_only=consult_only,
+        timeout=timeout,
+        validator=_validate_gate_envelope_v2,
+    )
+
+
+def _run_gate_check(
+    event: dict,
+    *,
+    db: Path | str,
+    consult_only: bool,
+    timeout: int,
+    validator: Callable[[object, list[str]], dict],
+) -> dict:
     cmd = [
         _python(), "-m", "pebra", "gate-check", "--db", str(db),
         "--include-host-metadata",
@@ -306,8 +388,14 @@ def gate_check(
     if consult_only:
         cmd.append("--consult-only")
     env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
-    proc = subprocess.run(cmd, input=json.dumps(event), capture_output=True, text=True,
-                          env=env, timeout=timeout)
+    proc = subprocess.run(
+        cmd,
+        input=json.dumps(event),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=timeout,
+    )
     _check_exit(proc.returncode, cmd, proc.stderr)
     try:
         payload = _parse_json_stdout(proc.stdout, cmd)
@@ -315,7 +403,7 @@ def gate_check(
         raise GateContractError(
             f"command {cmd!r} returned an unparseable gate contract"
         ) from exc
-    return _validate_gate_envelope(payload, cmd)
+    return validator(payload, cmd)
 
 
 def _git_output(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:

@@ -65,6 +65,7 @@ def test_colors_are_legible_on_both_backgrounds() -> None:
 
 def test_verdict_for_known_decision_returns_its_entry() -> None:
     assert verdict_for("proceed") is VERDICT_PALETTE["proceed"]
+    assert verdict_for("reject").label == "Reject candidate"
 
 
 def test_verdict_for_unknown_decision_returns_safe_fallback() -> None:

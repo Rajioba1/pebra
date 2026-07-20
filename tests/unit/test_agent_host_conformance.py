@@ -15,7 +15,8 @@ from pebra.core.agent_hosts import AGENT_HOSTS, HostSpec
 
 
 _SEMANTIC_TOKENS = (
-    "Understand — For a significant or unfamiliar edit",
+    "Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify",
+    "2. **Understand.**",
     "Do not repeat equivalent exploration",
     "not trusted PEBRA scoring evidence",
     "ordinary repository search/read tools",
@@ -28,13 +29,13 @@ _SEMANTIC_TOKENS = (
 )
 
 
-def test_every_host_uses_the_byte_identical_protocol_v2_projection(tmp_path) -> None:
+def test_every_host_uses_the_byte_identical_protocol_v3_projection(tmp_path) -> None:
     bodies = []
     for target, spec in AGENT_HOSTS.items():
         assert _run(target, tmp_path) == 0
         bodies.append((tmp_path / spec.skill_path).read_bytes())
 
-    assert agent_init.PROTOCOL_VERSION == 2
+    assert agent_init.PROTOCOL_VERSION == 3
     assert len(set(bodies)) == 1
     lowered = bodies[0].lower()
     for provider_detail in (b"codegraph", b"mcp", b"prompt hook", b"provider selector"):

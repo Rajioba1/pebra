@@ -157,11 +157,11 @@ def test_multifile_candidate_runs_graph_assess_gate_and_verify_end_to_end(
         "p_event"
     ]
 
-    partial_gate = ch.gate_check(_gate_event(repo, first), db=db)
+    partial_gate = ch.gate_check_v2(_gate_event(repo, first), db=db)
     assert partial_gate["permission"] == "deny"
     assert partial_gate["tier"] == "candidate_incomplete"
 
-    full_gate = ch.gate_check(_gate_event(repo, combined), db=db)
+    full_gate = ch.gate_check_v2(_gate_event(repo, combined), db=db)
     assert full_gate["permission"] == "allow"
     assert full_gate["tier"] == "consulted"
 

@@ -44,7 +44,7 @@ _FORBIDDEN_BLINDING_TERMS = (
     "goal rejected",
 )
 _VALID_GATE = {
-    "schema_version": 1,
+    "schema_version": 2,
     "permission": "allow",
     "tier": "pass",
     "reason": None,
@@ -91,6 +91,7 @@ def _seed_case(
     decision: str,
     scores: object = _SCORES,
     replay: object = _MISSING,
+    gates_fired: object = _MISSING,
 ) -> GateCase:
     repo = root / "repo"
     repo.mkdir(parents=True)
@@ -111,6 +112,7 @@ def _seed_case(
 
     content: dict = {
         "assessed_commit": head,
+        "decision_reason": "Persisted risk reason for the exact candidate.",
         "model_guidance_packet": {
             "binding": {
                 "safe_scope": {"files": ["target.txt"]},
@@ -124,6 +126,8 @@ def _seed_case(
     }
     if replay is not _MISSING:
         content["request"] = {"candidate_replay": replay}
+    if gates_fired is not _MISSING:
+        content["gates_fired"] = gates_fired
 
     db = root / "pebra.db"
     with sqlite3.connect(db) as connection:
@@ -192,7 +196,7 @@ def _gate_hook(event: dict, *, db: Path) -> dict:
 
 def _assert_candidate_hold(payload: dict) -> str:
     assert set(payload) == _ENVELOPE_KEYS
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["permission"] == "deny"
     assert payload["warn"] is None
     reason = payload["reason"]
@@ -201,11 +205,11 @@ def _assert_candidate_hold(payload: dict) -> str:
     return reason
 
 
-def test_gate_check_real_cli_emits_schema_one_envelope(tmp_path):
-    payload = cli_harness.gate_check({}, db=tmp_path / "missing.db", consult_only=True)
+def test_gate_check_real_cli_emits_schema_two_envelope(tmp_path):
+    payload = cli_harness.gate_check_v2({}, db=tmp_path / "missing.db", consult_only=True)
 
     assert payload == {
-        "schema_version": 1,
+        "schema_version": 2,
         "permission": "allow",
         "tier": "pass",
         "reason": None,
@@ -217,7 +221,7 @@ def test_gate_check_real_cli_emits_schema_one_envelope(tmp_path):
 
 def test_gate_check_parse_limit_failure_is_fatal_contract(monkeypatch, tmp_path):
     stdout = (
-        '{"schema_version":1,"permission":"allow","tier":"consulted",'
+        '{"schema_version":2,"permission":"allow","tier":"consulted",'
         '"reason":null,"warn":null,"risk_summary":{"decision":"proceed",'
         '"expected_loss":' + "9" * 5000 + ',"benefit":0.34,"rau":-0.27},'
         '"matched_assessment_id":"asm_1"}'
@@ -231,7 +235,7 @@ def test_gate_check_parse_limit_failure_is_fatal_contract(monkeypatch, tmp_path)
     )
 
     with pytest.raises(cli_harness.GateContractError, match="gate contract"):
-        cli_harness.gate_check({}, db=tmp_path / "pebra.db", consult_only=True)
+        cli_harness.gate_check_v2({}, db=tmp_path / "pebra.db", consult_only=True)
 
 
 @pytest.mark.parametrize("stdout", ("", "not-json"), ids=("empty", "invalid"))
@@ -247,7 +251,7 @@ def test_gate_check_conventional_parse_failure_is_fatal_contract(
     )
 
     with pytest.raises(cli_harness.GateContractError, match="gate contract"):
-        cli_harness.gate_check({}, db=tmp_path / "pebra.db", consult_only=True)
+        cli_harness.gate_check_v2({}, db=tmp_path / "pebra.db", consult_only=True)
 
 
 @pytest.mark.parametrize(
@@ -255,7 +259,7 @@ def test_gate_check_conventional_parse_failure_is_fatal_contract(
     (
         [],
         {},
-        {**_VALID_GATE, "schema_version": 2},
+        {**_VALID_GATE, "schema_version": 1},
         {**_VALID_GATE, "permission": "continue"},
         {**_VALID_GATE, "permission": []},
         {**_VALID_GATE, "tier": "unknown"},
@@ -296,7 +300,7 @@ def test_gate_check_conventional_parse_failure_is_fatal_contract(
 )
 def test_gate_envelope_rejects_unsupported_or_malformed_payload(payload):
     with pytest.raises(cli_harness.GateContractError, match="gate contract"):
-        cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"])
+        cli_harness._validate_gate_envelope_v2(payload, ["pebra", "gate-check"])
 
 
 @pytest.mark.parametrize(
@@ -307,6 +311,7 @@ def test_gate_envelope_rejects_unsupported_or_malformed_payload(payload):
         ("deny", "consulted_prerequisite", "inspect_first"),
         ("deny", "consulted_prerequisite", "test_first"),
         ("ask", "consulted_review", "ask_human"),
+        ("ask", "consulted_reject_review", "reject"),
         ("deny", "consulted_review", "reject"),
         ("deny", "consulted_review_unavailable", "ask_human"),
     ),
@@ -326,7 +331,7 @@ def test_gate_envelope_accepts_declared_risk_decision_matrix(permission, tier, d
         "matched_assessment_id": "asm_1",
     }
 
-    assert cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"]) is payload
+    assert cli_harness._validate_gate_envelope_v2(payload, ["pebra", "gate-check"]) is payload
 
 
 @pytest.mark.parametrize(
@@ -336,6 +341,7 @@ def test_gate_envelope_accepts_declared_risk_decision_matrix(permission, tier, d
         ("deny", "consulted_revise", "proceed"),
         ("deny", "consulted_prerequisite", "ask_human"),
         ("ask", "consulted_review", "reject"),
+        ("ask", "consulted_reject_review", "ask_human"),
         ("deny", "consulted_review", "ask_human"),
         ("deny", "consulted_review_unavailable", "reject"),
     ),
@@ -356,13 +362,33 @@ def test_gate_envelope_rejects_undeclared_risk_decision_matrix(permission, tier,
     }
 
     with pytest.raises(cli_harness.GateContractError, match="gate contract"):
-        cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"])
+        cli_harness._validate_gate_envelope_v2(payload, ["pebra", "gate-check"])
 
 
-def test_gate_envelope_allows_unknown_schema_one_top_level_fields():
+def test_schema_two_reject_review_tier_requires_exact_risk_evidence() -> None:
+    payload = {
+        **_VALID_GATE,
+        "permission": "ask",
+        "tier": "consulted_reject_review",
+        "reason": "A trusted human may run the bound review workflow.",
+        "risk_summary": None,
+        "matched_assessment_id": "asm_1",
+    }
+
+    with pytest.raises(cli_harness.GateContractError, match="evidence-free"):
+        cli_harness._validate_gate_envelope_v2(payload, ["pebra", "gate-check"])
+
+
+def test_gate_envelope_allows_unknown_schema_two_top_level_fields():
     payload = {**_VALID_GATE, "future_host_metadata": {"opaque": True}}
 
-    assert cli_harness._validate_gate_envelope(payload, ["pebra", "gate-check"]) is payload
+    assert cli_harness._validate_gate_envelope_v2(payload, ["pebra", "gate-check"]) is payload
+
+
+def test_experiment_consumer_remains_pinned_until_deferred_alignment() -> None:
+    assert cli_harness.SUPPORTED_GATE_SCHEMA_VERSION == 1
+    with pytest.raises(cli_harness.GateContractError, match="unsupported"):
+        cli_harness._validate_gate_envelope(_VALID_GATE, ["pebra", "gate-check"])
 
 
 def test_gate_hook_capabilities_emit_candidate_binding_protocol():
@@ -379,7 +405,7 @@ def test_gate_hook_capabilities_emit_candidate_binding_protocol():
 
 def test_consult_only_holds_an_exact_restrictive_candidate_with_blinded_evidence(gate_case):
     case = gate_case(decision="ask_human", replay=_VALID_REPLAY)
-    payload = cli_harness.gate_check(case.claude_event, db=case.db, consult_only=True)
+    payload = cli_harness.gate_check_v2(case.claude_event, db=case.db, consult_only=True)
 
     reason = _assert_candidate_hold(payload)
     assert payload["tier"] == "consulted_review_unavailable"
@@ -393,10 +419,10 @@ def test_consult_only_holds_an_exact_restrictive_candidate_with_blinded_evidence
 
 def test_interactive_gate_asks_only_for_replay_available_ask_human(gate_case):
     review = gate_case(decision="ask_human", replay=_VALID_REPLAY)
-    payload = cli_harness.gate_check(review.claude_event, db=review.db)
+    payload = cli_harness.gate_check_v2(review.claude_event, db=review.db)
 
     assert set(payload) == _ENVELOPE_KEYS
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["permission"] == "ask"
     assert payload["tier"] == "consulted_review"
     assert payload["risk_summary"] == {"decision": "ask_human", **_SCORES}
@@ -407,13 +433,74 @@ def test_interactive_gate_asks_only_for_replay_available_ask_human(gate_case):
 
 def test_reject_returns_candidate_and_requires_a_different_route(gate_case):
     rejected = gate_case(decision="reject", replay=_VALID_REPLAY)
-    payload = cli_harness.gate_check(rejected.claude_event, db=rejected.db)
+    payload = cli_harness.gate_check_v2(rejected.claude_event, db=rejected.db)
 
     reason = _assert_candidate_hold(payload)
     assert payload["tier"] == "consulted_review"
     assert payload["risk_summary"] == {"decision": "reject", **_SCORES}
     assert "different candidate or route" in reason.lower()
     assert "accept-risk" not in reason.lower()
+
+
+def test_eligible_reject_requests_only_bound_trusted_review(gate_case):
+    rejected = gate_case(
+        decision="reject",
+        replay=_VALID_REPLAY,
+        gates_fired=[{
+            "gate": 3,
+            "name": "expected_loss_over_threshold",
+            "expected_loss": 0.75,
+            "threshold": 0.5,
+        }],
+    )
+
+    payload = cli_harness.gate_check_v2(rejected.claude_event, db=rejected.db)
+
+    assert payload["permission"] == "ask"
+    assert payload["tier"] == "consulted_reject_review"
+    assert payload["risk_summary"] == {"decision": "reject", **_SCORES}
+    assert "Controlling gate: 3 (expected_loss_over_threshold)." in payload["reason"]
+    assert "Recorded reason: Persisted risk reason for the exact candidate." in payload["reason"]
+    assert "pebra accept-risk --apply --assessment-id asm_1" in payload["reason"]
+
+
+def test_eligible_reject_with_malformed_scores_stays_denied(gate_case):
+    rejected = gate_case(
+        decision="reject",
+        scores={"expected_loss": 0.75},
+        replay=_VALID_REPLAY,
+        gates_fired=[{
+            "gate": 3,
+            "name": "expected_loss_over_threshold",
+            "expected_loss": 0.75,
+            "threshold": 0.5,
+        }],
+    )
+
+    payload = cli_harness.gate_check_v2(rejected.claude_event, db=rejected.db)
+
+    assert payload["permission"] == "deny"
+    assert payload["tier"] == "consulted_review"
+    assert payload["risk_summary"] is None
+    assert "accept-risk" not in payload["reason"]
+
+
+def test_installed_hook_demotes_eligible_reject_review_to_deny(gate_case):
+    rejected = gate_case(
+        decision="reject",
+        replay=_VALID_REPLAY,
+        gates_fired=[{
+            "gate": 4,
+            "name": "negative_rau",
+            "rau": -0.55,
+        }],
+    )
+
+    payload = _gate_hook(rejected.codex_event, db=rejected.db)["hookSpecificOutput"]
+
+    assert payload["permissionDecision"] == "deny"
+    assert "pebra accept-risk --apply --assessment-id asm_1" in payload["permissionDecisionReason"]
+    assert "ask" not in payload.values()
 
 
 @pytest.mark.parametrize("event_name", ("claude_event", "codex_event"))
@@ -457,7 +544,7 @@ def test_installed_hooks_project_bound_review_to_blocking_deny(gate_case, event_
 )
 def test_unavailable_replay_stays_blocking_without_promising_bound_apply(gate_case, replay):
     case = gate_case(decision="ask_human", replay=replay)
-    payload = cli_harness.gate_check(case.claude_event, db=case.db)
+    payload = cli_harness.gate_check_v2(case.claude_event, db=case.db)
 
     reason = _assert_candidate_hold(payload)
     assert payload["tier"] == "consulted_review_unavailable"
@@ -468,9 +555,9 @@ def test_unavailable_replay_stays_blocking_without_promising_bound_apply(gate_ca
 
 def test_one_byte_candidate_mismatch_never_reuses_stale_risk_math(gate_case):
     case = gate_case(decision="revise_safer")
-    payload = cli_harness.gate_check(case.mismatch_event, db=case.db)
+    payload = cli_harness.gate_check_v2(case.mismatch_event, db=case.db)
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["permission"] == "deny"
     assert payload["tier"] == "candidate_mismatch"
     assert payload["risk_summary"] is None
@@ -493,7 +580,7 @@ def test_one_byte_candidate_mismatch_never_reuses_stale_risk_math(gate_case):
 )
 def test_malformed_scores_stay_blocking_without_numeric_fragments(gate_case, scores):
     case = gate_case(decision="revise_safer", scores=scores)
-    payload = cli_harness.gate_check(case.claude_event, db=case.db)
+    payload = cli_harness.gate_check_v2(case.claude_event, db=case.db)
 
     reason = _assert_candidate_hold(payload)
     assert payload["tier"] == "consulted_revise"
@@ -508,7 +595,7 @@ def test_oversized_integer_scores_keep_cli_and_hook_clean_and_restrictive(gate_c
     scores = {"expected_loss": value, "benefit": 0.2, "rau": -0.55}
     case = gate_case(decision="revise_safer", scores=scores)
 
-    cli_payload = cli_harness.gate_check(case.claude_event, db=case.db)
+    cli_payload = cli_harness.gate_check_v2(case.claude_event, db=case.db)
     hook_payload = _gate_hook(case.claude_event, db=case.db)["hookSpecificOutput"]
 
     reason = _assert_candidate_hold(cli_payload)
@@ -525,7 +612,7 @@ def test_corrupt_persisted_decision_fails_open_with_visible_warning(
 ):
     case = gate_case(decision=persisted_decision)
 
-    payload = cli_harness.gate_check(case.claude_event, db=case.db)
+    payload = cli_harness.gate_check_v2(case.claude_event, db=case.db)
     hook_payload = _gate_hook(case.claude_event, db=case.db)
 
     assert payload["permission"] == "allow"

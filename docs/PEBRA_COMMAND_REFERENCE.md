@@ -535,10 +535,17 @@ pebra help [COMMAND] [--all]
 
 ### Pre-edit lifecycle
 
-For a significant or unfamiliar edit, first reuse equivalent current repository context already
-provided by the host. If none exists, run `pebra explore` with the task, symbols, or files. Do not
-repeat equivalent exploration. If unavailable, use ordinary repository search/read tools. This
-Understand phase is descriptive only; Assess remains the authorization boundary.
+The agent lifecycle is:
+
+`Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify`
+
+Read-only work may stop after Understand. Mutation does not: first reuse equivalent current repository
+context or run `pebra explore`, then design the exact `expected_files` and `proposed_patch`, and run
+`pebra assess` before writing. `pebra explore` uses PEBRA's provider-neutral repository-graph interface;
+CodeGraph is the current adapter. Its bounded context, dependents, and affected tests are descriptive and
+cannot authorize a write. PEBRA decides for the exact candidate. A `reject` is shown as **Reject
+candidate** with its recorded reason and metrics; only an eligible trusted-human route may override a
+sanction-convertible risk rejection, while policy or obligation failures require a compliant route.
 
 ```console
 pebra assess request.json --json

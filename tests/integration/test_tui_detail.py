@@ -28,6 +28,7 @@ from pebra.tui.screens.detail import (  # noqa: E402
     GATES_UNAVAILABLE_NOTE,
     AssessmentDetailScreen,
     detail_sections,
+    gate_history_note,
     header_line,
 )
 from pebra.tui.screens.observatory import ObservatoryScreen  # noqa: E402
@@ -174,6 +175,66 @@ def test_header_line_summarizes_identity() -> None:
     assert "asm_1" in line and "ask_human" in line and "abc1234" in line and "repo r" in line
 
 
+def test_reject_detail_explains_reason_without_claiming_override_availability() -> None:
+    detail = _detail()
+    content = detail["content"]
+    content["decision"] = "reject"
+    content["decision_reason"] = "Expected loss exceeds the configured limit."
+    content["gates_fired"] = [{
+        "gate": 3,
+        "name": "expected_loss_over_threshold",
+        "expected_loss": 0.73,
+        "threshold": 0.5,
+    }]
+
+    review = dict(detail_sections(detail))["Candidate decision"]
+
+    assert review["Decision"] == "Reject candidate"
+    assert review["Reason"] == "Expected loss exceeds the configured limit."
+    assert review["Controlling gate"] == 3
+    assert "Gate-eligible only" in review["Trusted risk override"]
+    assert "availability is not claimed" in review["Trusted risk override"]
+    assert "hash-covered" in gate_history_note(content)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("candidate_replay", None),
+        ("candidate_binding", {"algorithm": "bad", "files": {}}),
+        ("scores", {"rau": float("nan")}),
+        ("decision_reason", ""),
+    ),
+)
+def test_reject_detail_never_infers_override_availability_from_partial_history(
+    field: str, value: object
+) -> None:
+    detail = _detail()
+    content = detail["content"]
+    content.update(
+        {
+            "decision": "reject",
+            "decision_reason": "Recorded reason.",
+            "gates_fired": [{"gate": 3, "name": "expected_loss_over_threshold"}],
+            "candidate_replay": {"digest": "a" * 64},
+            "candidate_binding": {
+                "algorithm": "sha256-normalized-content-v1",
+                "files": {"src/a.py": "b" * 64},
+            },
+            "scores": {"rau": -0.5, "expected_loss": 0.9, "benefit": 0.1},
+        }
+    )
+    content[field] = value
+
+    override = dict(detail_sections(detail))["Candidate decision"]["Trusted risk override"]
+
+    assert "Conditionally available" not in override
+    assert (
+        "availability is not claimed" in override.lower()
+        or override.startswith("Unavailable;")
+    )
+
+
 def test_gates_note_says_unavailable_and_is_not_reconstructed() -> None:
     assert "not available in history" in GATES_UNAVAILABLE_NOTE.lower()
     # The detail carries no gates_fired; the note is a constant, never derived from scores.
@@ -235,7 +296,7 @@ def test_row_select_opens_detail_then_escape_returns(tmp_path) -> None:
             # persisted sections + the honest gates note are present
             assert app.screen.query("Pretty").results(Pretty)
             assert any(
-                "not available in history" in str(s.render()).lower()
+                "hash-covered history" in str(s.render()).lower()
                 for s in app.screen.query("#gates-note")
             )
             await pilot.press("escape")

@@ -43,18 +43,38 @@ _UNDERSTAND_PHASE = (
 )
 
 
-def test_protocol_v2_inserts_exact_provider_neutral_understand_phase_before_assess() -> None:
+def test_protocol_v3_enforces_the_ordered_cognitive_lifecycle() -> None:
     normalized = " ".join(agent_init._PROTOCOL_BODY.split())
 
-    assert agent_init.PROTOCOL_VERSION == 2
-    assert _UNDERSTAND_PHASE in normalized
-    assert normalized.index(_UNDERSTAND_PHASE) < normalized.index("Assess (pre-edit)")
+    assert agent_init.PROTOCOL_VERSION == 3
+    phases = (
+        "1. **Interpret.",
+        "2. **Understand.",
+        "3. **Design.",
+        "4. **Assess (pre-edit).",
+        "5. **PEBRA decides.",
+        "6. **Apply.",
+        "7. **Verify.",
+    )
+    positions = [normalized.index(phase) for phase in phases]
+    assert positions == sorted(positions)
+    assert "Read-only explanation or investigation may stop after Understand" in normalized
+    assert "creation, edit, rename, or deletion" in normalized
+    assert "before any write" in normalized
+    assert "PEBRA does not invent the candidate" in normalized
+    assert "the model supplies" in normalized
+    assert "PEBRA—not the model—decides" in normalized
     assert "Do not repeat equivalent exploration" in normalized
     assert "does not authorize an edit" in normalized
     assert "not trusted PEBRA scoring evidence" in normalized
     assert "ordinary repository search/read tools" in normalized
     for provider_detail in ("codegraph", "mcp", "prompt hook", "provider selector"):
         assert provider_detail not in normalized.lower()
+
+
+def test_non_negotiables_are_shared_by_rule_and_protocol() -> None:
+    assert agent_init._NON_NEGOTIABLES in agent_init._PROTOCOL_BODY
+    assert agent_init._NON_NEGOTIABLES in agent_init._CLAUDE_RULE_MD
 
 
 def _run(target: str, repo_root: Path) -> int:
@@ -90,7 +110,10 @@ def test_claude_writes_always_loaded_non_negotiables(tmp_path):
 
 def test_claude_non_negotiables_match_detailed_protocol_guarantees():
     required_relations = (
-        r"\bassess before every significant edit,\s+rename,\s+or delete\b",
+        (
+            r"\bassess before every repository file creation,\s+edit,\s+rename,\s+or "
+            r"deletion\b"
+        ),
         r"\bapply only (?:the )?exact assessed candidate\b",
         (
             r"\bcandidate hold or human review\s+overrides\s+an earlier advisory proceed"
@@ -106,6 +129,14 @@ def test_claude_non_negotiables_match_detailed_protocol_guarantees():
     for body in (agent_init._CLAUDE_RULE_MD.lower(), agent_init._PROTOCOL_BODY.lower()):
         for relation in required_relations:
             assert re.search(relation, body), relation
+
+
+def test_skill_trigger_covers_every_repository_file_mutation() -> None:
+    description = agent_init._SKILL_MD.split("---", 2)[1].lower()
+
+    for operation in ("creation", "edit", "rename", "deletion"):
+        assert operation in description
+    assert "significant" not in description
 
 
 def test_claude_rule_is_fully_managed_and_idempotent(tmp_path):
@@ -680,8 +711,8 @@ def test_agent_init_check_reports_file_state_without_mutation(
         "declared_support", "effective_enforcement",
     }
     assert payload["target"] == target
-    assert payload["protocol_version"] == 2
-    assert payload["gate_schema_version"] == 1
+    assert payload["protocol_version"] == 3
+    assert payload["gate_schema_version"] == 2
     assert {item["state"] for item in payload["files"]} == {file_state}
     assert payload["declared_support"] == AGENT_HOSTS[target].declared_support
     assert payload["effective_enforcement"]["mode"] == "degraded_fail_open"

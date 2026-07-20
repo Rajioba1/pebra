@@ -44,7 +44,13 @@ def test_declared_pairs_construct(permission, tier):
         None if permission is GatePermission.CONTINUE
         else "This exact candidate is held; follow the required next action."
     )
-    decision = GateDecision(permission, tier, reason=reason)
+    kwargs = {}
+    if tier is GateTier.CONSULTED_REJECT_REVIEW:
+        kwargs = {
+            "risk_summary": _summary(Decision.REJECT),
+            "matched_assessment_id": "asm_1",
+        }
+    decision = GateDecision(permission, tier, reason=reason, **kwargs)
     assert decision.as_dict()["schema_version"] == GATE_SCHEMA_VERSION
 
 
@@ -185,6 +191,27 @@ def test_consulted_review_distinguishes_reject_from_ask_human():
     )
     assert denied.risk_summary.decision is Decision.REJECT
     assert asked.risk_summary.decision is Decision.ASK_HUMAN
+
+
+def test_override_eligible_reject_has_its_own_request_human_tier():
+    reviewed = GateDecision(
+        GatePermission.REQUEST_HUMAN,
+        GateTier.CONSULTED_REJECT_REVIEW,
+        reason="A trusted human may run the bound review workflow.",
+        risk_summary=_summary(Decision.REJECT),
+        matched_assessment_id="asm_1",
+    )
+
+    assert reviewed.risk_summary.decision is Decision.REJECT
+
+
+def test_override_eligible_reject_tier_requires_exact_finite_risk_evidence():
+    with pytest.raises(ValueError, match="requires finite exact risk evidence"):
+        GateDecision(
+            GatePermission.REQUEST_HUMAN,
+            GateTier.CONSULTED_REJECT_REVIEW,
+            reason="A trusted human may run the bound review workflow.",
+        )
 
 
 @pytest.mark.parametrize("matched_id", (None, "", " ", "asm_0", "asm_-1", "asm_01", "asm_x", "asm_1x"))

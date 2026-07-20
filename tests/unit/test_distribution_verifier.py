@@ -46,8 +46,8 @@ def _agent_check_payload(target: str) -> dict[str, object]:
     return {
         "command": "agent-init",
         "target": target,
-        "protocol_version": 2,
-        "gate_schema_version": 1,
+        "protocol_version": 3,
+        "gate_schema_version": 2,
         "files": [
             {"path": path, "state": "current"}
             for path in (*spec["instruction_paths"], spec["skill_path"])
@@ -426,8 +426,8 @@ def test_installed_artifact_verifier_checks_skill_semantic_relations(
     _write_agent_init_artifacts(tmp_path, "claude")
     skill = tmp_path / str(_EXPECTED_AGENT_HOSTS["claude"]["skill_path"])
     changed = skill.read_text(encoding="utf-8").replace(
-        "Never treat either decision as permission to edit.",
-        "Treat either decision as permission to edit.",
+        "Never treat a held candidate as permission to edit.",
+        "Treat a held candidate as permission to edit.",
     )
     skill.write_text(changed, encoding="utf-8", newline="")
     monkeypatch.setattr(

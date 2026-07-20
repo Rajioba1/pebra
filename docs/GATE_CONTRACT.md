@@ -1,6 +1,6 @@
 # Gate decision contract
 
-The universal gate-check envelope has schema version `1` and these JSON fields:
+The universal gate-check envelope has schema version `2` and these JSON fields:
 `schema_version`, `permission`, `tier`, nullable `reason`, nullable `warn`, and nullable
 `risk_summary`. Trusted host integrations may additionally request `matched_assessment_id`; the default
 model-facing envelope omits it. A non-null risk summary contains `decision`, `expected_loss`, `benefit`,
@@ -19,6 +19,7 @@ emitted by PEBRA, precedence is `RETURN_CANDIDATE > REQUEST_HUMAN > CONTINUE`.
 | `allow` | `fail_open` | Infrastructure evidence was unavailable; preserve fail-open behavior. |
 | `allow` | `consulted` | The exact candidate has a persisted `proceed` assessment. |
 | `ask` | `consulted_review` | The exact candidate requires trusted human review. |
+| `ask` | `consulted_reject_review` | A sanction-convertible rejected candidate is available for trusted, bound human review. |
 | `deny` | `must_consult` | Assess the attempted candidate before editing. |
 | `deny` | `candidate_unverifiable` | The host event cannot be materialized as a complete candidate. |
 | `deny` | `candidate_unbound` | The persisted assessment predates exact candidate binding. |
@@ -54,6 +55,7 @@ and the reason states `risk summary unavailable`.
 | `deny` / `consulted_revise` | `revise_safer` |
 | `deny` / `consulted_prerequisite` | `inspect_first`, `test_first` |
 | `ask` / `consulted_review` | `ask_human` |
+| `ask` / `consulted_reject_review` | `reject` |
 | `deny` / `consulted_review` | `reject` |
 | `deny` / `consulted_review_unavailable` | `ask_human` |
 
@@ -67,6 +69,13 @@ structurally valid: `status` is `available`, `algorithm` is exactly `sha256-cand
 `digest` is 64 lowercase hexadecimal characters. The gate validates metadata only; it does not read the
 cached payload. Missing or malformed metadata produces `deny/consulted_review_unavailable` without
 promising the approval command.
+
+An exact `reject` reaches `ask/consulted_reject_review` only when its hash-covered controlling gate is
+the canonical risk rejection from gate 3, 4, or 9, its recorded reason and finite exact risk summary are
+available, and valid bound replay is available. Policy rejection, malformed gate or score evidence,
+gate 2, consult-only operation, and unavailable replay remain blocking
+`deny/consulted_review` results. Installed host shims still demote universal `ask` to `deny`; only a
+trusted operator may run the returned `pebra accept-risk --apply --assessment-id asm_N` command.
 
 ## Host projection and threat boundary
 

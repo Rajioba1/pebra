@@ -2,8 +2,8 @@
 
 A normal Screen (not a modal): pushed on row-select, Escape pops it. It renders the persisted detail —
 scores, evidence, guidance, guardrails, outcomes — and is honest about the one thing that is NOT
-persisted: `gates_fired` exists only in the live MCP payload, so history shows an explicit "unavailable"
-note rather than reconstructing gate state from scores.
+persisted. New assessments carry hash-covered gate and reason evidence; legacy history states that the
+evidence is unavailable rather than reconstructing it from scores.
 """
 
 from __future__ import annotations
@@ -17,14 +17,14 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, Pretty, Static
 
 from pebra.core.assessment_history import project_assessment_identity
+from pebra.core.human_review import controlling_gate, reject_override_eligible
 from pebra.core.exploration import ExplorationResult
 from pebra.tui.exploration import RepositoryExplorationCoordinator
 from pebra.tui.widgets.ledger_table import short_commit
 
-# gates_fired / high_risk_triggers are composed only for the live MCP response; db._canonical never
-# persists them. History must SAY this, never re-derive gate state from the stored scores.
+# Legacy rows may predate persisted gate evidence. History must say so and never re-derive gate state.
 GATES_UNAVAILABLE_NOTE = (
-    "Gates fired: not available in history — recorded only on the live assessment, not persisted."
+    "Gates fired: not available in history (legacy assessment); never reconstructed from scores."
 )
 
 _EVIDENCE_KEYS = ("variance_breakdown", "symbol_scope_evidence", "candidate_verification")
@@ -39,8 +39,10 @@ _PROVENANCE_LABELS = {
 
 def header_line(detail: dict[str, Any]) -> str:
     content = detail.get("content") or {}
+    decision = content.get("decision", "—")
+    decision_label = "Reject candidate" if decision == "reject" else decision
     return (
-        f"{detail.get('assessment_id', '—')}   ·   decision {content.get('decision', '—')}"
+        f"{detail.get('assessment_id', '—')}   ·   decision {decision_label}"
         f"   ·   assessed commit {short_commit(content.get('assessed_commit'))}"
         f"   ·   repo {content.get('repo_id', '—')}"
     )
@@ -69,14 +71,44 @@ def detail_sections(
     }
     if len(assessment_ids) > 1:
         identity_payload["Contained assessment IDs"] = list(assessment_ids)
+    decision = str(content.get("decision") or "—")
+    gate = controlling_gate(content.get("gates_fired") or ())
+    if decision == "reject" and reject_override_eligible(
+        decision, content.get("gates_fired") or ()
+    ):
+        override = (
+            "Gate-eligible only; override availability is not claimed from history. accept-risk "
+            "revalidates replay, binding, finite scores, the recorded reason, ledger integrity, "
+            "and current HEAD before prompting."
+        )
+    elif decision == "reject":
+        override = "Unavailable; revise the candidate or follow the stated policy-resolution route."
+    else:
+        override = "Not applicable to this decision."
+    decision_payload = {
+        "Decision": "Reject candidate" if decision == "reject" else decision,
+        "Reason": content.get("decision_reason") or "not recorded",
+        "Controlling gate": gate if gate is not None else "unavailable",
+        "Trusted risk override": override,
+    }
     return [
         ("Assessment identity", identity_payload),
+        ("Candidate decision", decision_payload),
         ("Scores", plain_scores),
         ("Evidence", evidence),
         ("Guidance", detail.get("model_guidance_packet")),
         ("Guardrails", detail.get("guardrails") or []),
         ("Outcomes", detail.get("outcomes") or []),
     ]
+
+
+def gate_history_note(content: dict[str, Any]) -> str:
+    gates = content.get("gates_fired")
+    if not isinstance(gates, list):
+        return GATES_UNAVAILABLE_NOTE
+    gate = controlling_gate(gates)
+    label = str(gate) if gate is not None else "unavailable"
+    return f"Gates fired: recorded in hash-covered history; controlling gate {label}."
 
 
 class AssessmentDetailScreen(Screen):
@@ -123,7 +155,7 @@ class AssessmentDetailScreen(Screen):
         yield Header()
         with VerticalScroll(id="detail-body"):
             yield Static(header_line(self._detail), id="detail-header")
-            yield Static(GATES_UNAVAILABLE_NOTE, id="gates-note")
+            yield Static(gate_history_note(self._detail.get("content") or {}), id="gates-note")
             for title, payload in detail_sections(
                 self._detail, assessment_ids=self.assessment_ids
             ):

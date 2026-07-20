@@ -125,11 +125,17 @@ pebra dashboard --port 4500 --open
 pebra capabilities --repo-root <repo_root>
 ```
 
-For a significant or unfamiliar edit, the generated agent protocol first reuses equivalent current
-repository context already supplied by the host. If none is available, it runs `pebra explore` before
-assessment; if exploration is unavailable, it falls back to ordinary repository search/read tools.
-Equivalent exploration is not repeated. Exploration is descriptive context only—it never authorizes
-an edit or becomes trusted PEBRA scoring evidence.
+The generated agent protocol follows one cognitive lifecycle:
+
+`Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify`
+
+Read-only work may stop after Understand. Before any create, edit, rename, or delete, the agent retrieves
+equivalent current repository context (using `pebra explore` when needed), designs the exact files and
+patch, and submits that candidate to `pebra assess`. Exploration is descriptive only; CodeGraph is the
+current graph adapter, but it never authorizes an edit. PEBRA's decision applies to the exact candidate.
+`reject` means **Reject candidate**, not reject the maintainer's goal: the agent presents the recorded
+reason and risk-benefit evidence. Only a hash-covered, sanction-convertible risk rejection with valid
+replay can advertise trusted interactive review; policy and obligation failures require a compliant route.
 
 `outcome.json` contains `assessment_id`, terminal `status`, and an optional `detail` object. The
 `finalize-outcome` command is host-only: MCP outcome reports are retained for lifecycle telemetry but

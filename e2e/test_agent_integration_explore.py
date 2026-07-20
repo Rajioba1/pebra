@@ -40,7 +40,12 @@ def test_installed_host_protocol_teaches_one_advisory_exploration_before_assess(
 
     skill = (tmp_path / _HOST_SKILLS[target]).read_text(encoding="utf-8")
     normalized = " ".join(skill.split())
-    assert normalized.index("Understand —") < normalized.index("Assess (pre-edit)")
+    lifecycle = "Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify"
+    assert lifecycle in normalized
+    assert normalized.index("2. **Understand.**") < normalized.index("4. **Assess (pre-edit).**")
+    assert "Read-only explanation or investigation may stop after Understand" in normalized
+    assert "PEBRA does not invent the candidate" in normalized
+    assert "PEBRA—not the model—decides" in normalized
     assert "Do not repeat equivalent exploration" in normalized
     assert "does not authorize an edit" in normalized
     assert "not trusted PEBRA scoring evidence" in normalized
@@ -67,7 +72,7 @@ def test_installed_host_protocol_teaches_one_advisory_exploration_before_assess(
         check=False,
     )
     assert inspected.returncode == 0, inspected.stderr
-    assert json.loads(inspected.stdout)["protocol_version"] == 2
+    assert json.loads(inspected.stdout)["protocol_version"] == 3
 
 
 def test_installed_claude_and_codex_skills_are_byte_identical(tmp_path: Path) -> None:

@@ -53,6 +53,7 @@ def test_render_card_surfaces_graph_rollup_in_human_labels() -> None:
     assert "Changed operation: delete file" in card
     assert "File fan-in rollup: 1.000 percentile" in card
     assert "Graph callers/references: 13" in card
+    assert "PEBRA Decision: Reject candidate" in card
 
 
 def test_render_card_surfaces_prior_source_and_version() -> None:

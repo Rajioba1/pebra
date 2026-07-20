@@ -151,6 +151,7 @@ def _seed(
     candidate: dict | None = None,
     scores: object = None,
     candidate_replay: object = None,
+    gates_fired: object = None,
 ):
     con = sqlite3.connect(db_path)
     con.execute("CREATE TABLE assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -158,11 +159,17 @@ def _seed(
     binding = {"safe_scope": {"files": files}}
     if candidate is not None:
         binding["candidate"] = candidate
-    content = {"assessed_commit": head, "model_guidance_packet": {"binding": binding}}
+    content = {
+        "assessed_commit": head,
+        "decision_reason": "Persisted reason for the exact candidate.",
+        "model_guidance_packet": {"binding": binding},
+    }
     if scores is not None:
         content["scores"] = scores
     if candidate_replay is not None:
         content["request"] = {"candidate_replay": candidate_replay}
+    if gates_fired is not None:
+        content["gates_fired"] = gates_fired
     con.execute("INSERT INTO assessments (repo_id, decision, content_json) VALUES (?,?,?)",
                 (repo_id, decision, json.dumps(content)))
     con.commit()
@@ -401,7 +408,7 @@ def test_decide_deny_for_codex_apply_patch_event(tmp_path, monkeypatch):
 
 def _consulted(
     tmp_path, monkeypatch, decision: str, *,
-    scores: object = None, candidate_replay: object = None,
+    scores: object = None, candidate_replay: object = None, gates_fired: object = None,
 ):
     monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: True)
     monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
@@ -421,6 +428,7 @@ def _consulted(
         candidate=binding,
         scores=scores,
         candidate_replay=candidate_replay,
+        gates_fired=gates_fired,
     )
 
 
@@ -553,6 +561,113 @@ def test_decide_returns_exact_candidate_when_assessment_is_reject(tmp_path, monk
     assert d.risk_summary.decision is Decision.REJECT
 
 
+def test_decide_requests_trusted_review_for_eligible_bound_reject(tmp_path, monkeypatch):
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "reject",
+        scores={"expected_loss": 0.61, "benefit": 0.34, "rau": -0.27},
+        candidate_replay=_VALID_REPLAY,
+        gates_fired=[{
+            "gate": 3,
+            "name": "expected_loss_over_threshold",
+            "expected_loss": 0.61,
+            "threshold": 0.5,
+        }],
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.REQUEST_HUMAN
+    assert result.tier is GateTier.CONSULTED_REJECT_REVIEW
+    assert result.risk_summary.decision is Decision.REJECT
+    assert "Controlling gate: 3 (expected_loss_over_threshold)." in result.reason
+    assert "Recorded reason: Persisted reason for the exact candidate." in result.reason
+    assert "pebra accept-risk --apply --assessment-id asm_1" in result.reason
+
+
+@pytest.mark.parametrize(
+    "scores",
+    (
+        None,
+        {"expected_loss": 0.61},
+        {"expected_loss": True, "benefit": 0.34, "rau": -0.27},
+        {"expected_loss": 0.61, "benefit": float("nan"), "rau": -0.27},
+        {"expected_loss": 0.61, "benefit": 0.34, "rau": float("inf")},
+        {"expected_loss": 10**1000, "benefit": 0.34, "rau": -0.27},
+    ),
+)
+def test_eligible_reject_with_malformed_scores_never_advertises_override(
+    tmp_path, monkeypatch, scores,
+):
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "reject",
+        scores=scores,
+        candidate_replay=_VALID_REPLAY,
+        gates_fired=[{
+            "gate": 3,
+            "name": "expected_loss_over_threshold",
+            "expected_loss": 0.61,
+            "threshold": 0.5,
+        }],
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.RETURN_CANDIDATE
+    assert result.tier is GateTier.CONSULTED_REVIEW
+    assert result.risk_summary is None
+    assert "accept-risk" not in result.reason
+
+
+@pytest.mark.parametrize(
+    "gates_fired",
+    (
+        [{"gate": 1, "name": "policy_violation"}],
+        [{"gate": 2, "name": "ask_human_only"}],
+        [{"gate": True, "name": "malformed"}],
+        [{"gate": 3, "name": "expected_loss_over_threshold", "advisory": True}],
+        "malformed",
+    ),
+)
+def test_reject_without_trusted_override_evidence_stays_denied(
+    tmp_path, monkeypatch, gates_fired,
+):
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "reject",
+        candidate_replay=_VALID_REPLAY,
+        gates_fired=gates_fired,
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.RETURN_CANDIDATE
+    assert result.tier is GateTier.CONSULTED_REVIEW
+    assert "accept-risk" not in result.reason
+
+
+def test_reject_without_replay_stays_denied_even_when_gate_is_convertible(
+    tmp_path, monkeypatch,
+):
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "reject",
+        gates_fired=[{"gate": 4, "name": "negative_rau", "rau": -0.27}],
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.RETURN_CANDIDATE
+    assert result.tier is GateTier.CONSULTED_REVIEW
+    assert "accept-risk" not in result.reason
+    assert "reassess" in result.reason.lower()
+
+
 def test_decide_ask_when_matched_assessment_is_ask_human(tmp_path, monkeypatch):
     _consulted(
         tmp_path, monkeypatch, "ask_human",
@@ -575,7 +690,13 @@ def test_deny_reason_is_blinding_neutral():
 
 
 def test_decide_consult_only_keeps_reject_as_consulted_review(tmp_path, monkeypatch):
-    _consulted(tmp_path, monkeypatch, "reject")
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "reject",
+        candidate_replay=_VALID_REPLAY,
+        gates_fired=[{"gate": 9, "name": "revision_budget_exhausted"}],
+    )
     d = gca.decide(_edit_event(tmp_path), consult_only=True)
     assert d.permission == "deny" and d.tier == "consulted_review"
     assert d.reason

@@ -30,6 +30,7 @@ class GateTier(StrEnum):
     CONSULTED_REVISE = "consulted_revise"
     CONSULTED_PREREQUISITE = "consulted_prerequisite"
     CONSULTED_REVIEW = "consulted_review"
+    CONSULTED_REJECT_REVIEW = "consulted_reject_review"
     CONSULTED_REVIEW_UNAVAILABLE = "consulted_review_unavailable"
 
 
@@ -68,7 +69,7 @@ class GateRiskSummary:
         }
 
 
-GATE_SCHEMA_VERSION: Final[int] = 1
+GATE_SCHEMA_VERSION: Final[int] = 2
 _ASSESSMENT_ID_RE: Final[re.Pattern[str]] = re.compile(r"asm_[1-9][0-9]*")
 ALLOWED_PERMISSION_TIERS: Final[Mapping[GatePermission, frozenset[GateTier]]] = (
     MappingProxyType({
@@ -77,11 +78,15 @@ ALLOWED_PERMISSION_TIERS: Final[Mapping[GatePermission, frozenset[GateTier]]] = 
             GateTier.FAIL_OPEN,
             GateTier.CONSULTED,
         }),
-        GatePermission.REQUEST_HUMAN: frozenset({GateTier.CONSULTED_REVIEW}),
+        GatePermission.REQUEST_HUMAN: frozenset({
+            GateTier.CONSULTED_REVIEW,
+            GateTier.CONSULTED_REJECT_REVIEW,
+        }),
         GatePermission.RETURN_CANDIDATE: frozenset(set(GateTier) - {
             GateTier.PASS,
             GateTier.FAIL_OPEN,
             GateTier.CONSULTED,
+            GateTier.CONSULTED_REJECT_REVIEW,
         }),
     })
 )
@@ -98,6 +103,9 @@ ALLOWED_RISK_DECISIONS: Final[
     }),
     (GatePermission.REQUEST_HUMAN, GateTier.CONSULTED_REVIEW): frozenset({
         Decision.ASK_HUMAN,
+    }),
+    (GatePermission.REQUEST_HUMAN, GateTier.CONSULTED_REJECT_REVIEW): frozenset({
+        Decision.REJECT,
     }),
     (GatePermission.RETURN_CANDIDATE, GateTier.CONSULTED_REVIEW): frozenset({
         Decision.REJECT,
