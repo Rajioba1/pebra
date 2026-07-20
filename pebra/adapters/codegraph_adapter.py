@@ -292,6 +292,12 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph status malformed"
             ), None
+        if not in_accepted_range(initial["version"]):
+            return _failed_snapshot(
+                "unavailable", config_before,
+                f"codegraph version outside the accepted range {CODEGRAPH_ACCEPTED_RANGE}; "
+                "run: pebra setup-graph --fix",
+            ), None
         if initial["worktreeMismatch"] is not None:
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph index belongs to another worktree"
@@ -326,6 +332,13 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
         if not _valid_status(post):
             return _failed_snapshot(
                 "unavailable", config_before, "codegraph post-sync status malformed",
+                sync_performed=True,
+            ), None
+        if not in_accepted_range(post["version"]):
+            return _failed_snapshot(
+                "unavailable", config_before,
+                f"codegraph version outside the accepted range {CODEGRAPH_ACCEPTED_RANGE}; "
+                "run: pebra setup-graph --fix",
                 sync_performed=True,
             ), None
         if post["worktreeMismatch"] is not None:
@@ -459,6 +472,12 @@ class CodeGraphAdapter:
                 snapshot = _failed_snapshot(
                     "unavailable", config_digest, "codegraph status malformed"
                 )
+            elif not in_accepted_range(status["version"]):
+                snapshot = _failed_snapshot(
+                    "unavailable", config_digest,
+                    f"codegraph version outside the accepted range {CODEGRAPH_ACCEPTED_RANGE}; "
+                    "run: pebra setup-graph --fix",
+                )
             elif status["worktreeMismatch"] is not None or not _is_fresh(status):
                 snapshot = _failed_snapshot(
                     "stale", config_digest, "codegraph index stale or worktree-mismatched"
@@ -485,7 +504,11 @@ class CodeGraphAdapter:
         self._status_cache[repo_root] = (
             status
             if snapshot.status == "available"
-            or (self._status_fn is not None and _valid_status(status))
+            or (
+                self._status_fn is not None
+                and _valid_status(status)
+                and in_accepted_range(status["version"])
+            )
             else None
         )
         return snapshot
@@ -786,7 +809,15 @@ class CodeGraphAdapter:
     def fanin(self, action: CandidateAction, repo_root: str) -> FanInEvidence:
         status = self._status(repo_root)
         if status is None:
-            return _unresolved("unknown", f"codegraph CLI not found; {_INSTALL_HINT}")
+            snapshot = self._snapshot_cache.get(repo_root)
+            reason = f"codegraph CLI not found; {_INSTALL_HINT}"
+            if (
+                snapshot is not None
+                and snapshot.fallback_reason
+                and snapshot.fallback_reason != "codegraph CLI not found"
+            ):
+                reason = snapshot.fallback_reason
+            return _unresolved("unknown", reason)
         runtime_ver = status.get("version")
         if runtime_ver and not in_accepted_range(runtime_ver):
             # running an unsupported codegraph version -> untrusted (its fan-in/extraction semantics may

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from pebra.adapters import codegraph_adapter as cga
+from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE
 
 
 FRESH = {
@@ -253,6 +254,61 @@ def test_missing_worktree_mismatch_field_is_unavailable(tmp_path, monkeypatch, p
 
     assert snapshot.status == "unavailable"
     assert len(runner.sync_calls) == (0 if phase == "initial" else 1)
+
+
+def test_unsupported_initial_provider_version_never_syncs_or_caches(
+    tmp_path, monkeypatch
+) -> None:
+    unsupported = {**FRESH, "version": "2.0.0"}
+    runner = _Runner([unsupported, FRESH])
+    _patch_runtime(monkeypatch, runner, ["commit-b", "commit-b"])
+    adapter = cga.CodeGraphAdapter()
+
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert snapshot.sync_performed is False
+    assert snapshot.fallback_reason == (
+        f"codegraph version outside the accepted range {CODEGRAPH_ACCEPTED_RANGE}; "
+        "run: pebra setup-graph --fix"
+    )
+    assert adapter.prepared_status(str(tmp_path)) is None
+    assert runner.sync_calls == []
+
+
+def test_unsupported_post_sync_provider_version_is_unavailable_and_not_cached(
+    tmp_path, monkeypatch
+) -> None:
+    unsupported = {**FRESH, "version": "2.0.0"}
+    runner = _Runner([FRESH, unsupported])
+    _patch_runtime(monkeypatch, runner, ["commit-b", "commit-b"])
+    adapter = cga.CodeGraphAdapter()
+
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert snapshot.sync_performed is True
+    assert snapshot.fallback_reason == (
+        f"codegraph version outside the accepted range {CODEGRAPH_ACCEPTED_RANGE}; "
+        "run: pebra setup-graph --fix"
+    )
+    assert adapter.prepared_status(str(tmp_path)) is None
+    assert len(runner.sync_calls) == 1
+
+
+def test_injected_unsupported_provider_version_is_unavailable_and_not_cached(tmp_path) -> None:
+    unsupported = {**FRESH, "version": "2.0.0"}
+    adapter = cga.CodeGraphAdapter(status_fn=lambda _root: unsupported)
+
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert snapshot.sync_performed is False
+    assert snapshot.fallback_reason == (
+        f"codegraph version outside the accepted range {CODEGRAPH_ACCEPTED_RANGE}; "
+        "run: pebra setup-graph --fix"
+    )
+    assert adapter.prepared_status(str(tmp_path)) is None
 
 
 def test_injected_malformed_status_is_unavailable_and_never_cached(tmp_path) -> None:
