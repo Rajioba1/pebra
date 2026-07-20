@@ -157,27 +157,18 @@ def _config_digest(repo_root: str) -> str | None:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _index_version(repo_root: str, status: dict[str, Any]) -> str | None:
+def _index_version(status: dict[str, Any]) -> str | None:
     index = status.get("index") or {}
-    for key in ("extractionVersion", "indexVersion", "schemaVersion"):
+    for key in (
+        "builtWithExtractionVersion",
+        "extractionVersion",
+        "indexVersion",
+        "schemaVersion",
+    ):
         value = index.get(key)
         if value is not None:
             return str(value)
-    db_path = _db_path_from_status(repo_root, status)
-    if not db_path.is_file():
-        return None
-    try:
-        con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
-        try:
-            row = con.execute(
-                "SELECT value FROM project_metadata WHERE key = ?",
-                ("indexed_with_extraction_version",),
-            ).fetchone()
-        finally:
-            con.close()
-    except (sqlite3.Error, OSError, ValueError):
-        return None
-    return str(row[0]) if row and row[0] is not None else None
+    return None
 
 
 def _scope_digest(
@@ -227,7 +218,12 @@ def _valid_status(status: object) -> bool:
     index_path = status.get("indexPath")
     if index_path is not None and (not isinstance(index_path, str) or not index_path.strip()):
         return False
-    for key in ("extractionVersion", "indexVersion", "schemaVersion"):
+    for key in (
+        "builtWithExtractionVersion",
+        "extractionVersion",
+        "indexVersion",
+        "schemaVersion",
+    ):
         value = index.get(key)
         if value is not None and (
             isinstance(value, bool)
@@ -360,7 +356,7 @@ def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | No
             ), None
         if head_before == head_after and config_before == config_after and head_after is not None:
             provider_version = str(post["version"]) if post.get("version") is not None else None
-            index_version = _index_version(repo_root, post)
+            index_version = _index_version(post)
             return GraphSnapshot(
                 status="available",
                 provider="CodeGraph",
@@ -486,7 +482,7 @@ class CodeGraphAdapter:
                 provider_version = (
                     str(status["version"]) if status.get("version") is not None else None
                 )
-                index_version = _index_version(repo_root, status)
+                index_version = _index_version(status)
                 snapshot = GraphSnapshot(
                     status="available",
                     provider="CodeGraph",

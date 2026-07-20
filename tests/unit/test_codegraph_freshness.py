@@ -91,6 +91,37 @@ def test_apparently_clean_status_still_syncs_once_and_caches_snapshot(tmp_path, 
     assert len(runner.status_calls) == 2
 
 
+def test_prepare_uses_status_extraction_version_without_creating_sqlite_sidecars(
+    tmp_path, monkeypatch
+) -> None:
+    index_dir = tmp_path / ".codegraph"
+    index_dir.mkdir()
+    (index_dir / "codegraph.db").write_bytes(b"provider-owned database")
+    status = {
+        **FRESH,
+        "indexPath": str(index_dir),
+        "index": {
+            **FRESH["index"],
+            "builtWithExtractionVersion": 24,
+        },
+    }
+
+    def connect_with_persistent_side_effect(*_args, **_kwargs):
+        (index_dir / "codegraph.db-wal").write_bytes(b"PEBRA opened SQLite")
+        (index_dir / "codegraph.db-shm").write_bytes(b"PEBRA opened SQLite")
+        raise AssertionError("prepare must not open SQLite for extraction-version provenance")
+
+    monkeypatch.setattr(cga.sqlite3, "connect", connect_with_persistent_side_effect)
+    monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit-b")
+
+    snapshot = cga.CodeGraphAdapter(status_fn=lambda _root: status).prepare(str(tmp_path))
+
+    assert snapshot.status == "available"
+    assert snapshot.index_version == "24"
+    assert not (index_dir / "codegraph.db-wal").exists()
+    assert not (index_dir / "codegraph.db-shm").exists()
+
+
 @pytest.mark.parametrize(
     "initial",
     [
@@ -158,6 +189,13 @@ def test_absent_index_status_never_syncs(tmp_path, monkeypatch) -> None:
         {**FRESH, "pendingChanges": {"added": -1, "modified": 0, "removed": 0}},
         {**FRESH, "index": []},
         {**FRESH, "index": {"reindexRecommended": 0}},
+        {
+            **FRESH,
+            "index": {
+                **FRESH["index"],
+                "builtWithExtractionVersion": False,
+            },
+        },
         {key: value for key, value in FRESH.items() if key != "version"},
     ],
 )
