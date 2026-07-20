@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-import signal
-import subprocess
 import sys
 import threading
 import time
@@ -58,32 +56,7 @@ def test_run_bounded_launch_error_never_exposes_raw_path() -> None:
     assert "secret" not in result.stdout + result.stderr
 
 
-def _force_kill(pid: int) -> None:
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
-        )
-    else:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-
-@pytest.mark.parametrize(
-    "containment",
-    ["native", pytest.param("taskkill", marks=pytest.mark.skipif(os.name != "nt", reason="Windows"))],
-)
-def test_run_bounded_times_out_descendant_that_keeps_parent_pipes_open(
-    tmp_path, monkeypatch, containment
-) -> None:
-    if containment == "taskkill":
-        monkeypatch.setattr(bp, "_assign_windows_job", lambda _job, _process: False)
+def test_run_bounded_times_out_descendant_that_keeps_parent_pipes_open(tmp_path) -> None:
     started = tmp_path / "descendant-started.txt"
     parent_exited = tmp_path / "parent-exited.txt"
     survived = tmp_path / "descendant-survived.txt"
@@ -91,7 +64,7 @@ def test_run_bounded_times_out_descendant_that_keeps_parent_pipes_open(
         "import os,sys,time; from pathlib import Path; "
         "Path(sys.argv[1]).write_text(str(os.getpid()), encoding='utf-8'); "
         "time.sleep(1.5); Path(sys.argv[2]).write_text('survived', encoding='utf-8'); "
-        "time.sleep(30)"
+        "time.sleep(3)"
     )
     parent_code = "\n".join(
         [
@@ -123,9 +96,6 @@ def test_run_bounded_times_out_descendant_that_keeps_parent_pipes_open(
     worker.start()
     worker.join(1.75)
     exceeded_bound = worker.is_alive()
-    if exceeded_bound and started.exists():
-        _force_kill(int(started.read_text(encoding="utf-8")))
-        worker.join(5)
 
     assert exceeded_bound is False
     result = outcome["result"]
@@ -137,20 +107,39 @@ def test_run_bounded_times_out_descendant_that_keeps_parent_pipes_open(
     assert survived.exists() is False
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object fallback")
-def test_run_bounded_falls_back_when_job_creation_is_unavailable(monkeypatch) -> None:
-    def unavailable():
-        raise OSError(r"private C:\job-policy")
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
+@pytest.mark.parametrize("failure", ["job-unavailable", "job-error", "assignment-rejected"])
+def test_run_bounded_never_resumes_process_without_job_containment(
+    tmp_path, monkeypatch, failure
+) -> None:
+    marker = tmp_path / "command-ran.txt"
+    if failure == "job-unavailable":
+        monkeypatch.setattr(bp, "_windows_job", lambda: None)
+    elif failure == "job-error":
+        def unavailable():
+            raise OSError(r"private C:\job-policy")
 
-    monkeypatch.setattr(bp, "_windows_job", unavailable)
+        monkeypatch.setattr(bp, "_windows_job", unavailable)
+    else:
+        monkeypatch.setattr(bp, "_assign_windows_job", lambda _job, _process: False)
 
+    began = time.monotonic()
     result = run_bounded(
-        [sys.executable, "-c", "print('ok')"],
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
+            str(marker),
+        ],
         timeout=2,
         stdout_limit=100,
         stderr_limit=100,
     )
+    elapsed = time.monotonic() - began
 
-    assert result.error is None
-    assert result.stdout.strip() == "ok"
+    assert elapsed < 1.0
+    assert result.error == "launch_failed"
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert marker.exists() is False
     assert "private" not in result.stdout + result.stderr
