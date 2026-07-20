@@ -31,6 +31,31 @@ def test_run_bounded_drains_but_caps_both_output_streams() -> None:
     assert result.error is None
 
 
+def test_run_bounded_passes_isolated_cwd_and_environment(tmp_path) -> None:
+    env = dict(os.environ)
+    env["PEBRA_BOUNDED_CHILD_MARKER"] = "isolated"
+    try:
+        result = run_bounded(
+            [
+                sys.executable,
+                "-c",
+                "import os; from pathlib import Path; "
+                "print(Path.cwd()); print(os.environ['PEBRA_BOUNDED_CHILD_MARKER'])",
+            ],
+            timeout=5,
+            stdout_limit=1_024,
+            stderr_limit=1_024,
+            cwd=str(tmp_path),
+            env=env,
+        )
+    except TypeError:
+        pytest.fail("run_bounded does not support isolated cwd/environment")
+
+    assert result.error is None
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [str(tmp_path), "isolated"]
+
+
 def test_run_bounded_kills_timed_out_process_with_stable_category() -> None:
     result = run_bounded(
         [sys.executable, "-c", "import time; time.sleep(30)"],

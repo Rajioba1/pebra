@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from pebra.adapters import codegraph_candidate_refinement as refinement
 from pebra.adapters.codegraph_candidate_refinement import CodeGraphCandidateRefinementAdapter
 from pebra.adapters.codegraph_candidate_refinement import _CONTINUITY_EDGE_KINDS
 from pebra.adapters.codegraph_candidate_refinement import _default_cache_root
@@ -41,6 +42,41 @@ def _patch(alias: bool = True) -> str:
         "+export function newName(): void {}\n"
         f"{added}"
     )
+
+
+def test_engine_identity_uses_measured_runtime_version(tmp_path, monkeypatch) -> None:
+    launcher = tmp_path / "codegraph"
+    launcher.write_bytes(b"launcher")
+    monkeypatch.setattr(refinement, "find_engine", lambda: str(launcher))
+    monkeypatch.setattr(
+        refinement, "known_engine_version", lambda _exe, **_kwargs: "1.1.9", raising=False
+    )
+
+    identity = refinement._engine_identity()
+
+    assert identity["version"] == "1.1.9"
+
+
+def test_candidate_refinement_cache_namespace_bumps_for_runtime_version_identity() -> None:
+    assert refinement._CACHE_VERSION == 10
+
+
+def test_candidate_default_indexer_delegates_to_shared_temp_boundary(
+    tmp_path, monkeypatch
+) -> None:
+    expected = tmp_path / ".codegraph" / "codegraph.db"
+    calls: list[tuple[Path, float]] = []
+
+    def shared(root: Path, *, timeout_s: float) -> Path:
+        calls.append((root, timeout_s))
+        return expected
+
+    monkeypatch.setattr(refinement, "index_temp_tree", shared, raising=False)
+
+    actual = refinement._index_with_codegraph(tmp_path, timeout_s=3.5)
+
+    assert actual == expected
+    assert calls == [(tmp_path, 3.5)]
 
 
 def _db(
@@ -1104,7 +1140,7 @@ def test_cache_hit_reuses_only_conservative_ambiguity_without_reindexing(tmp_pat
 def test_cache_namespace_tracks_current_proof_contract(tmp_path: Path) -> None:
     adapter = CodeGraphCandidateRefinementAdapter(cache_root=tmp_path / "cache")
 
-    assert adapter._cache_path(str(tmp_path), "manifest").parent.name == "v9"
+    assert adapter._cache_path(str(tmp_path), "manifest").parent.name == "v10"
 
 
 def test_default_cache_root_never_uses_repository_marker(

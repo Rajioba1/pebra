@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from pebra.adapters import codegraph_materialized_diff as materialized
 from pebra.adapters.codegraph_materialized_diff import CodeGraphMaterializedDiffAdapter
 from pebra.core.models import MaterializedGraphDiffResult
 
@@ -83,6 +84,26 @@ def test_materialized_diff_is_dark_gated_by_default(tmp_path: Path) -> None:
     assert result.available is False
     assert result.rows == ()
     assert result.fallback_reason == "materialized CodeGraph diff disabled"
+
+
+def test_materialized_default_indexer_delegates_to_shared_temp_boundary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    expected = tmp_path / ".codegraph" / "codegraph.db"
+    calls: list[tuple[Path, float]] = []
+
+    def shared(root: Path, *, timeout_s: float) -> Path:
+        calls.append((root, timeout_s))
+        return expected
+
+    monkeypatch.setattr(materialized, "index_temp_tree", shared, raising=False)
+
+    actual = CodeGraphMaterializedDiffAdapter(
+        enabled=True, timeout_s=4.5
+    )._index_with_codegraph(tmp_path)
+
+    assert actual == expected
+    assert calls == [(tmp_path, 4.5)]
 
 
 def test_materialized_diff_matches_by_file_and_qualified_name_not_node_id(tmp_path: Path) -> None:

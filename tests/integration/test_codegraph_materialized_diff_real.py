@@ -13,6 +13,7 @@ import pytest
 
 from pebra.adapters.codegraph_materialized_diff import CodeGraphMaterializedDiffAdapter
 from pebra.adapters.codegraph_candidate_refinement import CodeGraphCandidateRefinementAdapter
+from pebra.adapters.codegraph_temp_index import index_temp_tree
 from pebra.core.engine_paths import find_engine
 from pebra.core.models import CandidateAction, GraphRiskScope
 
@@ -96,6 +97,20 @@ _TS_CONTINUITY_PATCH = (
     "+export function newName(): void {}\n"
     "+export const oldName = newName;\n"
 )
+
+
+@requires_codegraph
+def test_temp_index_overrides_inherited_codegraph_directory(tmp_path, monkeypatch):
+    root = tmp_path / "scratch"
+    root.mkdir()
+    (root / "main.ts").write_text("export const answer = 42;\n", encoding="utf-8")
+    monkeypatch.setenv("CODEGRAPH_DIR", ".codegraph-host")
+
+    database = index_temp_tree(root)
+
+    assert database == root / ".codegraph" / "codegraph.db"
+    assert database.is_file()
+    assert not (root / ".codegraph-host").exists()
 
 _TS_SAME_SIGNATURE_SWAP_PATCH = (
     "diff --git a/src/api.ts b/src/api.ts\n--- a/src/api.ts\n+++ b/src/api.ts\n"

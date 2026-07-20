@@ -20,9 +20,8 @@ from pebra.adapters._paths import safe_relative_files
 from pebra.adapters.continuity_witness import ContinuityWitness, witness_for_language
 from pebra.adapters.patch_header_adapter import touched_files
 from pebra.adapters.patch_materializer import materialize_patch
-from pebra.core.graph_version import CODEGRAPH_DEFAULT_VERSION
+from pebra.adapters.codegraph_temp_index import index_temp_tree, known_engine_version
 from pebra.core.engine_paths import find_engine
-from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.models import (
     CandidateAction,
     CandidateGraphRiskEvidence,
@@ -32,7 +31,7 @@ from pebra.core.models import (
 
 
 _SCHEMA_VERSION = 1
-_CACHE_VERSION = 9
+_CACHE_VERSION = 10
 _PROVIDER_VERSION = f"materialized-continuity-v{_CACHE_VERSION}"
 _CALLABLE_KINDS = {"function", "method", "class", "struct", "interface", "trait", "protocol"}
 _SUPPORTED_EVENTS = {"public_api_break"}
@@ -96,41 +95,28 @@ def _default_context_files(_repo_root: str, _scope: GraphRiskScope) -> tuple[str
 
 
 def _index_with_codegraph(root: Path, timeout_s: float = 30.0) -> Path:
-    executable = find_engine()
-    if executable is None:
-        raise FileNotFoundError("codegraph")
-    proc = subprocess.run(
-        resolve_engine_argv(executable, ["init", str(root)]),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_s,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise subprocess.SubprocessError("codegraph init failed")
-    database = root / ".codegraph" / "codegraph.db"
-    if not database.is_file():
-        raise FileNotFoundError(str(database))
-    return database
+    return index_temp_tree(root, timeout_s=timeout_s)
 
 
 def _engine_identity() -> dict[str, object]:
     executable = find_engine()
     if executable is None:
-        return {"version": CODEGRAPH_DEFAULT_VERSION, "launcher": None}
+        return {"version": None, "launcher": None}
     path = Path(executable).resolve()
+    try:
+        version = known_engine_version(executable)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        version = None
     try:
         stat = path.stat()
         return {
-            "version": CODEGRAPH_DEFAULT_VERSION,
+            "version": version,
             "launcher": str(path),
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
         }
     except OSError:
-        return {"version": CODEGRAPH_DEFAULT_VERSION, "launcher": str(path)}
+        return {"version": version, "launcher": str(path)}
 
 
 class CodeGraphCandidateRefinementAdapter:
@@ -223,11 +209,12 @@ class CodeGraphCandidateRefinementAdapter:
         scope: GraphRiskScope,
         files: Mapping[str, str | None],
         reason: str | None,
+        engine_identity: Mapping[str, object] | None = None,
     ) -> str:
         manifest = {
             "schema": _SCHEMA_VERSION,
             "provider": _PROVIDER_VERSION,
-            "codegraph": _engine_identity(),
+            "codegraph": dict(engine_identity) if engine_identity is not None else _engine_identity(),
             "bounds": {
                 "files": self._max_context_files,
                 "bytes": self._max_context_bytes,
@@ -855,7 +842,10 @@ class CodeGraphCandidateRefinementAdapter:
                     materialize_latency_ms=materialize_ms, total_latency_ms=_elapsed(started),
                 )
 
-        manifest_hash = self._manifest_hash(action, scope, before, context_error)
+        engine_identity = _engine_identity()
+        manifest_hash = self._manifest_hash(
+            action, scope, before, context_error, engine_identity=engine_identity
+        )
         cache_path = self._cache_path(repo_root, manifest_hash)
         cached = self._load_cache(cache_path)
         if cached is not None:
@@ -928,7 +918,11 @@ class CodeGraphCandidateRefinementAdapter:
             language=language,
             witness=witness.name,
             witness_version=witness.version,
-            engine_version=CODEGRAPH_DEFAULT_VERSION,
+            engine_version=(
+                str(engine_identity["version"])
+                if isinstance(engine_identity.get("version"), str)
+                else None
+            ),
             reason=None if facts else "structural continuity was not established",
             manifest_hash=manifest_hash,
             context_file_count=len(before),

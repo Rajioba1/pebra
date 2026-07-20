@@ -18,9 +18,8 @@ from typing import Any
 
 from pebra.adapters import patch_header_adapter
 from pebra.adapters._paths import is_safe_relative, safe_relative_files
+from pebra.adapters.codegraph_temp_index import index_temp_tree
 from pebra.adapters.patch_materializer import materialize_patch
-from pebra.core.engine_argv import resolve_engine_argv
-from pebra.core.engine_paths import find_engine
 from pebra.core.language_capability import derive_visibility_from_export
 from pebra.core.models import MaterializedGraphDiffResult, MaterializedGraphDiffRow
 
@@ -178,24 +177,7 @@ class CodeGraphMaterializedDiffAdapter:
         return self.diff(before_files=before, after_files=after, repo_root=repo_root)
 
     def _index_with_codegraph(self, root: Path) -> Path:
-        exe = find_engine()
-        if exe is None:
-            raise FileNotFoundError("codegraph")
-        proc = subprocess.run(
-            resolve_engine_argv(exe, ["init", str(root)]),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=self._timeout_s,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise subprocess.SubprocessError("codegraph init failed")
-        db_path = root / ".codegraph" / "codegraph.db"
-        if not db_path.is_file():
-            raise FileNotFoundError(str(db_path))
-        return db_path
+        return index_temp_tree(root, timeout_s=self._timeout_s)
 
 
 def _clear_tree(root: Path) -> bool:

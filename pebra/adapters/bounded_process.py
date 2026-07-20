@@ -8,6 +8,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from ctypes import wintypes
 from typing import BinaryIO, Literal
@@ -189,6 +190,8 @@ def run_bounded(
     timeout: float,
     stdout_limit: int,
     stderr_limit: int,
+    cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> BoundedProcessResult:
     """Drain both pipes under one deadline while retaining explicit byte limits."""
     stdout_limit = max(0, stdout_limit)
@@ -209,6 +212,8 @@ def run_bounded(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=env,
             **popen_options,
         )
     except OSError:
