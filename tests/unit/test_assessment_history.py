@@ -56,7 +56,7 @@ def test_revision_envelope_is_authoritative_declared_scope() -> None:
 def test_legacy_guidance_scope_is_labelled_inferred() -> None:
     content = _content()
     content["model_guidance_packet"] = {
-        "binding": {"safe_scope": {"files": ["src/legacy.py"]}}
+        "binding": {"safe_scope": {"files": ["src/bad\ud800.py", "src/legacy.py"]}}
     }
 
     identity = project_assessment_identity(content)
@@ -71,7 +71,9 @@ def test_graph_resolved_paths_are_last_legacy_fallback() -> None:
     content = _content()
     content["scores"] = {
         "symbol_scope_evidence": {
-            "symbol_fanin": {"resolved_file_paths": ["src/graph.py"]}
+            "symbol_fanin": {
+                "resolved_file_paths": ["src/bad\ud800.py", "src/graph.py"]
+            }
         }
     }
 
@@ -119,6 +121,53 @@ def test_invalid_file_digest_has_no_fingerprint() -> None:
     assert identity.candidate_fingerprint is None
 
 
+def test_invalid_utf8_labels_and_declared_paths_degrade_safely() -> None:
+    content = {
+        "request": {
+            "task": "bad\ud800task",
+            "action_id": "bad\udfffaction",
+            "revision_envelope": {
+                "expected_files": ["src/bad\ud800.py", "src/good.py"]
+            },
+        }
+    }
+
+    identity = project_assessment_identity(content)
+
+    assert identity.task is None
+    assert identity.action_id is None
+    assert identity.declared_files == ("src/good.py",)
+    assert identity.target_files == ("src/good.py",)
+    assert identity.target_provenance == "declared"
+
+
+def test_candidate_binding_with_invalid_utf8_path_is_rejected_entirely() -> None:
+    content = _with_binding(
+        _content(revision_envelope={"expected_files": ["src/declared.py"]}),
+        {"src/good.py": _A, "src/bad\ud800.py": _B},
+    )
+
+    identity = project_assessment_identity(content)
+
+    assert identity.bound_files == ()
+    assert identity.candidate_fingerprint is None
+    assert identity.target_files == ("src/declared.py",)
+
+
+def test_candidate_binding_with_invalid_utf8_metadata_is_rejected_entirely() -> None:
+    content = _with_binding(
+        _content(revision_envelope={"expected_files": ["src/declared.py"]}),
+        {"src/good.py": _A},
+        metadata={"note": "bad\ud800metadata"},
+    )
+
+    identity = project_assessment_identity(content)
+
+    assert identity.bound_files == ()
+    assert identity.candidate_fingerprint is None
+    assert identity.target_files == ("src/declared.py",)
+
+
 def test_symbol_only_candidate_binding_has_no_fingerprint() -> None:
     content = _with_binding(_content(), {"src/auth.py::validate_login": _A})
 
@@ -154,6 +203,15 @@ def test_fingerprint_is_stable_across_dictionary_order() -> None:
         project_assessment_identity(first).candidate_fingerprint
         == project_assessment_identity(second).candidate_fingerprint
     )
+
+
+def test_fingerprint_changes_when_file_content_digest_changes() -> None:
+    first = _with_binding(_content(), {"src/a.py": _A})
+    second = _with_binding(_content(), {"src/a.py": _B})
+    first_fingerprint = project_assessment_identity(first).candidate_fingerprint
+
+    assert first_fingerprint == "7777bb937abfaea98a378435a40153678a147dc553b25a846411d1e49ca733f4"
+    assert first_fingerprint != project_assessment_identity(second).candidate_fingerprint
 
 
 def test_paths_are_forward_slash_normalized_and_deduplicated() -> None:

@@ -605,6 +605,39 @@ def test_list_assessments_keeps_malformed_binding_visible_without_fingerprint(tm
     assert row["candidate_fingerprint"] is None
 
 
+def test_list_assessments_keeps_invalid_utf8_identity_visible_and_safe(tmp_path) -> None:
+    store = _store(tmp_path)
+    asm = _persist_history_identity(
+        store,
+        request={
+            "task": "bad\ud800task",
+            "action_id": "bad\udfffaction",
+            "revision_envelope": {
+                "expected_files": ["src/bad\ud800.py", "src/good.py"]
+            },
+        },
+        packet={
+            "binding": {
+                "candidate": {
+                    "algorithm": CANDIDATE_BINDING_ALGORITHM,
+                    "files": {"src/bound.py": "a" * 64},
+                    "metadata": {"note": "bad\ud800metadata"},
+                }
+            }
+        },
+    )
+
+    row = store.list_assessments("r")[0]
+
+    assert row["assessment_id"] == asm
+    assert row["task"] is None
+    assert row["action_id"] is None
+    assert row["declared_files"] == ["src/good.py"]
+    assert row["target_files"] == ["src/good.py"]
+    assert row["target_provenance"] == "declared"
+    assert row["candidate_fingerprint"] is None
+
+
 def test_list_assessments_pagination(tmp_path) -> None:
     store = _store(tmp_path)
     ids = [_persist(store, repo_id="r") for _ in range(3)]

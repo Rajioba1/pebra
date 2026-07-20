@@ -33,8 +33,16 @@ def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _utf8_encodable(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _label(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
+    return value if isinstance(value, str) and value and _utf8_encodable(value) else None
 
 
 def _paths(values: object, *, allow_file_path_records: bool = False) -> tuple[str, ...]:
@@ -44,7 +52,12 @@ def _paths(values: object, *, allow_file_path_records: bool = False) -> tuple[st
     for value in values:
         if allow_file_path_records and isinstance(value, Mapping):
             value = value.get("file_path")
-        if not isinstance(value, str) or not value or "::" in value:
+        if (
+            not isinstance(value, str)
+            or not value
+            or "::" in value
+            or not _utf8_encodable(value)
+        ):
             continue
         normalized = value.replace("\\", "/")
         if normalized not in paths:
@@ -62,13 +75,17 @@ def _candidate(binding: object) -> tuple[tuple[str, ...], str | None]:
         isinstance(path, str)
         and bool(path)
         and "::" not in path
+        and _utf8_encodable(path)
         and isinstance(digest, str)
         and _DIGEST_RE.fullmatch(digest) is not None
         for path, digest in files.items()
     ):
         return (), None
     canonical = json.dumps(binding, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    try:
+        fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError:
+        return (), None
     return _paths(files.keys()), fingerprint
 
 

@@ -144,6 +144,49 @@ def test_dashboard_and_tui_return_identical_assessment_identity_fields(tmp_path)
     assert dashboard_row["target_provenance"] == "candidate_bound"
 
 
+def test_authenticated_assessments_route_survives_invalid_utf8_identity(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    asm = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED,
+            requires_confirmation=False,
+            action_status=ActionStatus.PENDING,
+            risk_mode=RiskMode.NORMAL,
+            scores={},
+            repo_id="r",
+            repo_root="/x",
+            model_guidance_packet={
+                "binding": {
+                    "candidate": {
+                        "algorithm": CANDIDATE_BINDING_ALGORITHM,
+                        "files": {"src/bound.py": "a" * 64},
+                        "metadata": {"note": "bad\ud800metadata"},
+                    }
+                }
+            },
+        ),
+        {
+            "task": "bad\ud800task",
+            "action_id": "bad\udfffaction",
+            "revision_envelope": {
+                "expected_files": ["src/bad\ud800.py", "src/good.py"]
+            },
+        },
+    )
+    store.close()
+
+    response = _client(db).get("/api/repos/r/assessments", headers=_AUTH)
+
+    assert response.status_code == 200
+    row = response.json()["items"][0]
+    assert row["assessment_id"] == asm
+    assert row["task"] is None
+    assert row["action_id"] is None
+    assert row["target_files"] == ["src/good.py"]
+    assert row["candidate_fingerprint"] is None
+
+
 def test_overview_route_counts_decisions(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/api/repos/r/overview", headers=_AUTH)
