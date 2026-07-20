@@ -32,6 +32,13 @@ emitted by PEBRA, precedence is `RETURN_CANDIDATE > REQUEST_HUMAN > CONTINUE`.
 An exact candidate hold or review request overrides an earlier advisory proceed only for that exact
 attempted candidate. It never cancels or rejects the user's goal.
 
+Repository exploration is outside this authorization contract. `pebra explore` and the Observatory's
+explicit detail-only `x` action return bounded descriptive context; their output is not trusted scoring
+evidence and cannot produce or change a permission, tier, decision, score, gate, sanction, or learned
+fact. Agents use equivalent current host context first, avoid repeating equivalent exploration, and fall
+back to ordinary repository search/read tools when exploration is unavailable before assessing the exact
+candidate.
+
 ## Risk-summary matrix
 
 Risk summaries are exact-only and all-or-none. All three numbers must be finite, non-boolean numbers from

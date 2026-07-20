@@ -40,6 +40,7 @@ from pebra.adapters.structural_feature_adapter import StructuralFeatureAdapter
 from pebra.core.models import AssessmentRequest, GraphRiskScope
 from pebra.core.exploration import ExplorationResult, clamp_bounds
 from pebra.ports.sanction_port import SanctionPort
+from pebra.ports.repository_explorer_port import RepositoryExplorer
 
 
 @dataclass
@@ -128,6 +129,11 @@ def explore_repository(
         max_files=max_files,
         max_bytes=max_bytes,
     )
+
+
+def build_repository_explorer() -> RepositoryExplorer:
+    """Construct the provider adapter at the composition boundary."""
+    return CodeGraphExplorer()
 
 
 def prepare_dashboard_graph_reader(repo_root: str | None, *, read_only: bool) -> object:

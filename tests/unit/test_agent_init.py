@@ -33,6 +33,29 @@ _OBLIGATIONS = (
     "verify and record",
 )
 
+_UNDERSTAND_PHASE = (
+    "Understand — For a significant or unfamiliar edit, first use equivalent current repository "
+    "context already supplied by the host. If none is available, run `pebra explore` with the task, "
+    "relevant symbols, or target files before assessment. Do not repeat equivalent exploration. Treat "
+    "the result as descriptive repository context only: it does not authorize an edit and is not "
+    "trusted PEBRA scoring evidence. If exploration is unavailable, continue with the host's ordinary "
+    "repository search/read tools, then assess the exact candidate."
+)
+
+
+def test_protocol_v2_inserts_exact_provider_neutral_understand_phase_before_assess() -> None:
+    normalized = " ".join(agent_init._PROTOCOL_BODY.split())
+
+    assert agent_init.PROTOCOL_VERSION == 2
+    assert _UNDERSTAND_PHASE in normalized
+    assert normalized.index(_UNDERSTAND_PHASE) < normalized.index("Assess (pre-edit)")
+    assert "Do not repeat equivalent exploration" in normalized
+    assert "does not authorize an edit" in normalized
+    assert "not trusted PEBRA scoring evidence" in normalized
+    assert "ordinary repository search/read tools" in normalized
+    for provider_detail in ("codegraph", "mcp", "prompt hook", "provider selector"):
+        assert provider_detail not in normalized.lower()
+
 
 def _run(target: str, repo_root: Path) -> int:
     args = build_parser().parse_args(
@@ -657,7 +680,7 @@ def test_agent_init_check_reports_file_state_without_mutation(
         "declared_support", "effective_enforcement",
     }
     assert payload["target"] == target
-    assert payload["protocol_version"] == 1
+    assert payload["protocol_version"] == 2
     assert payload["gate_schema_version"] == 1
     assert {item["state"] for item in payload["files"]} == {file_state}
     assert payload["declared_support"] == AGENT_HOSTS[target].declared_support

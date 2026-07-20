@@ -116,6 +116,26 @@ def test_normal_mode_resolved_context_reaches_launch(monkeypatch, tmp_path) -> N
     assert captured["ctx"].read_only is False
 
 
+def test_default_launch_injects_composed_explorer_for_a_resolved_repository(monkeypatch) -> None:
+    from pebra import composition
+    from pebra.tui import app as tui_app
+    from pebra.observatory_context import ObservatoryContext
+
+    explorer = object()
+    captured: dict = {}
+    monkeypatch.setattr(composition, "build_repository_explorer", lambda: explorer)
+    monkeypatch.setattr(
+        tui_app,
+        "run_observatory",
+        lambda context, *, explorer=None: captured.update(context=context, explorer=explorer),
+    )
+    context = ObservatoryContext("db", "repo", "/repo", False)
+
+    cli_tui._launch(context)
+
+    assert captured == {"context": context, "explorer": explorer}
+
+
 def test_version_flag_prints_provenance_without_a_subcommand() -> None:
     import io
     from contextlib import redirect_stdout

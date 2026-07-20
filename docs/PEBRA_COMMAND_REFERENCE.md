@@ -547,12 +547,24 @@ Product-defined keys:
 | Key | Action |
 | --- | --- |
 | `q` | Quit |
-| `Ctrl+Q` | Priority quit inherited from Textual |
 | `?` | Toggle key-help panel |
 | `Escape` | Close help panel or return from assessment detail |
 | `r` | Refresh the Observatory ledger |
 | `g` | Toggle contiguous exact-candidate grouping (`Group repeats` / `Show raw`) |
-| `Enter` | Open the selected assessment |
+| `x` | Explore impact from assessment detail only |
+
+The detail-only `x` action visibly prepares/reconciles the existing derived graph cache and then queries
+that accepted snapshot. It is single-flight: another `x` press is ignored while work is in progress. It
+never runs automatically on TUI launch, detail mount, row selection, five-second ledger refresh, or
+background polling. Its bounded output is descriptive context only and never enters stored assessments,
+scores, gates, sanctions, outcomes, or learning.
+
+Inherited Textual bindings (dependency behavior, not PEBRA API):
+
+| Key | Action |
+| --- | --- |
+| `Ctrl+Q` | Priority quit |
+| `Enter` | Open the selected DataTable row |
 | `Ctrl+P` | Open command palette |
 
 Ledger/DataTable navigation under the current Textual 8.2.x environment:

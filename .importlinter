@@ -138,6 +138,15 @@ ignore_imports =
     pebra.tui.data -> pebra.app.observatory_query_controller
     pebra.tui.screens.observatory -> pebra.app.observatory_query_controller
 
+[importlinter:contract:tui-exploration-is-injected]
+name = TUI exploration uses ports and types, never concrete composition
+type = forbidden
+source_modules =
+    pebra.tui
+forbidden_modules =
+    pebra.adapters.codegraph_explorer
+    pebra.composition
+
 [importlinter:contract:assess-no-learning]
 name = assess never imports learning (Hard Rule — Milestone 4: measure, never reapply)
 type = forbidden

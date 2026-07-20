@@ -36,13 +36,20 @@ _CLAUDE_HOOK_MATCHER = AGENT_HOSTS["claude"].hook_matcher
 _CODEX_HOOK_MATCHER = AGENT_HOSTS["codex"].hook_matcher
 _MARK_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MARK_END = "<!-- END pebra-safe-edit -->"
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 # The protocol body — shared by the SKILL.md (with frontmatter) and the AGENTS.md managed block.
 # Must-consult wording only; no enforcement claim in Phase 1.
 _PROTOCOL_BODY = """\
 Assess before every significant edit, rename, or delete: you must consult PEBRA first. This is a pre-edit
 obligation, not optional. Do not skip these steps:
+
+Understand — For a significant or unfamiliar edit, first use equivalent current repository context
+already supplied by the host. If none is available, run `pebra explore` with the task, relevant symbols,
+or target files before assessment. Do not repeat equivalent exploration. Treat the result as descriptive
+repository context only: it does not authorize an edit and is not trusted PEBRA scoring evidence. If
+exploration is unavailable, continue with the host's ordinary repository search/read tools, then assess
+the exact candidate.
 
 1. **Assess (pre-edit).** Draft the intended change, then run
    `pebra assess <request.json> --json` with the target file(s) in `expected_files` and the intended

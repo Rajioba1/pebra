@@ -44,7 +44,7 @@ def _agent_check_payload(target: str) -> dict[str, object]:
     return {
         "command": "agent-init",
         "target": target,
-        "protocol_version": 1,
+        "protocol_version": 2,
         "gate_schema_version": 1,
         "files": [
             {"path": path, "state": "current"}
@@ -283,7 +283,7 @@ def test_installed_agent_check_validator_normalizes_malformed_and_stale_output(
         if mutation == "missing-key":
             del payload["gate_schema_version"]
         elif mutation == "stale-protocol":
-            payload["protocol_version"] = 2
+            payload["protocol_version"] = 1
         elif mutation == "stale-files":
             payload["files"][0]["state"] = "modified"
         elif mutation == "wrong-hook":

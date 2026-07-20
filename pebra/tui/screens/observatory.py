@@ -21,6 +21,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from textual.widgets.data_table import RowDoesNotExist
 
 from pebra.app.observatory_query_controller import AssessmentNotFoundError
+from pebra.ports.repository_explorer_port import RepositoryExplorer
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot, ObservatoryStoreUnavailable
 from pebra.tui.ledger_groups import LedgerGroup, group_contiguous_assessments
 from pebra.tui.screens.detail import AssessmentDetailScreen
@@ -43,9 +44,17 @@ _REFRESH_INTERVAL = 5.0  # seconds; SQLite-only poll — never the graph/RCA eng
 class ObservatoryScreen(Screen):
     BINDINGS = [("r", "refresh", "Refresh"), ("g", "toggle_grouping", "Group repeats")]
 
-    def __init__(self, data: ObservatoryData) -> None:
+    def __init__(
+        self,
+        data: ObservatoryData,
+        *,
+        repo_root: str | None = None,
+        explorer: RepositoryExplorer | None = None,
+    ) -> None:
         super().__init__()
         self._data = data
+        self._repo_root = repo_root
+        self._explorer = explorer
         self._rows: list[dict[str, Any]] = []
         self._overview: dict[str, Any] = {}
         self._ledger_columns: tuple[str, ...] = ()
@@ -395,7 +404,12 @@ class ObservatoryScreen(Screen):
         if self._selected_underlying_id not in assessment_ids:
             self._selected_underlying_id = assessment_id
         self.app.push_screen(
-            AssessmentDetailScreen(detail, assessment_ids=assessment_ids)
+            AssessmentDetailScreen(
+                detail,
+                assessment_ids=assessment_ids,
+                repo_root=self._repo_root,
+                explorer=self._explorer,
+            )
         )
 
     def _on_theme_changed(self, theme: Theme) -> None:

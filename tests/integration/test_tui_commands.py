@@ -11,6 +11,7 @@ pytest.importorskip("textual", reason="requires textual (run via nox)")
 from pebra.observatory_context import ObservatoryContext  # noqa: E402
 from pebra.tui.app import ObservatoryApp  # noqa: E402
 from pebra.tui.screens.detail import AssessmentDetailScreen  # noqa: E402
+from pebra.tui.screens.observatory import ObservatoryScreen  # noqa: E402
 
 
 def _seed(tmp_path) -> str:
@@ -108,3 +109,31 @@ def test_busy_refresh_command_does_not_notify_started(tmp_path) -> None:
             assert not any("Refreshing" in note for note in notes)
 
     asyncio.run(scenario())
+
+
+def test_command_reference_pins_every_pebra_defined_tui_binding() -> None:
+    from pathlib import Path
+    from textual.binding import Binding
+
+    body = (Path(__file__).parents[2] / "docs" / "PEBRA_COMMAND_REFERENCE.md").read_text(
+        encoding="utf-8"
+    )
+    table = body.split("Product-defined keys:", 1)[1].split(
+        "Inherited Textual", 1
+    )[0]
+    bindings = (
+        *ObservatoryApp.BINDINGS,
+        *ObservatoryScreen.BINDINGS,
+        *AssessmentDetailScreen.BINDINGS,
+    )
+    keys = {
+        binding.key if isinstance(binding, Binding) else binding[0]
+        for binding in bindings
+    }
+
+    assert keys == {"q", "?", "escape", "r", "g", "x"}
+    for key in keys:
+        assert f"| `{key}` |" in table.lower()
+    assert "detail-only" in table
+    assert "single-flight" in table
+    assert "never runs automatically" in table

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
+from threading import Event
 
 import pytest
 
@@ -14,9 +16,11 @@ from textual.screen import Screen  # noqa: E402
 from textual.widgets import DataTable, Pretty  # noqa: E402
 
 from pebra.app.observatory_query_controller import AssessmentNotFoundError  # noqa: E402
+from pebra.core.exploration import ExplorationResult  # noqa: E402
+from pebra.core.graph_snapshot import GraphSnapshot  # noqa: E402
 from pebra.observatory_context import ObservatoryContext  # noqa: E402
 from pebra.tui.app import ObservatoryApp  # noqa: E402
-from pebra.tui.data import ObservatorySnapshot  # noqa: E402
+from pebra.tui.data import ObservatoryData, ObservatorySnapshot  # noqa: E402
 from pebra.tui.screens.detail import (  # noqa: E402
     GATES_UNAVAILABLE_NOTE,
     AssessmentDetailScreen,
@@ -24,6 +28,65 @@ from pebra.tui.screens.detail import (  # noqa: E402
     header_line,
 )
 from pebra.tui.screens.observatory import ObservatoryScreen  # noqa: E402
+
+
+def _graph_snapshot() -> GraphSnapshot:
+    return GraphSnapshot(
+        status="available",
+        provider="test-graph",
+        provider_version="1.2.3",
+        index_version="7",
+        repo_head="abc1234def",
+        config_digest="cfg",
+        graph_scope_digest="scope-123",
+        sync_performed=True,
+        fallback_reason=None,
+    )
+
+
+def _exploration_result() -> ExplorationResult:
+    return ExplorationResult(
+        status="available",
+        snapshot=_graph_snapshot(),
+        context="AuthService validates credentials before issuing a session.",
+        dependent_files=("src/caller.py",),
+        affected_tests=("tests/test_auth.py",),
+        warnings=("bounded context",),
+        fallback_reason=None,
+        truncated=True,
+    )
+
+
+class _RecordingExplorer:
+    def __init__(self, *, fail: bool = False, block: bool = False) -> None:
+        self.fail = fail
+        self.block = block
+        self.prepare_calls: list[str] = []
+        self.explore_calls: list[tuple[str, str, GraphSnapshot, tuple[str, ...]]] = []
+        self.started = Event()
+        self.release = Event()
+
+    def prepare(self, repo_root: str) -> GraphSnapshot:
+        self.prepare_calls.append(repo_root)
+        self.started.set()
+        if self.block:
+            self.release.wait(timeout=5)
+        if self.fail:
+            raise RuntimeError("provider unavailable")
+        return _graph_snapshot()
+
+    def explore(self, repo_root, query, *, snapshot, files=(), max_files=8, max_bytes=24_000):
+        self.explore_calls.append((repo_root, query, snapshot, files))
+        return _exploration_result()
+
+
+async def _pause_until(predicate, pilot, *, attempts: int = 100) -> None:
+    for _ in range(attempts):
+        if predicate():
+            return
+        await pilot.pause()
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition did not become true")
 
 
 def _detail() -> dict:
@@ -294,5 +357,135 @@ def test_grouped_row_opens_latest_assessment_and_shows_all_ids() -> None:
                 "Assessment identity"
             ]
             assert identity["Contained assessment IDs"] == ["asm_2", "asm_1"]
+
+    asyncio.run(scenario())
+
+
+def test_detail_never_explores_on_mount() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer()
+        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.pause()
+            assert explorer.prepare_calls == []
+            assert explorer.explore_calls == []
+
+    asyncio.run(scenario())
+
+
+def test_five_second_refresh_never_calls_explorer() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer()
+        screen = ObservatoryScreen(_FakeData(), repo_root="/repo", explorer=explorer)
+        async with _Harness(screen).run_test() as pilot:
+            screen._tick()
+            await _pause_until(lambda: not screen._refreshing, pilot)
+            assert explorer.prepare_calls == []
+            assert explorer.explore_calls == []
+
+    asyncio.run(scenario())
+
+
+def test_explicit_explore_is_single_flight() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer(block=True)
+        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.press("x", "x")
+            await _pause_until(explorer.started.is_set, pilot)
+            assert explorer.prepare_calls == ["/repo"]
+            explorer.release.set()
+            await _pause_until(lambda: not screen.exploring, pilot)
+            assert len(explorer.explore_calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_explicit_explore_prepares_once_then_queries_snapshot() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer()
+        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.press("x")
+            await _pause_until(lambda: not screen.exploring, pilot)
+
+            assert explorer.prepare_calls == ["/repo"]
+            assert explorer.explore_calls == [(
+                "/repo",
+                "Fix login validation",
+                _graph_snapshot(),
+                ("src/bound.py",),
+            )]
+            rendered = str(screen.query_one("#exploration-result").render())
+            assert "AuthService" in rendered
+            assert "src/caller.py" in rendered
+            assert "tests/test_auth.py" in rendered
+            assert "abc1234def" in rendered
+            assert "scope-123" in rendered
+            assert "1.2.3" in rendered
+            assert "bounded context" in rendered
+            assert "truncated" in rendered.lower()
+
+    asyncio.run(scenario())
+
+
+def test_late_explore_result_cannot_touch_popped_screen() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer(block=True)
+        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        app = _Harness(Screen())
+        async with app.run_test() as pilot:
+            await app.push_screen(screen)
+            await pilot.press("x")
+            await _pause_until(explorer.started.is_set, pilot)
+            await app.pop_screen()
+            await _pause_until(lambda: not screen._can_update_children(), pilot)
+            explorer.release.set()
+            await _pause_until(lambda: not screen.exploring, pilot)
+            assert len(screen.query("#exploration-status")) == 0
+
+    asyncio.run(scenario())
+
+
+def test_explore_failure_preserves_assessment_detail() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer()
+        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.press("x")
+            await _pause_until(lambda: not screen.exploring, pilot)
+            good = str(screen.query_one("#exploration-result").render())
+            pretty_count = len(list(screen.query(".section-body").results(Pretty)))
+
+            explorer.fail = True
+            await pilot.press("x")
+            await _pause_until(lambda: not screen.exploring, pilot)
+
+            assert str(screen.query_one("#exploration-result").render()) == good
+            assert len(list(screen.query(".section-body").results(Pretty))) == pretty_count
+            assert "failed" in str(screen.query_one("#exploration-status").render()).lower()
+
+    asyncio.run(scenario())
+
+
+def test_exploration_result_never_enters_store_or_scores(tmp_path) -> None:
+    async def scenario() -> None:
+        db = _seed(tmp_path)
+        context = ObservatoryContext(db, "r", "/repo", False)
+        before = deepcopy(ObservatoryData(context).detail("asm_1"))
+        explorer = _RecordingExplorer()
+        app = ObservatoryApp(context, explorer=explorer)
+        async with app.run_test() as pilot:
+            app.query_one("#ledger", DataTable).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, AssessmentDetailScreen)
+            await pilot.press("x")
+            await _pause_until(lambda: not screen.exploring, pilot)
+
+        after = ObservatoryData(context).detail("asm_1")
+        assert after == before
+        assert "AuthService" not in repr(after["content"]["scores"])
 
     asyncio.run(scenario())

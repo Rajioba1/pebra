@@ -77,11 +77,15 @@ _AGENT_CHECK_KEYS = {
     "declared_support",
     "effective_enforcement",
 }
-_EXPECTED_AGENT_SKILL_SHA256 = "0727ba1df53e6d944091a19f96b645983b32ba2776549eac3d4ec906cd92998d"
+_EXPECTED_AGENT_SKILL_SHA256 = "5a9dcb6f560296ecfcba639a0782d8f59dcebef71544eedb8cdef78a8fe36d0b"
 _CODEX_SENTINEL = "# Pre-existing Codex distribution-verifier sentinel\nPreserve this instruction.\n"
 _MANAGED_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MANAGED_END = "<!-- END pebra-safe-edit -->"
 _AGENT_SEMANTIC_OBLIGATIONS = (
+    "Understand — For a significant or unfamiliar edit",
+    "Do not repeat equivalent exploration.",
+    "it does not authorize an edit and is not trusted PEBRA scoring evidence.",
+    "ordinary repository search/read tools",
     "Assess before every significant edit, rename, or delete",
     "Never treat either decision as permission to edit.",
     "exact assessed candidate;",
@@ -90,6 +94,7 @@ _AGENT_SEMANTIC_OBLIGATIONS = (
     "pebra record-outcome --assessment-id <id> --status completed",
 )
 _AGENT_SEMANTIC_RELATIONS = (
+    ("Understand —", "**Assess (pre-edit).**"),
     ("**Assess (pre-edit).**", "**Revise when asked.**"),
     ("pebra accept-risk --apply", "apply_exact_candidate_then_verify"),
     ("apply_exact_candidate_then_verify", "pebra verify --assessment-id"),
@@ -220,7 +225,7 @@ def _validate_agent_init_check(raw: str, *, target: str) -> dict[str, object]:
         )
     if (
         type(payload["protocol_version"]) is not int
-        or payload["protocol_version"] != 1
+        or payload["protocol_version"] != 2
         or type(payload["gate_schema_version"]) is not int
         or payload["gate_schema_version"] != 1
     ):

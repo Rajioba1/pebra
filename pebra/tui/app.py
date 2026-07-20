@@ -15,6 +15,7 @@ from textual.screen import Screen
 
 from pebra.observatory_context import ObservatoryContext
 from pebra.provenance import provenance_line
+from pebra.ports.repository_explorer_port import RepositoryExplorer
 from pebra.tui.data import ObservatoryData
 from pebra.tui.screens.observatory import ObservatoryScreen
 from pebra.tui.theme import css_variables
@@ -38,16 +39,23 @@ class ObservatoryApp(App[None]):
         ("escape", "close_help_panel", "Back"),
     ]
 
-    def __init__(self, context: ObservatoryContext) -> None:
+    def __init__(
+        self, context: ObservatoryContext, *, explorer: RepositoryExplorer | None = None
+    ) -> None:
         super().__init__()
         # NOTE: not `self._context` — that name is a Textual App internal (the app-context manager).
         self.observatory_context = context
+        self.repository_explorer = explorer
         # Source provenance in the header subtitle, so you can tell the checkout from the released wheel.
         # Computed once here (may shell out to git for an editable install) — never on the 5s refresh.
         self.sub_title = provenance_line(prefix=False)
 
     def get_default_screen(self) -> Screen:
-        return ObservatoryScreen(ObservatoryData(self.observatory_context))
+        return ObservatoryScreen(
+            ObservatoryData(self.observatory_context),
+            repo_root=self.observatory_context.repo_root,
+            explorer=self.repository_explorer,
+        )
 
     def get_css_variables(self) -> dict[str, str]:
         variables = super().get_css_variables()
@@ -108,6 +116,8 @@ class ObservatoryApp(App[None]):
             self.notify(screen.overview_summary(), title="Overview", timeout=6)
 
 
-def run_observatory(context: ObservatoryContext) -> None:
-    """Blocking entry point used by `pebra tui` — construct and run the app for the resolved context."""
-    ObservatoryApp(context).run()
+def run_observatory(
+    context: ObservatoryContext, *, explorer: RepositoryExplorer | None = None
+) -> None:
+    """Run the Observatory with an optional injected descriptive explorer."""
+    ObservatoryApp(context, explorer=explorer).run()

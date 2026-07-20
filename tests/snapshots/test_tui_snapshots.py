@@ -154,8 +154,14 @@ def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False, groupable: bool 
     return db
 
 
-def _app(db: str) -> ObservatoryApp:
-    return ObservatoryApp(ObservatoryContext(db_path=db, repo_id="r", repo_root=None, read_only=True))
+def _app(db: str, *, exploration: bool = False) -> ObservatoryApp:
+    context = ObservatoryContext(
+        db_path=db,
+        repo_id="r",
+        repo_root="/repo" if exploration else None,
+        read_only=True,
+    )
+    return ObservatoryApp(context, explorer=object() if exploration else None)
 
 
 def test_snapshot_ledger_width_120(snap_compare, tmp_path) -> None:
@@ -199,7 +205,9 @@ async def _open_first_detail(pilot) -> None:
 
 def test_snapshot_detail_screen(snap_compare, tmp_path) -> None:
     assert snap_compare(
-        _app(_seed(tmp_path)), terminal_size=(110, 36), run_before=_open_first_detail
+        _app(_seed(tmp_path), exploration=True),
+        terminal_size=(110, 36),
+        run_before=_open_first_detail,
     )
 
 

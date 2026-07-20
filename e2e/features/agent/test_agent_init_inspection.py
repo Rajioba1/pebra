@@ -51,7 +51,7 @@ def test_installed_host_check_is_real_cli_non_mutating(tmp_path, target):
     payload = json.loads(checked.stdout)
     assert payload["command"] == "agent-init"
     assert payload["target"] == target
-    assert payload["protocol_version"] == 1
+    assert payload["protocol_version"] == 2
     assert payload["gate_schema_version"] == 1
     assert {item["state"] for item in payload["files"]} == {"current"}
     assert payload["hook"]["state"] == "exact"
