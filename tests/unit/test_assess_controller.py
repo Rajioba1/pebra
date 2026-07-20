@@ -16,6 +16,7 @@ from pebra.core.apply_snapshot import SnapshotBundle, SnapshotFact
 from pebra.core import models as m
 from pebra.core.constants import Decision, RiskMode
 from pebra.core.language_capability import LanguageCapability
+from pebra.core.graph_snapshot import GraphSnapshot
 from pebra.core.warm_prior import CalibratedPriorCell
 from pebra.ports.repository_registry_port import RepoMetadata
 
@@ -882,7 +883,7 @@ def test_controller_surfaces_single_candidate_aggregate_from_owner_evidence() ->
     assert result.scores["candidate_aggregate"]["languages"] == ("python", "typescript")
 
 
-def _run_cg(ev, extra_thresholds=None, request=None):
+def _run_cg(ev, extra_thresholds=None, request=None, **extra_ports):
     store = FakeStore()
     outcome = ac.assess(
         request or _request(),
@@ -895,6 +896,7 @@ def _run_cg(ev, extra_thresholds=None, request=None):
         repository_registry=FakeRegistry(),
         store=store,
         fanin_provider=FakeFanInProvider(ev),
+        **extra_ports,
     )
     return outcome
 
@@ -1064,6 +1066,55 @@ def test_codegraph_versions_are_provenance_not_scores() -> None:
     symbol_fanin = result.scores["symbol_scope_evidence"]["symbol_fanin"]
     assert "provider_version" not in symbol_fanin
     assert "index_version" not in symbol_fanin
+
+
+def test_graph_provenance_is_bound_to_matching_snapshot_and_prediction_features() -> None:
+    ev = m.FanInEvidence(
+        symbol_fan_in_percentile=0.95, symbol_caller_count=12,
+        resolution_method="location", graph_freshness="fresh",
+        provider_version="older-status", index_version="older-index",
+    )
+    snapshot = GraphSnapshot(
+        status="available", provider="CodeGraph", provider_version="1.1.1",
+        index_version="24", repo_head="b", config_digest="config-digest",
+        graph_scope_digest="scope-digest", sync_performed=True, fallback_reason=None,
+    )
+
+    outcome = _run_cg(ev, assessed_commit="b", graph_snapshot=snapshot)
+    result = outcome.recommended_result
+
+    assert result.provenance["graph_provenance"] == {
+        "engine": "CodeGraph",
+        "provider_version": "1.1.1",
+        "index_version": "24",
+        "repo_head": "b",
+        "config_digest": "config-digest",
+        "graph_scope_digest": "scope-digest",
+        "structure_tier": "unavailable",
+    }
+    for prediction in outcome.scored_actions[0].predictions:
+        assert prediction["features"]["provenance"] == {
+            "provider_version": "1.1.1",
+            "index_version": "24",
+            "repo_head": "b",
+            "config_digest": "config-digest",
+            "graph_scope_digest": "scope-digest",
+        }
+
+
+def test_graph_provenance_is_not_trusted_when_assessed_commit_differs_from_snapshot() -> None:
+    ev = m.FanInEvidence(
+        symbol_fan_in_percentile=0.95, resolution_method="location", graph_freshness="fresh",
+    )
+    snapshot = GraphSnapshot(
+        status="available", provider="CodeGraph", provider_version="1.1.1",
+        index_version="24", repo_head="b", config_digest="config-digest",
+        graph_scope_digest="scope-digest", sync_performed=True, fallback_reason=None,
+    )
+
+    result = _run_cg(ev, assessed_commit="c", graph_snapshot=snapshot).recommended_result
+
+    assert "graph_provenance" not in result.provenance
 
 
 def test_trusted_low_fanin_patches_percentile_without_forcing_consequential() -> None:

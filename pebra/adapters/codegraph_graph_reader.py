@@ -28,7 +28,6 @@ from pebra.adapters.codegraph_adapter import (
     _MODIFY_IMPACT_EDGE_KINDS,
     CodeGraphAdapter,
     _db_path_from_status,
-    _default_status,
     _is_fresh,
 )
 from pebra.core.graph_version import in_accepted_range
@@ -53,7 +52,7 @@ class CodeGraphReader:
     ``CodeGraphAdapter``) so the SQL is unit-testable without the binary."""
 
     def __init__(self, status_fn: Callable[[str], dict[str, Any] | None] | None = None) -> None:
-        self._status_fn = status_fn or _default_status
+        self._status_fn = status_fn or (lambda _repo_root: None)
 
     def _open(self, repo_root: str) -> tuple[sqlite3.Connection | None, str, str | None]:
         """Apply the same trust gates as ``CodeGraphAdapter.fanin`` and open the DB read-only.

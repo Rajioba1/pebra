@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pebra import composition
 from pebra.core import candidate_parser
+from pebra.core.graph_snapshot import GraphSnapshot
 
 
 def test_resolve_defaults_db_under_dot_pebra(tmp_path) -> None:
@@ -87,6 +88,118 @@ def test_build_verify_ports_has_the_controller_keys() -> None:
     assert set(ports) == {"change_verifier", "contract_surface"}
     # the verifier is wired with the semantic reproduction hook (dark behind the same threshold)
     assert ports["change_verifier"]._materialized_diff_fn is not None
+
+
+class _PreparedGraph:
+    def __init__(self, snapshot: GraphSnapshot) -> None:
+        self.snapshot = snapshot
+        self.prepare_calls: list[str] = []
+        self.bind_calls: list[tuple[str, str | None]] = []
+
+    def prepare(self, repo_root: str) -> GraphSnapshot:
+        self.prepare_calls.append(repo_root)
+        return self.snapshot
+
+    def bind_assessed_commit(self, repo_root: str, assessed_commit: str | None) -> bool:
+        self.bind_calls.append((repo_root, assessed_commit))
+        return assessed_commit == self.snapshot.repo_head
+
+    def direct_caller_files_result(self, *_args):
+        return {"available": False}
+
+    def percentiles_by_name(self, *_args):
+        return {}
+
+    def structural_symbols(self, *_args):
+        return None
+
+    def capability_for(self, *_args):
+        return None
+
+    def node_counts(self, *_args):
+        return {"total": 0, "callable": 0, "csharp_callable": 0}
+
+    def probe_capabilities(self, *_args):
+        return {}
+
+    def dependent_files(self, *_args):
+        return []
+
+    def dependent_files_result(self, *_args):
+        return {"available": False, "dependent_files": []}
+
+
+def _snapshot(head: str) -> GraphSnapshot:
+    return GraphSnapshot(
+        status="available", provider="CodeGraph", provider_version="1.1.1",
+        index_version="24", repo_head=head, config_digest="config",
+        graph_scope_digest="scope", sync_performed=True, fallback_reason=None,
+    )
+
+
+def test_build_assess_ports_prepares_once_then_reads_assessed_commit_independently(
+    monkeypatch, tmp_path
+) -> None:
+    graph = _PreparedGraph(_snapshot("b"))
+    monkeypatch.setattr(composition, "CodeGraphAdapter", lambda: graph)
+    monkeypatch.setattr(composition.git_adapter, "head_commit", lambda _root: "b")
+    req = candidate_parser.parse({"task": "t", "candidate_actions": [{"id": "a1"}]})
+    ctx = composition.resolve_repo_and_db(str(tmp_path))
+    try:
+        ports = composition.build_assess_ports(req, ctx)
+    finally:
+        ctx.store.close()
+
+    assert graph.prepare_calls == [ctx.repo.repo_root]
+    assert graph.bind_calls == [(ctx.repo.repo_root, "b")]
+    assert ports["graph_snapshot"] is graph.snapshot
+    assert ports["assessed_commit"] == "b"
+    assert ports["fanin_provider"] is graph
+    assert ports["file_fanin_provider"] is graph
+    assert ports["language_capability_provider"] is graph
+
+
+def test_build_assess_ports_rejects_snapshot_when_independent_assessed_commit_differs(
+    monkeypatch, tmp_path
+) -> None:
+    graph = _PreparedGraph(_snapshot("b"))
+    monkeypatch.setattr(composition, "CodeGraphAdapter", lambda: graph)
+    monkeypatch.setattr(composition.git_adapter, "head_commit", lambda _root: "c")
+    req = candidate_parser.parse({"task": "t", "candidate_actions": [{"id": "a1"}]})
+    ctx = composition.resolve_repo_and_db(str(tmp_path))
+    try:
+        composition.build_assess_ports(req, ctx)
+    finally:
+        ctx.store.close()
+
+    assert graph.bind_calls == [(ctx.repo.repo_root, "c")]
+
+
+def test_build_verify_ports_prepares_once_when_repo_root_is_explicit(monkeypatch) -> None:
+    graph = _PreparedGraph(_snapshot("b"))
+    monkeypatch.setattr(composition, "CodeGraphAdapter", lambda: graph)
+
+    composition.build_verify_ports("/repo")
+
+    assert graph.prepare_calls == ["/repo"]
+
+
+def test_graph_stats_capabilities_and_dependents_each_prepare_one_adapter(monkeypatch) -> None:
+    graphs: list[_PreparedGraph] = []
+
+    def factory() -> _PreparedGraph:
+        graph = _PreparedGraph(_snapshot("b"))
+        graphs.append(graph)
+        return graph
+
+    monkeypatch.setattr(composition, "CodeGraphAdapter", factory)
+
+    composition.graph_node_counts("/repo")
+    composition.probe_language_capabilities("/repo")
+    composition.dependent_files_result("/repo", "src/a.py")
+
+    assert len(graphs) == 3
+    assert [graph.prepare_calls for graph in graphs] == [["/repo"], ["/repo"], ["/repo"]]
 
 
 def test_verify_payload_exposes_measured_benefit_and_deltas() -> None:

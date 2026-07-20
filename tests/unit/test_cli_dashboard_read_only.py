@@ -48,6 +48,12 @@ def test_read_only_skips_repo_resolution_and_serves_read_only(monkeypatch, tmp_p
 
     monkeypatch.setattr("pebra.dashboard.server.serve", _serve)
     monkeypatch.setattr("pebra.dashboard.server.resolve_dashboard_token", lambda host, mode: None)
+    prepared = []
+    monkeypatch.setattr(
+        cli_dash.composition,
+        "prepare_dashboard_graph_reader",
+        lambda repo_root, *, read_only: prepared.append((repo_root, read_only)) or object(),
+    )
 
     class _NoResolve:
         def resolve(self, *a, **k):
@@ -62,3 +68,29 @@ def test_read_only_skips_repo_resolution_and_serves_read_only(monkeypatch, tmp_p
     assert seen["db"] == str(db)
     assert seen["repo_id"] == "repo_abc"
     assert seen["read_only"] is True
+    assert prepared == [(None, True)]
+
+
+def test_normal_dashboard_prepares_graph_once_and_injects_reader(monkeypatch, tmp_path):
+    seen = {}
+    db = tmp_path / "pebra.db"
+    reader = object()
+
+    monkeypatch.setattr(
+        cli_dash.composition,
+        "prepare_dashboard_graph_reader",
+        lambda repo_root, *, read_only: seen.update(
+            prepared=(repo_root, read_only)
+        ) or reader,
+    )
+    monkeypatch.setattr(
+        "pebra.dashboard.server.serve",
+        lambda _db_path, **kwargs: seen.update(kwargs),
+    )
+    monkeypatch.setattr("pebra.dashboard.server.resolve_dashboard_token", lambda host, mode: None)
+
+    rc = cli_dash.run(_args(repo_root=str(tmp_path), db=str(db)))
+
+    assert rc == 0
+    assert seen["prepared"] == (str(tmp_path.resolve()), False)
+    assert seen["graph_reader"] is reader

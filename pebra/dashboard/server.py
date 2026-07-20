@@ -113,11 +113,12 @@ def create_app(
     # repo_root binds the graph routes to a codebase on disk (the .codegraph index). None (e.g. a
     # replayed db from another machine) makes the graph routes fail-soft, never error.
     app.state.repo_root = repo_root
-    # graph_reader is injectable for tests; the default reads codegraph's SQLite via the real gate.
+    # A request must never prepare/sync. The CLI may inject a reader bound to an already-prepared
+    # adapter; the direct/default server posture is graph-unavailable and query-only.
     if graph_reader is None:
         from pebra.adapters.codegraph_graph_reader import CodeGraphReader
 
-        graph_reader = CodeGraphReader()
+        graph_reader = CodeGraphReader(status_fn=lambda _root: None)
     app.state.graph_reader = graph_reader
     allowed = _allowed_hosts(allowed_hosts)
 
@@ -159,6 +160,7 @@ def serve(
     repo_root: str | None = None,
     open_browser: bool = False,
     read_only: bool = False,
+    graph_reader: object | None = None,
 ) -> None:
     import uvicorn
 
@@ -167,7 +169,14 @@ def serve(
     token = token or None
     _require_token_for_network_bind(host, token)  # never expose the store to the network unauthenticated
     port = ports.allocate_port(host, requested=requested_port, instance=instance)
-    app = create_app(db_path, token, repo_id=repo_id, repo_root=repo_root, read_only=read_only)
+    app = create_app(
+        db_path,
+        token,
+        repo_id=repo_id,
+        repo_root=repo_root,
+        read_only=read_only,
+        graph_reader=graph_reader,
+    )
     url = _startup_url(host, port, token, repo_id)
     print(f"PEBRA Risk Observatory: {url}")
     if open_browser:

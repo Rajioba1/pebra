@@ -35,6 +35,7 @@ from pebra.core.calibrated_priors import CALIBRATED_PRIORS
 from pebra.core.warm_prior import apply_warm_prior
 from pebra.core.explanation_generator import Explanation
 from pebra.core.graph_trust import is_trusted_fanin
+from pebra.core.graph_snapshot import GraphSnapshot
 from pebra.core.language_capability import LanguageCapability, classify_tier
 from pebra.core.models import (
     AssessmentInput,
@@ -645,7 +646,11 @@ def _score_prepared_input(
         "worktree_dirty": ports.get("worktree_dirty"),
         "assessed_repo_root": repo_root,
     }
-    graph_provenance = _graph_provenance(inp)
+    graph_provenance = _graph_provenance(
+        inp,
+        graph_snapshot=ports.get("graph_snapshot"),
+        assessed_commit=ports.get("assessed_commit"),
+    )
     if graph_provenance:
         result.provenance["graph_provenance"] = graph_provenance
         capability = graph_provenance.get("language_capability")
@@ -677,6 +682,14 @@ def _score_prepared_input(
         inp.events, inp.candidate_graph_risk_evidence, patch_hash=patch_hash
     )
     prediction_features = dict(inp.structural_features or {})
+    if graph_provenance:
+        prediction_features["provenance"] = {
+            "provider_version": graph_provenance.get("provider_version"),
+            "index_version": graph_provenance.get("index_version"),
+            "repo_head": graph_provenance.get("repo_head"),
+            "config_digest": graph_provenance.get("config_digest"),
+            "graph_scope_digest": graph_provenance.get("graph_scope_digest"),
+        }
     if inp.candidate_graph_risk_evidence.status != "not_applicable":
         prediction_features["graph_refinement"] = {
             "status": inp.candidate_graph_risk_evidence.status,
@@ -724,15 +737,36 @@ def _score_action(
     return _score_prepared_input(inp, action, repo_root, **ports)
 
 
-def _graph_provenance(inp: AssessmentInput) -> dict[str, Any]:
+def _graph_provenance(
+    inp: AssessmentInput,
+    *,
+    graph_snapshot: GraphSnapshot | None = None,
+    assessed_commit: str | None = None,
+) -> dict[str, Any]:
     fanin = inp.fanin_evidence
     if fanin is None:
         return {}
+    if graph_snapshot is not None and (
+        graph_snapshot.status != "available"
+        or assessed_commit is None
+        or assessed_commit != graph_snapshot.repo_head
+    ):
+        return {}
     prov: dict[str, Any] = {
         "engine": "CodeGraph",
-        "provider_version": fanin.provider_version,
-        "index_version": fanin.index_version,
+        "provider_version": (
+            graph_snapshot.provider_version if graph_snapshot is not None else fanin.provider_version
+        ),
+        "index_version": (
+            graph_snapshot.index_version if graph_snapshot is not None else fanin.index_version
+        ),
     }
+    if graph_snapshot is not None:
+        prov.update({
+            "repo_head": graph_snapshot.repo_head,
+            "config_digest": graph_snapshot.config_digest,
+            "graph_scope_digest": graph_snapshot.graph_scope_digest,
+        })
     # Honest per-language reach: measured tier + coverage for the resolved edit's language, and the
     # tier that produced THIS diff. Lets a reader see WHY a non-Python diff is coarse — so
     # "unavailable"/"partial" can't be mistaken for "verified full support".
@@ -1028,6 +1062,7 @@ def assess(
     trusted_task_obligations: dict[str, Any] | None = None,
     candidate_binding_provider: CandidateBindingProvider | None = None,
     graph_risk_refinement_provider: GraphRiskRefinementProvider | None = None,
+    graph_snapshot: GraphSnapshot | None = None,
     candidate_replay_cache: CandidateReplayPort | None = None,
 ) -> AssessmentOutcome:
     request_validator.validate(request)
@@ -1120,6 +1155,7 @@ def assess(
             "revision_origin": revision_origin,
             "prepared_revision_origin": revision_origin,
             "is_revision": revise_attempt > 0,
+            "graph_snapshot": graph_snapshot,
         }
         if candidate_binding_provider is not None:
             score_ports["prepared_candidate_binding"] = (

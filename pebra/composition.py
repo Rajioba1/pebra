@@ -65,7 +65,9 @@ def resolve_repo_and_db(start_path: str, db_path: str | None = None) -> RepoCont
 def graph_node_counts(repo_root: str) -> dict[str, int]:
     """Repo-wide CodeGraph node counts via the codegraph adapter (used by `pebra graph-stats` and the
     A/B graph preflight for an independent graph-validity check). Zeros when the graph is absent."""
-    return CodeGraphAdapter().node_counts(repo_root)
+    adapter = CodeGraphAdapter()
+    adapter.prepare(repo_root)
+    return adapter.node_counts(repo_root)
 
 
 def probe_language_capabilities(repo_root: str) -> list[dict[str, Any]]:
@@ -74,7 +76,9 @@ def probe_language_capabilities(repo_root: str) -> list[dict[str, Any]]:
     desc so the best-covered languages lead."""
     from pebra.core.language_capability import classify_tier  # noqa: PLC0415
 
-    caps = CodeGraphAdapter().probe_capabilities(repo_root)
+    adapter = CodeGraphAdapter()
+    adapter.prepare(repo_root)
+    caps = adapter.probe_capabilities(repo_root)
     rows = [
         {
             "language": cap.language,
@@ -92,12 +96,27 @@ def probe_language_capabilities(repo_root: str) -> list[dict[str, Any]]:
 def dependent_files(repo_root: str, target: str) -> list[str]:
     """Repo-relative files that depend on ``target`` (the file-level blast radius), via the codegraph
     adapter. Empty when the graph is absent. Used by `pebra dependents`."""
-    return CodeGraphAdapter().dependent_files(target, repo_root)
+    adapter = CodeGraphAdapter()
+    adapter.prepare(repo_root)
+    return adapter.dependent_files(target, repo_root)
 
 
 def dependent_files_result(repo_root: str, target: str) -> dict[str, Any]:
     """Structured file-level blast radius with graph availability/fallback metadata."""
-    return CodeGraphAdapter().dependent_files_result(target, repo_root)
+    adapter = CodeGraphAdapter()
+    adapter.prepare(repo_root)
+    return adapter.dependent_files_result(target, repo_root)
+
+
+def prepare_dashboard_graph_reader(repo_root: str | None, *, read_only: bool) -> object:
+    """Build a query-only reader; preparation is explicit and never reachable from a GET route."""
+    from pebra.adapters.codegraph_graph_reader import CodeGraphReader  # noqa: PLC0415
+
+    if read_only or repo_root is None:
+        return CodeGraphReader(status_fn=lambda _root: None)
+    adapter = CodeGraphAdapter()
+    adapter.prepare(repo_root)
+    return CodeGraphReader(status_fn=adapter.prepared_status)
 
 
 def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str, Any]:
@@ -107,6 +126,9 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
     # One CodeGraphAdapter serves both the per-symbol fan-in and the whole-file roll-up (it satisfies
     # both ports structurally) — sharing the instance shares its distribution cache (one DB scan).
     codegraph = CodeGraphAdapter()
+    graph_snapshot = codegraph.prepare(ctx.repo.repo_root)
+    assessed_commit = git_adapter.head_commit(ctx.repo.repo_root)
+    codegraph.bind_assessed_commit(ctx.repo.repo_root, assessed_commit)
 
     def dependent_context(repo_root: str, scope: GraphRiskScope) -> tuple[str, ...]:
         result = codegraph.direct_caller_files_result(scope.owner_node_ids, repo_root)
@@ -127,7 +149,8 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
         "sanction_port": SanctionStore(ctx.store, repo_root=ctx.repo.repo_root),
         "repository_registry": ctx.registry,
         "store": ctx.store,
-        "assessed_commit": git_adapter.head_commit(ctx.repo.repo_root),
+        "assessed_commit": assessed_commit,
+        "graph_snapshot": graph_snapshot,
         "worktree_dirty": git_adapter.worktree_dirty(ctx.repo.repo_root),
         # Phase-4 reframe: PEBRA-owned structural feature capture (no external codeindex/sem). Shared
         # by CLI + MCP so both persist the same feature payload with predictions.
@@ -166,7 +189,7 @@ def build_assess_ports(request: AssessmentRequest, ctx: RepoContext) -> dict[str
     }
 
 
-def build_verify_ports() -> dict[str, Any]:
+def build_verify_ports(repo_root: str | None = None) -> dict[str, Any]:
     """The (stateless) adapter bundle ``verify_controller.verify`` needs.
 
     A1: the verifier gets the graph engine's per-symbol fan-in lookup so post-edit reclassification
@@ -175,6 +198,8 @@ def build_verify_ports() -> dict[str, Any]:
     # One CodeGraphAdapter backs both the per-symbol fan-in lookup (Python rows) and the multi-language
     # structural reclassification of non-Python changed files (else they'd be silently skipped).
     codegraph = CodeGraphAdapter()
+    if repo_root is not None:
+        codegraph.prepare(repo_root)
     return {
         "change_verifier": GitChangeVerifier(
             fanin_lookup=codegraph.percentiles_by_name,
@@ -343,6 +368,9 @@ def _graph_provenance(r: Any) -> dict[str, Any]:
         ),
         "provider_version": stored.get("provider_version"),
         "index_version": stored.get("index_version"),
+        "repo_head": stored.get("repo_head"),
+        "config_digest": stored.get("config_digest"),
+        "graph_scope_digest": stored.get("graph_scope_digest"),
         "symbol_fanin": symbol,
         "file_fanin_rollup": rollup,
         "fanin_validity": r.fanin_validity,

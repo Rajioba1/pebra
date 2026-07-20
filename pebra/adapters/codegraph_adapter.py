@@ -21,6 +21,7 @@ pendingChanges is empty AND index.reindexRecommended is false.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -32,10 +33,12 @@ from typing import Any
 
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.engine_paths import find_engine
+from pebra.core.graph_snapshot import GraphSnapshot
 from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range
 from pebra.core.language_capability import EXPORT_AS_VISIBILITY_LANGUAGES, LanguageCapability
 from pebra.core.models import CandidateAction, FanInEvidence, FileFanInRollup, OwnerRiskEvidence
 from pebra.core.score_math import fractional_rank
+from pebra.adapters import git_adapter
 
 # Edge kinds that constitute per-symbol fan-in. 'imports' is deliberately excluded (file/module-level).
 _FANIN_EDGE_KINDS = ("calls", "references", "instantiates")
@@ -143,43 +146,167 @@ def _changed_after_side_ranges(before: str, after: str) -> list[tuple[int, int]]
     return _merge_contiguous(lines)
 
 
-def _default_status(repo_root: str) -> dict[str, Any] | None:
-    """Real freshness gate — STATUS-FIRST, then a *conditional* repair sync.
-
-    Ordering is load-bearing: ``codegraph sync`` must NEVER run before we know the index state, because
-    a worktree mismatch means the resolved index belongs to a *different* worktree — syncing it would
-    refresh (and mutate) the wrong, borrowed index without fixing the mismatch. So:
-
-        status  ->  if absent/uninitialized/worktree-mismatch/already-fresh: stop (no sync)
-                ->  else (initialized, same worktree, merely stale): sync to repair, then re-status
-
-    Returns the parsed status dict, or None if the codegraph CLI is unavailable / errors / times out.
-    The path is POSITIONAL on ``sync``/``status`` (no ``--path`` option on those two)."""
-    exe = find_engine()  # PEBRA_CODEGRAPH_BIN -> PATH -> managed install (works in a fresh shell)
-    if exe is None:
-        return None  # engine not found anywhere -> don't even spawn (caller emits an install hint)
+def _config_digest(repo_root: str) -> str:
+    path = Path(repo_root) / "codegraph.json"
     try:
-        initial = _run_status(repo_root, exe)
-        if initial is None:
-            return None
-        # Only an initialized, same-worktree, merely-stale index is safe to repair with sync.
-        if (
-            initial.get("initialized") is False
-            or initial.get("worktreeMismatch")
-            or _is_fresh(initial)
-        ):
-            return initial
-        # resolve_engine_argv handles the Windows .cmd shim (codegraph has no .exe) — a bare
-        # ["codegraph", ...] FileNotFoundErrors on Windows even when installed.
-        subprocess.run(
-            resolve_engine_argv(exe, ["sync", repo_root]),
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=120, check=False,
-        )
-        post = _run_status(repo_root, exe)
-        return post if post is not None else initial
-    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "error"
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _index_version(repo_root: str, status: dict[str, Any]) -> str | None:
+    index = status.get("index") or {}
+    for key in ("extractionVersion", "indexVersion", "schemaVersion"):
+        value = index.get(key)
+        if value is not None:
+            return str(value)
+    db_path = _db_path_from_status(repo_root, status)
+    if not db_path.is_file():
         return None
+    try:
+        con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            row = con.execute(
+                "SELECT value FROM project_metadata WHERE key = ?",
+                ("indexed_with_extraction_version",),
+            ).fetchone()
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    return str(row[0]) if row and row[0] is not None else None
+
+
+def _scope_digest(
+    provider: str,
+    provider_version: str | None,
+    index_version: str | None,
+    config_digest: str,
+) -> str:
+    payload = {
+        "config_digest": config_digest,
+        "index_version": index_version,
+        "provider": provider,
+        "provider_version": provider_version,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _failed_snapshot(
+    status: str,
+    config_digest: str,
+    reason: str,
+    *,
+    sync_performed: bool = False,
+) -> GraphSnapshot:
+    return GraphSnapshot(
+        status=status,  # type: ignore[arg-type]
+        provider="CodeGraph",
+        provider_version=None,
+        index_version=None,
+        repo_head=None,
+        config_digest=config_digest,
+        graph_scope_digest=None,
+        sync_performed=sync_performed,
+        fallback_reason=reason,
+    )
+
+
+def _prepare_default(repo_root: str) -> tuple[GraphSnapshot, dict[str, Any] | None]:
+    """Reconcile one existing same-worktree index behind stable HEAD/config fences."""
+    exe = find_engine()
+    initial_config = _config_digest(repo_root)
+    if exe is None:
+        return _failed_snapshot("unavailable", initial_config, "codegraph CLI not found"), None
+    for attempt in range(2):
+        head_before = git_adapter.head_commit(repo_root)
+        config_before = _config_digest(repo_root)
+        if head_before is None:
+            return _failed_snapshot(
+                "unavailable", config_before, "repository HEAD unavailable"
+            ), None
+        try:
+            initial = _run_status(repo_root, exe)
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            initial = None
+        if initial is None:
+            return _failed_snapshot(
+                "unavailable", config_before, "codegraph status unavailable"
+            ), None
+        if initial.get("initialized") is False:
+            return _failed_snapshot(
+                "unavailable", config_before, "codegraph index not initialized"
+            ), None
+        if initial.get("worktreeMismatch"):
+            return _failed_snapshot(
+                "unavailable", config_before, "codegraph index belongs to another worktree"
+            ), None
+        try:
+            sync = subprocess.run(
+                resolve_engine_argv(exe, ["sync", repo_root]),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return _failed_snapshot(
+                "unavailable", config_before, "codegraph sync failed", sync_performed=True
+            ), None
+        if sync.returncode != 0:
+            return _failed_snapshot(
+                "unavailable", config_before, "codegraph sync failed", sync_performed=True
+            ), None
+        try:
+            post = _run_status(repo_root, exe)
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            post = None
+        if post is None:
+            return _failed_snapshot(
+                "unavailable", config_before, "codegraph post-sync status unavailable",
+                sync_performed=True,
+            ), None
+        if not _is_fresh(post):
+            return _failed_snapshot(
+                "stale", config_before, "codegraph index stale after sync", sync_performed=True
+            ), None
+        head_after = git_adapter.head_commit(repo_root)
+        config_after = _config_digest(repo_root)
+        if head_before == head_after and config_before == config_after and head_after is not None:
+            provider_version = str(post["version"]) if post.get("version") is not None else None
+            index_version = _index_version(repo_root, post)
+            return GraphSnapshot(
+                status="available",
+                provider="CodeGraph",
+                provider_version=provider_version,
+                index_version=index_version,
+                repo_head=head_after,
+                config_digest=config_after,
+                graph_scope_digest=_scope_digest(
+                    "CodeGraph", provider_version, index_version, config_after
+                ),
+                sync_performed=True,
+                fallback_reason=None,
+            ), post
+        if attempt == 1:
+            return _failed_snapshot(
+                "stale",
+                config_after,
+                "repository HEAD or codegraph.json changed during graph preparation",
+                sync_performed=True,
+            ), None
+    raise AssertionError("unreachable")
+
+
+def _default_status(repo_root: str) -> dict[str, Any] | None:
+    """Compatibility wrapper returning only an accepted prepared status."""
+    return _prepare_default(repo_root)[1]
 
 
 def _run_status(repo_root: str, exe: str) -> dict[str, Any] | None:
@@ -232,22 +359,84 @@ class CodeGraphAdapter:
     """
 
     def __init__(self, status_fn: Callable[[str], dict[str, Any] | None] | None = None) -> None:
-        self._status_fn = status_fn or _default_status
+        self._status_fn = status_fn
         self._dist_cache: dict[tuple[str, float], list[int]] = {}
         self._impact_dist_cache: dict[tuple[str, float], list[int]] = {}
         self._transitive_impact_dist_cache: dict[tuple[str, float], list[int]] = {}
         self._file_rollup_dist_cache: dict[tuple[str, float], list[int]] = {}
         self._status_cache: dict[str, dict[str, Any] | None] = {}
+        self._snapshot_cache: dict[str, GraphSnapshot] = {}
         # Memoize the capability probe per repo_root for this adapter's lifetime (one assess()/CLI call):
         # fanin() already spawned a `codegraph status` subprocess for the same repo, so re-probing per
         # action would double the subprocess count. Same-lifetime staleness is a non-issue (the adapter
         # is rebuilt per assess() in composition), mirroring _dist_cache's per-instance scope.
         self._probe_cache: dict[str, tuple[dict[str, LanguageCapability], bool, str | None]] = {}
 
+    def prepare(self, repo_root: str) -> GraphSnapshot:
+        if repo_root in self._snapshot_cache:
+            return self._snapshot_cache[repo_root]
+        if self._status_fn is None:
+            snapshot, status = _prepare_default(repo_root)
+        else:
+            status = self._status_fn(repo_root)
+            config_digest = _config_digest(repo_root)
+            if status is None:
+                snapshot = _failed_snapshot(
+                    "unavailable", config_digest, "codegraph CLI not found"
+                )
+            elif status.get("initialized") is False:
+                snapshot = _failed_snapshot(
+                    "unavailable", config_digest, "codegraph index not initialized"
+                )
+            elif status.get("worktreeMismatch") or not _is_fresh(status):
+                snapshot = _failed_snapshot(
+                    "stale", config_digest, "codegraph index stale or worktree-mismatched"
+                )
+            else:
+                provider_version = (
+                    str(status["version"]) if status.get("version") is not None else None
+                )
+                index_version = _index_version(repo_root, status)
+                snapshot = GraphSnapshot(
+                    status="available",
+                    provider="CodeGraph",
+                    provider_version=provider_version,
+                    index_version=index_version,
+                    repo_head=git_adapter.head_commit(repo_root),
+                    config_digest=config_digest,
+                    graph_scope_digest=_scope_digest(
+                        "CodeGraph", provider_version, index_version, config_digest
+                    ),
+                    sync_performed=False,
+                    fallback_reason=None,
+                )
+        self._snapshot_cache[repo_root] = snapshot
+        self._status_cache[repo_root] = (
+            status
+            if snapshot.status == "available" or self._status_fn is not None
+            else None
+        )
+        return snapshot
+
+    def prepared_status(self, repo_root: str) -> dict[str, Any] | None:
+        """Return cached accepted status without running preparation."""
+        return self._status_cache.get(repo_root)
+
+    def bind_assessed_commit(self, repo_root: str, assessed_commit: str | None) -> bool:
+        """Keep prepared graph reads trusted only for the independently observed assessment HEAD."""
+        snapshot = self.prepare(repo_root)
+        trusted = (
+            snapshot.status == "available"
+            and assessed_commit is not None
+            and assessed_commit == snapshot.repo_head
+        )
+        if not trusted:
+            self._status_cache[repo_root] = None
+        return trusted
+
     def _status(self, repo_root: str) -> dict[str, Any] | None:
-        if repo_root not in self._status_cache:
-            self._status_cache[repo_root] = self._status_fn(repo_root)
-        return self._status_cache[repo_root]
+        self.prepare(repo_root)
+        return self._status_cache.get(repo_root)
 
     def node_counts(self, repo_root: str) -> dict[str, int]:
         """Repo-wide CodeGraph node counts for an INDEPENDENT graph-validity check (used by the A/B

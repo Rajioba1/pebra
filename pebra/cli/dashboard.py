@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from pebra import composition
 from pebra.observatory_context import ObservatoryContextError, resolve_observatory_context
 
 
@@ -69,6 +70,9 @@ def run(args: Any) -> int:
         print(f"error: {exc}", file=sys.stderr)  # fail loudly, before binding anything
         return 1
 
+    graph_reader = composition.prepare_dashboard_graph_reader(
+        ctx.repo_root, read_only=ctx.read_only
+    )
     serve(
         ctx.db_path,
         host=args.host,
@@ -79,5 +83,6 @@ def run(args: Any) -> int:
         repo_root=ctx.repo_root,
         read_only=ctx.read_only,
         open_browser=args.open,
+        graph_reader=graph_reader,
     )
     return 0

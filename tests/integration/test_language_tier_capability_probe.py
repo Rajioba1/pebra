@@ -80,6 +80,19 @@ def measured_tiers(tmp_path_factory) -> dict[str, str]:
     repo = tmp_path_factory.mktemp("lang-tier-probe")
     for fname, src in _FIXTURES.values():
         (repo / fname).write_text(src, encoding="utf-8")
+    subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"], check=True
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "fixture"],
+        capture_output=True,
+        check=True,
+    )
     proc = subprocess.run(
         resolve_engine_argv(find_engine(), ["init", str(repo)]),
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,

@@ -69,7 +69,7 @@ def run(args: Any) -> int:
             dry_run_preview_present=args.dry_run_preview,
             repo_root=ctx.repo.repo_root,
             store=ctx.store,
-            **composition.build_verify_ports(),
+            **composition.build_verify_ports(ctx.repo.repo_root),
         )
         if args.as_json:
             print(json.dumps(composition.verify_payload(outcome), indent=2, sort_keys=True))

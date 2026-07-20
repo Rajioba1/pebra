@@ -40,6 +40,7 @@ def _features(
     is_public_api=False,
     domains=None,
     change_kind="BEHAVIORAL",
+    graph_scope="scope-1",
 ):
     return {
         "symbol": {
@@ -49,7 +50,11 @@ def _features(
         },
         "structural": {"is_high_symbol_fan_in": False},
         "domain": {"matched_domains": domains or [], "criticality_stage": "C2"},
-        "provenance": {"provider_version": provider, "index_version": index},
+        "provenance": {
+            "provider_version": provider,
+            "index_version": index,
+            "graph_scope_digest": graph_scope,
+        },
     }
 
 
@@ -253,10 +258,73 @@ def test_promoted_fact_carries_version_metadata():
     fj = facts[0]["fact_json"]
     assert fj["provider_version"] == "cg-1.1.1"
     assert fj["index_version"] == "idx-7"
+    assert fj["graph_scope_digest"] == "scope-1"
     assert fj["calibration_method"] == "observed_rate_v1"
     assert fj["value"] == pytest.approx(1.0)
     assert fj["variance"] > 0.0
     assert fj["variance_method"] == "beta_1_1_parameter_variance"
+
+
+def test_graph_derived_fact_requires_one_nonempty_scope_digest():
+    rows = [_row(0.1, 1) for _ in range(5)]
+    for row in rows:
+        row["features"]["structural"]["is_high_symbol_fan_in"] = True
+    learning = _FakeLearning()
+
+    result = pc.run_promotion(
+        "r",
+        store=_FakeStore(rows),
+        learning_port=learning,
+        config=pe.PromotionConfig(min_calibration_samples=5),
+    )
+
+    assert result.promoted is True
+    facts = learning.calls[0][2]
+    high_fanin = [fact for fact in facts if fact["scope_kind"] == "high_symbol_fan_in"]
+    assert high_fanin
+    assert high_fanin[0]["fact_json"]["graph_scope_digest"] == "scope-1"
+
+
+@pytest.mark.parametrize("scopes", [["scope-1", "scope-2"], [None, "scope-1"]])
+def test_graph_derived_fact_vetoes_mixed_or_missing_scope_digests(scopes):
+    rows = [_row(0.1, 1) for _ in range(6)]
+    for index, row in enumerate(rows):
+        row["features"]["structural"]["is_high_symbol_fan_in"] = True
+        row["features"]["provenance"]["graph_scope_digest"] = scopes[index % len(scopes)]
+    learning = _FakeLearning()
+
+    result = pc.run_promotion(
+        "r",
+        store=_FakeStore(rows),
+        learning_port=learning,
+        config=pe.PromotionConfig(min_calibration_samples=5),
+    )
+
+    assert result.promoted is True  # non-graph scopes retain their existing behavior
+    facts = learning.calls[0][2]
+    assert not any(fact["scope_kind"] == "high_symbol_fan_in" for fact in facts)
+    assert "GRAPH_SCOPE_COHORT_MISMATCH" in result.veto_reasons
+
+
+def test_legacy_rows_veto_only_graph_derived_facts():
+    rows = [_row(0.1, 1) for _ in range(5)]
+    for row in rows:
+        row["features"]["structural"]["is_high_symbol_fan_in"] = True
+        row["features"]["provenance"].pop("graph_scope_digest")
+    learning = _FakeLearning()
+
+    result = pc.run_promotion(
+        "r",
+        store=_FakeStore(rows),
+        learning_port=learning,
+        config=pe.PromotionConfig(min_calibration_samples=5),
+    )
+
+    assert result.promoted is True
+    facts = learning.calls[0][2]
+    assert any(fact["scope_kind"] == "global" for fact in facts)
+    assert not any(fact["scope_kind"] == "high_symbol_fan_in" for fact in facts)
+    assert "GRAPH_SCOPE_COHORT_MISMATCH" in result.veto_reasons
 
 
 def test_derives_public_api_domain_and_domain_change_kind_scopes():

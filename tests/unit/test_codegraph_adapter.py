@@ -1221,6 +1221,7 @@ def _patch(monkeypatch, recorder, *, on_path=True):
     # _default_status resolves the engine via find_engine() (not shutil.which directly), so mock that
     monkeypatch.setattr(cga, "find_engine", lambda: "/usr/bin/codegraph" if on_path else None)
     monkeypatch.setattr(cga.subprocess, "run", recorder)
+    monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "commit")
 
 
 def test_default_status_never_syncs_on_worktree_mismatch(monkeypatch) -> None:
@@ -1230,7 +1231,7 @@ def test_default_status_never_syncs_on_worktree_mismatch(monkeypatch) -> None:
     _patch(monkeypatch, rec)
     out = cga._default_status("/repo")
     assert rec.sync_calls == []  # the borrowed index must NOT be synced
-    assert out and out.get("worktreeMismatch")
+    assert out is None
 
 
 def test_default_status_never_syncs_when_uninitialized(monkeypatch) -> None:
@@ -1238,15 +1239,16 @@ def test_default_status_never_syncs_when_uninitialized(monkeypatch) -> None:
     _patch(monkeypatch, rec)
     out = cga._default_status("/repo")
     assert rec.sync_calls == []
-    assert out == {"initialized": False}
+    assert out is None
 
 
-def test_default_status_no_sync_when_already_fresh(monkeypatch) -> None:
-    rec = _Recorder([{"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-                      "index": {"reindexRecommended": False}}])
+def test_default_status_syncs_even_when_initial_status_is_fresh(monkeypatch) -> None:
+    fresh = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+             "index": {"reindexRecommended": False}}
+    rec = _Recorder([fresh, fresh])
     _patch(monkeypatch, rec)
     out = cga._default_status("/repo")
-    assert rec.sync_calls == [] and rec.status_calls and out is not None
+    assert len(rec.sync_calls) == 1 and len(rec.status_calls) == 2 and out == fresh
 
 
 def test_default_status_syncs_only_when_stale_initialized_same_worktree(monkeypatch) -> None:
@@ -1265,7 +1267,7 @@ def test_default_status_syncs_only_when_stale_initialized_same_worktree(monkeypa
     assert out == fresh  # returns the post-sync status
 
 
-def test_default_status_returns_initial_when_post_sync_status_fails(monkeypatch) -> None:
+def test_default_status_never_returns_initial_when_post_sync_status_fails(monkeypatch) -> None:
     stale = {"initialized": True, "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
              "index": {"reindexRecommended": False}}
     rec = _Recorder([stale, None])  # post-sync status probe fails -> fall back to the stale initial
@@ -1273,7 +1275,7 @@ def test_default_status_returns_initial_when_post_sync_status_fails(monkeypatch)
     out = cga._default_status("/repo")
     assert len(rec.sync_calls) == 1
     assert rec.sync_calls[0][0] == "/usr/bin/codegraph"  # resolved full path, not bare name
-    assert out == stale
+    assert out is None
 
 
 @pytest.mark.parametrize("payload", (None, [], 42, "status"))
@@ -1345,8 +1347,9 @@ def test_percentiles_by_name_empty_for_no_symbols(tmp_path) -> None:
 def test_default_status_invokes_resolved_full_path_not_bare_name(monkeypatch) -> None:
     # A2/Windows: status/sync must run the resolved full path (shutil.which), never the bare name
     # ("codegraph"), or Windows FileNotFoundErrors on the .cmd shim even when installed.
-    rec = _Recorder([{"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-                      "index": {"reindexRecommended": False}}])
+    fresh = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+             "index": {"reindexRecommended": False}}
+    rec = _Recorder([fresh, fresh])
     _patch(monkeypatch, rec)
     cga._default_status("/repo")
     assert rec.calls and all(c[0] == "/usr/bin/codegraph" for c in rec.calls)
@@ -1359,6 +1362,12 @@ def test_default_status_against_real_initialized_repo(tmp_path) -> None:
     import subprocess
 
     (tmp_path / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "m.py"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "initial"],
+                   capture_output=True, check=True)
     # resolve via find_engine (PATH or managed install), then build argv (cmd /c for the Windows .cmd
     # shim); utf-8 decode because codegraph emits UTF-8 progress output (cp1252 default raises on Windows)
     exe = cga.find_engine()

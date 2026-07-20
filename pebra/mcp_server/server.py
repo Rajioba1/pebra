@@ -187,7 +187,7 @@ def _handle_verify(arguments: dict[str, Any]) -> dict[str, Any]:
             dry_run_preview_present=bool(arguments.get("dry_run_preview", False)),
             repo_root=ctx.repo.repo_root,
             store=ctx.store,
-            **composition.build_verify_ports(),
+            **composition.build_verify_ports(ctx.repo.repo_root),
         )
         return composition.verify_payload(outcome)
     finally:

@@ -107,20 +107,46 @@ def _derive_scope_candidates(
     return cands
 
 
-def _extract_provider_provenance(rows: list[dict[str, Any]]) -> tuple[str | None, str | None]:
+def _extract_provider_provenance(
+    rows: list[dict[str, Any]],
+) -> tuple[str | None, str | None, str | None]:
     """Most common provider_version / index_version across the rows (provenance preserved in fact_json
     even though v1 does not group by version)."""
     provs = Counter()
     idxs = Counter()
+    scopes: set[str] = set()
+    scope_missing = False
     for r in rows:
         prov = (r.get("features") or {}).get("provenance") or {}
         if prov.get("provider_version"):
             provs[prov["provider_version"]] += 1
         if prov.get("index_version"):
             idxs[prov["index_version"]] += 1
+        scope = prov.get("graph_scope_digest")
+        if isinstance(scope, str) and scope:
+            scopes.add(scope)
+        else:
+            scope_missing = True
     provider = provs.most_common(1)[0][0] if provs else None
     index = idxs.most_common(1)[0][0] if idxs else None
-    return provider, index
+    graph_scope = next(iter(scopes)) if len(scopes) == 1 and not scope_missing else None
+    return provider, index, graph_scope
+
+
+def _is_graph_derived_scope(scope_kind: str) -> bool:
+    return scope_kind in {"high_symbol_fan_in", "domain_high_symbol_fan_in"}
+
+
+def _one_graph_scope(rows: list[dict[str, Any]]) -> str | None:
+    scopes: set[str] = set()
+    for row in rows:
+        scope = ((row.get("features") or {}).get("provenance") or {}).get(
+            "graph_scope_digest"
+        )
+        if not isinstance(scope, str) or not scope:
+            return None
+        scopes.add(scope)
+    return next(iter(scopes)) if len(scopes) == 1 else None
 
 
 def _collect_facts(
@@ -144,7 +170,7 @@ def _collect_facts(
     veto_reasons: list[str] = []
     considered = 0
     for target_name, target_rows in by_target.items():
-        provider_v, index_v = _extract_provider_provenance(target_rows)
+        provider_v, index_v, graph_scope = _extract_provider_provenance(target_rows)
         target_type = target_rows[0]["target_type"]
         for candidate in _derive_scope_candidates(target_rows, target_name, target_type):
             considered += 1
@@ -158,6 +184,10 @@ def _collect_facts(
                 if pe.scope_matches_features(candidate.scope_kind, candidate.scope_value,
                                              candidate.scope_json, r.get("features") or {})
             ]
+            candidate_graph_scope = _one_graph_scope(group_rows)
+            if _is_graph_derived_scope(candidate.scope_kind) and candidate_graph_scope is None:
+                veto_reasons.append("GRAPH_SCOPE_COHORT_MISMATCH")
+                continue
             fact_json = {
                 "value": value_fn(group_rows),
                 "weight": 1.0,
@@ -167,6 +197,7 @@ def _collect_facts(
                 "scope_change_count": 0,
                 "provider_version": provider_v,
                 "index_version": index_v,
+                "graph_scope_digest": candidate_graph_scope or graph_scope,
             }
             if variance_fn is not None:
                 fact_json["variance"] = variance_fn(group_rows)
