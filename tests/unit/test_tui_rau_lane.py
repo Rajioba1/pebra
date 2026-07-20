@@ -8,7 +8,13 @@ overflow is shown with an arrow, and the numeric RAU value (rendered separately)
 from __future__ import annotations
 
 from pebra.tui.theme import VERDICT_PALETTE
-from pebra.tui.widgets.ledger_table import format_rau, render_rau_lane
+from pebra.tui.widgets.ledger_table import (
+    format_assessed_at,
+    format_rau,
+    format_target,
+    format_task,
+    render_rau_lane,
+)
 
 _DECISION_GLYPHS = {v.glyph for v in VERDICT_PALETTE.values()}
 _MARKER = "●"
@@ -72,3 +78,27 @@ def test_format_rau_missing_and_nonfinite_render_dash() -> None:
     assert format_rau(None) == "—"
     assert format_rau(float("nan")) == "—"
     assert format_rau(float("inf")) == "—"
+
+
+def test_single_target_uses_compact_filename() -> None:
+    assert format_target(["src/auth/login.py"]) == "login.py"
+
+
+def test_multiple_targets_render_filename_plus_count() -> None:
+    assert format_target(["src/auth.py", "src/session.py", "tests/test_auth.py"]) == "auth.py +2"
+
+
+def test_unavailable_target_is_explicit() -> None:
+    assert format_target([]) == "target unavailable"
+
+
+def test_assessed_at_is_compact_and_legacy_safe() -> None:
+    assert format_assessed_at("2026-07-20T12:34:56.123456+00:00") == "2026-07-20 12:34"
+    assert format_assessed_at(None) == "—"
+
+
+def test_task_display_is_bounded_without_mutating_row_data() -> None:
+    row = {"task": "  Update   authentication validation across every entry point  "}
+
+    assert format_task(row["task"]) == "Update authentication valid…"
+    assert row["task"] == "  Update   authentication validation across every entry point  "

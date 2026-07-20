@@ -132,7 +132,11 @@ def _seed(tmp_path, *, rows: int = 2) -> str:
                 model_guidance_packet={"decision": decision.value},
                 assessed_commit=commit,
             ),
-            {"task": "t"},
+            {
+                "task": "Fix failing login validation without changing session behavior",
+                "action_id": "edit-login",
+                "revision_envelope": {"expected_files": ["src/auth.py", "tests/test_auth.py"]},
+            },
         )
     store.close()
     return db
@@ -172,9 +176,9 @@ def test_content_columns_preserve_the_full_lane_and_decision_label(tmp_path) -> 
 
     async def scenario() -> None:
         app = ObservatoryApp(_ctx_for(db))
-        async with app.run_test():
+        async with app.run_test(size=(120, 30)):
             columns = list(app.query_one("#ledger", DataTable).columns.values())
-            lane, decision = columns[2], columns[3]
+            lane, decision = columns[4], columns[5]
             assert lane.auto_width is False
             assert lane.width == LEDGER_LANE_WIDTH == len(render_rau_lane(0.0, width=LEDGER_LANE_WIDTH))
             assert decision.auto_width is False
@@ -256,35 +260,76 @@ def test_header_subtitle_shows_source_provenance() -> None:
     asyncio.run(scenario())
 
 
-def test_ledger_fits_eighty_columns_and_pins_asm_id(tmp_path) -> None:
+def _column_labels(table) -> list[str]:
+    return [column.label.plain for column in table.columns.values()]
+
+
+@pytest.mark.parametrize(
+    ("width", "expected"),
+    [
+        (70, ["ID", "target", "decision", "RAU"]),
+        (80, ["ID", "target", "assessed commit", "decision", "RAU", "status"]),
+        (100, ["ID", "target", "assessed commit", "decision", "RAU", "status"]),
+        (
+            120,
+            [
+                "ID", "target", "task", "assessed commit", "gate lane", "decision", "RAU",
+                "expected loss", "benefit", "status", "assessed time",
+            ],
+        ),
+    ],
+)
+def test_ledger_uses_locked_breakpoint_columns(tmp_path, width: int, expected: list[str]) -> None:
     from textual.widgets import DataTable
 
     db = _seed(tmp_path, rows=2)
 
     async def scenario() -> None:
         app = ObservatoryApp(_ctx_for(db))
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(width, 30)) as pilot:
             await pilot.pause()
             table = app.query_one("#ledger", DataTable)
-            assert table.fixed_columns == 1  # asm-id column pinned across horizontal scroll
-            assert table.max_scroll_x == 0  # all eight columns fit 80 cols — no scroll needed
-            assert app.query_one("#scroll-hint").display is False
+            assert table.fixed_columns == 1
+            assert _column_labels(table) == expected
 
     asyncio.run(scenario())
 
 
-def test_narrow_terminal_reveals_scroll_hint(tmp_path) -> None:
+def test_resize_rebuild_preserves_selected_assessment(tmp_path) -> None:
     from textual.widgets import DataTable
 
     db = _seed(tmp_path, rows=2)
 
     async def scenario() -> None:
         app = ObservatoryApp(_ctx_for(db))
-        async with app.run_test(size=(70, 24)) as pilot:
+        async with app.run_test(size=(100, 24)) as pilot:
+            table = app.query_one("#ledger", DataTable)
+            table.focus()
+            table.move_cursor(row=1, column=3, scroll=False)
+            selected = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+            await pilot.resize_terminal(70, 24)
             await pilot.pause()
+            assert table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value == selected
+            assert table.has_focus
+
+    asyncio.run(scenario())
+
+
+def test_breakpoint_rebuild_resets_horizontal_scroll(tmp_path) -> None:
+    from textual.widgets import DataTable
+
+    db = _seed(tmp_path, rows=2)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(120, 24)) as pilot:
+            table = app.query_one("#ledger", DataTable)
+            table.scroll_to(x=20, animate=False, force=True, immediate=True)
             await pilot.pause()
-            assert app.query_one("#ledger", DataTable).max_scroll_x > 0  # overflow at 70 cols
-            assert app.query_one("#scroll-hint").display is True
+            assert table.scroll_x > 0
+            await pilot.resize_terminal(100, 24)
+            await pilot.pause()
+            assert table.scroll_x == 0
 
     asyncio.run(scenario())
 
@@ -354,7 +399,8 @@ def test_status_line_is_store_scoped_compact_and_pure() -> None:
 
     line = format_status(repo_id="r", latest_commit="abcdef123456", chain_valid=True, total=1)
     assert "repo r" in line
-    assert "HEAD abcdef1" in line  # short commit
+    assert "latest assessed abcdef1" in line
+    assert "HEAD" not in line
     assert "store chain ok" in line  # "store" kept — the chain is database-global, not repo-scoped
     assert "1 asm" in line
     # a real repo_id compacts to a short slug that fits a narrow pane
@@ -362,7 +408,15 @@ def test_status_line_is_store_scoped_compact_and_pure() -> None:
         repo_id="repo_481a73928338", latest_commit="cc5d175abc", chain_valid=True, total=16
     )
     assert "repo 481a7392 " in compact  # "repo_" dropped, first 8 hex kept
-    assert len(compact) < 60  # fits a ~70-column pane without wrapping
+    assert len(compact) <= 70  # fits the locked narrow terminal without wrapping
+
+
+def test_status_calls_commit_latest_assessed_not_head() -> None:
+    from pebra.tui.widgets.status_header import format_status
+
+    line = format_status(repo_id="r", latest_commit="abcdef123", chain_valid=True, total=3)
+    assert line == "repo r · latest assessed abcdef1 · store chain ok · 3 asm"
+    assert "HEAD" not in line
 
 
 def test_theme_change_recolors_existing_decision_cells_without_reloading(tmp_path) -> None:

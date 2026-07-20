@@ -1,5 +1,5 @@
 /* PEBRA Observatory TUI theme (Textual TCSS).
-   Minimal shell and ledger styling; detail styling arrives in a later milestone.
+   Shell, responsive ledger, and detail styling.
    Solid hairline borders only (never `round`): an assessment ledger is an append-only, hash-chained
    record, and the form reflects that. */
 

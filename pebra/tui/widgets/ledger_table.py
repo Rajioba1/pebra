@@ -9,16 +9,46 @@ is authoritative and never clamped — only the visual marker clamps, with an ov
 from __future__ import annotations
 
 import math
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Any, Sequence
 
 from textual.content import Content
 
 from pebra.tui.theme import VERDICT_PALETTE, verdict_for
 
-# The ledger's columns. The RAU value is the hero number; the gate-lane is the signature visual; the
-# decision is a separate colored glyph+label so the verdict never depends on the lane's position alone.
-# Header is "asm id" (compact) though values stay asm_<n>; total row width fits an 80-column terminal.
-LEDGER_COLUMNS = ("asm id", "commit", "gate-lane", "decision", "rau", "e.loss", "benefit", "status")
+# Semantic column keys and their breakpoint-specific ordering. A data refresh keeps the current set;
+# only a width-breakpoint crossing rebuilds it.
+WIDE_COLUMNS = (
+    "assessment_id",
+    "target",
+    "task",
+    "assessed_commit",
+    "gate_lane",
+    "decision",
+    "rau",
+    "expected_loss",
+    "benefit",
+    "status",
+    "assessed_at",
+)
+NORMAL_COLUMNS = (
+    "assessment_id", "target", "assessed_commit", "decision", "rau", "status",
+)
+NARROW_COLUMNS = ("assessment_id", "target", "decision", "rau")
+
+LEDGER_LABELS = {
+    "assessment_id": "ID",
+    "target": "target",
+    "task": "task",
+    "assessed_commit": "assessed commit",
+    "gate_lane": "gate lane",
+    "decision": "decision",
+    "rau": "RAU",
+    "expected_loss": "expected loss",
+    "benefit": "benefit",
+    "status": "status",
+    "assessed_at": "assessed time",
+}
 
 # The gate-lane track width in the ledger. Deliberately narrower than render_rau_lane's default (13) so
 # all eight columns fit ~80 cols: the lane is a coarse visual cue and the authoritative value is the
@@ -34,9 +64,22 @@ _OVERFLOW_RIGHT = "»"   # RAU above the +1.0 window
 # Textual 8 cannot measure native Content cells for DataTable auto-width (it reports one cell), so
 # these two semantic columns must be explicit or the lane and full verdict labels are clipped.
 LEDGER_COLUMN_WIDTHS = {
-    "gate-lane": LEDGER_LANE_WIDTH,
+    "target": 18,
+    "task": 28,
+    "assessed_commit": len(LEDGER_LABELS["assessed_commit"]),
+    "gate_lane": LEDGER_LANE_WIDTH,
     "decision": max(Content(f"{v.glyph} {v.label}").cell_length for v in VERDICT_PALETTE.values()),
+    "expected_loss": len(LEDGER_LABELS["expected_loss"]),
+    "assessed_at": 16,
 }
+
+
+def columns_for_width(width: int) -> tuple[str, ...]:
+    if width >= 120:
+        return WIDE_COLUMNS
+    if width >= 80:
+        return NORMAL_COLUMNS
+    return NARROW_COLUMNS
 
 
 def render_rau_lane(rau: float | None, *, width: int = 13) -> str:
@@ -70,6 +113,27 @@ def format_rau(rau: float | None) -> str:
     return f"{rau:+.2f}"
 
 
+def format_target(paths: Sequence[str]) -> str:
+    """Compact a normalized target list without inventing missing history."""
+    if not paths:
+        return "target unavailable"
+    first = PurePosixPath(paths[0]).name or paths[0]
+    return first if len(paths) == 1 else f"{first} +{len(paths) - 1}"
+
+
+def format_assessed_at(value: str | None) -> str:
+    """Compact the validated UTC timestamp projected by the read model."""
+    return value[:16].replace("T", " ") if value else "—"
+
+
+def format_task(value: str | None, *, width: int = 28) -> str:
+    """Bound task display text; callers retain the untouched history row."""
+    text = " ".join((value or "").split())
+    if not text:
+        return "—"
+    return text if len(text) <= width else f"{text[: width - 1]}…"
+
+
 def _num(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
@@ -92,18 +156,23 @@ def decision_cell(decision: str, *, dark: bool = True) -> Content:
     )
 
 
-def ledger_row(assessment: dict[str, Any], *, dark: bool = True) -> tuple[Any, ...]:
-    """One DataTable row from a controller assessment summary. Cells are plain strings except the
-    gate-lane and decision, which are styled Content."""
+def ledger_row(
+    assessment: dict[str, Any], *, columns: Sequence[str] = WIDE_COLUMNS, dark: bool = True
+) -> tuple[Any, ...]:
+    """One display-only row from a controller summary, projected into the active column set."""
     scores = assessment.get("scores") or {}
     rau = _num(scores.get("rau"))
-    return (
-        assessment.get("assessment_id", "—"),
-        short_commit(assessment.get("assessed_commit")),
-        Content(render_rau_lane(rau, width=LEDGER_LANE_WIDTH)),
-        decision_cell(str(assessment.get("decision", "")), dark=dark),
-        format_rau(rau),
-        _fmt_score(scores.get("expected_loss")),
-        _fmt_score(scores.get("benefit")),
-        assessment.get("terminal_status") or "pending",
-    )
+    cells = {
+        "assessment_id": assessment.get("assessment_id", "—"),
+        "target": format_target(assessment.get("target_files") or ()),
+        "task": format_task(assessment.get("task")),
+        "assessed_commit": short_commit(assessment.get("assessed_commit")),
+        "gate_lane": Content(render_rau_lane(rau, width=LEDGER_LANE_WIDTH)),
+        "decision": decision_cell(str(assessment.get("decision", "")), dark=dark),
+        "rau": format_rau(rau),
+        "expected_loss": _fmt_score(scores.get("expected_loss")),
+        "benefit": _fmt_score(scores.get("benefit")),
+        "status": assessment.get("terminal_status") or "pending",
+        "assessed_at": format_assessed_at(assessment.get("assessed_at")),
+    }
+    return tuple(cells[column] for column in columns)

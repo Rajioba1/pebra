@@ -282,18 +282,20 @@ def test_successful_refresh_preserves_ledger_interaction_state() -> None:
                 return _snapshot_with_rows(*original_ids)
 
         app = _Harness(ObservatoryScreen(_ManyRowsData()))
-        async with app.run_test(size=(100, 18)) as pilot:
+        async with app.run_test(size=(120, 18)) as pilot:
             screen = app.screen
             table = app.query_one("#ledger", DataTable)
             table.focus()
-            table.move_cursor(row=20, column=3, scroll=False)
-            table.scroll_to(y=12, animate=False, force=True, immediate=True)
+            table.move_cursor(row=20, column=5, scroll=False)
+            table.scroll_to(x=12, y=12, animate=False, force=True, immediate=True)
             await pilot.pause()
 
             selected_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
             old_scroll_y = table.scroll_y
+            old_scroll_x = table.scroll_x
             assert selected_key == "asm_20"
             assert old_scroll_y > 0
+            assert old_scroll_x > 0
             assert table.has_focus
 
             screen._apply_snapshot(_snapshot_with_rows("asm_new", *original_ids))
@@ -301,7 +303,8 @@ def test_successful_refresh_preserves_ledger_interaction_state() -> None:
 
             refreshed_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
             assert refreshed_key == selected_key
-            assert table.cursor_coordinate.column == 3
+            assert table.cursor_coordinate.column == 5
+            assert table.scroll_x == old_scroll_x
             assert table.scroll_y == old_scroll_y
             assert table.has_focus
 

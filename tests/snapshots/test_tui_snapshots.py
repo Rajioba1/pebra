@@ -9,6 +9,7 @@ change, then review the SVGs before committing.
 
 from __future__ import annotations
 
+import datetime
 import sqlite3
 from types import SimpleNamespace
 
@@ -67,6 +68,12 @@ def _color_snapshots_are_environment_independent(monkeypatch) -> None:
 
     from pebra.tui import app as app_mod
     from pebra.tui.widgets import banner as banner_mod
+    from pebra.adapters.store import db as db_mod
+
+    class _FixedDateTime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 20, 12, 34, 56, 123456, tzinfo=tz)
 
     # Provenance is intentionally environment-specific (installed/editable + git hash); keep the
     # visual baseline stable across local checkouts, CI, and future commits.
@@ -75,6 +82,11 @@ def _color_snapshots_are_environment_independent(monkeypatch) -> None:
         banner_mod.PebraBanner,
         "on_mount",
         lambda self: self.update(banner_mod.banner_content(banner_mod._REST_INDEX)),
+    )
+    monkeypatch.setattr(
+        db_mod,
+        "datetime",
+        SimpleNamespace(datetime=_FixedDateTime, timezone=datetime.timezone),
     )
 
 
@@ -108,7 +120,13 @@ def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False) -> str:
                 model_guidance_packet={"decision": decision.value},
                 assessed_commit=commit,
             ),
-            {"task": "t"},
+            {
+                "task": "Fix authentication validation without changing session behavior",
+                "action_id": "edit-auth",
+                "revision_envelope": {
+                    "expected_files": ["src/auth.py", "tests/test_auth.py"]
+                },
+            },
         )
     store.close()
     if break_chain:
@@ -126,12 +144,20 @@ def _app(db: str) -> ObservatoryApp:
     return ObservatoryApp(ObservatoryContext(db_path=db, repo_id="r", repo_root=None, read_only=True))
 
 
-def test_snapshot_ledger_mixed_decisions_wide_dark(snap_compare, tmp_path) -> None:
-    assert snap_compare(_app(_seed(tmp_path)), terminal_size=(110, 30))
+def test_snapshot_ledger_width_120(snap_compare, tmp_path) -> None:
+    assert snap_compare(_app(_seed(tmp_path)), terminal_size=(120, 30))
 
 
-def test_snapshot_ledger_narrow(snap_compare, tmp_path) -> None:
+def test_snapshot_ledger_width_80(snap_compare, tmp_path) -> None:
     assert snap_compare(_app(_seed(tmp_path)), terminal_size=(80, 24))
+
+
+def test_snapshot_ledger_width_70(snap_compare, tmp_path) -> None:
+    assert snap_compare(_app(_seed(tmp_path)), terminal_size=(70, 24))
+
+
+def test_snapshot_ledger_width_100(snap_compare, tmp_path) -> None:
+    assert snap_compare(_app(_seed(tmp_path)), terminal_size=(100, 30))
 
 
 def test_snapshot_ledger_light_theme(snap_compare, tmp_path) -> None:

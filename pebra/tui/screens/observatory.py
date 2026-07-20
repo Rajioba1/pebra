@@ -24,8 +24,9 @@ from pebra.tui.data import ObservatoryData, ObservatorySnapshot, ObservatoryStor
 from pebra.tui.screens.detail import AssessmentDetailScreen
 from pebra.tui.widgets.banner import PebraBanner
 from pebra.tui.widgets.ledger_table import (
-    LEDGER_COLUMNS,
     LEDGER_COLUMN_WIDTHS,
+    LEDGER_LABELS,
+    columns_for_width,
     decision_cell,
     ledger_row,
 )
@@ -34,7 +35,6 @@ from pebra.tui.widgets.status_header import StatusHeader
 
 _EMPTY = "No assessments recorded for this repository yet."
 _SCROLL_HINT = "←/→ more columns · Home/End"
-_DECISION_COLUMN_INDEX = LEDGER_COLUMNS.index("decision")
 _REFRESH_INTERVAL = 5.0  # seconds; SQLite-only poll — never the graph/RCA engines
 
 
@@ -46,6 +46,7 @@ class ObservatoryScreen(Screen):
         self._data = data
         self._rows: list[dict[str, Any]] = []
         self._overview: dict[str, Any] = {}
+        self._ledger_columns: tuple[str, ...] = ()
         self.message_text = ""  # current empty-state / error text ("" when the ledger has rows)
         self._refreshing = False  # single-flight guard, only read/written on the UI thread
         self._refresh_started_at = 0.0  # monotonic clock, for dev-console refresh-duration logging
@@ -68,9 +69,7 @@ class ObservatoryScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#ledger", DataTable)
-        for label in LEDGER_COLUMNS:
-            table.add_column(label, width=LEDGER_COLUMN_WIDTHS.get(label))
+        self._rebuild_ledger_columns(columns_for_width(self.size.width))
         self.app.theme_changed_signal.subscribe(self, self._on_theme_changed)
         self.reload()  # initial load is synchronous so the first paint has data
         self.set_interval(_REFRESH_INTERVAL, self._tick)
@@ -85,12 +84,74 @@ class ObservatoryScreen(Screen):
         self._apply_snapshot(snapshot)
 
     def on_resize(self, event: events.Resize) -> None:
+        columns = columns_for_width(event.size.width)
+        if self._ledger_columns and columns != self._ledger_columns:
+            self._rebuild_ledger_columns(columns)
         # The overflow hint depends on the settled layout, so update it after the next refresh.
         self.call_after_refresh(self._update_scroll_hint)
 
+    def _selected_assessment_id(self, table: DataTable) -> str | None:
+        row = table.cursor_coordinate.row
+        if not table.row_count or row >= table.row_count:
+            return None
+        return table.coordinate_to_cell_key(Coordinate(row, 0)).row_key.value
+
+    def _add_ledger_rows(self, table: DataTable) -> None:
+        dark = self._is_dark()
+        for row in self._rows:
+            assessment_id = row.get("assessment_id")
+            table.add_row(
+                *ledger_row(row, columns=self._ledger_columns, dark=dark),
+                key=str(assessment_id) if assessment_id else None,
+            )
+
+    def _restore_cursor(
+        self,
+        table: DataTable,
+        *,
+        assessment_id: str | None,
+        fallback_row: int,
+        column: int,
+    ) -> None:
+        if not table.row_count:
+            return
+        try:
+            restored_row = table.get_row_index(assessment_id) if assessment_id else fallback_row
+        except RowDoesNotExist:
+            restored_row = fallback_row
+        table.move_cursor(
+            row=min(restored_row, table.row_count - 1),
+            column=min(column, len(self._ledger_columns) - 1),
+            scroll=False,
+        )
+
+    def _rebuild_ledger_columns(self, columns: tuple[str, ...]) -> None:
+        """Rebuild only across a width breakpoint; retain row identity/focus, reset horizontal view."""
+        table = self.query_one("#ledger", DataTable)
+        selected_id = self._selected_assessment_id(table)
+        old_row = table.cursor_coordinate.row
+        old_column = table.cursor_coordinate.column
+        old_scroll_y = table.scroll_y
+        had_focus = table.has_focus
+        table.clear(columns=True)
+        self._ledger_columns = columns
+        for column in columns:
+            table.add_column(
+                LEDGER_LABELS[column], key=column, width=LEDGER_COLUMN_WIDTHS.get(column)
+            )
+        self._add_ledger_rows(table)
+        self._restore_cursor(
+            table,
+            assessment_id=selected_id,
+            fallback_row=old_row,
+            column=old_column,
+        )
+        if had_focus:
+            table.focus(scroll_visible=False)
+        table.scroll_to(x=0, y=old_scroll_y, animate=False, force=True, immediate=True)
+
     def _update_scroll_hint(self) -> None:
-        # Show the horizontal-scroll affordance only when the ledger actually overflows the pane, so a
-        # normal 80-column terminal (where all eight columns fit) never shows it.
+        # Show the affordance only when the active breakpoint's columns actually overflow the pane.
         if not self._can_update_children():
             return
         overflowing = self.query_one("#ledger", DataTable).max_scroll_x > 0
@@ -178,30 +239,18 @@ class ObservatoryScreen(Screen):
         table = self.query_one("#ledger", DataTable)
         old_row = table.cursor_coordinate.row
         old_column = table.cursor_coordinate.column
-        old_row_key: str | None = None
-        if table.row_count and old_row < table.row_count:
-            old_row_key = table.coordinate_to_cell_key(Coordinate(old_row, 0)).row_key.value
+        old_row_key = self._selected_assessment_id(table)
         old_scroll_x = table.scroll_x
         old_scroll_y = table.scroll_y
         had_focus = table.has_focus
         table.clear()
-        dark = self._is_dark()
-        for row in rows:
-            assessment_id = row.get("assessment_id")
-            table.add_row(
-                *ledger_row(row, dark=dark),
-                key=str(assessment_id) if assessment_id else None,
-            )
-        if table.row_count:
-            try:
-                restored_row = table.get_row_index(old_row_key) if old_row_key else old_row
-            except RowDoesNotExist:
-                restored_row = old_row
-            table.move_cursor(
-                row=min(restored_row, table.row_count - 1),
-                column=min(old_column, len(LEDGER_COLUMNS) - 1),
-                scroll=False,
-            )
+        self._add_ledger_rows(table)
+        self._restore_cursor(
+            table,
+            assessment_id=old_row_key,
+            fallback_row=old_row,
+            column=old_column,
+        )
         if had_focus:
             table.focus(scroll_visible=False)
         table.scroll_to(
@@ -234,9 +283,10 @@ class ObservatoryScreen(Screen):
 
     def _on_theme_changed(self, theme: Theme) -> None:
         table = self.query_one("#ledger", DataTable)
+        decision_column = self._ledger_columns.index("decision")
         for row_index, row in enumerate(self._rows):
             table.update_cell_at(
-                Coordinate(row_index, _DECISION_COLUMN_INDEX),
+                Coordinate(row_index, decision_column),
                 decision_cell(str(row.get("decision", "")), dark=theme.dark),
             )
 

@@ -16,6 +16,7 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Pretty, Static
 
+from pebra.core.assessment_history import project_assessment_identity
 from pebra.tui.widgets.ledger_table import short_commit
 
 # gates_fired / high_risk_triggers are composed only for the live MCP response; db._canonical never
@@ -25,13 +26,20 @@ GATES_UNAVAILABLE_NOTE = (
 )
 
 _EVIDENCE_KEYS = ("variance_breakdown", "symbol_scope_evidence", "candidate_verification")
+_PROVENANCE_LABELS = {
+    "candidate_bound": "candidate binding",
+    "declared": "declared request",
+    "legacy_guidance": "legacy guidance inference",
+    "legacy_graph": "legacy graph inference",
+    "unavailable": "unavailable",
+}
 
 
 def header_line(detail: dict[str, Any]) -> str:
     content = detail.get("content") or {}
     return (
         f"{detail.get('assessment_id', '—')}   ·   decision {content.get('decision', '—')}"
-        f"   ·   commit {short_commit(content.get('assessed_commit'))}"
+        f"   ·   assessed commit {short_commit(content.get('assessed_commit'))}"
         f"   ·   repo {content.get('repo_id', '—')}"
     )
 
@@ -43,7 +51,20 @@ def detail_sections(detail: dict[str, Any]) -> list[tuple[str, Any]]:
     scores = content.get("scores") or {}
     evidence = {key: scores[key] for key in _EVIDENCE_KEYS if key in scores}
     plain_scores = {key: value for key, value in scores.items() if key not in evidence}
+    identity = project_assessment_identity(content)
+    identity_payload = {
+        "Task": identity.task or "—",
+        "Action ID": identity.action_id or "—",
+        "Assessed at": identity.assessed_at or "—",
+        "Assessed commit": content.get("assessed_commit") or "—",
+        "Candidate fingerprint": identity.candidate_fingerprint or "—",
+        "Declared files": list(identity.declared_files),
+        "Bound files": list(identity.bound_files),
+        "Chosen targets": list(identity.target_files) or ["target unavailable"],
+        "Target provenance": _PROVENANCE_LABELS[identity.target_provenance],
+    }
     return [
+        ("Assessment identity", identity_payload),
         ("Scores", plain_scores),
         ("Evidence", evidence),
         ("Guidance", detail.get("model_guidance_packet")),

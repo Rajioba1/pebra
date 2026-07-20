@@ -1,4 +1,4 @@
-"""StatusHeader — the Observatory's instrument line: repo, HEAD, store-chain integrity, count.
+"""StatusHeader — repo, latest assessed commit, store-chain integrity, and count.
 
 Chain integrity is labelled "store chain" because it is database-global (not repo-scoped). CodeGraph
 health is deliberately NOT shown here — it is not a store read and must not be polled on this surface.
@@ -20,12 +20,13 @@ def _short_repo(repo_id: str) -> str:
 
 def format_status(*, repo_id: str, latest_commit: str | None, chain_valid: bool, total: int) -> str:
     # Permanently compact so it never wraps on a normal terminal (nowrap+ellipsis in TCSS is only a
-    # last-resort safety net). HEAD = the most recent assessment's assessed_commit (the repo HEAD at
-    # assess time), from the store — never a live git call. "store chain" is kept in full because the
-    # chain is database-global, not repo-scoped, and that distinction is load-bearing.
-    head = short_commit(latest_commit)
+    # last-resort safety net). The commit comes from persisted assessment history, never live Git.
+    assessed = short_commit(latest_commit)
     chain = "ok" if chain_valid else "BROKEN"
-    return f"repo {_short_repo(repo_id)} · HEAD {head} · store chain {chain} · {total} asm"
+    return (
+        f"repo {_short_repo(repo_id)} · latest assessed {assessed} · "
+        f"store chain {chain} · {total} asm"
+    )
 
 
 class StatusHeader(Static):

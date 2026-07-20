@@ -33,6 +33,20 @@ def _detail() -> dict:
             "repo_id": "r",
             "decision": "ask_human",
             "assessed_commit": "abc1234def",
+            "assessed_at": "2026-07-20T12:34:56.123456+00:00",
+            "request": {
+                "task": "Fix login validation",
+                "action_id": "edit-auth",
+                "revision_envelope": {"expected_files": ["src/declared.py"]},
+            },
+            "model_guidance_packet": {
+                "binding": {
+                    "candidate": {
+                        "algorithm": "sha256-normalized-content-v1",
+                        "files": {"src/bound.py": "a" * 64},
+                    }
+                }
+            },
             "scores": {
                 "rau": -0.14,
                 "benefit": 0.5,
@@ -52,6 +66,33 @@ def test_sections_split_scores_from_evidence_and_carry_guidance() -> None:
     assert set(sections["Evidence"]) == {"symbol_scope_evidence", "variance_breakdown"}
     assert sections["Guidance"] == {"decision": "ask_human"}
     assert sections["Guardrails"] == [{"decision": "proceed"}]
+
+
+def test_detail_lists_declared_and_bound_files_separately() -> None:
+    sections = dict(detail_sections(_detail()))
+    identity = sections["Assessment identity"]
+    assert identity["Task"] == "Fix login validation"
+    assert identity["Action ID"] == "edit-auth"
+    assert identity["Assessed at"] == "2026-07-20T12:34:56.123456+00:00"
+    assert identity["Assessed commit"] == "abc1234def"
+    assert identity["Declared files"] == ["src/declared.py"]
+    assert identity["Bound files"] == ["src/bound.py"]
+    assert identity["Chosen targets"] == ["src/bound.py"]
+    assert identity["Target provenance"] == "candidate binding"
+    assert len(identity["Candidate fingerprint"]) == 64
+
+
+def test_detail_labels_legacy_inference() -> None:
+    detail = _detail()
+    detail["content"]["request"] = {"task": "Legacy task"}
+    detail["content"]["model_guidance_packet"] = {
+        "binding": {"safe_scope": {"files": ["legacy/auth.py"]}}
+    }
+
+    identity = dict(detail_sections(detail))["Assessment identity"]
+
+    assert identity["Chosen targets"] == ["legacy/auth.py"]
+    assert identity["Target provenance"] == "legacy guidance inference"
 
 
 def test_header_line_summarizes_identity() -> None:
