@@ -13,9 +13,11 @@ from pathlib import Path
 from pebra.adapters import codegraph_graph_reader as gr
 
 FRESH = {"pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-         "index": {"reindexRecommended": False}, "version": "1.1.1"}
+         "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+         "version": "1.1.1"}
 STALE = {"pendingChanges": {"added": 0, "modified": 1, "removed": 0},
-         "index": {"reindexRecommended": False}, "version": "1.1.1"}
+         "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+         "version": "1.1.1"}
 
 
 def _make_db(path: Path, *, schema_version: int = 5) -> None:

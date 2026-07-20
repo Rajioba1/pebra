@@ -1026,7 +1026,7 @@ def test_gate_check_graph_probe_never_prepares_or_syncs(event, tmp_path, monkeyp
                 stdout=json.dumps({
                     "initialized": True,
                     "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-                    "index": {"reindexRecommended": False},
+                    "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
                     "version": "1.1.1",
                 }),
             )

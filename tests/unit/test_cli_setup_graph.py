@@ -14,9 +14,9 @@ from pebra.cli import setup_graph as sg
 from pebra.core.graph_version import CODEGRAPH_DEFAULT_VERSION
 
 _FRESH = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-          "index": {"reindexRecommended": False}}
+          "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24}}
 _MISMATCH = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-             "index": {"reindexRecommended": False},
+             "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
              "worktreeMismatch": {"worktreeRoot": "/wt", "indexRoot": "/main"}}
 
 
@@ -246,7 +246,8 @@ def test_allow_unsupported_install_is_still_untrusted_at_runtime() -> None:
     # runtime side: that same running version is untrusted -> unresolved (feeds Gate 13)
     status = {"initialized": True, "version": "2.0.0",
               "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-              "index": {"reindexRecommended": False}, "worktreeMismatch": None}
+              "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+              "worktreeMismatch": None}
     ev = cga.CodeGraphAdapter(status_fn=lambda r: status).fanin(
         CandidateAction(id="a1", label="p", action_type="edit"), "/repo")
     assert ev.resolution_method == "unresolved"

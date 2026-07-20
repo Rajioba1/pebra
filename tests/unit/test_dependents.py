@@ -19,7 +19,8 @@ from pebra.cli.main import build_parser
 
 _FRESH = {"initialized": True,
           "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-          "index": {"reindexRecommended": False}, "version": "1.1.1",
+          "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+          "version": "1.1.1",
           "worktreeMismatch": None}
 
 
@@ -93,7 +94,7 @@ def test_dependent_files_result_marks_stale_graph_unavailable(tmp_path):
     stale = {
         "initialized": True,
         "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
-        "index": {"reindexRecommended": False},
+        "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
         "version": "1.1.1",
         "worktreeMismatch": None,
     }

@@ -20,7 +20,7 @@ from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE
 FRESH = {
     "initialized": True,
     "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-    "index": {"reindexRecommended": False},
+    "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
     "version": "1.1.1",
     "worktreeMismatch": None,
 }
@@ -71,6 +71,31 @@ def _patch_runtime(monkeypatch, runner: _Runner, heads: list[str | None]) -> Non
     monkeypatch.setattr(cga, "find_engine", lambda: "/tools/codegraph")
     monkeypatch.setattr(cga.subprocess, "run", runner)
     monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: next(head_values))
+
+
+@pytest.fixture(params=[
+    pytest.param({}, id="missing"),
+    pytest.param({"builtWithExtractionVersion": None}, id="null"),
+    pytest.param({"builtWithExtractionVersion": "24"}, id="string"),
+    pytest.param({"builtWithExtractionVersion": False}, id="bool"),
+    pytest.param({"builtWithExtractionVersion": -1}, id="negative"),
+    pytest.param(
+        {
+            "extractionVersion": 24,
+            "indexVersion": 24,
+            "schemaVersion": 24,
+        },
+        id="legacy-aliases-only",
+    ),
+])
+def malformed_extraction_status(request):
+    return {
+        **FRESH,
+        "index": {
+            "reindexRecommended": False,
+            **request.param,
+        },
+    }
 
 
 def test_apparently_clean_status_still_syncs_once_and_caches_snapshot(tmp_path, monkeypatch) -> None:
@@ -180,6 +205,49 @@ def test_absent_index_status_never_syncs(tmp_path, monkeypatch) -> None:
     assert runner.sync_calls == []
 
 
+def test_malformed_initial_extraction_version_never_syncs_or_caches(
+    tmp_path, monkeypatch, malformed_extraction_status
+) -> None:
+    runner = _Runner([malformed_extraction_status])
+    _patch_runtime(monkeypatch, runner, ["commit-b"])
+    adapter = cga.CodeGraphAdapter()
+
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert snapshot.graph_scope_digest is None
+    assert adapter.prepared_status(str(tmp_path)) is None
+    assert runner.sync_calls == []
+
+
+def test_malformed_post_sync_extraction_version_is_not_cached_or_scoped(
+    tmp_path, monkeypatch, malformed_extraction_status
+) -> None:
+    runner = _Runner([FRESH, malformed_extraction_status])
+    _patch_runtime(monkeypatch, runner, ["commit-b", "commit-b"])
+    adapter = cga.CodeGraphAdapter()
+
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert snapshot.graph_scope_digest is None
+    assert snapshot.sync_performed is True
+    assert adapter.prepared_status(str(tmp_path)) is None
+    assert len(runner.sync_calls) == 1
+
+
+def test_injected_malformed_extraction_version_is_not_cached_or_scoped(
+    tmp_path, malformed_extraction_status
+) -> None:
+    adapter = cga.CodeGraphAdapter(status_fn=lambda _root: malformed_extraction_status)
+
+    snapshot = adapter.prepare(str(tmp_path))
+
+    assert snapshot.status == "unavailable"
+    assert snapshot.graph_scope_digest is None
+    assert adapter.prepared_status(str(tmp_path)) is None
+
+
 @pytest.mark.parametrize(
     "malformed",
     [
@@ -189,13 +257,6 @@ def test_absent_index_status_never_syncs(tmp_path, monkeypatch) -> None:
         {**FRESH, "pendingChanges": {"added": -1, "modified": 0, "removed": 0}},
         {**FRESH, "index": []},
         {**FRESH, "index": {"reindexRecommended": 0}},
-        {
-            **FRESH,
-            "index": {
-                **FRESH["index"],
-                "builtWithExtractionVersion": False,
-            },
-        },
         {key: value for key, value in FRESH.items() if key != "version"},
     ],
 )

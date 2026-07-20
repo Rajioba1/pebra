@@ -27,11 +27,13 @@ from tests.unit.test_assessment_builder import _worked_example_input
 # not file lists (references/codegraph/src/bin/codegraph.ts:818-822) — fixtures mirror that shape.
 FRESH = {"initialized": True,
          "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-         "index": {"reindexRecommended": False}, "version": "1.1.1",
+         "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+         "version": "1.1.1",
          "worktreeMismatch": None}
 STALE = {"initialized": True,
          "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
-         "index": {"reindexRecommended": False}, "version": "1.1.1",
+         "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+         "version": "1.1.1",
          "worktreeMismatch": None}
 
 
@@ -750,7 +752,8 @@ def test_reindex_recommended_is_stale(tmp_path) -> None:
     _seed_repo(tmp_path)
     status = {"initialized": True,
               "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-              "index": {"reindexRecommended": True}, "version": "1.1.1",
+              "index": {"reindexRecommended": True, "builtWithExtractionVersion": 24},
+              "version": "1.1.1",
               "worktreeMismatch": None}
     action = CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=_PATCH)
     ev = _adapter(status=status).fanin(action, str(tmp_path))
@@ -763,7 +766,7 @@ def test_worktree_mismatch_is_stale(tmp_path) -> None:
     status = {
         "initialized": True,
         "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-        "index": {"reindexRecommended": False},
+        "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
         "version": "1.1.1",
         "worktreeMismatch": {"worktreeRoot": "/repo/worktree", "indexRoot": "/repo/main"},
     }
@@ -791,7 +794,7 @@ def test_status_index_path_selects_non_default_codegraph_dir(tmp_path) -> None:
     status = {
         "initialized": True,
         "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-        "index": {"reindexRecommended": False},
+        "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
         "version": "1.1.1",
         "worktreeMismatch": None,
         "indexPath": str(cg_dir),
@@ -860,7 +863,8 @@ def test_cli_missing_returns_unresolved_with_install_hint(tmp_path) -> None:
 
 _OUT_OF_RANGE = {"initialized": True,
                  "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-                 "index": {"reindexRecommended": False}, "version": "2.0.0",
+                 "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+                 "version": "2.0.0",
                  "worktreeMismatch": None}
 
 
@@ -1239,7 +1243,7 @@ def _patch(monkeypatch, recorder, *, on_path=True):
 
 def test_default_status_never_syncs_on_worktree_mismatch(monkeypatch) -> None:
     rec = _Recorder([{"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-                      "index": {"reindexRecommended": False},
+                      "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
                       "worktreeMismatch": {"worktreeRoot": "/wt", "indexRoot": "/main"}}])
     _patch(monkeypatch, rec)
     out = cga._default_status("/repo")
@@ -1257,7 +1261,8 @@ def test_default_status_never_syncs_when_uninitialized(monkeypatch) -> None:
 
 def test_default_status_syncs_even_when_initial_status_is_fresh(monkeypatch) -> None:
     fresh = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-             "index": {"reindexRecommended": False}, "version": "1.1.1",
+             "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+             "version": "1.1.1",
              "worktreeMismatch": None}
     rec = _Recorder([fresh, fresh])
     _patch(monkeypatch, rec)
@@ -1267,10 +1272,12 @@ def test_default_status_syncs_even_when_initial_status_is_fresh(monkeypatch) -> 
 
 def test_default_status_syncs_only_when_stale_initialized_same_worktree(monkeypatch) -> None:
     stale = {"initialized": True, "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
-             "index": {"reindexRecommended": False}, "version": "1.1.1",
+             "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+             "version": "1.1.1",
              "worktreeMismatch": None}
     fresh = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-             "index": {"reindexRecommended": False}, "version": "1.1.1",
+             "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+             "version": "1.1.1",
              "worktreeMismatch": None}
     rec = _Recorder([stale, fresh])  # initial=stale -> sync -> re-status=fresh
     _patch(monkeypatch, rec)
@@ -1285,7 +1292,8 @@ def test_default_status_syncs_only_when_stale_initialized_same_worktree(monkeypa
 
 def test_default_status_never_returns_initial_when_post_sync_status_fails(monkeypatch) -> None:
     stale = {"initialized": True, "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
-             "index": {"reindexRecommended": False}, "version": "1.1.1",
+             "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+             "version": "1.1.1",
              "worktreeMismatch": None}
     rec = _Recorder([stale, None])  # post-sync status probe fails -> fall back to the stale initial
     _patch(monkeypatch, rec)
@@ -1365,7 +1373,8 @@ def test_default_status_invokes_resolved_full_path_not_bare_name(monkeypatch) ->
     # A2/Windows: status/sync must run the resolved full path (shutil.which), never the bare name
     # ("codegraph"), or Windows FileNotFoundErrors on the .cmd shim even when installed.
     fresh = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-             "index": {"reindexRecommended": False}, "version": "1.1.1",
+             "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+             "version": "1.1.1",
              "worktreeMismatch": None}
     rec = _Recorder([fresh, fresh])
     _patch(monkeypatch, rec)

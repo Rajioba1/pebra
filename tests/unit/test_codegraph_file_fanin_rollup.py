@@ -14,10 +14,12 @@ import pytest
 from pebra.adapters import codegraph_adapter as cga
 
 FRESH = {"pendingChanges": {"added": 0, "modified": 0, "removed": 0},
-         "index": {"reindexRecommended": False}, "worktreeMismatch": None,
+         "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+         "worktreeMismatch": None,
          "initialized": True, "version": "1.1.1"}
 STALE = {"pendingChanges": {"added": 0, "modified": 1, "removed": 0},
-         "index": {"reindexRecommended": False}, "worktreeMismatch": None,
+         "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
+         "worktreeMismatch": None,
          "initialized": True, "version": "1.1.1"}
 
 

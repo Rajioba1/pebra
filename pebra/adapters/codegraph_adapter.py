@@ -157,18 +157,8 @@ def _config_digest(repo_root: str) -> str | None:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _index_version(status: dict[str, Any]) -> str | None:
-    index = status.get("index") or {}
-    for key in (
-        "builtWithExtractionVersion",
-        "extractionVersion",
-        "indexVersion",
-        "schemaVersion",
-    ):
-        value = index.get(key)
-        if value is not None:
-            return str(value)
-    return None
+def _index_version(status: dict[str, Any]) -> str:
+    return str(status["index"]["builtWithExtractionVersion"])
 
 
 def _scope_digest(
@@ -218,20 +208,13 @@ def _valid_status(status: object) -> bool:
     index_path = status.get("indexPath")
     if index_path is not None and (not isinstance(index_path, str) or not index_path.strip()):
         return False
-    for key in (
-        "builtWithExtractionVersion",
-        "extractionVersion",
-        "indexVersion",
-        "schemaVersion",
+    extraction_version = index.get("builtWithExtractionVersion")
+    if (
+        isinstance(extraction_version, bool)
+        or not isinstance(extraction_version, int)
+        or extraction_version < 0
     ):
-        value = index.get(key)
-        if value is not None and (
-            isinstance(value, bool)
-            or not isinstance(value, (str, int))
-            or (isinstance(value, str) and not value.strip())
-            or (isinstance(value, int) and value < 0)
-        ):
-            return False
+        return False
     return True
 
 
