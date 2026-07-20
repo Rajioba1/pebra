@@ -34,8 +34,13 @@ def _row_hash(prev_hash: str, content_json: str) -> str:
     return hashlib.sha256((prev_hash + content_json).encode("utf-8")).hexdigest()
 
 
-def _canonical(result: AssessmentResult, request_payload: dict[str, Any]) -> str:
-    """Deterministic content for hashing (sorted keys; no wall-clock fields)."""
+def _canonical(
+    result: AssessmentResult,
+    request_payload: dict[str, Any],
+    *,
+    assessed_at: str | None = None,
+) -> str:
+    """Deterministic hash content, with an explicit timestamp for new rows."""
     content = {
         "decision": result.recommended_decision.value,
         "requires_confirmation": result.requires_confirmation,
@@ -48,6 +53,8 @@ def _canonical(result: AssessmentResult, request_payload: dict[str, Any]) -> str
         "model_guidance_packet": result.model_guidance_packet,
         "request": request_payload,
     }
+    if assessed_at is not None:
+        content["assessed_at"] = assessed_at
     # No default= fallback: content must be natively JSON-serializable so the chain stays
     # semantically reconstructable. A non-serializable leak should raise, not be stringified.
     return json.dumps(content, sort_keys=True)
@@ -697,7 +704,7 @@ class SqliteStore:
                 guidance_packet_id = self._guidance_packet_uid(assessment_id, packet)
                 packet["guidance_packet_id"] = guidance_packet_id
                 result.model_guidance_packet = packet
-            content_json = _canonical(result, request_payload)
+            content_json = _canonical(result, request_payload, assessed_at=recorded_at)
             prev_hash = self._last_assessment_hash()
             row_hash = _row_hash(prev_hash, content_json)
             cur = self._con.execute(
@@ -1457,6 +1464,7 @@ class SqliteStore:
                     "target_files": list(identity.target_files),
                     "target_provenance": identity.target_provenance,
                     "candidate_fingerprint": identity.candidate_fingerprint,
+                    "assessed_at": identity.assessed_at,
                 }
             )
         return summaries

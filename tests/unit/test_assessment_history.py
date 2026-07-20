@@ -247,3 +247,27 @@ def test_present_but_empty_declared_scope_does_not_fall_back_to_legacy() -> None
 
     assert identity.target_files == ()
     assert identity.target_provenance == "unavailable"
+
+
+def test_assessed_at_accepts_only_utc_iso_8601() -> None:
+    identity = project_assessment_identity(
+        {"request": {}, "assessed_at": "2026-07-20T12:34:56.123456+00:00"}
+    )
+
+    assert identity.assessed_at == "2026-07-20T12:34:56.123456+00:00"
+
+
+def test_assessed_at_malformed_legacy_values_degrade_to_unavailable() -> None:
+    invalid_values = (
+        None,
+        "",
+        "not-a-timestamp",
+        "2026-07-20T12:34:56",
+        "2026-07-20T13:34:56+01:00",
+        123,
+        "bad\ud800timestamp",
+    )
+
+    for value in invalid_values:
+        identity = project_assessment_identity({"request": {}, "assessed_at": value})
+        assert identity.assessed_at is None

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from pebra.adapters.store import db as dbmod
 from pebra.adapters.store.db import SqliteStore
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 from pebra.core.constants import ActionStatus, Decision, RiskMode
@@ -552,6 +553,38 @@ def test_list_assessments_projects_modern_declared_and_bound_identity(tmp_path) 
     assert row["target_files"] == ["src/bound.py"]
     assert row["target_provenance"] == "candidate_bound"
     assert len(row["candidate_fingerprint"]) == 64
+
+
+def test_list_projection_returns_assessed_at_or_none(tmp_path) -> None:
+    store = _store(tmp_path)
+    current = _persist_history_identity(store)
+    result = AssessmentResult(
+        recommended_decision=Decision.PROCEED,
+        requires_confirmation=False,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.NORMAL,
+        scores={},
+        repo_id="r",
+        repo_root="/x",
+        assessed_commit="legacy",
+        model_guidance_packet=None,
+    )
+    content_json = dbmod._canonical(result, {"task": "Legacy"})
+    previous_hash = store._con.execute(
+        "SELECT row_hash FROM assessments ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0]
+    row_hash = dbmod._row_hash(previous_hash, content_json)
+    store._con.execute(
+        "INSERT INTO assessments (repo_id, decision, content_json, prev_hash, row_hash) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("r", "proceed", content_json, previous_hash, row_hash),
+    )
+    store._con.commit()
+
+    rows = {row["assessment_id"]: row for row in store.list_assessments("r")}
+
+    assert rows[current]["assessed_at"] is not None
+    assert rows["asm_2"]["assessed_at"] is None
 
 
 def test_list_assessments_projects_legacy_guidance_identity(tmp_path) -> None:

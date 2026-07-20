@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import datetime
 import hashlib
 import json
 import re
@@ -27,6 +28,7 @@ class AssessmentHistoryIdentity:
     target_files: tuple[str, ...]
     target_provenance: TargetProvenance
     candidate_fingerprint: str | None
+    assessed_at: str | None
 
 
 def _mapping(value: object) -> Mapping[str, Any]:
@@ -43,6 +45,19 @@ def _utf8_encodable(value: str) -> bool:
 
 def _label(value: object) -> str | None:
     return value if isinstance(value, str) and value and _utf8_encodable(value) else None
+
+
+def _assessed_at(value: object) -> str | None:
+    timestamp = _label(value)
+    if timestamp is None:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != datetime.timedelta(0):
+        return None
+    return timestamp
 
 
 def _paths(values: object, *, allow_file_path_records: bool = False) -> tuple[str, ...]:
@@ -133,4 +148,5 @@ def project_assessment_identity(content: Mapping[str, Any]) -> AssessmentHistory
         target_files=target_files,
         target_provenance=target_provenance,
         candidate_fingerprint=candidate_fingerprint,
+        assessed_at=_assessed_at(content.get("assessed_at")),
     )

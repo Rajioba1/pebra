@@ -5,9 +5,12 @@ Insert two assessments -> validate_chain() passes; mutate a stored row -> valida
 
 from __future__ import annotations
 
+import datetime
+import json
 import sqlite3
 
-from pebra.adapters.store.db import SqliteStore
+from pebra.adapters.store import db as dbmod
+from pebra.adapters.store.db import GENESIS, SqliteStore
 from pebra.core.constants import ActionStatus, Decision, RiskMode
 from pebra.core.models import AssessmentResult
 
@@ -58,6 +61,117 @@ def test_two_inserts_validate(tmp_path) -> None:
     id2 = store.persist_assessment(_result(0.22), {"task": "t2", "action_id": "a2"})
     assert id1 != id2
     assert store.validate_chain() is True
+
+
+def test_new_assessment_persists_hash_covered_assessed_at(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+
+    store.persist_assessment(_result(0.31), {"task": "timestamped"})
+
+    content_json = store._con.execute(
+        "SELECT content_json FROM assessments WHERE id = 1"
+    ).fetchone()[0]
+    content = json.loads(content_json)
+    assert isinstance(content["assessed_at"], str)
+    assert content["assessed_at"]
+    assert store.validate_chain() is True
+
+
+def test_tampering_with_assessed_at_breaks_assessment_chain(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    store.persist_assessment(_result(0.31), {"task": "timestamped"})
+    content_json = store._con.execute(
+        "SELECT content_json FROM assessments WHERE id = 1"
+    ).fetchone()[0]
+    content = json.loads(content_json)
+    content["assessed_at"] = "2026-01-01T00:00:00+00:00"
+    store._con.execute(
+        "UPDATE assessments SET content_json = ? WHERE id = 1",
+        (json.dumps(content, sort_keys=True),),
+    )
+    store._con.commit()
+
+    assert store.validate_chain() is False
+
+
+def test_legacy_row_without_assessed_at_still_validates(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    result = _result(0.31)
+    result.model_guidance_packet = None
+    content_json = dbmod._canonical(result, {"task": "legacy"})
+    row_hash = dbmod._row_hash(GENESIS, content_json)
+    store._con.execute(
+        "INSERT INTO assessments (repo_id, decision, content_json, prev_hash, row_hash) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (result.repo_id, result.recommended_decision.value, content_json, GENESIS, row_hash),
+    )
+    store._con.commit()
+
+    assert "assessed_at" not in json.loads(content_json)
+    assert store.validate_chain() is True
+
+
+def test_assessed_at_is_utc_iso_8601(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    store.persist_assessment(_result(0.31), {"task": "timestamped"})
+    content = json.loads(
+        store._con.execute("SELECT content_json FROM assessments WHERE id = 1").fetchone()[0]
+    )
+
+    parsed = datetime.datetime.fromisoformat(content["assessed_at"])
+
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == datetime.timedelta(0)
+    assert content["assessed_at"].endswith("+00:00")
+
+
+def test_assessment_and_predictions_share_one_recorded_at(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    store.persist_assessment(
+        _result(0.31),
+        {"task": "timestamped"},
+        predictions=[
+            {
+                "target_type": "risk_binary",
+                "target_name": "p_success",
+                "predicted_value": 0.74,
+                "action_id": "a1",
+                "prediction_scope": "shadow",
+                "provenance": {},
+            }
+        ],
+    )
+    assessed_at = json.loads(
+        store._con.execute("SELECT content_json FROM assessments WHERE id = 1").fetchone()[0]
+    )["assessed_at"]
+    prediction_recorded_at = store._con.execute(
+        "SELECT recorded_at FROM assessment_predictions WHERE assessment_id = 1"
+    ).fetchone()[0]
+
+    assert assessed_at == prediction_recorded_at
+
+
+def test_malformed_legacy_assessed_at_remains_chain_valid(tmp_path) -> None:
+    store = SqliteStore(str(tmp_path / "pebra.db"))
+    result = _result(0.31)
+    result.model_guidance_packet = None
+    content_json = dbmod._canonical(
+        result,
+        {"task": "legacy"},
+        assessed_at="not-a-timestamp",
+    )
+    row_hash = dbmod._row_hash(GENESIS, content_json)
+    store._con.execute(
+        "INSERT INTO assessments (repo_id, decision, content_json, prev_hash, row_hash) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (result.repo_id, result.recommended_decision.value, content_json, GENESIS, row_hash),
+    )
+    store._con.commit()
+
+    assert store.validate_chain() is True
+    assert store.list_assessments(result.repo_id)[0]["assessed_at"] is None
 
 
 def test_guidance_packet_is_persisted(tmp_path) -> None:
