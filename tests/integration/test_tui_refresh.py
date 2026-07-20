@@ -285,8 +285,11 @@ def test_successful_refresh_preserves_ledger_interaction_state() -> None:
         async with app.run_test(size=(120, 18)) as pilot:
             screen = app.screen
             table = app.query_one("#ledger", DataTable)
+            for _ in range(3):
+                await pilot.pause()
             table.focus()
             table.move_cursor(row=20, column=5, scroll=False)
+            await pilot.pause()
             table.scroll_to(x=12, y=12, animate=False, force=True, immediate=True)
             await pilot.pause()
 
@@ -309,3 +312,51 @@ def test_successful_refresh_preserves_ledger_interaction_state() -> None:
             assert table.has_focus
 
     asyncio.run(scenario())
+
+
+def test_refresh_preserves_scroll_when_selected_row_is_offscreen() -> None:
+    async def scenario() -> None:
+        assessment_ids = tuple(f"asm_{index}" for index in range(30))
+
+        class _ManyRowsData(_FakeData):
+            def refresh_snapshot(self) -> ObservatorySnapshot:
+                return _snapshot_with_rows(*assessment_ids)
+
+        app = _Harness(ObservatoryScreen(_ManyRowsData()))
+        async with app.run_test(size=(120, 18)) as pilot:
+            screen = app.screen
+            table = app.query_one("#ledger", DataTable)
+            table.focus()
+            table.move_cursor(row=0, column=5, scroll=False)
+            table.scroll_to(x=12, y=12, animate=False, force=True, immediate=True)
+            await pilot.pause()
+
+            old_scroll_x = table.scroll_x
+            old_scroll_y = table.scroll_y
+            assert old_scroll_x > 0
+            assert old_scroll_y > 0
+
+            screen._apply_snapshot(_snapshot_with_rows("asm_new", *assessment_ids))
+            for _ in range(3):
+                await pilot.pause()
+
+            selected_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+            assert selected_key == "asm_0"
+            assert table.scroll_x == old_scroll_x
+            assert table.scroll_y == old_scroll_y
+            assert table.has_focus
+
+    asyncio.run(scenario())
+
+
+def test_late_scroll_restore_ignores_unmounted_screen(monkeypatch) -> None:
+    screen = ObservatoryScreen(_FakeData())
+    table = DataTable()
+    monkeypatch.setattr(screen, "_can_update_children", lambda: False)
+
+    def fail_if_called(*_args, **_kwargs) -> None:
+        pytest.fail("late scroll callback must not touch an unmounted table")
+
+    monkeypatch.setattr(table, "scroll_to", fail_if_called)
+
+    screen._restore_ledger_scroll(table, x=12, y=12)

@@ -334,6 +334,59 @@ def test_breakpoint_rebuild_resets_horizontal_scroll(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_breakpoint_rebuild_preserves_vertical_scroll_with_offscreen_selection(tmp_path) -> None:
+    from pebra.adapters.store.db import SqliteStore
+    from pebra.core.constants import ActionStatus, Decision, RiskMode
+    from pebra.core.models import AssessmentResult
+    from textual.widgets import DataTable
+
+    db = str(tmp_path / "many.db")
+    store = SqliteStore(db)
+    for index in range(30):
+        store.persist_assessment(
+            AssessmentResult(
+                recommended_decision=Decision.PROCEED,
+                requires_confirmation=False,
+                action_status=ActionStatus.PENDING,
+                risk_mode=RiskMode.NORMAL,
+                scores={"rau": 0.1},
+                repo_id="r",
+                repo_root="/x",
+                assessed_commit=f"{index:07d}",
+            ),
+            {
+                "task": "Edit authentication",
+                "revision_envelope": {"expected_files": ["src/auth.py"]},
+            },
+        )
+    store.close()
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(120, 18)) as pilot:
+            table = app.query_one("#ledger", DataTable)
+            for _ in range(3):
+                await pilot.pause()
+            table.focus()
+            table.move_cursor(row=0, column=5, scroll=False)
+            table.scroll_to(x=12, y=12, animate=False, force=True, immediate=True)
+            await pilot.pause()
+            selected = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+            old_scroll_y = table.scroll_y
+            assert old_scroll_y > 0
+
+            await pilot.resize_terminal(100, 18)
+            for _ in range(3):
+                await pilot.pause()
+
+            assert table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value == selected
+            assert table.scroll_x == 0
+            assert table.scroll_y == old_scroll_y
+            assert table.has_focus
+
+    asyncio.run(scenario())
+
+
 def test_snapshot_width_growth_reveals_scroll_hint_without_a_resize(tmp_path) -> None:
     from dataclasses import replace
 

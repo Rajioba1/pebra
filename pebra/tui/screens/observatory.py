@@ -125,6 +125,12 @@ class ObservatoryScreen(Screen):
             scroll=False,
         )
 
+    def _restore_ledger_scroll(self, table: DataTable, *, x: float, y: float) -> None:
+        """Restore after Textual's deferred cursor-visibility work, unless the screen is going away."""
+        if not self._can_update_children() or not table.is_mounted:
+            return
+        table.scroll_to(x=x, y=y, animate=False, force=True, immediate=True)
+
     def _rebuild_ledger_columns(self, columns: tuple[str, ...]) -> None:
         """Rebuild only across a width breakpoint; retain row identity/focus, reset horizontal view."""
         table = self.query_one("#ledger", DataTable)
@@ -149,6 +155,9 @@ class ObservatoryScreen(Screen):
         if had_focus:
             table.focus(scroll_visible=False)
         table.scroll_to(x=0, y=old_scroll_y, animate=False, force=True, immediate=True)
+        table.call_after_refresh(
+            self._restore_ledger_scroll, table, x=0, y=old_scroll_y
+        )
 
     def _update_scroll_hint(self) -> None:
         # Show the affordance only when the active breakpoint's columns actually overflow the pane.
@@ -259,6 +268,12 @@ class ObservatoryScreen(Screen):
             animate=False,
             force=True,
             immediate=True,
+        )
+        table.call_after_refresh(
+            self._restore_ledger_scroll,
+            table,
+            x=old_scroll_x,
+            y=old_scroll_y,
         )
         self.query_one("#trends", ScoreSparklines).update_series(snapshot.scores_series)
         self._set_message("" if rows else _EMPTY)
