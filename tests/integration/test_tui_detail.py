@@ -467,22 +467,33 @@ def test_explicit_explore_prepares_once_then_queries_snapshot() -> None:
 
 
 def test_late_explore_result_cannot_touch_popped_screen() -> None:
+    delivered = Event()
+
+    class _DeliveryObservedDetail(AssessmentDetailScreen):
+        def _finish_explore_result(self, result: ExplorationResult) -> None:
+            try:
+                super()._finish_explore_result(result)
+            finally:
+                delivered.set()
+
     async def scenario() -> None:
         explorer = _RecordingExplorer(block=True)
-        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", explorer=explorer)
+        screen = _DeliveryObservedDetail(_detail(), repo_root="/repo", explorer=explorer)
         app = _Harness(Screen())
         async with app.run_test() as pilot:
             await app.push_screen(screen)
             await pilot.press("x")
             await _pause_until(explorer.started.is_set, pilot)
+            status = screen.query_one("#exploration-status")
+            before = str(status.render())
             await app.pop_screen()
             await _pause_until(lambda: not screen._can_update_children(), pilot)
             explorer.release.set()
-            await _pause_until(explorer.completed.is_set, pilot)
+            await _pause_until(delivered.is_set, pilot, attempts=500)
+            assert explorer.completed.is_set()
             assert len(explorer.explore_calls) == 1
-            for _ in range(3):
-                await pilot.pause()
             assert len(screen.query("#exploration-status")) == 0
+            assert str(status.render()) == before
 
     asyncio.run(scenario())
 

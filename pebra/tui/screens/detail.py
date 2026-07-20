@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from textual import work
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.screen import Screen
@@ -159,15 +158,24 @@ class AssessmentDetailScreen(Screen):
         self.query_one("#exploration-status", Static).update(
             "Preparing repository graph, then querying its accepted snapshot…"
         )
-        self._explore_worker()
+        # App ownership is deliberate: Textual cancels screen-owned workers on pop while their backing
+        # threads continue. Keeping this worker app-owned lets its finish callback be delivered, where
+        # _can_update_children() safely rejects a late update to the removed detail screen.
+        app = self.app
+        app.run_worker(
+            lambda: self._explore_worker(app),
+            name="assessment-detail-explore",
+            group=f"assessment-detail-explore-{id(self)}",
+            exit_on_error=False,
+            thread=True,
+        )
         return True
 
-    @work(thread=True)
-    def _explore_worker(self) -> None:
+    def _explore_worker(self, app: App[Any]) -> None:
         repo_root = self._repo_root
         explorer = self._explorer
         if repo_root is None or explorer is None:
-            self.app.call_from_thread(self._finish_explore_error)
+            app.call_from_thread(self._finish_explore_error)
             return
         try:
             snapshot = explorer.prepare(repo_root)
@@ -178,9 +186,9 @@ class AssessmentDetailScreen(Screen):
                 files=self._explore_files,
             )
         except Exception:  # provider/runtime boundary: fail visibly without damaging detail
-            self.app.call_from_thread(self._finish_explore_error)
+            app.call_from_thread(self._finish_explore_error)
             return
-        self.app.call_from_thread(self._finish_explore_result, result)
+        app.call_from_thread(self._finish_explore_result, result)
 
     def _can_update_children(self) -> bool:
         return self.is_mounted and not self._pruning
