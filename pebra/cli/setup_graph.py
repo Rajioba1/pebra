@@ -138,14 +138,28 @@ def _installed_version() -> str | None:
     return out.strip() if rc == 0 and out.strip() else None
 
 
+def _json_depth_is_bounded(payload: object, *, max_depth: int = 64) -> bool:
+    pending = [(payload, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if depth > max_depth:
+            return False
+        if isinstance(value, dict):
+            pending.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            pending.extend((item, depth + 1) for item in value)
+    return True
+
+
 def _status(repo_root: str) -> object | None:
     rc, out, _ = _run([_engine_exe(), "status", repo_root, "--json"], timeout=30)
     if rc != 0 or not out.strip():
         return None
     try:
-        return json.loads(out)
+        payload = json.loads(out)
     except (json.JSONDecodeError, ValueError, RecursionError):
         return None
+    return payload if _json_depth_is_bounded(payload) else None
 
 
 def _healthy(status: object | None) -> bool:

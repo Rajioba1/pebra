@@ -180,7 +180,11 @@ def test_install_npm_windows_uses_direct_node_argv(tmp_path, monkeypatch) -> Non
     launcher.write_text("shim", encoding="utf-8")
     node.write_bytes(b"node")
     npm_cli.write_text("script", encoding="utf-8")
-    monkeypatch.setattr(ea.os, "name", "nt")
+    monkeypatch.setattr(
+        sg,
+        "resolve_engine_argv",
+        lambda exe, args: ea._resolve_engine_argv(exe, args, os_name="nt"),
+    )
     monkeypatch.setattr(
         sg.shutil,
         "which",

@@ -48,7 +48,9 @@ def normalize_repository_files(repo_root: str, files: tuple[str, ...]) -> tuple[
     normalized: list[str] = []
     seen: set[str] = set()
     for value in files:
-        candidate = Path(value)
+        # Provider-facing repository paths use POSIX separators on every host. Normalize Windows
+        # input lexically first so the same candidate is neither duplicated nor misread on POSIX.
+        candidate = Path(value.replace("\\", "/"))
         try:
             resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
             relative = resolved.relative_to(root)

@@ -657,7 +657,11 @@ def test_windows_cmd_launcher_is_used_for_status_and_sync(tmp_path, monkeypatch)
     monkeypatch.setattr(cga, "find_engine", lambda: str(launcher))
     monkeypatch.setattr(cga, "run_bounded", runner)
     monkeypatch.setattr(cga.git_adapter, "head_commit", lambda _root: "b")
-    monkeypatch.setattr(engine_argv.os, "name", "nt")
+    monkeypatch.setattr(
+        cga,
+        "resolve_engine_argv",
+        lambda exe, args: engine_argv._resolve_engine_argv(exe, args, os_name="nt"),
+    )
 
     snapshot = cga.CodeGraphAdapter().prepare(str(tmp_path))
 

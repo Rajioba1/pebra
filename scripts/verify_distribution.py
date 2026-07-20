@@ -498,6 +498,16 @@ def verify_codegraph_setup() -> None:
             encoding="utf-8",
         )
         subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+        subprocess.run(["git", "-C", str(repo), "add", "sample.ts"], check=True, timeout=30)
+        subprocess.run(
+            [
+                "git", "-c", "user.name=PEBRA verifier",
+                "-c", "user.email=pebra-verifier@users.noreply.github.com",
+                "-C", str(repo), "commit", "-q", "-m", "fixture",
+            ],
+            check=True,
+            timeout=30,
+        )
         setup = _run_cli(
             "setup-graph", "--fix", "--via", "standalone", "--repo-root", str(repo), "--json",
             cwd=repo,

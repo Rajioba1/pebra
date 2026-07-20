@@ -5,6 +5,7 @@ import tarfile
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -422,6 +423,26 @@ def test_installed_verifier_constructs_tui_app() -> None:
 
     assert "from pebra.tui.app import ObservatoryApp" in source
     assert "ObservatoryApp(ObservatoryContext(" in source
+
+
+def test_codegraph_smoke_commits_fixture_before_setup(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def run_cli(*args: str, cwd: Path, **_kwargs: object) -> SimpleNamespace:
+        distribution_verifier.subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--verify", "HEAD"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(distribution_verifier, "_run_cli", run_cli)
+
+    distribution_verifier.verify_codegraph_setup()
+
+    assert [args[0] for args in calls] == ["setup-graph", "doctor"]
 
 
 def test_checksums_detect_artifact_tampering(tmp_path: Path) -> None:
