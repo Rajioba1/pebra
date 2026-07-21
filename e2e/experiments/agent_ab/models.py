@@ -442,8 +442,34 @@ class AssayInterpretation:
     task_has_headroom: bool
     assay_detects_realistic: bool
     pebra_has_efficacy: bool
-    pebra_exceeds_blast: bool
-    graph_repair_exceeds_pebra: bool = False
+    pebra_graph_interaction_positive: bool
+    graph_repair_exceeds_graph_pebra: bool = False
+    legacy_pebra_exceeds_blast: bool | None = None
+    legacy_graph_repair_exceeds_pebra: bool | None = None
+
+    @property
+    def pebra_exceeds_blast(self) -> bool:
+        """Deprecated artifact compatibility alias for the old five-arm assay."""
+        if self.legacy_pebra_exceeds_blast is not None:
+            return self.legacy_pebra_exceeds_blast
+        return False
+
+    @property
+    def graph_repair_exceeds_pebra(self) -> bool:
+        """Deprecated alias; the repair baseline is now graph-context PEBRA."""
+        if self.legacy_graph_repair_exceeds_pebra is not None:
+            return self.legacy_graph_repair_exceeds_pebra
+        return False
+
+
+@dataclass(frozen=True)
+class FactorialInteraction:
+    """Understand x Decision interaction effects; ``None`` means the paired cell was absent."""
+
+    harm_avoidance: float | None
+    risky_completion: float | None
+    over_caution: float | None
+    harm_over_caution_balance: float | None
 
 
 @dataclass(frozen=True)
@@ -452,5 +478,6 @@ class AssayMetrics:
     # TypeError). It stays required and is still compared by value in __eq__.
     arm_metrics: dict[str, ArmMetrics] = field(hash=False)
     pairwise: tuple[PairwiseComparison, ...] = field(hash=False)
+    factorial_interaction: FactorialInteraction = field(hash=False)
     interpretation: AssayInterpretation = field(hash=False)
     n_arms: int = field(hash=False)

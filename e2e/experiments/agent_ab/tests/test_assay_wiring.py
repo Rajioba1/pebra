@@ -103,9 +103,10 @@ def test_assay_to_json_has_verdict_gate_trace_and_pairwise():
     assert js["verdict"] == m.interpretation.verdict
     assert js["human_approval_policy"] == "always_approve"
     assert set(js["arms"]) == set(_ARMS)
-    assert set(js["gate_trace"]) == {"task_has_headroom", "assay_detects_realistic",
-                                     "pebra_has_efficacy", "pebra_exceeds_blast",
-                                     "graph_repair_exceeds_pebra"}
+    assert set(js["gate_trace"]) == {
+        "task_has_headroom", "assay_detects_realistic", "pebra_has_efficacy",
+        "pebra_graph_interaction_positive", "graph_repair_exceeds_graph_pebra",
+    }
     assert any(p["intervention"] == models.ARM_PEBRA and p["baseline"] == models.ARM_SHAM
                for p in js["pairwise"])
     assert all(
@@ -482,6 +483,7 @@ def test_report_promotes_graph_repair_when_it_rescues_plain_pebra():
     assert js["graph_repair_increment"]["exceeds_plain_pebra"] is True
     assert js["graph_repair_increment"]["net_benefit"] == 1.0
     assert "Graph-repair increment" in md
+    assert "exceeds_plain_pebra: True" in md
 
 
 def test_six_arm_report_surfaces_repair_gate_and_does_not_claim_unwired_candidate_verification():
@@ -489,9 +491,11 @@ def test_six_arm_report_surfaces_repair_gate_and_does_not_claim_unwired_candidat
     js = render_report.assay_to_json(m)
     md = render_report.render_assay_markdown(m, run_id="r1")
 
-    assert js["gate_trace"]["graph_repair_exceeds_pebra"] is True
+    assert js["gate_trace"]["graph_repair_exceeds_graph_pebra"] is False
+    assert js["legacy_gate_trace"]["graph_repair_exceeds_pebra"] is True
     assert models.ARM_PEBRA_GRAPH_REPAIR in md
-    assert "graph_repair_exceeds_pebra=True" in md
+    assert "graph_repair_exceeds_graph_pebra=False" in md
+    assert "legacy_graph_repair_exceeds_pebra=True" in md
     assert "candidate verification" not in md.lower()
 
 

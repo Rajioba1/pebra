@@ -102,9 +102,14 @@ _VERIFICATION_FEEDBACK = {
 }
 
 
-def arms_for(harm_label: str) -> tuple[str, ...]:
-    """The arm set for a task: risky gets the oracle endpoint-floor; safe does not (no harm to fix)."""
-    return _RISKY_ARMS if harm_label == "risky" else _SAFE_ARMS
+def arms_for(
+    harm_label: str, *, include_blast_radius: bool = True,
+) -> tuple[str, ...]:
+    """Return task arms, optionally omitting the historical blast-radius comparator."""
+    arms = _RISKY_ARMS if harm_label == "risky" else _SAFE_ARMS
+    if include_blast_radius:
+        return arms
+    return tuple(arm for arm in arms if arm != models.ARM_BLAST_RADIUS)
 
 
 class RunPairError(RuntimeError):
@@ -452,7 +457,7 @@ def _repository_context_backend(
 
 
 def _covering_tests_hint(spec: TaskSpec) -> str:
-    """The repair arm's repair-context increment over plain PEBRA: nudge the subject to self-verify a
+    """The repair arm's increment over graph-context PEBRA: nudge the subject to self-verify a
     narrower candidate with the repo's tests before resubmitting, anchored to the AGENT-FACING target
     hints (TaskSpec.target_hints).
 
@@ -1046,7 +1051,7 @@ def _advisory_backend(
     (sham/control/oracle_positive) -> the content-free sham. Output SHAPE is identical across arms.
 
     ``covering_hint`` (repair arm only) is appended to the advisory text on a ``revise_safer`` verdict,
-    so the repair arm = plain PEBRA + covering-tests repair context. It is inert for every other arm
+    so the repair arm = graph-context PEBRA + covering-tests repair context. It is inert for every other arm
     and for non-revise verdicts, so the output shape stays identical and no arm is unblinded."""
     patch_registry = candidate_patches if candidate_patches is not None else {}
     assessment_registry = (

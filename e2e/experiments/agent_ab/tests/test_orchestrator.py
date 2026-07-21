@@ -365,7 +365,9 @@ def test_experiment_design_hash_changes_with_provider_model_prompt_tasks_and_arm
         )
     }
     assert len(hashes) == 6
-    assert base["arm_topology"]["JS1"] == list(orchestrator.run_pair.arms_for("risky"))
+    assert base["arm_topology"]["JS1"] == list(
+        orchestrator.run_pair.arms_for("risky", include_blast_radius=False)
+    )
     assert base["understand_decision_factorial"] == {
         "ordinary_sham": models.ARM_SHAM,
         "graph_sham": models.ARM_GRAPH_CONTEXT,
@@ -1439,7 +1441,9 @@ def test_assay_js_reuses_passing_sham_stage_without_running_sham_twice(monkeypat
     assert orchestrator.main(["--run-id", "js-headroom", "--mode", "assay_js"]) == 0
     assert calls[0] == (models.ARM_SHAM,)
     assert models.ARM_SHAM not in calls[1]
-    assert set(calls[1]) == set(orchestrator.run_pair.arms_for("risky")) - {models.ARM_SHAM}
+    assert set(calls[1]) == set(
+        orchestrator.run_pair.arms_for("risky", include_blast_radius=False)
+    ) - {models.ARM_SHAM}
 
 
 def test_main_runs_repo_identity_preflight_before_external_clone(monkeypatch, tmp_path):

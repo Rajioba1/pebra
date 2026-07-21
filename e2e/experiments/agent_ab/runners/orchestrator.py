@@ -292,6 +292,13 @@ def _design_sha256(design: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _arms_for_mode(mode: str, harm_label: str) -> tuple[str, ...]:
+    """Resolve the pre-registered topology without changing historical assay runs."""
+    return run_pair.arms_for(
+        harm_label, include_blast_radius=mode != "assay_js"
+    )
+
+
 def _experiment_design(
     args: argparse.Namespace,
     cfg: dict[str, Any],
@@ -310,7 +317,7 @@ def _experiment_design(
     )
     protocol_hashes = {
         arm: _sha256_text(subject_protocol.protocol_for_arm(arm))
-        for arm in run_pair.arms_for("risky")
+        for arm in _arms_for_mode(args.mode, "risky")
     }
     return {
         "git_commit": harness_commit if harness_commit is not None else _git_commit(),
@@ -348,7 +355,7 @@ def _experiment_design(
         "task_specs": [dataclasses.asdict(spec) for spec in specs],
         "arm_topology": {
             spec.task_id: list(
-                run_pair.arms_for(spec.harm_label)
+                _arms_for_mode(args.mode, spec.harm_label)
                 if is_assay
                 else (ARM_CONTROL, ARM_TREATMENT)
             )
@@ -664,16 +671,21 @@ def _completed_pairs(outcomes: list[RunOutcome]) -> set[tuple[str, int]]:
     return {k for k, a in arms.items() if {ARM_CONTROL, ARM_TREATMENT} <= a}
 
 
-def _completed_units(outcomes: list[RunOutcome], specs_by_id: dict[str, TaskSpec]) -> set[tuple[str, int]]:
+def _completed_units(
+    outcomes: list[RunOutcome], specs_by_id: dict[str, TaskSpec], *, mode: str = "assay",
+) -> set[tuple[str, int]]:
     """Assay resume: a (task_id, seed) is complete only when ALL expected arms for that task's
-    harm_label are present (risky=4 arms, safe=3). Partial units are dropped and re-run."""
+    mode-specific topology are present. Partial units are dropped and re-run."""
     present: dict[tuple[str, int], set[str]] = {}
     for o in outcomes:
         present.setdefault((o.task_id, o.seed), set()).add(o.arm)
     done: set[tuple[str, int]] = set()
     for key, arms in present.items():
         spec = specs_by_id.get(key[0])
-        expected = set(run_pair.arms_for(spec.harm_label)) if spec else {ARM_CONTROL, ARM_TREATMENT}
+        expected = (
+            set(_arms_for_mode(mode, spec.harm_label))
+            if spec else {ARM_CONTROL, ARM_TREATMENT}
+        )
         if expected <= arms:
             done.add(key)
     return done
@@ -727,7 +739,7 @@ def _planned_arms_for_mode(mode: str) -> frozenset[str]:
     return frozenset(
         arm
         for harm_label in ("safe", "risky")
-        for arm in run_pair.arms_for(harm_label)
+        for arm in _arms_for_mode(mode, harm_label)
     )
 
 
@@ -876,7 +888,10 @@ def main(argv: list[str] | None = None) -> int:
         specs_by_id = {s.task_id: s for s in corpus}
         outcomes_path = out_dir / "outcomes.json"
         existing = _load_existing_outcomes(outcomes_path)
-        completed = _completed_units(existing, specs_by_id) if is_assay else _completed_pairs(existing)
+        completed = (
+            _completed_units(existing, specs_by_id, mode=args.mode)
+            if is_assay else _completed_pairs(existing)
+        )
         # Keep fully-completed units. For the JS assay only, also preserve a completed sham-stage row so
         # the paid headroom check is reusable on resume and sham is not paid for twice.
         outcomes: list[RunOutcome] = [o for o in existing if (o.task_id, o.seed) in completed]
@@ -933,7 +948,8 @@ def main(argv: list[str] | None = None) -> int:
                 }
                 if args.mode == "assay_js":
                     missing_arms = tuple(
-                        arm for arm in run_pair.arms_for(spec.harm_label) if arm not in present_arms
+                        arm for arm in _arms_for_mode(args.mode, spec.harm_label)
+                        if arm not in present_arms
                     )
                     results = run_pair.run_trial(spec, seed, args.run_id, arms=missing_arms)
                 else:
@@ -955,7 +971,7 @@ def main(argv: list[str] | None = None) -> int:
 
         served_models = _served_models(outcomes)
         if is_assay:
-            assay = scorecard.aggregate_assay(outcomes, arms=list(run_pair.arms_for("risky")),
+            assay = scorecard.aggregate_assay(outcomes, arms=list(_arms_for_mode(args.mode, "risky")),
                                               bootstrap_seed=cfg.get("bootstrap_seed", 0))
             render_report.write_assay_report(assay, out_dir=out_dir / "reports", run_id=args.run_id,
                                              scoring_mode=scoring_mode,

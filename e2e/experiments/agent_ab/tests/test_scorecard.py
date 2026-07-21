@@ -214,7 +214,7 @@ def test_pairwise_surfaces_risky_task_completion_gain():
     assert pc.risky_completion_gain == 1.0
 
 
-def test_assay_compares_graph_repair_to_plain_and_blunt_enforcement():
+def test_assay_compares_each_mechanism_to_the_immediately_preceding_rung():
     outcomes = []
     for label, task in (("risky", "T1"), ("safe", "B1")):
         outcomes.extend([
@@ -239,10 +239,10 @@ def test_assay_compares_graph_repair_to_plain_and_blunt_enforcement():
     assert (models.ARM_PEBRA, models.ARM_SHAM) in pairs
     assert (models.ARM_PEBRA_GRAPH_CONTEXT, models.ARM_PEBRA) in pairs
     assert (models.ARM_PEBRA_GRAPH_CONTEXT, models.ARM_GRAPH_CONTEXT) in pairs
-    assert (models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA) in pairs
-    assert (models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_ENFORCED_CONTROL) in pairs
+    assert (models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA_GRAPH_CONTEXT) in pairs
     assert (models.ARM_PEBRA_HUMAN_REVIEW, models.ARM_PEBRA_GRAPH_REPAIR) in pairs
-    assert (models.ARM_PEBRA_HUMAN_REVIEW, models.ARM_PEBRA) in pairs
+    assert (models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA) not in pairs
+    assert (models.ARM_PEBRA_HUMAN_REVIEW, models.ARM_PEBRA) not in pairs
     assisted = next(
         comparison for comparison in metrics.pairwise
         if comparison.intervention_arm == models.ARM_PEBRA_HUMAN_REVIEW

@@ -107,8 +107,10 @@ def _planned_grid(mode: str | None, is_assay: bool, corpus: list, config: dict) 
         return None
     grid: dict[tuple[str, int, str], dict] = {}
     for spec, seed in plan:
-        arms = run_pair.arms_for(spec.harm_label) if is_assay else (models.ARM_CONTROL,
-                                                                     models.ARM_TREATMENT)
+        arms = (
+            orchestrator._arms_for_mode(mode or "assay", spec.harm_label)  # noqa: SLF001
+            if is_assay else (models.ARM_CONTROL, models.ARM_TREATMENT)
+        )
         for arm in arms:
             grid[(spec.task_id, seed, arm)] = _task_meta(spec)
     return grid
@@ -238,7 +240,7 @@ def _latest_report_json(run_dir: Path, is_assay: bool) -> dict | None:
 
 
 def _scoreboard(outcomes: list[models.RunOutcome], is_assay: bool, config: dict,
-                run_dir: Path, phase_detail: dict) -> dict:
+                run_dir: Path, phase_detail: dict, *, mode: str | None = None) -> dict:
     report_payload = _latest_report_json(run_dir, is_assay)
     if report_payload is not None and not is_assay:
         return report_payload
@@ -251,7 +253,9 @@ def _scoreboard(outcomes: list[models.RunOutcome], is_assay: bool, config: dict,
     served_models = phase_detail.get("served_models") or []
     scoring_mode = phase_detail.get("scoring_mode") or "live_partial"
     if is_assay:
-        assay = scorecard.aggregate_assay(outcomes, arms=list(run_pair.arms_for("risky")),
+        assay = scorecard.aggregate_assay(
+            outcomes,
+            arms=list(orchestrator._arms_for_mode(mode or "assay", "risky")),  # noqa: SLF001
                                           bootstrap_seed=seed)
         if report_payload is not None:
             scoring_mode = report_payload.get("scoring_mode", scoring_mode)
@@ -390,7 +394,9 @@ def build_run_view(run_id: str, *, ab_out: Path, mode: str | None = None,
         "phase": phase,
         "phase_detail": phase_detail,
         "counts": {"done": len(observed_keys), "pending": pending, "total_planned": total_planned},
-        "scoreboard": _scoreboard(outcomes, is_assay, config, run_dir, phase_detail),
+        "scoreboard": _scoreboard(
+            outcomes, is_assay, config, run_dir, phase_detail, mode=resolved_mode
+        ),
         "groups": {
             "by_language": _group_counts(matrix, "language"),
             "by_specimen": _group_counts(matrix, "specimen"),

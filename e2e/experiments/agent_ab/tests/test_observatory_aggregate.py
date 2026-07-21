@@ -159,7 +159,7 @@ def test_observatory_payload_preserves_credited_graph_route_and_lineage(tmp_path
     pair = next(
         item for item in view["scoreboard"]["pairwise"]
         if item["intervention"] == models.ARM_PEBRA_GRAPH_REPAIR
-        and item["baseline"] == models.ARM_PEBRA
+        and item["baseline"] == models.ARM_PEBRA_GRAPH_CONTEXT
     )
     assert pair["graph_refined_post_edit_verified_completion_gain"] == 1.0
 
@@ -251,10 +251,10 @@ def test_pending_cells_keep_language_specimen_and_harm_label(tmp_path):
     assert first["specimen"] == "javascript"
     assert first["harm_label"] == "risky"
     assert view["groups"]["by_language"]["typescript"]["total_planned"] == len(
-        run_pair.arms_for("risky")
+        run_pair.arms_for("risky", include_blast_radius=False)
     )
     assert view["groups"]["by_specimen"]["javascript"]["pending"] == len(
-        run_pair.arms_for("risky")
+        run_pair.arms_for("risky", include_blast_radius=False)
     )
 
 
