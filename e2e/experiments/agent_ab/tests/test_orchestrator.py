@@ -671,7 +671,7 @@ def test_aligned_live_run_documentation_uses_fresh_one_seed_run_id():
     assert "schema-2" in normalized
     assert "different graph-scope digests" in normalized
     assert 'E2E_AB_SEEDS_PER_ARM="1"' in readme
-    assert 'E2E_AB_RUN_ID="js4_s2_cogv2_1s_20260720_001"' in readme
+    assert 'E2E_AB_RUN_ID="js4_s2_cogv3_1s_20260721_001"' in readme
     assert "js4_schema1_1seed_20260719_001" not in readme
     assert "js4_v4pro_sp_3seed_001" not in readme
 
