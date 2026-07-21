@@ -104,7 +104,9 @@ def test_reject_advisory_is_actionable_without_engine_vocab():
     out = real._shape_output({"recommended_decision": "reject", "scores": {"expected_loss": 1.0}})
     advisory = out["advisory"].lower()
     assert "do not edit" in advisory
-    assert "stop" in advisory
+    assert "exact candidate" in advisory
+    assert "not the requested goal" in advisory
+    assert "different candidate or route" in advisory
 
 
 def test_revise_safer_advisory_blocks_current_patch_with_forward_path():

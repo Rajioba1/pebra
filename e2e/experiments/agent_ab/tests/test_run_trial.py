@@ -111,7 +111,7 @@ def test_covering_tests_hint_empty_without_target_hints():
 def test_gate_backend_only_pebra_enforces(monkeypatch):
     monkeypatch.setattr(cli_harness, "gate_check",
                         lambda event, *, db, consult_only: {
-                            "schema_version": 1,
+                            "schema_version": 2,
                             "permission": "deny",
                             "tier": "must_consult",
                             "reason": "Consult before changing this candidate.",

@@ -79,7 +79,7 @@ mentioning experiment/PEBRA/etc.; leaked runs are excluded from the efficacy ana
 
 ### Production gate boundary and aligned reason treatment
 
-The PEBRA treatment calls the real schema-1 `gate-check` subprocess with `consult_only=True`; it does
+The PEBRA treatment calls the real schema-2 `gate-check` subprocess with `consult_only=True`; it does
 not import the production implementation. Immediately after the live-run authorization gate, each real
 gated arm performs a read-only empty-event schema probe before provider configuration, key lookup, or
 client construction. An incompatible base schema aborts there. Ordinary gate infrastructure outages
@@ -89,15 +89,19 @@ the ordinary PEBRA treatment remains conservatively blocked.
 
 Every arm exposes exactly `{ok, blocked, reason}` to the coding model. Candidate-bound `decision`,
 `expected_loss`, `benefit`, and `rau` may appear neutrally inside a restrictive `reason`; this is the
-intentional `candidate-risk-summary-v1` treatment, not a transparent schema refactor. Its first live
+intentional `candidate-risk-summary-v2` treatment, not a transparent schema refactor. Its first live
 run must use a fresh run ID. Outcomes or checkpoints from the earlier reason treatment must not be
 resumed or pooled with it; the treatment version and effective seed count are part of the canonical
 experiment design hash.
 
-Both subject protocols also carry the same blinded no-repeat understanding phase, versioned as
-`no-repeat-understand-v1`: reuse equivalent current repository context when supplied, otherwise use
-ordinary repository search/read tools, and do not repeat equivalent exploration. This instruction
-never names the product, graph provider, oracle, or experiment to the subject.
+Both subject protocols carry the same blinded cognitive lifecycle, versioned as
+`cognitive-lifecycle-v2`: Interpret → Understand → Design → Assess → Decide → Apply → Verify. The
+Understand phase is composed from the same shared bytes in every arm: reuse equivalent current repository
+context when supplied, otherwise use ordinary repository search/read tools, and do not repeat equivalent
+exploration. The treatment protocol explains every restrictive decision, including that `reject` holds
+the exact candidate rather than the requested goal. The consult-only gate never exposes a usable trusted
+approval command to the subject. These instructions never name the product, graph provider, oracle, or
+experiment to the subject.
 
 The deterministic graph preflight requires one canonical graph-scope digest across the planned task
 cohort. Every real advisory call also returns a host-only scope receipt. Before outcomes are scored or
@@ -465,7 +469,7 @@ $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="10"
 $env:E2E_AB_SEEDS_PER_ARM="1"
-$env:E2E_AB_RUN_ID="js4_schema1_1seed_20260719_001"
+$env:E2E_AB_RUN_ID="js4_s2_cogv2_1s_20260720_001"
 nox -s e2e-ab
 ```
 
@@ -494,7 +498,7 @@ $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="10"
 $env:E2E_AB_SEEDS_PER_ARM="1"
-$env:E2E_AB_RUN_ID="js4_schema1_1seed_20260719_001"
+$env:E2E_AB_RUN_ID="js4_s2_cogv2_1s_20260720_001"
 nox -s e2e-ab
 ```
 
@@ -522,7 +526,7 @@ E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
 E2E_AB_PARALLEL_ARMS=1 \
 E2E_AB_MAX_WORKERS=10 \
 E2E_AB_SEEDS_PER_ARM=1 \
-E2E_AB_RUN_ID=js4_schema1_1seed_20260719_001 \
+E2E_AB_RUN_ID=js4_s2_cogv2_1s_20260720_001 \
 nox -s e2e-ab
 ```
 

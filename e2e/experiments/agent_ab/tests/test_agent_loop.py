@@ -311,7 +311,7 @@ def test_allowed_assessment_is_attributed_only_after_write_succeeds(tmp_path):
     setup = SimpleNamespace(
         repo_path=tmp_path,
         gate_check_backend=lambda _event: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "allow",
             "tier": "consulted",
             "_matched_assessment_id": "asm_7",
@@ -325,7 +325,7 @@ def test_allowed_assessment_is_attributed_only_after_write_succeeds(tmp_path):
 
     assert result == {"ok": True, "blocked": False, "reason": None}
     assert applied == [{
-        "schema_version": 1,
+        "schema_version": 2,
         "permission": "allow",
         "tier": "consulted",
         "_matched_assessment_id": "asm_7",
@@ -337,7 +337,7 @@ def test_failed_write_never_credits_allowed_assessment(tmp_path):
     setup = SimpleNamespace(
         repo_path=tmp_path,
         gate_check_backend=lambda _event: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "allow",
             "tier": "consulted",
             "_matched_assessment_id": "asm_7",
@@ -363,7 +363,7 @@ def test_restrictive_exact_candidate_returns_only_blinded_reason_without_mutatio
     setup = SimpleNamespace(
         repo_path=tmp_path,
         gate_check_backend=lambda _event: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "deny",
             "tier": "consulted_revise",
             "reason": reason,
@@ -393,7 +393,7 @@ def test_unbound_candidate_reason_does_not_copy_numeric_risk_scores(tmp_path):
     setup = SimpleNamespace(
         repo_path=tmp_path,
         gate_check_backend=lambda _event: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "deny",
             "tier": "candidate_unbound",
             "reason": reason,

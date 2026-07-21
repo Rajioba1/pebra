@@ -1118,11 +1118,11 @@ their validation rule remain unchanged, so existing chains stay readable without
 
 ### Tasks
 
-Implementation status (2026-07-20): Steps 1–7 are implemented and locally verified. Step 8 is the
-only feature work intentionally deferred. The production suite, lint/import contracts, non-experiment
-E2E, installed-wheel verification, MCP smoke, and core-only smoke pass. The complete `e2e-fast` session
-currently stops only where the deferred A/B orchestrator (schema 1) rejects the production gate contract
-(schema 2); aligning that consumer and rerunning the complete gate belongs to Step 8.
+Implementation status (2026-07-20): Steps 1–8 are implemented and locally verified. The deterministic
+A/B consumer now accepts production gate schema 2, uses the seven-phase cognitive lifecycle in both arms,
+preserves byte-identical blinded Understand guidance, and rejects checkpoints from the prior experiment
+protocol. The complete test, lint/import-contract, `e2e-fast`, installed-wheel, MCP-smoke, and core-only
+gates pass. No provider-backed or paid experiment was run.
 
 - [x] **Step 1: Lock override eligibility with failing core tests**
 
@@ -1272,7 +1272,7 @@ built artifact.
 Document the seven-phase lifecycle, exact-candidate meaning of `reject`, conditional human override, and
 that CodeGraph is the current implementation behind PEBRA's provider-neutral repository-graph interface.
 
-- [ ] **Step 8: Align deterministic experiments last**
+- [x] **Step 8: Align deterministic experiments last**
 
 Modify the agent A/B advisory contract, subject protocol, experiment README, and deterministic tests only
 after production behavior and E2E are approved. The consult-only experiment has no trusted approver, so
@@ -1282,7 +1282,7 @@ consumer to schema 2, bump the experiment protocol/design identifier, and reject
 Preserve the identical blinded Understand instruction in every arm. Do not run a provider-backed or paid
 experiment.
 
-- [ ] **Step 9: Run local gates and independent safety/protocol reviews**
+- [x] **Step 9: Run local gates and independent safety/protocol reviews**
 
 Run:
 

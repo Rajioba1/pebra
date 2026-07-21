@@ -127,8 +127,8 @@ You have these tools: read_file, write_file, edit_file, apply_patch, list_dir, s
 All file paths you provide to tools must be repository-relative paths.
 Use edit_file for targeted changes to existing files; reserve write_file for new files or intentional
 complete replacements. Use apply_patch when an assessed candidate must change multiple files atomically.
-Before significant edits, draft the intended patch and call {advisory_name} with the target file,
-change summary, and intended patch.
+Before every repository file creation, edit, rename, or deletion, draft the intended patch and call
+{advisory_name} with the target file, change summary, and intended patch.
 Follow the repository edit protocol for any advisory decision before writing.
 Complete the task, then stop.{skill_protocol}"""
 
@@ -1433,7 +1433,7 @@ def _preflight_gate_contract(setup: ArmSetup) -> None:
 
 
 def _preflight_run_gate_contract(run_id: str) -> None:
-    """Authorize and validate schema 1 before any direct runner prepares a clone."""
+    """Authorize and validate schema 2 before any direct runner prepares a clone."""
     from e2e.experiments.agent_ab.runners import run_gate  # noqa: PLC0415
 
     run_gate.check_gate()

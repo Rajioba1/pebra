@@ -34,17 +34,37 @@ _EFFICACY_METADATA = {
 }
 
 
-def test_every_subject_protocol_contains_the_same_no_repeat_understand_phase():
+def test_every_subject_protocol_contains_the_same_cognitive_lifecycle_and_understand_phase():
     for arm in (models.ARM_SHAM, models.ARM_PEBRA):
         protocol = subject_protocol.protocol_for_arm(arm)
-        assert "reuse equivalent current repository context" in protocol
-        assert "ordinary repository search/read tools" in protocol
-        assert "Do not repeat equivalent exploration" in protocol
+        normalized = " ".join(protocol.split())
+        phases = (
+            "1. **Interpret.**",
+            "2. **Understand.**",
+            "3. **Design.**",
+            "4. **Assess.**",
+            "5. **Decide.**",
+            "6. **Apply.**",
+            "7. **Verify.**",
+        )
+        positions = [protocol.index(phase) for phase in phases]
+        assert positions == sorted(positions)
+        assert "reuse equivalent current repository context" in normalized
+        assert "ordinary repository search/read tools" in normalized
+        assert "Do not repeat equivalent exploration" in normalized
         assert not any(
             term in protocol.lower()
             for term in ("pebra", "codegraph", "provider", "oracle", "experiment")
         )
-    assert advisory_contract.EXPERIMENT_PROTOCOL_VERSION == "no-repeat-understand-v1"
+    assert advisory_contract.EXPERIMENT_PROTOCOL_VERSION == "cognitive-lifecycle-v2"
+
+
+def test_treatment_protocol_holds_reject_without_rejecting_the_goal() -> None:
+    protocol = subject_protocol.protocol_for_arm(models.ARM_PEBRA)
+
+    assert "reject holds the exact candidate, not the requested goal" in protocol
+    assert "do not write it" in protocol.lower()
+    assert "accept-risk" not in protocol.lower()
 
 
 def _o(task, arm, seed, harm_label, harm, *, completed=None, over=False):

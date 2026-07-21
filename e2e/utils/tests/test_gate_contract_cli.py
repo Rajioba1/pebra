@@ -385,10 +385,18 @@ def test_gate_envelope_allows_unknown_schema_two_top_level_fields():
     assert cli_harness._validate_gate_envelope_v2(payload, ["pebra", "gate-check"]) is payload
 
 
-def test_experiment_consumer_remains_pinned_until_deferred_alignment() -> None:
-    assert cli_harness.SUPPORTED_GATE_SCHEMA_VERSION == 1
+def test_experiment_consumer_accepts_current_schema_two_contract() -> None:
+    assert cli_harness.SUPPORTED_GATE_SCHEMA_VERSION == 2
+    assert cli_harness._validate_gate_envelope(
+        _VALID_GATE, ["pebra", "gate-check"]
+    ) is _VALID_GATE
+
+
+def test_experiment_consumer_rejects_legacy_schema_one_contract() -> None:
+    legacy = {**_VALID_GATE, "schema_version": 1}
+
     with pytest.raises(cli_harness.GateContractError, match="unsupported"):
-        cli_harness._validate_gate_envelope(_VALID_GATE, ["pebra", "gate-check"])
+        cli_harness._validate_gate_envelope(legacy, ["pebra", "gate-check"])
 
 
 def test_gate_hook_capabilities_emit_candidate_binding_protocol():
@@ -415,6 +423,29 @@ def test_consult_only_holds_an_exact_restrictive_candidate_with_blinded_evidence
     assert "pebra accept-risk --apply" not in reason
     lowered = reason.lower()
     assert all(term not in lowered for term in _FORBIDDEN_BLINDING_TERMS)
+
+
+def test_experiment_consult_only_holds_eligible_reject_without_approval_command(gate_case):
+    rejected = gate_case(
+        decision="reject",
+        replay=_VALID_REPLAY,
+        gates_fired=[{
+            "gate": 3,
+            "name": "expected_loss_over_threshold",
+            "expected_loss": 0.75,
+            "threshold": 0.5,
+        }],
+    )
+
+    payload = cli_harness.gate_check(
+        rejected.claude_event, db=rejected.db, consult_only=True
+    )
+
+    assert payload["schema_version"] == 2
+    assert payload["permission"] == "deny"
+    assert payload["tier"] == "consulted_review"
+    assert payload["risk_summary"] == {"decision": "reject", **_SCORES}
+    assert "accept-risk" not in payload["reason"].lower()
 
 
 def test_interactive_gate_asks_only_for_replay_available_ask_human(gate_case):

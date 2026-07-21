@@ -27,10 +27,10 @@ class CLIError(RuntimeError):
     """A ``pebra`` CLI invocation failed (non-zero exit) or returned unparseable JSON."""
 
 
-SUPPORTED_GATE_SCHEMA_VERSION = 1
+SUPPORTED_GATE_SCHEMA_VERSION = 2
 _GATE_PERMISSION_TIERS = {
     "allow": frozenset({"pass", "fail_open", "consulted"}),
-    "ask": frozenset({"consulted_review"}),
+    "ask": frozenset({"consulted_review", "consulted_reject_review"}),
     "deny": frozenset({
         "must_consult",
         "candidate_unverifiable",
@@ -42,10 +42,6 @@ _GATE_PERMISSION_TIERS = {
         "consulted_review",
         "consulted_review_unavailable",
     }),
-}
-_GATE_PERMISSION_TIERS_V2 = {
-    **_GATE_PERMISSION_TIERS,
-    "ask": frozenset({"consulted_review", "consulted_reject_review"}),
 }
 
 
@@ -64,9 +60,6 @@ _RISK_DECISIONS_BY_PAIR = {
     ("ask", "consulted_review"): frozenset({"ask_human"}),
     ("deny", "consulted_review"): frozenset({"reject"}),
     ("deny", "consulted_review_unavailable"): frozenset({"ask_human"}),
-}
-_RISK_DECISIONS_BY_PAIR_V2 = {
-    **_RISK_DECISIONS_BY_PAIR,
     ("ask", "consulted_reject_review"): frozenset({"reject"}),
 }
 
@@ -158,26 +151,20 @@ def _validate_gate_envelope_for(
 
 
 def _validate_gate_envelope(payload: object, cmd: list[str]) -> dict:
-    """Experiment-pinned schema-1 consumer; Step 8 deliberately updates this last."""
+    """Experiment consumer for the current schema-2 contract."""
     return _validate_gate_envelope_for(
         payload,
         cmd,
         schema_version=SUPPORTED_GATE_SCHEMA_VERSION,
         permission_tiers=_GATE_PERMISSION_TIERS,
         risk_decisions_by_pair=_RISK_DECISIONS_BY_PAIR,
+        required_summary_pairs=frozenset({("ask", "consulted_reject_review")}),
     )
 
 
 def _validate_gate_envelope_v2(payload: object, cmd: list[str]) -> dict:
     """Independent production E2E validator for the current schema-2 contract."""
-    return _validate_gate_envelope_for(
-        payload,
-        cmd,
-        schema_version=2,
-        permission_tiers=_GATE_PERMISSION_TIERS_V2,
-        risk_decisions_by_pair=_RISK_DECISIONS_BY_PAIR_V2,
-        required_summary_pairs=frozenset({("ask", "consulted_reject_review")}),
-    )
+    return _validate_gate_envelope(payload, cmd)
 
 
 def _python() -> str:
@@ -344,7 +331,7 @@ def gate_check(
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict:
     """`pebra gate-check` — the pure pre-edit gate DECISION for a proposed edit. The host event
-    (``tool_name``/``tool_input``/``cwd``) goes in on STDIN; the experiment-pinned schema-1 gate
+    (``tool_name``/``tool_input``/``cwd``) goes in on STDIN; the experiment-pinned schema-2 gate
     envelope comes out. gate-check always exits 0 (allow/deny/ask as data) — the caller enforces. The event
     carries ``cwd=repo_root``; the store is the shared clone db written by ``pebra assess``.
 
@@ -363,7 +350,7 @@ def gate_check_v2(
     event: dict, *, db: Path | str, consult_only: bool = False,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict:
-    """Production E2E gate-check consumer for schema 2; experiment callers remain on ``gate_check``."""
+    """Explicit production E2E alias for the same schema-2 validator used by the experiment."""
     return _run_gate_check(
         event,
         db=db,

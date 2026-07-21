@@ -255,7 +255,7 @@ def test_treatment_gate_check_backend_uses_consult_only(monkeypatch, tmp_path):
         captured["db"] = db
         captured["consult_only"] = consult_only
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "allow",
             "tier": "consulted",
             "reason": None,
@@ -271,7 +271,7 @@ def test_treatment_gate_check_backend_uses_consult_only(monkeypatch, tmp_path):
     result = backend({"tool_name": "Write"})
 
     assert result == {
-        "schema_version": 1,
+        "schema_version": 2,
         "permission": "allow",
         "tier": "consulted",
         "reason": None,
@@ -314,7 +314,7 @@ def test_exact_allowed_candidate_is_bound_for_post_edit_verify(monkeypatch, tmp_
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "allow", "tier": "consulted", "reason": None, "warn": None,
             "risk_summary": {
                 "decision": "proceed", "expected_loss": 0.08, "benefit": 0.65, "rau": 0.22,
@@ -419,7 +419,7 @@ def test_exact_allowed_candidate_binds_host_only_graph_refinement_telemetry(
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "allow", "tier": "consulted", "reason": None, "warn": None,
             "risk_summary": {
                 "decision": "proceed", "expected_loss": 0.08, "benefit": 0.65, "rau": 0.22,
@@ -769,7 +769,7 @@ def test_gate_binds_older_exact_assessment_not_latest_assessment(monkeypatch, tm
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "allow",
             "tier": "consulted",
             "reason": None,
@@ -857,7 +857,7 @@ def test_denied_candidate_is_not_bound_for_post_edit_verify(monkeypatch, tmp_pat
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "deny", "tier": "consulted_revise", "reason": "revise",
             "warn": None,
             "risk_summary": {
@@ -882,7 +882,7 @@ def test_fail_open_write_is_not_bound_for_post_edit_verify(monkeypatch, tmp_path
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "allow", "tier": "fail_open", "reason": None,
             "warn": "graph unavailable", "risk_summary": None,
             "matched_assessment_id": None,
@@ -1453,7 +1453,7 @@ def test_human_review_arm_requires_model_request_before_host_sanction_and_reasse
     def _gate_check(_event, **_kwargs):
         if not telemetry.post_approval_reassessment:
             return {
-                "schema_version": 1,
+                "schema_version": 2,
                 "permission": "deny",
                 "tier": "consulted_review_unavailable",
                 "reason": "The original exact candidate remains held pending reassessment.",
@@ -1466,7 +1466,7 @@ def test_human_review_arm_requires_model_request_before_host_sanction_and_reasse
             }
         if reassessment_decision == "proceed":
             return {
-                "schema_version": 1,
+                "schema_version": 2,
                 "permission": "allow",
                 "tier": "consulted",
                 "reason": None,
@@ -1478,7 +1478,7 @@ def test_human_review_arm_requires_model_request_before_host_sanction_and_reasse
                 "matched_assessment_id": "asm_2",
             }
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "deny",
             "tier": "consulted_review_unavailable",
             "reason": "The reassessed exact candidate remains held.",
@@ -1664,7 +1664,7 @@ def test_human_review_gate_records_write_attempt_before_approval(monkeypatch, tm
         run_pair.cli_harness,
         "gate_check",
         lambda event, **_kwargs: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "deny", "tier": "consulted_review_unavailable", "reason": "wait",
             "warn": None,
             "risk_summary": {
@@ -1704,7 +1704,7 @@ def test_human_assisted_write_attribution_is_sticky_across_later_candidate(
         run_pair.cli_harness,
         "gate_check",
         lambda event, **_kwargs: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "allow", "tier": "consulted",
             "reason": None, "warn": None,
             "risk_summary": {
@@ -2451,7 +2451,7 @@ def test_subject_prompt_lists_all_served_tools_and_advisory_workflow(tmp_path):
         assert name in prompt
     assert subject_protocol.INSTRUCTION_REL_PATH in prompt
     assert "read" in prompt.lower()
-    assert "before significant edits" in prompt.lower()
+    assert "before every repository file creation, edit, rename, or deletion" in prompt.lower()
     assert "intended patch" in prompt.lower()
     lower = prompt.lower()
     assert "recommended_decision=reject" not in lower

@@ -53,7 +53,7 @@ _TERMINAL_PHASES = frozenset(
 )
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _MAX_RUN_ID_LENGTH = 32
-GATE_REASON_TREATMENT_VERSION = "candidate-risk-summary-v1"
+GATE_REASON_TREATMENT_VERSION = "candidate-risk-summary-v2"
 
 
 class ExperimentRunError(RuntimeError):
@@ -660,7 +660,7 @@ def _sham_admission_failures(
 
 
 def _preflight_gate_contract(out_dir: Path) -> None:
-    """Validate the real schema-1 gate boundary once before any subject trial starts."""
+    """Validate the real schema-2 gate boundary once before any subject trial starts."""
     try:
         cli_harness.gate_check(
             {}, db=out_dir / "gate-contract-probe.db", consult_only=True

@@ -195,8 +195,7 @@ def test_run_contract_probe_uses_real_schema_validator(monkeypatch, tmp_path):
         ),
     )
 
-    with pytest.raises(orchestrator.cli_harness.GateContractError, match="contract schema"):
-        orchestrator._preflight_gate_contract(tmp_path)
+    orchestrator._preflight_gate_contract(tmp_path)
 
 
 def test_orchestrator_corpus_loader_includes_javascript_specimen():
@@ -367,7 +366,7 @@ def test_experiment_design_hash_changes_with_gate_reason_treatment(monkeypatch):
     monkeypatch.setattr(
         orchestrator,
         "GATE_REASON_TREATMENT_VERSION",
-        "candidate-risk-summary-v2",
+        "candidate-risk-summary-v3",
     )
     changed = orchestrator._experiment_design(
         args, cfg, [js4], provider="deepseek", model="deepseek-v4-flash"
@@ -386,8 +385,25 @@ def test_experiment_design_binds_protocol_version_and_graph_scope_digest():
 
     assert bound["graph_scope_digest"] == "a" * 64
     assert bound["experiment_design"]["graph_scope_digest"] == "a" * 64
-    assert bound["experiment_design"]["protocol_version"] == "no-repeat-understand-v1"
+    assert bound["experiment_design"]["protocol_version"] == "cognitive-lifecycle-v2"
     assert bound["experiment_design_sha256"] != unbound["experiment_design_sha256"]
+
+
+def test_resume_rejects_pre_schema_two_subject_protocol(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    current = _run_meta(mode="assay_js", seeds_per_arm=3)
+    prior = json.loads(json.dumps(current))
+    prior["experiment_design"]["protocol_version"] = "no-repeat-understand-v1"
+    prior["experiment_design_sha256"] = orchestrator._design_sha256(
+        prior["experiment_design"]
+    )
+    (run_dir / "outcomes.json").write_text(
+        json.dumps({"outcomes": [], "run_metadata": prior}), encoding="utf-8"
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run design changed"):
+        orchestrator._assert_resume_design_compatible(run_dir, current)
 
 
 def test_resume_rejects_different_graph_scope_cohort(tmp_path):
@@ -571,11 +587,13 @@ def test_aligned_live_run_documentation_uses_fresh_one_seed_run_id():
     readme = (orchestrator._CONFIG_PATH.parent / "README.md").read_text(encoding="utf-8")
     normalized = " ".join(readme.split())
 
-    assert "candidate-risk-summary-v1" in normalized
-    assert "no-repeat-understand-v1" in normalized
+    assert "candidate-risk-summary-v2" in normalized
+    assert "cognitive-lifecycle-v2" in normalized
+    assert "schema-2" in normalized
     assert "different graph-scope digests" in normalized
     assert 'E2E_AB_SEEDS_PER_ARM="1"' in readme
-    assert 'E2E_AB_RUN_ID="js4_schema1_1seed_20260719_001"' in readme
+    assert 'E2E_AB_RUN_ID="js4_s2_cogv2_1s_20260720_001"' in readme
+    assert "js4_schema1_1seed_20260719_001" not in readme
     assert "js4_v4pro_sp_3seed_001" not in readme
 
 

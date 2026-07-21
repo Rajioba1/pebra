@@ -83,7 +83,7 @@ def test_gate_denial_reasons_do_not_leak_arm_identity(arm, tmp_path, monkeypatch
         run_pair.cli_harness,
         "gate_check",
         lambda event, *, db, consult_only: {
-            "schema_version": 1,
+            "schema_version": 2,
             "permission": "deny",
             "tier": "consulted_revise",
             "reason": "A pre-edit check blocked this write. Revise or stop.",
