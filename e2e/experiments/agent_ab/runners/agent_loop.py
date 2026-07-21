@@ -496,6 +496,9 @@ def run(
         final_stop_reason=final_stop_reason, limit_reason=limit_reason, turn_count=turn_count,
         served_models=tuple(served_models),
         protocol_file_read=protocol_read,
+        real_advisory_failures=tuple(
+            getattr(getattr(setup, "telemetry", None), "real_advisory_failures", ())
+        ),
     )
     if trace_path is not None:
         _write_subject_trace(trace_path, result, config, turns, tools_seen, limit_reason)
@@ -532,6 +535,8 @@ def _write_subject_trace(
             "served_models": list(result.served_models),
             "protocol_file_read": result.protocol_file_read,
             "modified_files": list(result.modified_files),
+            "reason": result.error or result.limit_reason,
+            "real_advisory_failures": list(result.real_advisory_failures),
         },
         "transcript": list(result.transcript),
         "turns": turns,

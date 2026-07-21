@@ -49,6 +49,49 @@ def test_assess_payload_hides_host_snapshot_provenance_by_default() -> None:
     assert "prior_provenance" in host_payload
 
 
+def test_assess_payload_exposes_graph_failure_reason_without_inventing_scope() -> None:
+    result = AssessmentResult(
+        recommended_decision=Decision.INSPECT_FIRST,
+        requires_confirmation=False,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.NORMAL,
+        scores={},
+        repo_id="r",
+        repo_root="/repo",
+        provenance={
+            "graph_provenance": {
+                "engine": "CodeGraph",
+                "status": "unavailable",
+                "fallback_reason": "codegraph sync failed",
+            }
+        },
+    )
+    outcome = AssessmentOutcome(
+        recommended_result=result,
+        recommended_explanation=Explanation(
+            risk_level_band="Low",
+            value_after_risk_band="Positive",
+            confidence_band="high",
+            confidence_percent=90,
+            code_sensitivity_label="Low",
+            code_sensitivity_descriptor="code",
+            expected_damage=0.0,
+            risk_budget_percent=0,
+            affected_area="small",
+        ),
+        assessment_id="asm_1",
+        repo_id="r",
+        repo_root="/repo",
+    )
+
+    provenance = composition.assess_payload(outcome)["graph_provenance"]
+
+    assert provenance["engine"] == "CodeGraph"
+    assert provenance["status"] == "unavailable"
+    assert provenance["fallback_reason"] == "codegraph sync failed"
+    assert provenance["graph_scope_digest"] is None
+
+
 def test_assess_payload_exposes_prior_provenance_only_to_host() -> None:
     result = AssessmentResult(
         recommended_decision=Decision.ASK_HUMAN,

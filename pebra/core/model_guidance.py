@@ -58,6 +58,20 @@ def _safer_route(result: AssessmentResult, action: CandidateAction) -> dict[str,
         "Declare every intended file in the resubmitted assessment so the revised candidate is "
         "reassessed and bound to its complete file scope."
     )
+    obligation_gate = next(
+        (gate for gate in result.gates_fired if gate.get("name") == "task_obligations_incomplete"),
+        None,
+    )
+    if obligation_gate:
+        missing_files = ", ".join(obligation_gate.get("missing_files") or ())
+        missing_symbols = ", ".join(obligation_gate.get("missing_symbols") or ())
+        missing_checks = ", ".join(obligation_gate.get("missing_or_unverified_checks") or ())
+        if missing_files:
+            constraints.append(f"Include the host-required files in the candidate: {missing_files}.")
+        if missing_symbols:
+            constraints.append(f"Cover the host-required symbols in the candidate: {missing_symbols}.")
+        if missing_checks:
+            constraints.append(f"Provide exact-candidate verification for: {missing_checks}.")
     rollup = sse.get("file_fanin_rollup") or {}
     callers = rollup.get("distinct_caller_count")
     if isinstance(callers, int) and callers > 0:

@@ -111,6 +111,13 @@ arms do not invent receipts. The digest is included in host-side run metadata an
 hash, but is never serialized to the coding model or a tool-call record. Runs from different
 graph-scope digests cannot be resumed or pooled under one run ID.
 
+When arm-level parallelism is enabled, non-advisory arms may still overlap, but the three real-advisory
+arms run one at a time so repository builds and graph preparation do not contend on one host. A real
+advisory is not started with less than 30 seconds of run budget (the bounded graph-status probe alone
+may consume that window). These execution rules are part of the canonical design hash. Host-only traces
+record whether a skipped/failed advisory lacked wall budget or timed out; the model still receives the
+same arm-neutral unavailable response, and the graph-scope receipt gate remains strict.
+
 Held candidates do not write, receive applied/proceeded-edit assessment attribution, or count as edit
 cycles; they remain visible only as intervention/unresolved observations. The `ask_human` review arm
 still requires an explicit model request, exact-candidate sanction, and a new assessment before an

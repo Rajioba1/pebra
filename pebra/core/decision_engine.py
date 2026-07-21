@@ -698,15 +698,15 @@ def decide(
         if obligations_issue:
             gates_fired.append(obligations_issue)
             return _result(
-                Decision.ASK_HUMAN,
-                requires_confirmation=True,
+                Decision.REVISE_SAFER,
+                requires_confirmation=False,
                 risk_mode=_risk_mode(
-                    Decision.ASK_HUMAN, stage, controlled=False, elevated=False
+                    Decision.REVISE_SAFER, stage, controlled=False, elevated=False
                 ),
                 gates_fired=gates_fired,
                 decision_reason=(
                     "The sanction covers the risk decision but cannot waive incomplete "
-                    "host-declared task obligations."
+                    "host-declared task obligations; revise the candidate to satisfy them."
                 ),
             )
         return _result(

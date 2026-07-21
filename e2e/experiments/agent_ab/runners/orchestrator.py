@@ -327,6 +327,8 @@ def _experiment_design(
         "execution": {
             "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
             "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
+            "real_advisory_arms_serialized": run_pair._REAL_ADVISORY_ARMS_SERIALIZED,
+            "min_real_advisory_budget_seconds": run_pair._MIN_REAL_ADVISORY_BUDGET_SECONDS,
             "prior_mode": os.environ.get("E2E_AB_PRIOR_MODE", "explicit"),
             "semantic_diff_env": os.environ.get("PEBRA_CODEGRAPH_SEMANTIC_DIFF"),
             "thinking_env": os.environ.get("E2E_AB_THINKING"),
@@ -387,6 +389,8 @@ def _run_metadata(
         ),
         "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
         "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
+        "real_advisory_arms_serialized": run_pair._REAL_ADVISORY_ARMS_SERIALIZED,
+        "min_real_advisory_budget_seconds": run_pair._MIN_REAL_ADVISORY_BUDGET_SECONDS,
         "prior_mode": os.environ.get("E2E_AB_PRIOR_MODE", "explicit"),
         "human_approval_policy": os.environ.get(
             "E2E_AB_HUMAN_APPROVAL_POLICY", "always_approve"

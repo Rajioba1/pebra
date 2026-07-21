@@ -744,13 +744,21 @@ def _graph_provenance(
     assessed_commit: str | None = None,
 ) -> dict[str, Any]:
     fanin = inp.fanin_evidence
-    if fanin is None:
-        return {}
+    if graph_snapshot is not None and graph_snapshot.status != "available":
+        return {
+            "engine": "CodeGraph",
+            "status": graph_snapshot.status,
+            "fallback_reason": graph_snapshot.fallback_reason or "graph snapshot unavailable",
+        }
     if graph_snapshot is not None and (
-        graph_snapshot.status != "available"
-        or assessed_commit is None
-        or assessed_commit != graph_snapshot.repo_head
+        assessed_commit is None or assessed_commit != graph_snapshot.repo_head
     ):
+        return {
+            "engine": "CodeGraph",
+            "status": "unavailable",
+            "fallback_reason": "graph snapshot does not match the assessed commit",
+        }
+    if fanin is None:
         return {}
     prov: dict[str, Any] = {
         "engine": "CodeGraph",

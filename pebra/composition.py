@@ -492,6 +492,8 @@ def _graph_provenance(r: Any) -> dict[str, Any]:
     has_graph_evidence = symbol is not None or rollup is not None
     return {
         "engine": stored.get("engine") or ("CodeGraph" if has_graph_evidence else None),
+        "status": stored.get("status") or ("available" if has_graph_evidence else "unknown"),
+        "fallback_reason": stored.get("fallback_reason"),
         "graph_freshness": "fresh" if "fresh" in freshness_values else (
             freshness_values[0] if freshness_values else "unknown"
         ),

@@ -1369,7 +1369,7 @@ def test_valid_sanction_converts_gate3_to_controlled_high_risk_proceed() -> None
     assert gate["sanction_assessment_id"] == "asm_origin"
 
 
-def test_sanction_cannot_bypass_incomplete_task_obligations() -> None:
+def test_sanction_routes_incomplete_task_obligations_to_revision() -> None:
     sanction = {
         "valid": True,
         "pre_edit_authorization_controls_satisfied": True,
@@ -1385,7 +1385,9 @@ def test_sanction_cannot_bypass_incomplete_task_obligations() -> None:
 
     result = de.decide(ab.build_assessment(inp))
 
-    assert result.recommended_decision is Decision.ASK_HUMAN
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert result.requires_confirmation is False
+    assert "cannot waive" in result.decision_reason
     assert any(g["name"] == "sanction_resolution" for g in result.gates_fired)
     assert any(g["name"] == "task_obligations_incomplete" for g in result.gates_fired)
 

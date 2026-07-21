@@ -184,6 +184,34 @@ def test_revise_safer_guidance_stays_domain_agnostic_for_gamma_paths() -> None:
     assert "denominator" not in rendered
 
 
+def test_post_sanction_obligation_revision_names_the_missing_work() -> None:
+    inp = replace(
+        _worked_example_input(),
+        events=[{"event": "test_regression", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        sanction={
+            "valid": True,
+            "assessment_id": "asm_origin",
+            "pre_edit_authorization_controls_satisfied": True,
+            "converts_gates": [2, 3, 4],
+        },
+        task_obligations=m.TaskObligationsEvidence(
+            required_files=("src/compat.py",),
+            required_symbols=("src/compat.py::bridge",),
+            required_checks=("public_contract",),
+        ),
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+    packet = mg.render(result, inp.action, eg.render(result))
+    constraints = " ".join(packet["advisory"]["safer_route"]["constraints"])
+
+    assert result.recommended_decision is Decision.REVISE_SAFER
+    assert "src/compat.py" in constraints
+    assert "src/compat.py::bridge" in constraints
+    assert "public_contract" in constraints
+
+
 def test_repo_blast_fraction_reaches_advisory_risk_facts_when_trusted() -> None:
     inp = replace(
         _worked_example_input(),

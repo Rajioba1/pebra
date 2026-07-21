@@ -48,6 +48,38 @@ def test_end_turn_no_tools(tmp_path, monkeypatch):
     assert r.limit_reason == "model_stop"
 
 
+def test_subject_trace_keeps_host_only_advisory_failure_and_terminal_reason(
+    tmp_path, monkeypatch
+):
+    _no_git(monkeypatch)
+    setup = _setup(tmp_path)
+    setup.telemetry = SimpleNamespace(real_advisory_failures=[{
+        "category": "insufficient_wall_budget",
+        "attempted": False,
+        "remaining_budget_seconds": 5.9,
+    }])
+    trace_path = tmp_path / "subject_trace.json"
+
+    agent_loop.run(
+        setup,
+        _SPEC,
+        0,
+        client=ScriptedClient([ModelTurn(text="done", stop_reason="end_turn")]),
+        config=_CFG,
+        trace_path=trace_path,
+    )
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+
+    assert trace["final"]["reason"] == "model_stop"
+    assert trace["final"]["real_advisory_failures"] == [
+        {
+            "category": "insufficient_wall_budget",
+            "attempted": False,
+            "remaining_budget_seconds": 5.9,
+        }
+    ]
+
+
 def test_tool_call_captured_with_sequence(tmp_path, monkeypatch):
     _no_git(monkeypatch)
     client = ScriptedClient([_tool("list_dir"), ModelTurn(text="done", stop_reason="end_turn")])

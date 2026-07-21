@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -78,6 +79,9 @@ _GRAPH_ARMS = frozenset(
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 _DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 _CANDIDATE_VERIFICATION_TIMEOUT_SECONDS = 300
+# A real assessment cannot even guarantee its bounded graph-status probe below this budget.
+_MIN_REAL_ADVISORY_BUDGET_SECONDS = 30.0
+_REAL_ADVISORY_ARMS_SERIALIZED = True
 _VERIFICATION_FEEDBACK = {
     "patch_unparseable": "The candidate patch format could not be parsed. Submit a complete unified diff.",
     "target_mismatch": "The candidate patch targets do not match the declared edit. Submit one consistent candidate.",
@@ -166,6 +170,7 @@ class ArmTelemetry:
     real_advisory_graph_scope_digests: list[str | None] = dataclasses.field(
         default_factory=list
     )
+    real_advisory_failures: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
 
 @dataclass
@@ -810,6 +815,29 @@ def _advisory_backend(
         ) -> dict[str, Any]:
             nonlocal revise_attempt
             backend_started = time.monotonic()
+
+            def _budget_exhausted(remaining: float) -> dict[str, Any]:
+                if telemetry is not None:
+                    telemetry.real_advisory_failures.append({
+                        "category": "insufficient_wall_budget",
+                        "attempted": False,
+                        "remaining_budget_seconds": remaining,
+                    })
+                return {
+                    "recommended_decision": None,
+                    "risk_level": "unknown",
+                    "advisory": (
+                        "The pre-edit review exhausted the remaining run time. Stop and retry "
+                        "with a fresh budget."
+                    ),
+                    "detail": {},
+                }
+
+            if (
+                timeout_seconds is not None
+                and timeout_seconds < _MIN_REAL_ADVISORY_BUDGET_SECONDS
+            ):
+                return _budget_exhausted(timeout_seconds)
             attempt = revise_attempt
             approved_candidate_binding = None
             if is_human_review and telemetry is not None and telemetry.human_approval_granted:
@@ -877,22 +905,27 @@ def _advisory_backend(
                 advise_kwargs.update({"p_success": None, "review_cost": None})
             if timeout_seconds is not None:
                 remaining_for_assess = timeout_seconds - (time.monotonic() - backend_started)
-                if remaining_for_assess <= 0:
-                    return {
-                        "recommended_decision": None,
-                        "risk_level": "unknown",
-                        "advisory": (
-                            "The pre-edit review exhausted the remaining run time. Stop and retry "
-                            "with a fresh budget."
-                        ),
-                        "detail": {},
-                    }
+                if remaining_for_assess < _MIN_REAL_ADVISORY_BUDGET_SECONDS:
+                    return _budget_exhausted(remaining_for_assess)
                 advise_kwargs["timeout_seconds"] = remaining_for_assess
             scope_receipt_index: int | None = None
             if telemetry is not None:
                 scope_receipt_index = len(telemetry.real_advisory_graph_scope_digests)
                 telemetry.real_advisory_graph_scope_digests.append(None)
-            result = advisory_check_real.advise(payload, **advise_kwargs)
+            try:
+                result = advisory_check_real.advise(payload, **advise_kwargs)
+            except Exception as exc:
+                if telemetry is not None:
+                    telemetry.real_advisory_failures.append({
+                        "category": (
+                            "subprocess_timeout"
+                            if isinstance(exc, subprocess.TimeoutExpired)
+                            else type(exc).__name__
+                        ),
+                        "attempted": True,
+                        "remaining_budget_seconds": timeout_seconds,
+                    })
+                raise
             graph_scope_digest = getattr(result, "graph_scope_digest", None)
             if (
                 telemetry is not None
@@ -938,6 +971,12 @@ def _advisory_backend(
                         telemetry.approved_reassessment_id = assessment_id
                         telemetry.approved_reassessment_ids.add(assessment_id)
                         telemetry.pending_human_approval = None
+                elif (
+                    telemetry.human_approval_granted
+                    and result.get("recommended_decision") == "revise_safer"
+                ):
+                    telemetry.post_approval_reassessment = True
+                    telemetry.pending_human_approval = None
             verification_status = (
                 payload.get("candidate_verification", {}).get("status")
                 if isinstance(payload.get("candidate_verification"), dict)
@@ -1017,7 +1056,7 @@ def _approval_backend(
         unavailable = {
             "status": "unavailable",
             "approval_id": None,
-            "message": "No exact candidate is pending approval.",
+            "message": "No approvable exact candidate is pending; revise the candidate or stop.",
         }
         if arm != models.ARM_PEBRA_HUMAN_REVIEW:
             return unavailable
@@ -1520,6 +1559,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         real_advisory_graph_scope_digests=tuple(
             setup.telemetry.real_advisory_graph_scope_digests
         ),
+        real_advisory_failures=tuple(setup.telemetry.real_advisory_failures),
         **_graph_refinement_result_fields(setup.telemetry),
         **_calibration_result_fields(setup.telemetry),
     )
@@ -1581,8 +1621,16 @@ def _max_arm_workers(arm_count: int) -> int:
 def _invoke_trial_setups(setups: list[ArmSetup], spec: TaskSpec, seed: int) -> tuple[SubjectResult, ...]:
     if not _parallel_arms_enabled() or len(setups) <= 1:
         return tuple(_invoke_trial_setup(setup, spec, seed) for setup in setups)
+    real_advisory_lock = threading.Lock()
+
+    def _invoke(setup: ArmSetup) -> SubjectResult:
+        if setup.arm in _REAL_ADVISORY_ARMS:
+            with real_advisory_lock:
+                return _invoke_trial_setup(setup, spec, seed)
+        return _invoke_trial_setup(setup, spec, seed)
+
     with ThreadPoolExecutor(max_workers=_max_arm_workers(len(setups))) as executor:
-        futures = [executor.submit(_invoke_trial_setup, setup, spec, seed) for setup in setups]
+        futures = [executor.submit(_invoke, setup) for setup in setups]
         return tuple(future.result() for future in futures)
 
 

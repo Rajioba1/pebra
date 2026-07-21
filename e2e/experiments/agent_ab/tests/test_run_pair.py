@@ -5,6 +5,9 @@ so this pin is the last line of defence against an accidental live run."""
 
 from __future__ import annotations
 
+import subprocess
+import threading
+import time
 from dataclasses import replace
 
 from types import SimpleNamespace
@@ -1565,6 +1568,102 @@ def test_human_review_arm_requires_model_request_before_host_sanction_and_reasse
         assert telemetry.applied_assessment_id is None
 
 
+def test_post_approval_obligation_revision_cannot_request_the_same_approval_again(
+    monkeypatch, tmp_path
+) -> None:
+    binding = {
+        "algorithm": "sha256-normalized-content-v1",
+        "files": {"src/api.ts": "a" * 64},
+    }
+    first_raw = {
+        "recommended_decision": "ask_human",
+        "risk_mode": "elevated_review",
+        "assessment_id": "asm_1",
+        "scores": {"expected_loss": 0.36, "benefit": 0.50, "rau": 0.08},
+        "next_action": {
+            "type": "request_human_approval",
+            "assessment_id": "asm_1",
+            "action_id": "ab1",
+            "candidate_binding": binding,
+            "risk_benefit": {},
+            "required_controls": [],
+            "trusted_actor_required": True,
+        },
+    }
+    second_raw = {
+        "recommended_decision": "revise_safer",
+        "risk_mode": "revise",
+        "assessment_id": "asm_2",
+        "scores": {"expected_loss": 0.36, "benefit": 0.50, "rau": 0.08},
+        "gates_fired": [
+            {"gate": 10, "name": "sanction_resolution"},
+            {
+                "gate": 15,
+                "name": "task_obligations_incomplete",
+                "missing_files": ["src/compat.ts"],
+            },
+        ],
+        "model_guidance_packet": {
+            "advisory": {
+                "safer_route": {
+                    "constraints": [
+                        "Include the host-required files in the candidate: src/compat.ts."
+                    ]
+                }
+            }
+        },
+    }
+    outputs = iter((first_raw, second_raw))
+
+    def _advise(_payload, **_kwargs):
+        raw = next(outputs)
+        return run_pair.advisory_check_real.AdvisoryOutput(
+            run_pair.advisory_check_real._shape_output(raw),
+            assessment_id=raw["assessment_id"],
+            raw_payload=raw,
+        )
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "accept_risk",
+        lambda *_args, **_kwargs: {"sanction_id": "sx_1"},
+    )
+    telemetry = run_pair.ArmTelemetry()
+    advisory = run_pair._advisory_backend(
+        models.ARM_PEBRA_HUMAN_REVIEW,
+        tmp_path,
+        tmp_path / "pebra.db",
+        telemetry=telemetry,
+    )
+    approval = run_pair._approval_backend(
+        models.ARM_PEBRA_HUMAN_REVIEW,
+        tmp_path,
+        tmp_path / "pebra.db",
+        telemetry,
+    )
+    payload = {
+        "target_file": "src/api.ts",
+        "change_summary": "preserve compatibility",
+        "proposed_patch": "diff --git a/src/api.ts b/src/api.ts",
+    }
+
+    assert advisory(payload)["recommended_decision"] == "ask_human"
+    assert approval({"reason": "accept risk"})["status"] == "approved"
+    revised = advisory(payload)
+
+    assert revised["recommended_decision"] == "revise_safer"
+    assert "src/compat.ts" in revised["advisory"]
+    assert telemetry.post_approval_reassessment is True
+    assert telemetry.pending_human_approval is None
+    unavailable = approval({"reason": "approve the unchanged candidate again"})
+    assert unavailable == {
+        "status": "unavailable",
+        "approval_id": None,
+        "message": "No approvable exact candidate is pending; revise the candidate or stop.",
+    }
+
+
 def test_host_approval_policy_fails_closed_without_canonical_bound_request() -> None:
     shaped_only = {
         "recommended_decision": "ask_human",
@@ -1772,6 +1871,103 @@ def test_repair_arm_threads_host_task_obligations_only_from_spec(monkeypatch, tm
         "required_symbols": [],
         "required_checks": ["candidate_build", "public_contract_preserved"],
     }
+
+
+def test_real_advisory_does_not_start_below_graph_status_budget(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry()
+    called = []
+    monkeypatch.setattr(
+        run_pair.advisory_check_real,
+        "advise",
+        lambda *_args, **_kwargs: called.append(True),
+    )
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA, tmp_path, tmp_path / "p.db", telemetry=telemetry
+    )
+
+    result = backend(
+        {"target_file": "a.ts", "proposed_patch": "diff", "change_summary": "x"},
+        timeout_seconds=run_pair._MIN_REAL_ADVISORY_BUDGET_SECONDS - 0.1,
+    )
+
+    assert called == []
+    assert result["recommended_decision"] is None
+    assert "remaining run time" in result["advisory"]
+    assert telemetry.real_advisory_graph_scope_digests == []
+    assert telemetry.real_advisory_failures == [{
+        "category": "insufficient_wall_budget",
+        "attempted": False,
+        "remaining_budget_seconds": pytest.approx(
+            run_pair._MIN_REAL_ADVISORY_BUDGET_SECONDS - 0.1
+        ),
+    }]
+
+
+def test_real_advisory_records_host_only_timeout_diagnostic(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry()
+    monkeypatch.setattr(
+        run_pair.advisory_check_real,
+        "advise",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(["pebra", "assess"], 42)
+        ),
+    )
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA, tmp_path, tmp_path / "p.db", telemetry=telemetry
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        backend(
+            {"target_file": "a.ts", "proposed_patch": "diff", "change_summary": "x"},
+            timeout_seconds=42.5,
+        )
+
+    assert telemetry.real_advisory_graph_scope_digests == [None]
+    assert telemetry.real_advisory_failures == [{
+        "category": "subprocess_timeout",
+        "attempted": True,
+        "remaining_budget_seconds": 42.5,
+    }]
+
+
+def test_parallel_trial_serializes_real_advisory_arms_only(monkeypatch, tmp_path):
+    monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1")
+    monkeypatch.setenv("E2E_AB_MAX_WORKERS", "5")
+    active_real = 0
+    max_active_real = 0
+    active_total = 0
+    max_active_total = 0
+    guard = threading.Lock()
+
+    def _invoke(setup, _spec, _seed):
+        nonlocal active_real, max_active_real, active_total, max_active_total
+        is_real = setup.arm in models.REAL_ADVISORY_ARMS
+        with guard:
+            active_total += 1
+            max_active_total = max(max_active_total, active_total)
+            if is_real:
+                active_real += 1
+                max_active_real = max(max_active_real, active_real)
+        time.sleep(0.05)
+        with guard:
+            active_total -= 1
+            if is_real:
+                active_real -= 1
+        return SubjectResult(task_id="T1", arm=setup.arm, seed=0)
+
+    monkeypatch.setattr(run_pair, "_invoke_trial_setup", _invoke)
+    setups = [
+        _dummy_setup(tmp_path),
+        replace(_dummy_setup(tmp_path), arm=models.ARM_PEBRA),
+        replace(_dummy_setup(tmp_path), arm=models.ARM_PEBRA_GRAPH_REPAIR),
+        replace(_dummy_setup(tmp_path), arm=models.ARM_PEBRA_HUMAN_REVIEW),
+    ]
+
+    results = run_pair._invoke_trial_setups(setups, _SPEC, 0)
+
+    assert {result.arm for result in results} == {setup.arm for setup in setups}
+    assert max_active_real == 1
+    assert max_active_total > 1
 
 
 def test_repair_arm_verifies_candidate_and_raises_cap(monkeypatch, tmp_path):

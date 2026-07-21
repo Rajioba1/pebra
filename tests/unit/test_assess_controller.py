@@ -1102,7 +1102,7 @@ def test_graph_provenance_is_bound_to_matching_snapshot_and_prediction_features(
         }
 
 
-def test_graph_provenance_is_not_trusted_when_assessed_commit_differs_from_snapshot() -> None:
+def test_graph_provenance_explains_assessed_commit_mismatch_without_a_scope() -> None:
     ev = m.FanInEvidence(
         symbol_fan_in_percentile=0.95, resolution_method="location", graph_freshness="fresh",
     )
@@ -1114,7 +1114,35 @@ def test_graph_provenance_is_not_trusted_when_assessed_commit_differs_from_snaps
 
     result = _run_cg(ev, assessed_commit="c", graph_snapshot=snapshot).recommended_result
 
-    assert "graph_provenance" not in result.provenance
+    assert result.provenance["graph_provenance"] == {
+        "engine": "CodeGraph",
+        "status": "unavailable",
+        "fallback_reason": "graph snapshot does not match the assessed commit",
+    }
+
+
+def test_graph_provenance_preserves_unavailable_snapshot_reason() -> None:
+    snapshot = GraphSnapshot(
+        status="unavailable",
+        provider="CodeGraph",
+        provider_version=None,
+        index_version=None,
+        repo_head=None,
+        config_digest=None,
+        graph_scope_digest=None,
+        sync_performed=False,
+        fallback_reason="codegraph sync failed",
+    )
+
+    result = _run_cg(
+        m.FanInEvidence(), assessed_commit="c", graph_snapshot=snapshot
+    ).recommended_result
+
+    assert result.provenance["graph_provenance"] == {
+        "engine": "CodeGraph",
+        "status": "unavailable",
+        "fallback_reason": "codegraph sync failed",
+    }
 
 
 def test_trusted_low_fanin_patches_percentile_without_forcing_consequential() -> None:

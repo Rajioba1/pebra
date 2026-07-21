@@ -145,6 +145,7 @@ class SubjectResult:
     # Host-only receipts from actual real-advisory calls. ``None`` records a call whose result did not
     # carry a canonical graph-scope digest. Never copied into ToolCallRecord or model-facing output.
     real_advisory_graph_scope_digests: tuple[str | None, ...] = ()
+    real_advisory_failures: tuple[dict[str, Any], ...] = ()
     post_edit_verify_ran: bool = False
     post_edit_verify_passed: bool | None = None
     post_edit_verify_assessment_id: str | None = None

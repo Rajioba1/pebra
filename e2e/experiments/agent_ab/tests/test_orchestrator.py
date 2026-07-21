@@ -875,6 +875,8 @@ def test_main_writes_finished_run_status(monkeypatch, tmp_path):
     assert status["run_metadata"]["git_commit"]
     assert status["run_metadata"]["provider"] == "anthropic"
     assert status["run_metadata"]["parallel_arms"] is False
+    assert status["run_metadata"]["real_advisory_arms_serialized"] is True
+    assert status["run_metadata"]["min_real_advisory_budget_seconds"] == 30.0
     assert status["run_metadata"]["protocol_file"] == ".agent-instructions/edit_protocol.md"
     assert set(status["run_metadata"]["protocol_hashes"]) >= {"sham", "pebra"}
 
@@ -921,6 +923,7 @@ def test_main_run_status_records_parallel_arms_when_enabled(monkeypatch, tmp_pat
     status = json.loads((tmp_path / "t1" / "run_status.json").read_text(encoding="utf-8"))
     assert status["run_metadata"]["parallel_arms"] is True
     assert status["run_metadata"]["max_workers_env"] == "5"
+    assert status["run_metadata"]["real_advisory_arms_serialized"] is True
 
 
 def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):
