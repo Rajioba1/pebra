@@ -81,7 +81,14 @@ class CandidateApplicationAdapter:
                 for value in expected_files
                 if is_safe_repo_path(value)
             }
-            if len(expected) != len(expected_files) or set(after) != expected:
+            materialized = {
+                os.path.normcase(rel).replace("\\", "/") for rel in after
+            }
+            if (
+                len(expected) != len(expected_files)
+                or len(materialized) != len(after)
+                or materialized != expected
+            ):
                 raise CandidateApplicationError(
                     "materialized files do not match the validated candidate envelope"
                 )

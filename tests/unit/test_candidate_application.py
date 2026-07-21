@@ -58,6 +58,28 @@ def test_application_normalizes_validated_envelope_paths(tmp_path: Path) -> None
     assert changed == ("src/a.py", "src/b.py")
 
 
+def test_application_preserves_existing_filename_case(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    camel = repo / "src/parseUtil.ts"
+    camel.write_text("old-name\n", encoding="utf-8")
+    patch = (
+        "diff --git a/src/parseUtil.ts b/src/parseUtil.ts\n"
+        "--- a/src/parseUtil.ts\n"
+        "+++ b/src/parseUtil.ts\n"
+        "@@ -1 +1 @@\n"
+        "-old-name\n"
+        "+new-name\n"
+    )
+
+    changed = CandidateApplicationAdapter().apply(
+        repo, patch, expected_files=("src/parseUtil.ts",)
+    )
+
+    assert changed == ("src/parseUtil.ts",)
+    assert {path.name for path in (repo / "src").iterdir()} >= {"parseUtil.ts"}
+    assert camel.read_text(encoding="utf-8") == "new-name\n"
+
+
 def test_application_accepts_later_file_with_unquoted_spaces(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     spaced = repo / "src/user guide.py"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -41,6 +42,27 @@ def test_patch_binding_uses_public_algorithm_constant(tmp_path: Path) -> None:
 
     assert binding is not None
     assert binding["algorithm"] == CANDIDATE_BINDING_ALGORITHM
+
+
+def test_materialization_preserves_case_while_binding_normalizes_identity(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "parseUtil.ts"
+    target.write_text("old\n", encoding="utf-8")
+    patch = (
+        "diff --git a/parseUtil.ts b/parseUtil.ts\n"
+        "--- a/parseUtil.ts\n+++ b/parseUtil.ts\n"
+        "@@ -1 +1 @@\n-old\n+new\n"
+    )
+
+    materialized = candidate_binding.materialize_candidate_patch(tmp_path, patch)
+    binding = candidate_binding.binding_for_patch(tmp_path, patch)
+
+    assert materialized == {"parseUtil.ts": "new\n"}
+    assert binding is not None
+    assert set(binding["files"]) == {
+        os.path.normcase("parseUtil.ts").replace("\\", "/")
+    }
 
 
 def test_patch_and_claude_edit_produce_the_same_binding(tmp_path: Path) -> None:

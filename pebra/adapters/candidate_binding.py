@@ -59,7 +59,12 @@ def _safe_rel(repo_root: Path, value: str, *, base_dir: Path | None = None) -> s
         return None
     if not rel or ".." in PurePosixPath(rel).parts:
         return None
-    return os.path.normcase(rel).replace("\\", "/")
+    # Keep the repository's real spelling for materialization/application.  On
+    # Windows ``Path.resolve`` has already recovered the on-disk casing of an
+    # existing path.  Lower-casing here used to turn that identity key into a
+    # physical write path, so applying a patch to ``parseUtil.ts`` renamed it
+    # to ``parseutil.ts`` on a case-insensitive worktree.
+    return rel.replace("\\", "/")
 
 
 def _read(repo_root: Path, rel: str) -> str | None:
@@ -70,10 +75,16 @@ def _read(repo_root: Path, rel: str) -> str | None:
         return None
 
 
-def _binding(after: dict[str, str | None]) -> dict[str, Any]:
+def _binding(after: dict[str, str | None]) -> dict[str, Any] | None:
+    files: dict[str, str] = {}
+    for rel in sorted(after):
+        identity = os.path.normcase(rel).replace("\\", "/")
+        if identity in files:
+            return None
+        files[identity] = _digest(after[rel])
     return {
         "algorithm": CANDIDATE_BINDING_ALGORITHM,
-        "files": {rel: _digest(after[rel]) for rel in sorted(after)},
+        "files": files,
     }
 
 
