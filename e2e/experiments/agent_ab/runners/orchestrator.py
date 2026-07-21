@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from e2e.experiments.agent_ab import models
 from e2e.experiments.agent_ab.metrics import oracle, scorecard
 from e2e.experiments.agent_ab.models import (
     ARM_CONTROL,
@@ -338,6 +339,12 @@ def _experiment_design(
         },
         "subject_prompt_template_sha256": _sha256_text(run_pair._SUBJECT_PROMPT),  # noqa: SLF001
         "protocol_hashes": protocol_hashes,
+        "understand_decision_factorial": {
+            "ordinary_sham": models.ARM_SHAM,
+            "graph_sham": models.ARM_GRAPH_CONTEXT,
+            "ordinary_real": models.ARM_PEBRA,
+            "graph_real": models.ARM_PEBRA_GRAPH_CONTEXT,
+        },
         "task_specs": [dataclasses.asdict(spec) for spec in specs],
         "arm_topology": {
             spec.task_id: list(
@@ -565,6 +572,45 @@ def _assert_trial_graph_scope_compatible(
                     "real advisory graph scope does not match the run preflight cohort; outcomes "
                     "were not scored or persisted; use a fresh run-id"
                 )
+    for result in results:
+        if result.arm == models.ARM_ORACLE_POSITIVE or result.error is not None:
+            continue
+        receipts = [
+            receipt
+            for receipt in result.repository_context_receipts
+            if isinstance(receipt, dict) and receipt.get("status") == "available"
+        ]
+        if not receipts:
+            raise ExperimentRunError(
+                "an available Understand receipt was missing; outcomes were not scored or "
+                "persisted; use a fresh run-id"
+            )
+        receipt = receipts[-1]
+        expected_source = (
+            "graph" if result.arm in run_pair._GRAPH_CONTEXT_ARMS else "ordinary"
+        )
+        if receipt.get("source") != expected_source or not re.fullmatch(
+            r"[0-9a-f]{7,64}", str(receipt.get("repo_head") or "")
+        ):
+            raise ExperimentRunError(
+                "the Understand receipt was malformed or from the wrong context source; outcomes "
+                "were not scored or persisted; use a fresh run-id"
+            )
+        source_head = run_metadata.get("experiment_design", {}).get("source_head_sha")
+        if (
+            isinstance(source_head, str)
+            and re.fullmatch(r"[0-9a-fA-F]{7,64}", source_head)
+            and receipt.get("repo_head") != source_head.lower()
+        ):
+            raise ExperimentRunError(
+                "the Understand repository HEAD does not match the preflight source HEAD; outcomes "
+                "were not scored or persisted; use a fresh run-id"
+            )
+        if expected_source == "graph" and receipt.get("graph_scope_digest") != expected:
+            raise ExperimentRunError(
+                "the Understand graph scope does not match the run preflight cohort; outcomes were "
+                "not scored or persisted; use a fresh run-id"
+            )
 
 
 def _score_trial_results(

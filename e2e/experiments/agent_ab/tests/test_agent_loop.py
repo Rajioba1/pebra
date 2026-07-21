@@ -80,6 +80,59 @@ def test_subject_trace_keeps_host_only_advisory_failure_and_terminal_reason(
     ]
 
 
+def test_subject_result_and_trace_keep_context_receipts_host_only(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    setup = _setup(tmp_path)
+    receipt = {
+        "source": "graph",
+        "repo_head": "b" * 40,
+        "graph_scope_digest": "a" * 64,
+        "query": "helper",
+        "requested_files": ["src/a.ts"],
+        "returned_files": ["src/b.ts"],
+        "truncated": False,
+        "duration_seconds": 0.1,
+        "cache_hit": False,
+        "status": "available",
+    }
+    setup.telemetry = SimpleNamespace(
+        real_advisory_failures=[], repository_context_receipts=[]
+    )
+
+    def context_backend(_payload):
+        setup.telemetry.repository_context_receipts.append(receipt)
+        return {
+            "status": "available",
+            "context": "helper source",
+            "related_files": ["src/b.ts"],
+            "related_tests": [],
+            "warnings": [],
+            "truncated": False,
+        }
+
+    setup.repository_context_backend = context_backend
+    trace_path = tmp_path / "subject_trace.json"
+    result = agent_loop.run(
+        setup,
+        _SPEC,
+        0,
+        client=ScriptedClient(
+            [
+                _tool("repository_context", {"query": "helper"}),
+                ModelTurn(text="done", stop_reason="end_turn"),
+            ]
+        ),
+        config=agent_loop.RunConfig(model="m", tools=("repository_context",)),
+        trace_path=trace_path,
+    )
+
+    assert result.repository_context_receipts == (receipt,)
+    serialized_call = json.dumps(result.tool_calls[0].result)
+    assert "graph_scope_digest" not in serialized_call
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace["final"]["repository_context_receipts"] == [receipt]
+
+
 def test_tool_call_captured_with_sequence(tmp_path, monkeypatch):
     _no_git(monkeypatch)
     client = ScriptedClient([_tool("list_dir"), ModelTurn(text="done", stop_reason="end_turn")])
@@ -147,6 +200,134 @@ def test_max_tool_calls_limit(tmp_path, monkeypatch):
     r = agent_loop.run(_setup(tmp_path), _SPEC, 0, client=client, config=cfg)
     assert len(r.tool_calls) == 2
     assert r.limit_reason == "tool_call_limit"
+
+
+@pytest.mark.parametrize(
+    ("approval_status", "expected_reason"),
+    [("unavailable", "approval_unavailable"), ("denied", "approval_denied")],
+)
+def test_host_stops_exact_ask_human_candidate_when_approval_cannot_continue(
+    tmp_path, monkeypatch, approval_status, expected_reason
+):
+    _no_git(monkeypatch)
+    setup = _setup(
+        tmp_path,
+        backend=lambda _payload: {
+            "recommended_decision": "ask_human",
+            "risk_level": "high",
+            "advisory": "Get a trusted review before continuing.",
+            "detail": {},
+        },
+        approval_backend=lambda _payload: {
+            "status": approval_status,
+            "approval_id": None,
+            "message": "This approval route cannot continue.",
+        },
+    )
+    client = ScriptedClient(
+        [
+            _tool(
+                "advisory_check",
+                {
+                    "target_file": "a.cs",
+                    "change_summary": "change a",
+                    "proposed_patch": "diff --git a/a.cs b/a.cs",
+                },
+            ),
+            ModelTurn(
+                tool_calls=[
+                    {
+                        "id": "approval",
+                        "name": "request_human_approval",
+                        "input": {"reason": "remaining risk"},
+                    },
+                    {"id": "retry", "name": "list_dir", "input": {}},
+                ],
+                stop_reason="tool_use",
+            ),
+        ]
+    )
+    cfg = agent_loop.RunConfig(
+        model="m",
+        tools=("advisory_check", "request_human_approval", "list_dir"),
+    )
+
+    result = agent_loop.run(setup, _SPEC, 0, client=client, config=cfg)
+
+    assert [call.name for call in result.tool_calls] == [
+        "advisory_check",
+        "request_human_approval",
+    ]
+    assert result.limit_reason == expected_reason
+
+
+def test_premature_unavailable_approval_does_not_stop_a_winnable_lifecycle(
+    tmp_path, monkeypatch
+):
+    _no_git(monkeypatch)
+    client = ScriptedClient(
+        [
+            _tool("request_human_approval", {"reason": "premature request"}),
+            _tool("list_dir"),
+            ModelTurn(text="done", stop_reason="end_turn"),
+        ]
+    )
+    cfg = agent_loop.RunConfig(
+        model="m", tools=("request_human_approval", "list_dir")
+    )
+
+    result = agent_loop.run(_setup(tmp_path), _SPEC, 0, client=client, config=cfg)
+
+    assert [call.name for call in result.tool_calls] == [
+        "request_human_approval",
+        "list_dir",
+    ]
+    assert result.limit_reason == "model_stop"
+
+
+def test_host_stops_when_real_advisory_has_insufficient_wall_budget(
+    tmp_path, monkeypatch
+):
+    _no_git(monkeypatch)
+    setup = _setup(tmp_path)
+    setup.telemetry = SimpleNamespace(real_advisory_failures=[])
+
+    def exhausted(_payload):
+        setup.telemetry.real_advisory_failures.append(
+            {"category": "insufficient_wall_budget", "attempted": False}
+        )
+        return {
+            "recommended_decision": None,
+            "risk_level": "unknown",
+            "advisory": "The review could not run within the remaining time.",
+            "detail": {},
+        }
+
+    setup.advisory_backend = exhausted
+    client = ScriptedClient(
+        [
+            ModelTurn(
+                tool_calls=[
+                    {
+                        "id": "review",
+                        "name": "advisory_check",
+                        "input": {
+                            "target_file": "a.cs",
+                            "change_summary": "change a",
+                            "proposed_patch": "diff --git a/a.cs b/a.cs",
+                        },
+                    },
+                    {"id": "retry", "name": "list_dir", "input": {}},
+                ],
+                stop_reason="tool_use",
+            )
+        ]
+    )
+
+    result = agent_loop.run(setup, _SPEC, 0, client=client, config=_CFG)
+
+    assert [call.name for call in result.tool_calls] == ["advisory_check"]
+    assert result.limit_reason == "advisory_budget_exhausted"
 
 
 def test_wall_time_timeout(tmp_path, monkeypatch):
@@ -672,6 +853,122 @@ def test_agent_applies_advisory_candidate_by_handle_end_to_end(tmp_path, monkeyp
     assert [call.name for call in result.tool_calls] == ["advisory_check", "apply_patch"]
     assert result.tool_calls[1].arguments == {"candidate_patch_id": patch_id}
     assert result.tool_calls[1].result == {"ok": True, "blocked": False, "reason": None}
+    assert (tmp_path / "a.ts").read_text(encoding="utf-8") == "const a = 2;\n"
+
+
+def test_full_understand_review_approval_apply_verify_lifecycle_is_deterministic(
+    tmp_path, monkeypatch
+):
+    _no_git(monkeypatch, files=("a.ts",))
+    (tmp_path / "a.ts").write_text("const a = 1;\n", encoding="utf-8")
+    patch = """diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-const a = 1;
++const a = 2;
+"""
+    registry: dict[str, str] = {}
+    patch_id = advisory_contract.candidate_patch_id(patch)
+    decisions = iter(("ask_human", "proceed"))
+    receipt = {
+        "source": "graph",
+        "status": "available",
+        "repo_head": "b" * 40,
+        "graph_scope_digest": "a" * 64,
+    }
+    setup = _setup(
+        tmp_path,
+        backend=lambda _payload: advisory_contract.with_candidate_patch(
+            {
+                "recommended_decision": next(decisions),
+                "risk_level": "high",
+                "advisory": "Review the exact candidate, then apply only its bound handle.",
+                "detail": {},
+            },
+            patch,
+            registry,
+        ),
+        approval_backend=lambda _payload: {
+            "status": "approved",
+            "approval_id": "approval_1",
+            "message": "The exact candidate may be reassessed.",
+        },
+    )
+    setup.candidate_patches = registry
+    setup.gate_check_backend = lambda _event: {"permission": "allow"}
+    setup.telemetry = SimpleNamespace(
+        real_advisory_failures=[], repository_context_receipts=[]
+    )
+
+    def _context(_payload):
+        setup.telemetry.repository_context_receipts.append(receipt)
+        return {
+            "status": "available",
+            "context": "a is consumed by the public result",
+            "related_files": ["a.ts"],
+            "related_tests": ["a.test.ts"],
+            "warnings": [],
+            "truncated": False,
+        }
+
+    setup.repository_context_backend = _context
+    setup.build_solution = "package.json"
+    setup.spec = _SPEC
+    setup.build_backend = SimpleNamespace(
+        run_tests=lambda _repo, _spec: SimpleNamespace(
+            available=True,
+            passed=True,
+            error_summary="",
+            tests_selected=1,
+            targeted=True,
+        )
+    )
+    advisory_payload = {
+        "target_file": "a.ts",
+        "change_summary": "update a",
+        "proposed_patch": patch,
+    }
+    client = ScriptedClient(
+        [
+            _tool("repository_context", {"query": "update a", "files": ["a.ts"]}),
+            _tool("advisory_check", advisory_payload),
+            _tool("request_human_approval", {"reason": "review remaining risk"}),
+            _tool("advisory_check", advisory_payload),
+            _tool("apply_patch", {"candidate_patch_id": patch_id}),
+            _tool("run_tests"),
+            ModelTurn(text="done", stop_reason="end_turn"),
+        ]
+    )
+    cfg = agent_loop.RunConfig(
+        model="m",
+        tools=(
+            "repository_context",
+            "advisory_check",
+            "request_human_approval",
+            "apply_patch",
+            "run_tests",
+        ),
+        max_tool_calls_per_run=8,
+    )
+
+    result = agent_loop.run(setup, _SPEC, 0, client=client, config=cfg)
+
+    assert [call.name for call in result.tool_calls] == [
+        "repository_context",
+        "advisory_check",
+        "request_human_approval",
+        "advisory_check",
+        "apply_patch",
+        "run_tests",
+    ]
+    assert [result.tool_calls[index].result["recommended_decision"] for index in (1, 3)] == [
+        "ask_human",
+        "proceed",
+    ]
+    assert result.tool_calls[-1].result["passed"] is True
+    assert result.repository_context_receipts == (receipt,)
+    assert result.limit_reason == "model_stop"
     assert (tmp_path / "a.ts").read_text(encoding="utf-8") == "const a = 2;\n"
 
 

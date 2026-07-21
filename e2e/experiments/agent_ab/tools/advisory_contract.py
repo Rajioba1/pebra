@@ -21,7 +21,7 @@ import hashlib
 from typing import Any
 
 TOOL_NAME = "advisory_check"
-EXPERIMENT_PROTOCOL_VERSION = "cognitive-lifecycle-v2"
+EXPERIMENT_PROTOCOL_VERSION = "cognitive-lifecycle-v3"
 
 TOOL_DESCRIPTION = (
     "Get a pre-edit advisory before every repository file creation, edit, rename, or deletion. "

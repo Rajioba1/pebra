@@ -345,6 +345,15 @@ def aggregate_assay(
     if models.ARM_PEBRA in arms and models.ARM_BLAST_RADIUS in arms:
         pairwise.append(pairwise_comparison(
             outcomes, models.ARM_PEBRA, models.ARM_BLAST_RADIUS, bootstrap_seed=bootstrap_seed))
+    if models.ARM_PEBRA_GRAPH_CONTEXT in arms:
+        for baseline in (models.ARM_PEBRA, models.ARM_GRAPH_CONTEXT):
+            if baseline in arms:
+                pairwise.append(pairwise_comparison(
+                    outcomes,
+                    models.ARM_PEBRA_GRAPH_CONTEXT,
+                    baseline,
+                    bootstrap_seed=bootstrap_seed,
+                ))
     if models.ARM_PEBRA_GRAPH_REPAIR in arms and models.ARM_PEBRA in arms:
         pairwise.append(pairwise_comparison(
             outcomes, models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA, bootstrap_seed=bootstrap_seed))
@@ -353,7 +362,11 @@ def aggregate_assay(
             outcomes, models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_ENFORCED_CONTROL,
             bootstrap_seed=bootstrap_seed))
     if models.ARM_PEBRA_HUMAN_REVIEW in arms:
-        for baseline in (models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA):
+        for baseline in (
+            models.ARM_PEBRA_GRAPH_CONTEXT,
+            models.ARM_PEBRA_GRAPH_REPAIR,
+            models.ARM_PEBRA,
+        ):
             if baseline in arms:
                 pairwise.append(pairwise_comparison(
                     outcomes, models.ARM_PEBRA_HUMAN_REVIEW, baseline,

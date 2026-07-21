@@ -91,6 +91,22 @@ def test_graph_scope_is_host_only_and_never_serialized_to_subject():
     assert "secret-provider-version" not in serialized
 
 
+def test_assessed_repository_head_is_host_only_and_never_serialized_to_subject():
+    raw = {
+        **_LEAKY_PEBRA_RESULT,
+        "graph_provenance": {
+            **_LEAKY_PEBRA_RESULT["graph_provenance"],
+            "repo_head": "b" * 40,
+            "graph_scope_digest": "a" * 64,
+        },
+    }
+
+    out = real.AdvisoryOutput(real._shape_output(raw), assessment_id="asm_7", raw_payload=raw)
+
+    assert out.repo_head == "b" * 40
+    assert "bbbbbbbb" not in json.dumps(out)
+
+
 def test_real_output_is_vocab_clean_for_every_decision():
     for decision in ("proceed", "inspect_first", "test_first", "revise_safer",
                      "ask_human", "reject", None):

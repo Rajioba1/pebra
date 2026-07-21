@@ -55,6 +55,16 @@ class AdvisoryOutput(dict[str, Any]):
             else None
         )
         self.graph_scope_digest = digest if isinstance(digest, str) and _SHA256_RE.fullmatch(digest) else None
+        repo_head = (
+            graph_provenance.get("repo_head")
+            if isinstance(graph_provenance, dict)
+            else None
+        )
+        self.repo_head = (
+            repo_head.lower()
+            if isinstance(repo_head, str) and re.fullmatch(r"[0-9a-fA-F]{7,64}", repo_head)
+            else None
+        )
 
 
 def _build_request(

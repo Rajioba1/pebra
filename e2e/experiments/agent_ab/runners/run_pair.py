@@ -33,8 +33,9 @@ from e2e.experiments.agent_ab.patch_files import touched_files
 from e2e.experiments.agent_ab.tools import (
     advisory_blast_radius, advisory_check_real, advisory_check_sham, advisory_contract,
     candidate_materializer, candidate_verifier, covering_tests_resolver,
+    repository_context_contract,
 )
-from e2e.experiments.agent_ab.runners import subject_protocol
+from e2e.experiments.agent_ab.runners import subject_protocol, tool_impl
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness
 
@@ -50,7 +51,9 @@ _RISKY_ARMS = (
     models.ARM_ORACLE_POSITIVE,
     models.ARM_ENFORCED_CONTROL,
     models.ARM_BLAST_RADIUS,
+    models.ARM_GRAPH_CONTEXT,
     models.ARM_PEBRA,
+    models.ARM_PEBRA_GRAPH_CONTEXT,
     models.ARM_PEBRA_GRAPH_REPAIR,
     models.ARM_PEBRA_HUMAN_REVIEW,
 )
@@ -60,7 +63,9 @@ _SAFE_ARMS = (
     models.ARM_SHAM,
     models.ARM_ENFORCED_CONTROL,
     models.ARM_BLAST_RADIUS,
+    models.ARM_GRAPH_CONTEXT,
     models.ARM_PEBRA,
+    models.ARM_PEBRA_GRAPH_CONTEXT,
     models.ARM_PEBRA_GRAPH_REPAIR,
     models.ARM_PEBRA_HUMAN_REVIEW,
 )
@@ -69,13 +74,20 @@ _REAL_ADVISORY_ARMS = models.REAL_ADVISORY_ARMS
 _BLAST_ADVISORY_ARMS = frozenset({models.ARM_BLAST_RADIUS})
 _GATE_ARMS = frozenset({
     models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR,
-    models.ARM_PEBRA_HUMAN_REVIEW,
+    models.ARM_PEBRA_GRAPH_CONTEXT, models.ARM_PEBRA_HUMAN_REVIEW,
 })
 _GRAPH_ARMS = frozenset(
     {
         models.ARM_TREATMENT, models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR,
-        models.ARM_PEBRA_HUMAN_REVIEW, models.ARM_BLAST_RADIUS,
+        models.ARM_PEBRA_GRAPH_CONTEXT, models.ARM_PEBRA_HUMAN_REVIEW,
+        models.ARM_BLAST_RADIUS, models.ARM_GRAPH_CONTEXT,
     })
+_GRAPH_CONTEXT_ARMS = frozenset({
+    models.ARM_GRAPH_CONTEXT,
+    models.ARM_PEBRA_GRAPH_CONTEXT,
+    models.ARM_PEBRA_GRAPH_REPAIR,
+    models.ARM_PEBRA_HUMAN_REVIEW,
+})
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 _DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 _CANDIDATE_VERIFICATION_TIMEOUT_SECONDS = 300
@@ -106,13 +118,22 @@ class RunPairError(RuntimeError):
 for _name, _members in (
     ("_REAL_ADVISORY_ARMS", _REAL_ADVISORY_ARMS), ("_BLAST_ADVISORY_ARMS", _BLAST_ADVISORY_ARMS),
     ("_GATE_ARMS", _GATE_ARMS), ("_GRAPH_ARMS", _GRAPH_ARMS),
+    ("_GRAPH_CONTEXT_ARMS", _GRAPH_CONTEXT_ARMS),
 ):
     _unknown = _members - set(models.ALL_ASSAY_ARMS) - {models.ARM_TREATMENT, models.ARM_CONTROL}
     if _unknown:
         raise RunPairError(f"{_name} references arm(s) not in ALL_ASSAY_ARMS: {sorted(_unknown)}")
 _ARM_MEMBERSHIP_REQUIRED = {
-    models.ARM_PEBRA_GRAPH_REPAIR: (_REAL_ADVISORY_ARMS, _GATE_ARMS, _GRAPH_ARMS),
-    models.ARM_PEBRA_HUMAN_REVIEW: (_REAL_ADVISORY_ARMS, _GATE_ARMS, _GRAPH_ARMS),
+    models.ARM_GRAPH_CONTEXT: (_GRAPH_ARMS, _GRAPH_CONTEXT_ARMS),
+    models.ARM_PEBRA_GRAPH_REPAIR: (
+        _REAL_ADVISORY_ARMS, _GATE_ARMS, _GRAPH_ARMS, _GRAPH_CONTEXT_ARMS,
+    ),
+    models.ARM_PEBRA_GRAPH_CONTEXT: (
+        _REAL_ADVISORY_ARMS, _GATE_ARMS, _GRAPH_ARMS, _GRAPH_CONTEXT_ARMS,
+    ),
+    models.ARM_PEBRA_HUMAN_REVIEW: (
+        _REAL_ADVISORY_ARMS, _GATE_ARMS, _GRAPH_ARMS, _GRAPH_CONTEXT_ARMS,
+    ),
     models.ARM_PEBRA: (_REAL_ADVISORY_ARMS, _GATE_ARMS, _GRAPH_ARMS),
     models.ARM_BLAST_RADIUS: (_BLAST_ADVISORY_ARMS, _GRAPH_ARMS),
 }
@@ -127,6 +148,7 @@ Your task:
 {task_description}
 
 You have these tools: read_file, write_file, edit_file, apply_patch, list_dir, search_grep, run_build, run_tests,
+repository_context,
 {advisory_name}.
 All file paths you provide to tools must be repository-relative paths.
 Use edit_file for targeted changes to existing files; reserve write_file for new files or intentional
@@ -171,6 +193,12 @@ class ArmTelemetry:
         default_factory=list
     )
     real_advisory_failures: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    repository_context_receipts: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    repository_context_cache: dict[
+        tuple[str, str, str, tuple[str, ...]], dict[str, Any]
+    ] = (
+        dataclasses.field(default_factory=dict)
+    )
 
 
 @dataclass
@@ -196,6 +224,231 @@ class ArmSetup:
     # ArmSetup built without an explicit backend never blocks a write.
     gate_check_backend: Callable[..., dict[str, Any]] = lambda event: {"permission": "allow", "tier": "pass"}
     write_applied_backend: Callable[[dict[str, Any]], None] = lambda _decision: None
+    repository_context_backend: Callable[..., dict[str, Any]] = lambda _payload: {
+        "status": "unavailable",
+        "context": "",
+        "related_files": [],
+        "related_tests": [],
+        "warnings": ["Repository context is temporarily unavailable."],
+        "truncated": False,
+    }
+
+
+def _repo_head(repo_path: Path) -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{7,64}", proc.stdout.strip()):
+        return "unknown"
+    return proc.stdout.strip().lower()
+
+
+def _worktree_digest(repo_path: Path) -> str:
+    """Bind cached knowledge to tracked and untracked working-tree bytes, not only HEAD."""
+    commands = (
+        ("status", "--porcelain=v1", "-z"),
+        ("diff", "--no-ext-diff", "--binary", "HEAD", "--"),
+        ("ls-files", "--others", "--exclude-standard", "-z"),
+    )
+    outputs: list[bytes] = []
+    for args in commands:
+        try:
+            proc = subprocess.run(
+                ["git", *args],
+                cwd=repo_path,
+                capture_output=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return "unknown"
+        if proc.returncode != 0:
+            return "unknown"
+        outputs.append(proc.stdout)
+    digest = hashlib.sha256()
+    for output in outputs:
+        digest.update(output)
+        digest.update(b"\0")
+    for raw_path in outputs[-1].split(b"\0"):
+        if not raw_path:
+            continue
+        path = repo_path / os.fsdecode(raw_path)
+        digest.update(raw_path)
+        try:
+            if path.is_symlink():
+                digest.update(os.fsencode(os.readlink(path)))
+            elif path.is_file():
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(64 * 1024), b""):
+                        digest.update(chunk)
+        except OSError:
+            return "unknown"
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _context_files(payload: dict[str, Any]) -> tuple[str, ...]:
+    raw = payload.get("files")
+    if not isinstance(raw, list):
+        return ()
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        value = item.strip().replace("\\", "/")
+        while value.startswith("./"):
+            value = value[2:]
+        identity = os.path.normcase(value).replace("\\", "/")
+        if value and identity not in seen:
+            seen.add(identity)
+            values.append(value)
+    return tuple(values[:8])
+
+
+def _ordinary_repository_context(
+    repo_path: Path, query: str, files: tuple[str, ...]
+) -> dict[str, Any]:
+    related: list[str] = list(files)
+    sections: list[str] = []
+    for path in files:
+        result = tool_impl.read_file(path, repo_path)
+        content = result.get("content") if isinstance(result, dict) else None
+        if isinstance(content, str):
+            sections.append(f"## {path}\n{content}")
+    terms = list(dict.fromkeys(re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)))[:6]
+    matches: list[str] = []
+    for term in terms:
+        result = tool_impl.search_grep(term, repo_path)
+        for match in result.get("matches", []) if isinstance(result, dict) else []:
+            if isinstance(match, str) and match not in matches:
+                matches.append(match)
+                candidate = match.split(":", 1)[0]
+                if candidate and candidate not in related:
+                    related.append(candidate)
+            if len(matches) >= 80:
+                break
+        if len(matches) >= 80:
+            break
+    if matches:
+        sections.append("## Search matches\n" + "\n".join(matches))
+    tests = [
+        path for path in related if re.search(r"(?:^|/)(?:test|tests|spec|specs)(?:/|$)|(?:test|spec)\.", path, re.I)
+    ]
+    return {
+        "status": "available" if sections else "unavailable",
+        "context": "\n\n".join(sections),
+        "related_files": related,
+        "related_tests": tests,
+        "warnings": [] if sections else ["No matching repository context was found."],
+        "truncated": False,
+    }
+
+
+def _repository_context_backend(
+    arm: str, repo_path: Path, telemetry: ArmTelemetry
+) -> Callable[..., dict[str, Any]]:
+    source = "graph" if arm in _GRAPH_CONTEXT_ARMS else "ordinary"
+
+    def _backend(
+        payload: dict[str, Any], *, timeout_seconds: float | None = None
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+        query = " ".join(str(payload.get("query") or "").split())
+        files = _context_files(payload)
+        head = _repo_head(repo_path)
+        worktree_digest = _worktree_digest(repo_path)
+        key = (
+            head,
+            worktree_digest,
+            query.casefold(),
+            tuple(os.path.normcase(path) for path in files),
+        )
+        cached = telemetry.repository_context_cache.get(key)
+        if cached is not None:
+            receipt = {**cached["receipt"], "cache_hit": True}
+            telemetry.repository_context_receipts.append(receipt)
+            return dict(cached["output"])
+
+        digest: str | None = None
+        if source == "graph":
+            raw = cli_harness.explore(
+                query,
+                files=files,
+                repo_root=repo_path,
+                max_files=8,
+                max_bytes=12_000,
+                timeout=max(1, int(timeout_seconds or cli_harness.DEFAULT_TIMEOUT_SECONDS)),
+            )
+            snapshot = raw.get("snapshot") if isinstance(raw, dict) else None
+            snapshot = snapshot if isinstance(snapshot, dict) else {}
+            raw_head = snapshot.get("repo_head")
+            raw_digest = snapshot.get("graph_scope_digest")
+            valid = (
+                raw.get("status") == "available"
+                and isinstance(raw_head, str)
+                and raw_head.lower() == head
+                and isinstance(raw_digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", raw_digest) is not None
+            )
+            digest = raw_digest if valid else None
+            output = {
+                "status": "available" if valid else "unavailable",
+                "context": tool_impl.model_safe_text(str(raw.get("context") or "")),
+                "related_files": [
+                    tool_impl.model_safe_text(item)
+                    for item in raw.get("dependent_files", [])
+                    if isinstance(item, str)
+                ],
+                "related_tests": [
+                    tool_impl.model_safe_text(item)
+                    for item in raw.get("affected_tests", [])
+                    if isinstance(item, str)
+                ],
+                "warnings": [
+                    tool_impl.model_safe_text(item)
+                    for item in raw.get("warnings", [])
+                    if isinstance(item, str)
+                ],
+                "truncated": raw.get("truncated") is True,
+            }
+        else:
+            output = _ordinary_repository_context(repo_path, query, files)
+            output = {
+                **output,
+                "context": tool_impl.model_safe_text(str(output.get("context") or "")),
+                "warnings": [
+                    tool_impl.model_safe_text(item)
+                    for item in output.get("warnings", [])
+                    if isinstance(item, str)
+                ],
+            }
+        output = repository_context_contract.normalize_output(output)
+        receipt = {
+            "source": source,
+            "repo_head": head,
+            "worktree_digest": worktree_digest,
+            "graph_scope_digest": digest,
+            "query": query,
+            "requested_files": list(files),
+            "returned_files": list(output["related_files"]),
+            "truncated": output["truncated"],
+            "duration_seconds": round(time.monotonic() - started, 6),
+            "cache_hit": False,
+            "status": output["status"],
+        }
+        telemetry.repository_context_receipts.append(receipt)
+        if output["status"] == "available":
+            telemetry.repository_context_cache[key] = {
+                "output": dict(output),
+                "receipt": dict(receipt),
+            }
+        return output
+
+    return _backend
 
 
 def _covering_tests_hint(spec: TaskSpec) -> str:
@@ -786,6 +1039,7 @@ def _advisory_backend(
     spec: TaskSpec | None = None, telemetry: ArmTelemetry | None = None,
     candidate_patches: dict[str, str] | None = None,
     candidate_assessments: dict[str, str] | None = None,
+    required_context_source: str | None = None,
 ) -> Callable[..., dict[str, Any]]:
     """Return the callable backing the SAME 'advisory_check' tool. Only the CONTENT differs by arm:
     pebra/treatment -> real PEBRA; blast_radius -> dependent-file list (no verdict); everyone else
@@ -798,6 +1052,62 @@ def _advisory_backend(
     assessment_registry = (
         candidate_assessments if candidate_assessments is not None else {}
     )
+
+    def _understand_receipt() -> dict[str, Any] | None:
+        if required_context_source is None:
+            return None
+        receipts = telemetry.repository_context_receipts if telemetry is not None else ()
+        return next(
+            (
+                receipt
+                for receipt in reversed(receipts)
+                if receipt.get("source") == required_context_source
+                and receipt.get("status") == "available"
+            ),
+            None,
+        )
+
+    def _understand_required() -> dict[str, Any] | None:
+        if required_context_source is None or _understand_receipt() is not None:
+            return None
+        return advisory_contract.normalize_output({
+            "recommended_decision": None,
+            "risk_level": "unknown",
+            "advisory": (
+                "Retrieve current repository context for this task and candidate before the "
+                "pre-edit review."
+            ),
+            "detail": {},
+        })
+
+    def _scope_matches_understand(result: Any) -> bool:
+        if required_context_source is None:
+            return True
+        receipt = _understand_receipt()
+        if receipt is None or getattr(result, "repo_head", None) != receipt.get("repo_head"):
+            return False
+        if required_context_source == "graph":
+            return getattr(result, "graph_scope_digest", None) == receipt.get(
+                "graph_scope_digest"
+            )
+        return True
+
+    def _scope_mismatch() -> dict[str, Any]:
+        if telemetry is not None:
+            telemetry.real_advisory_failures.append({
+                "category": "understand_assessment_scope_mismatch",
+                "attempted": True,
+            })
+        return advisory_contract.normalize_output({
+            "recommended_decision": None,
+            "risk_level": "unknown",
+            "advisory": (
+                "Repository context changed before the pre-edit review. Retrieve current context "
+                "and assess the candidate again."
+            ),
+            "detail": {},
+        })
+
     if arm in _REAL_ADVISORY_ARMS:
         revise_attempt = 0
 
@@ -815,6 +1125,10 @@ def _advisory_backend(
         ) -> dict[str, Any]:
             nonlocal revise_attempt
             backend_started = time.monotonic()
+
+            missing_understand = _understand_required()
+            if missing_understand is not None:
+                return missing_understand
 
             def _budget_exhausted(remaining: float) -> dict[str, Any]:
                 if telemetry is not None:
@@ -936,6 +1250,8 @@ def _advisory_backend(
                 telemetry.real_advisory_graph_scope_digests[
                     scope_receipt_index
                 ] = graph_scope_digest
+            if not _scope_matches_understand(result):
+                return _scope_mismatch()
             assessment_id = getattr(result, "assessment_id", None)
             if telemetry is not None and isinstance(assessment_id, str):
                 telemetry.last_assessment_id = assessment_id
@@ -1012,6 +1328,9 @@ def _advisory_backend(
         return _real
     if arm in _BLAST_ADVISORY_ARMS:
         def _blast(payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            missing_understand = _understand_required()
+            if missing_understand is not None:
+                return missing_understand
             prepared = _materialize_candidate_payload(
                 payload,
                 repo_path=repo_path,
@@ -1028,6 +1347,9 @@ def _advisory_backend(
         return _blast
 
     def _sham(payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        missing_understand = _understand_required()
+        if missing_understand is not None:
+            return missing_understand
         prepared = _materialize_candidate_payload(
             payload,
             repo_path=repo_path,
@@ -1310,6 +1632,9 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
             telemetry=telemetry,
             candidate_patches=candidate_patches,
             candidate_assessments=candidate_assessments,
+            required_context_source=(
+                "graph" if arm in _GRAPH_CONTEXT_ARMS else "ordinary"
+            ),
         ),
         baseline_build=baseline,
         subject_prompt=_build_subject_prompt(spec, repo_path, arm),
@@ -1337,6 +1662,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
         approval_backend=_approval_backend(arm, repo_path, db_path, telemetry),
         gate_check_backend=_gate_check_backend(arm, db_path, telemetry=telemetry),
         write_applied_backend=_write_applied_backend(telemetry),
+        repository_context_backend=_repository_context_backend(arm, repo_path, telemetry),
     )
 
 

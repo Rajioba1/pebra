@@ -26,7 +26,11 @@ from e2e.experiments.agent_ab.metrics import blinding
 from e2e.experiments.agent_ab.models import MUTATING_TOOLS, SubjectResult, ToolCallRecord
 from e2e.experiments.agent_ab.runners import run_artifacts, subject_protocol, tool_impl
 from e2e.experiments.agent_ab.runners.model_client import ScriptExhausted
-from e2e.experiments.agent_ab.tools import advisory_contract, approval_contract
+from e2e.experiments.agent_ab.tools import (
+    advisory_contract,
+    approval_contract,
+    repository_context_contract,
+)
 from e2e.utils import cli_harness
 
 if False:  # typing only; avoid importing run_pair at runtime (it imports adapters)
@@ -44,8 +48,38 @@ class RunConfig:
     max_wall_seconds_per_run: int = 600
     max_output_tokens_per_turn: int = 4096
     tools: tuple[str, ...] = ("read_file", "edit_file", "apply_patch", "write_file", "list_dir", "search_grep",
-                              "run_build", "run_tests", "advisory_check",
+                              "run_build", "run_tests", "repository_context", "advisory_check",
                               "request_human_approval")
+
+
+@dataclass
+class _LifecycleState:
+    """Host-observed governance state; never exposed to the subject model."""
+
+    current_decision: str | None = None
+
+    def observe(self, name: str, result: dict[str, Any], setup: "ArmSetup") -> str | None:
+        if name == advisory_contract.TOOL_NAME:
+            decision = result.get("recommended_decision")
+            self.current_decision = decision if isinstance(decision, str) else None
+            failures = getattr(
+                getattr(setup, "telemetry", None), "real_advisory_failures", ()
+            )
+            if failures:
+                latest = failures[-1]
+                if (
+                    isinstance(latest, dict)
+                    and latest.get("category") == "insufficient_wall_budget"
+                    and latest.get("attempted") is False
+                ):
+                    return "advisory_budget_exhausted"
+        elif name == approval_contract.TOOL_NAME and self.current_decision == "ask_human":
+            status = result.get("status")
+            if status == "denied":
+                return "approval_denied"
+            if status == "unavailable":
+                return "approval_unavailable"
+        return None
 
 
 _SEED_USER = "Please complete the task now, using the tools available."
@@ -109,6 +143,12 @@ def _build_tools_schema(names: tuple[str, ...]) -> list[dict[str, Any]]:
         elif name == approval_contract.TOOL_NAME:
             schema.append({"name": name, "description": approval_contract.TOOL_DESCRIPTION,
                            "input_schema": approval_contract.INPUT_SCHEMA})
+        elif name == repository_context_contract.TOOL_NAME:
+            schema.append({
+                "name": name,
+                "description": repository_context_contract.TOOL_DESCRIPTION,
+                "input_schema": repository_context_contract.INPUT_SCHEMA,
+            })
         elif name in _TOOL_SCHEMAS:
             schema.append({"name": name, **_TOOL_SCHEMAS[name]})
     return schema
@@ -155,6 +195,12 @@ def _dispatch(
         return tool_impl.run_tests(repo, backend=getattr(setup, "build_backend", None),
                                    spec=getattr(setup, "spec", None), sln=setup.build_solution,
                                    timeout_seconds=timeout_seconds)
+    if name == repository_context_contract.TOOL_NAME:
+        return tool_impl.repository_context(
+            args,
+            setup.repository_context_backend,
+            timeout_seconds=timeout_seconds,
+        )
     if name == advisory_contract.TOOL_NAME:
         return tool_impl.advisory_check(
             args,
@@ -379,6 +425,7 @@ def run(
     tools_seen: list[dict[str, Any]] = []
     limit_reason: str | None = None
     deadline = start + config.max_wall_seconds_per_run
+    lifecycle = _LifecycleState()
 
     try:
         while True:
@@ -425,6 +472,7 @@ def run(
                 break
 
             results_content: list[dict[str, Any]] = []
+            governance_stop = False
             for tc in turn.tool_calls:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -476,7 +524,12 @@ def run(
                 seq += 1
                 results_content.append({"type": "tool_result", "tool_use_id": tc["id"],
                                         "content": json.dumps(result)})
-            if timed_out:
+                terminal_reason = lifecycle.observe(name, result, setup)
+                if terminal_reason is not None:
+                    limit_reason = terminal_reason
+                    governance_stop = True
+                    break
+            if timed_out or governance_stop:
                 break
             messages.append({"role": "user", "content": results_content})
     except BlindingViolationError:
@@ -498,6 +551,11 @@ def run(
         protocol_file_read=protocol_read,
         real_advisory_failures=tuple(
             getattr(getattr(setup, "telemetry", None), "real_advisory_failures", ())
+        ),
+        repository_context_receipts=tuple(
+            getattr(
+                getattr(setup, "telemetry", None), "repository_context_receipts", ()
+            )
         ),
     )
     if trace_path is not None:
@@ -537,6 +595,7 @@ def _write_subject_trace(
             "modified_files": list(result.modified_files),
             "reason": result.error or result.limit_reason,
             "real_advisory_failures": list(result.real_advisory_failures),
+            "repository_context_receipts": list(result.repository_context_receipts),
         },
         "transcript": list(result.transcript),
         "turns": turns,

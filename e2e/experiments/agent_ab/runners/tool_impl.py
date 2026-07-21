@@ -20,7 +20,11 @@ from typing import Any, Callable
 
 from e2e.experiments.agent_ab.forbidden import EXPERIMENT_LEAK_TERMS
 from e2e.experiments.agent_ab.backends import CSharpBackend
-from e2e.experiments.agent_ab.tools import advisory_contract, approval_contract
+from e2e.experiments.agent_ab.tools import (
+    advisory_contract,
+    approval_contract,
+    repository_context_contract,
+)
 
 _MAX_READ_BYTES = 64_000
 _MAX_LIST_ENTRIES = 500
@@ -322,6 +326,44 @@ def run_tests(
         "tests_selected": getattr(r, "tests_selected", None),
         "targeted": bool(getattr(r, "targeted", False)),
     }
+
+
+def repository_context(
+    payload: dict[str, Any],
+    backend: Callable[..., dict[str, Any]],
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    query = payload.get("query")
+    files = payload.get("files")
+    if not isinstance(query, str):
+        query = ""
+    if not isinstance(files, list) or any(not isinstance(item, str) for item in files):
+        files = []
+    prepared = {"query": query, "files": files}
+    if not query.strip() and not files:
+        return repository_context_contract.normalize_output({
+            "status": "unavailable",
+            "warnings": ["Provide a task, symbol, or repository file to retrieve context."],
+        })
+    try:
+        parameters = inspect.signature(backend).parameters.values()
+        accepts_timeout = any(
+            parameter.name == "timeout_seconds"
+            or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        raw = (
+            backend(prepared, timeout_seconds=timeout_seconds)
+            if accepts_timeout
+            else backend(prepared)
+        )
+    except Exception:
+        raw = {
+            "status": "unavailable",
+            "warnings": ["Repository context is temporarily unavailable."],
+        }
+    return repository_context_contract.normalize_output(raw)
 
 
 class _TimeoutSpec:

@@ -58,7 +58,7 @@ class CandidateApplicationAdapter:
         repo_root: str | Path,
         patch: str,
         *,
-        expected_files: tuple[str, ...] | None = None,
+        expected_files: tuple[str, ...],
         acquire_lock: bool = True,
     ) -> tuple[str, ...]:
         if acquire_lock:
@@ -73,25 +73,24 @@ class CandidateApplicationAdapter:
         after = materialize_candidate_patch(root, patch)
         if not after:
             raise CandidateApplicationError("candidate patch could not be materialized")
-        if expected_files is not None:
-            expected = {
-                os.path.normcase(
-                    PurePosixPath(value.replace("\\", "/")).as_posix()
-                ).replace("\\", "/")
-                for value in expected_files
-                if is_safe_repo_path(value)
-            }
-            materialized = {
-                os.path.normcase(rel).replace("\\", "/") for rel in after
-            }
-            if (
-                len(expected) != len(expected_files)
-                or len(materialized) != len(after)
-                or materialized != expected
-            ):
-                raise CandidateApplicationError(
-                    "materialized files do not match the validated candidate envelope"
-                )
+        expected = {
+            os.path.normcase(
+                PurePosixPath(value.replace("\\", "/")).as_posix()
+            ).replace("\\", "/")
+            for value in expected_files
+            if is_safe_repo_path(value)
+        }
+        materialized = {
+            os.path.normcase(rel).replace("\\", "/") for rel in after
+        }
+        if (
+            len(expected) != len(expected_files)
+            or len(materialized) != len(after)
+            or materialized != expected
+        ):
+            raise CandidateApplicationError(
+                "materialized files do not match the validated candidate envelope"
+            )
         return self._replace_transaction(root, after)
 
     def _replace_transaction(

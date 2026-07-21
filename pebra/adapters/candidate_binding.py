@@ -24,12 +24,22 @@ _CODEX_FILE = re.compile(r"^\*\*\* (Add|Update|Delete) File:\s*(.+?)\s*$")
 _UNSUPPORTED_MODE = re.compile(
     r"^(?:old mode|new mode)\s+|^new file mode\s+(?!100644\s*$)", re.MULTILINE
 )
+_RENAME_FROM = re.compile(r"^rename from (.+)$", re.MULTILINE)
+_RENAME_TO = re.compile(r"^rename to (.+)$", re.MULTILINE)
 
 
 def _has_unsupported_metadata(patch: str) -> bool:
     # v1 binds normalized contents only. Reject executable/special mode mutations instead of
-    # pretending they are represented by the content digest.
-    return bool(_UNSUPPORTED_MODE.search(patch))
+    # pretending they are represented by the content digest. It also cannot represent a path whose
+    # only change is case on a case-insensitive filesystem, so reject that rename on every platform.
+    if _UNSUPPORTED_MODE.search(patch):
+        return True
+    old_paths = _RENAME_FROM.findall(patch)
+    new_paths = _RENAME_TO.findall(patch)
+    return any(
+        old != new and old.replace("\\", "/").casefold() == new.replace("\\", "/").casefold()
+        for old, new in zip(old_paths, new_paths, strict=False)
+    )
 
 
 def _normal(text: str) -> str:

@@ -20,8 +20,10 @@ ARM_SHAM = "sham"                        # baseline / placebo (generic advisory)
 ARM_BLAST_RADIUS = "blast_radius"        # CTXO-style graph-guidance diagnostic (NOT literal CTXO)
 ARM_ENFORCED_CONTROL = "enforced_control"  # sensitivity control: write gate blocks known-risky edits
 ARM_PEBRA = "pebra"                      # experimental treatment
+ARM_GRAPH_CONTEXT = "graph_context"      # graph-backed Understand + sham decision control
 ARM_ORACLE_POSITIVE = "oracle_positive"  # endpoint floor: correct fix pre-applied before the agent runs
-ARM_PEBRA_GRAPH_REPAIR = "pebra_graph_repair"  # PEBRA + repair context + host candidate verification
+ARM_PEBRA_GRAPH_CONTEXT = "pebra_graph_context"  # graph-backed Understand + real decision control
+ARM_PEBRA_GRAPH_REPAIR = "pebra_graph_repair"  # real decision + host candidate-verification repair
 ARM_PEBRA_HUMAN_REVIEW = "pebra_human_review"  # repair + pre-registered host approval policy
 
 # The full assay arm universe. Every arm-membership frozenset in run_pair.py is validated against this
@@ -32,7 +34,9 @@ ALL_ASSAY_ARMS: tuple[str, ...] = (
     ARM_BLAST_RADIUS,
     ARM_ENFORCED_CONTROL,
     ARM_PEBRA,
+    ARM_GRAPH_CONTEXT,
     ARM_ORACLE_POSITIVE,
+    ARM_PEBRA_GRAPH_CONTEXT,
     ARM_PEBRA_GRAPH_REPAIR,
     ARM_PEBRA_HUMAN_REVIEW,
 )
@@ -40,7 +44,8 @@ ALL_ASSAY_ARMS: tuple[str, ...] = (
 # Arms backed by the real advisory backend/protocol. Centralized so adding a future real-advisory arm
 # cannot silently get the placebo protocol while still receiving real gate/advisory plumbing.
 REAL_ADVISORY_ARMS = frozenset({
-    ARM_TREATMENT, ARM_PEBRA, ARM_PEBRA_GRAPH_REPAIR, ARM_PEBRA_HUMAN_REVIEW,
+    ARM_TREATMENT, ARM_PEBRA, ARM_PEBRA_GRAPH_CONTEXT, ARM_PEBRA_GRAPH_REPAIR,
+    ARM_PEBRA_HUMAN_REVIEW,
 })
 
 # Every tool that can mutate tracked source. Scoring, adherence, traces, and the runner must share
@@ -146,6 +151,7 @@ class SubjectResult:
     # carry a canonical graph-scope digest. Never copied into ToolCallRecord or model-facing output.
     real_advisory_graph_scope_digests: tuple[str | None, ...] = ()
     real_advisory_failures: tuple[dict[str, Any], ...] = ()
+    repository_context_receipts: tuple[dict[str, Any], ...] = ()
     post_edit_verify_ran: bool = False
     post_edit_verify_passed: bool | None = None
     post_edit_verify_assessment_id: str | None = None

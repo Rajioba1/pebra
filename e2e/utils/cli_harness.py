@@ -491,6 +491,32 @@ def dependents_result(
     )
 
 
+def explore(
+    query: str,
+    *,
+    files: tuple[str, ...],
+    repo_root: Path | str,
+    max_files: int = 8,
+    max_bytes: int = 12_000,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> dict:
+    """Consume the public provider-neutral repository exploration CLI."""
+    args = [
+        "explore",
+        query,
+        "--repo-root",
+        str(repo_root),
+        "--max-files",
+        str(max_files),
+        "--max-bytes",
+        str(max_bytes),
+        "--json",
+    ]
+    for path in files:
+        args += ["--file", path]
+    return _run_json(args, timeout=timeout)
+
+
 def dashboard_proc(
     *, repo_root: Path | str, db: Path | str, port: int = 0, auth: str | None = None
 ) -> subprocess.Popen:

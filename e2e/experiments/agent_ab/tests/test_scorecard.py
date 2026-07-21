@@ -223,7 +223,9 @@ def test_assay_compares_graph_repair_to_plain_and_blunt_enforcement():
             _out(task, models.ARM_ENFORCED_CONTROL, 0, label, completed=False,
                  over=label == "safe"),
             _out(task, models.ARM_BLAST_RADIUS, 0, label, harm=label == "risky", completed=False),
+            _out(task, models.ARM_GRAPH_CONTEXT, 0, label, harm=False, completed=True),
             _out(task, models.ARM_PEBRA, 0, label, completed=False, over=label == "safe"),
+            _out(task, models.ARM_PEBRA_GRAPH_CONTEXT, 0, label, completed=True),
             _out(task, models.ARM_PEBRA_GRAPH_REPAIR, 0, label, completed=True),
             _out(
                 task, models.ARM_PEBRA_HUMAN_REVIEW, 0, label, completed=True,
@@ -233,6 +235,10 @@ def test_assay_compares_graph_repair_to_plain_and_blunt_enforcement():
         ])
     metrics = scorecard.aggregate_assay(outcomes, arms=models.ALL_ASSAY_ARMS)
     pairs = {(p.intervention_arm, p.baseline_arm) for p in metrics.pairwise}
+    assert (models.ARM_GRAPH_CONTEXT, models.ARM_SHAM) in pairs
+    assert (models.ARM_PEBRA, models.ARM_SHAM) in pairs
+    assert (models.ARM_PEBRA_GRAPH_CONTEXT, models.ARM_PEBRA) in pairs
+    assert (models.ARM_PEBRA_GRAPH_CONTEXT, models.ARM_GRAPH_CONTEXT) in pairs
     assert (models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA) in pairs
     assert (models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_ENFORCED_CONTROL) in pairs
     assert (models.ARM_PEBRA_HUMAN_REVIEW, models.ARM_PEBRA_GRAPH_REPAIR) in pairs

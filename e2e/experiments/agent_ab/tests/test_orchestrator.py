@@ -81,6 +81,19 @@ def _run_meta(*, mode="pilot", seeds_per_arm=1, specs=None) -> dict:
     }
 
 
+def _subject(task_id: str, arm: str, seed: int = 0, **kwargs) -> SubjectResult:
+    """Build a completed fake subject with the mandatory host-only Understand receipt."""
+    if arm != models.ARM_ORACLE_POSITIVE and "repository_context_receipts" not in kwargs:
+        source = "graph" if arm in orchestrator.run_pair._GRAPH_CONTEXT_ARMS else "ordinary"
+        kwargs["repository_context_receipts"] = ({
+            "source": source,
+            "status": "available",
+            "repo_head": "b" * 40,
+            "graph_scope_digest": None,
+        },)
+    return SubjectResult(task_id=task_id, arm=arm, seed=seed, **kwargs)
+
+
 def test_plan_is_sorted_and_seeded():
     plan = orchestrator._plan([_T1, _B1], ["B1", "T1"], 2)
     assert plan == [(_B1, 0), (_B1, 1), (_T1, 0), (_T1, 1)]
@@ -353,6 +366,12 @@ def test_experiment_design_hash_changes_with_provider_model_prompt_tasks_and_arm
     }
     assert len(hashes) == 6
     assert base["arm_topology"]["JS1"] == list(orchestrator.run_pair.arms_for("risky"))
+    assert base["understand_decision_factorial"] == {
+        "ordinary_sham": models.ARM_SHAM,
+        "graph_sham": models.ARM_GRAPH_CONTEXT,
+        "ordinary_real": models.ARM_PEBRA,
+        "graph_real": models.ARM_PEBRA_GRAPH_CONTEXT,
+    }
 
 
 def test_experiment_design_hash_changes_with_gate_reason_treatment(monkeypatch):
@@ -385,7 +404,7 @@ def test_experiment_design_binds_protocol_version_and_graph_scope_digest():
 
     assert bound["graph_scope_digest"] == "a" * 64
     assert bound["experiment_design"]["graph_scope_digest"] == "a" * 64
-    assert bound["experiment_design"]["protocol_version"] == "cognitive-lifecycle-v2"
+    assert bound["experiment_design"]["protocol_version"] == "cognitive-lifecycle-v3"
     assert bound["experiment_design_sha256"] != unbound["experiment_design_sha256"]
 
 
@@ -422,17 +441,77 @@ def test_resume_rejects_different_graph_scope_cohort(tmp_path):
 def test_trial_graph_scope_accepts_matching_real_advisories_and_ignores_sham():
     metadata = orchestrator._bind_graph_scope(_run_meta(), "a" * 64)
     results = (
-        SubjectResult(task_id="T1", arm=models.ARM_SHAM, seed=0),
+        SubjectResult(
+            task_id="T1",
+            arm=models.ARM_SHAM,
+            seed=0,
+            repository_context_receipts=({
+                "source": "ordinary", "status": "available", "repo_head": "b" * 40,
+                "graph_scope_digest": None,
+            },),
+        ),
         SubjectResult(
             task_id="T1",
             arm=models.ARM_PEBRA,
             seed=0,
             real_advisory_graph_scope_digests=("a" * 64, "a" * 64),
+            repository_context_receipts=({
+                "source": "ordinary", "status": "available", "repo_head": "b" * 40,
+                "graph_scope_digest": None,
+            },),
         ),
         SubjectResult(task_id="T1", arm=models.ARM_ORACLE_POSITIVE, seed=0),
     )
 
     orchestrator._assert_trial_graph_scope_compatible(results, metadata)
+
+
+def test_trial_requires_available_understand_receipt_before_scoring():
+    metadata = orchestrator._bind_graph_scope(_run_meta(), "a" * 64)
+    result = SubjectResult(task_id="T1", arm=models.ARM_SHAM, seed=0)
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="Understand receipt"):
+        orchestrator._assert_trial_graph_scope_compatible((result,), metadata)
+
+
+def test_graph_understand_receipt_must_match_preflight_scope():
+    metadata = orchestrator._bind_graph_scope(_run_meta(), "a" * 64)
+    result = SubjectResult(
+        task_id="T1",
+        arm=models.ARM_GRAPH_CONTEXT,
+        seed=0,
+        repository_context_receipts=({
+            "source": "graph",
+            "status": "available",
+            "repo_head": "b" * 40,
+            "graph_scope_digest": "c" * 64,
+        },),
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="Understand graph scope"):
+        orchestrator._assert_trial_graph_scope_compatible((result,), metadata)
+
+
+def test_understand_receipt_head_must_match_preflight_source_head():
+    metadata = orchestrator._bind_graph_scope(_run_meta(), "a" * 64)
+    metadata["experiment_design"]["source_head_sha"] = "b" * 40
+    metadata["experiment_design_sha256"] = orchestrator._design_sha256(
+        metadata["experiment_design"]
+    )
+    result = SubjectResult(
+        task_id="T1",
+        arm=models.ARM_SHAM,
+        seed=0,
+        repository_context_receipts=({
+            "source": "ordinary",
+            "status": "available",
+            "repo_head": "c" * 40,
+            "graph_scope_digest": None,
+        },),
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="repository HEAD"):
+        orchestrator._assert_trial_graph_scope_compatible((result,), metadata)
 
 
 @pytest.mark.parametrize(
@@ -588,7 +667,7 @@ def test_aligned_live_run_documentation_uses_fresh_one_seed_run_id():
     normalized = " ".join(readme.split())
 
     assert "candidate-risk-summary-v2" in normalized
-    assert "cognitive-lifecycle-v2" in normalized
+    assert "cognitive-lifecycle-v3" in normalized
     assert "schema-2" in normalized
     assert "different graph-scope digests" in normalized
     assert 'E2E_AB_SEEDS_PER_ARM="1"' in readme
@@ -793,8 +872,8 @@ def _wire(monkeypatch, tmp_path, corpus, run_pair_fn):
 
 def test_main_end_to_end_writes_report(monkeypatch, tmp_path):
     def _fake_pair(spec, seed, run_id):
-        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
-                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+        return (_subject(spec.task_id, models.ARM_CONTROL, seed),
+                _subject(spec.task_id, models.ARM_TREATMENT, seed))
 
     _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
@@ -811,8 +890,8 @@ def test_main_uses_effective_seed_count_override(monkeypatch, tmp_path):
     def _fake_pair(spec, seed, run_id):
         observed_seeds.append(seed)
         return (
-            SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
-            SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed),
+            _subject(spec.task_id, models.ARM_CONTROL, seed),
+            _subject(spec.task_id, models.ARM_TREATMENT, seed),
         )
 
     _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
@@ -860,8 +939,8 @@ def test_main_rejects_missing_reason_treatment_before_subject_setup(monkeypatch,
 
 def test_main_writes_finished_run_status(monkeypatch, tmp_path):
     def _fake_pair(spec, seed, run_id):
-        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
-                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+        return (_subject(spec.task_id, models.ARM_CONTROL, seed),
+                _subject(spec.task_id, models.ARM_TREATMENT, seed))
 
     _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
     monkeypatch.delenv("E2E_AB_PARALLEL_ARMS", raising=False)
@@ -910,8 +989,8 @@ def test_main_rejects_long_run_id_before_creating_artifacts(monkeypatch, tmp_pat
 
 def test_main_run_status_records_parallel_arms_when_enabled(monkeypatch, tmp_path):
     def _fake_pair(spec, seed, run_id):
-        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
-                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+        return (_subject(spec.task_id, models.ARM_CONTROL, seed),
+                _subject(spec.task_id, models.ARM_TREATMENT, seed))
 
     _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
@@ -1013,8 +1092,8 @@ def test_main_reports_scoring_mode_for_planned_tasks_only(monkeypatch, tmp_path)
     seen = {}
 
     def _fake_pair(spec, seed, run_id):
-        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
-                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+        return (_subject(spec.task_id, models.ARM_CONTROL, seed),
+                _subject(spec.task_id, models.ARM_TREATMENT, seed))
 
     def _capture_report(*_args, **kwargs):
         seen["scoring_mode"] = kwargs["scoring_mode"]
@@ -1033,8 +1112,8 @@ def test_main_runs_preflights_for_planned_tasks_only(monkeypatch, tmp_path):
     seen = {}
 
     def _fake_pair(spec, seed, run_id):
-        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
-                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+        return (_subject(spec.task_id, models.ARM_CONTROL, seed),
+                _subject(spec.task_id, models.ARM_TREATMENT, seed))
 
     _wire(monkeypatch, tmp_path, [_T1, _B1], _fake_pair)
     monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight",
@@ -1076,7 +1155,7 @@ def test_main_runs_revise_safer_calibration_for_assay(monkeypatch, tmp_path):
                         lambda *a, **k: calls.append("revise"))
     monkeypatch.setattr(orchestrator.run_pair, "run_trial",
                         lambda spec, seed, run_id: tuple(
-                            SubjectResult(task_id=spec.task_id, arm=arm, seed=seed)
+                            _subject(spec.task_id, arm, seed)
                             for arm in orchestrator.run_pair.arms_for(spec.harm_label)
                         ))
     monkeypatch.setattr(orchestrator.render_report, "write_assay_report",
@@ -1170,10 +1249,10 @@ def test_assay_js_stops_after_sham_stage_when_no_headroom(monkeypatch, tmp_path)
         calls.append(arms)
         if arms != (models.ARM_SHAM,):
             raise AssertionError("non-sham arms must not run without measured headroom")
-        return (SubjectResult(
-            task_id=spec.task_id,
-            arm=models.ARM_SHAM,
-            seed=seed,
+        return (_subject(
+            spec.task_id,
+            models.ARM_SHAM,
+            seed,
             tool_calls=(models.ToolCallRecord(sequence=1, name="write_file"),),
             modified_files=("src/a.ts",),
             build_ran=True,
@@ -1216,10 +1295,10 @@ def test_assay_js_distinguishes_all_no_attempt_sham_from_no_headroom(monkeypatch
         orchestrator.run_pair,
         "run_trial",
         lambda spec, seed, run_id, *, arms=None: (
-            SubjectResult(
-                task_id=spec.task_id,
-                arm=models.ARM_SHAM,
-                seed=seed,
+            _subject(
+                spec.task_id,
+                models.ARM_SHAM,
+                seed,
                 timed_out=True,
                 limit_reason="wall_clock",
             ),
@@ -1279,12 +1358,12 @@ def test_assay_js_resume_retries_unscorable_sham(monkeypatch, tmp_path):
     def _trial(spec, seed, run_id, *, arms=None):
         calls.append(arms)
         if arms == (models.ARM_SHAM,):
-            return (SubjectResult(
-                task_id=spec.task_id, arm=models.ARM_SHAM, seed=seed,
+            return (_subject(
+                spec.task_id, models.ARM_SHAM, seed,
                 tool_calls=(models.ToolCallRecord(sequence=1, name="write_file"),),
                 modified_files=("src/a.ts",), build_ran=True, build_passed=False,
             ),)
-        return tuple(SubjectResult(task_id=spec.task_id, arm=arm, seed=seed) for arm in arms)
+        return tuple(_subject(spec.task_id, arm, seed) for arm in arms)
 
     monkeypatch.setattr(orchestrator.run_pair, "run_trial", _trial)
     monkeypatch.setattr(
@@ -1346,7 +1425,7 @@ def test_assay_js_reuses_passing_sham_stage_without_running_sham_twice(monkeypat
 
     def _trial(spec, seed, run_id, *, arms=None):
         calls.append(arms)
-        return tuple(SubjectResult(task_id=spec.task_id, arm=arm, seed=seed) for arm in arms)
+        return tuple(_subject(spec.task_id, arm, seed) for arm in arms)
 
     def _score(subject, spec):
         return dataclasses.replace(
@@ -1367,8 +1446,8 @@ def test_main_runs_repo_identity_preflight_before_external_clone(monkeypatch, tm
     calls: list[str] = []
 
     def _fake_pair(spec, seed, run_id):
-        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
-                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+        return (_subject(spec.task_id, models.ARM_CONTROL, seed),
+                _subject(spec.task_id, models.ARM_TREATMENT, seed))
 
     _wire(monkeypatch, tmp_path, [_T1], _fake_pair)
     source = tmp_path / "source"
@@ -1434,7 +1513,7 @@ def test_skip_graph_preflight_remains_available_when_no_real_advisory_is_planned
 
     def _non_real_pair(spec, seed, run_id):
         subject_calls.append(spec.task_id)
-        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),)
+        return (_subject(spec.task_id, models.ARM_CONTROL, seed),)
 
     _wire(monkeypatch, tmp_path, [_T1], _non_real_pair)
     monkeypatch.setattr(
@@ -1465,8 +1544,8 @@ def test_skipped_preflight_status_is_reported(monkeypatch, tmp_path):
     seen = {}
 
     def _fake_pair(spec, seed, run_id):
-        return (SubjectResult(task_id=spec.task_id, arm=models.ARM_CONTROL, seed=seed),
-                SubjectResult(task_id=spec.task_id, arm=models.ARM_TREATMENT, seed=seed))
+        return (_subject(spec.task_id, models.ARM_CONTROL, seed),
+                _subject(spec.task_id, models.ARM_TREATMENT, seed))
 
     def _capture_report(*_args, **kwargs):
         seen["preflight_status"] = kwargs["preflight_status"]

@@ -28,6 +28,6 @@ class CandidateApplicationPort(Protocol):
         repo_root: str | Path,
         patch: str,
         *,
-        expected_files: tuple[str, ...] | None = None,
+        expected_files: tuple[str, ...],
         acquire_lock: bool = True,
     ) -> tuple[str, ...]: ...

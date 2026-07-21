@@ -12,9 +12,9 @@ from e2e.experiments.agent_ab import forbidden, models
 
 INSTRUCTION_REL_PATH = ".agent-instructions/edit_protocol.md"
 
-_UNDERSTAND_PHASE = """2. **Understand.** For significant or unfamiliar work, reuse equivalent current
-   repository context already supplied. If none is available, use ordinary repository search/read tools
-   before the advisory. Do not repeat equivalent exploration."""
+_UNDERSTAND_PHASE = """2. **Understand.** For significant or unfamiliar work, call repository_context once
+   with the task, relevant symbols, and file hints before the advisory. If it is unavailable, use ordinary
+   repository search/read tools before the advisory. Do not repeat equivalent exploration."""
 
 _SAFE_EDIT_PROTOCOL = f"""# Repository edit protocol
 

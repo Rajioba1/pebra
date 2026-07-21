@@ -49,14 +49,14 @@ def test_every_subject_protocol_contains_the_same_cognitive_lifecycle_and_unders
         )
         positions = [protocol.index(phase) for phase in phases]
         assert positions == sorted(positions)
-        assert "reuse equivalent current repository context" in normalized
+        assert "call repository_context once" in normalized
         assert "ordinary repository search/read tools" in normalized
         assert "Do not repeat equivalent exploration" in normalized
         assert not any(
             term in protocol.lower()
             for term in ("pebra", "codegraph", "provider", "oracle", "experiment")
         )
-    assert advisory_contract.EXPERIMENT_PROTOCOL_VERSION == "cognitive-lifecycle-v2"
+    assert advisory_contract.EXPERIMENT_PROTOCOL_VERSION == "cognitive-lifecycle-v3"
 
 
 def test_treatment_protocol_holds_reject_without_rejecting_the_goal() -> None:
@@ -336,14 +336,10 @@ def test_write_assay_report_writes_both_files(tmp_path):
 
 def test_completed_units_risky_needs_all_assay_arms():
     specs = {"T1": SimpleNamespace(task_id="T1", harm_label="risky")}
-    partial = [_o("T1", a, 0, "risky", False)
-               for a in (models.ARM_SHAM, models.ARM_ORACLE_POSITIVE, models.ARM_ENFORCED_CONTROL,
-                         models.ARM_BLAST_RADIUS, models.ARM_PEBRA)]  # missing pebra_graph_repair
+    expected = orchestrator.run_pair.arms_for("risky")
+    partial = [_o("T1", a, 0, "risky", False) for a in expected[:-1]]
     assert orchestrator._completed_units(partial, specs) == set()
-    full = partial + [
-        _o("T1", models.ARM_PEBRA_GRAPH_REPAIR, 0, "risky", False),
-        _o("T1", models.ARM_PEBRA_HUMAN_REVIEW, 0, "risky", False),
-    ]
+    full = partial + [_o("T1", expected[-1], 0, "risky", False)]
     assert ("T1", 0) in orchestrator._completed_units(full, specs)
 
 
@@ -501,9 +497,9 @@ def test_six_arm_report_surfaces_repair_gate_and_does_not_claim_unwired_candidat
 
 def test_completed_units_safe_needs_all_assay_arms():
     specs = {"B1": SimpleNamespace(task_id="B1", harm_label="safe")}
-    complete = [_o("B1", a, 0, "safe", False)
-                for a in (models.ARM_SHAM, models.ARM_ENFORCED_CONTROL, models.ARM_BLAST_RADIUS,
-                          models.ARM_PEBRA, models.ARM_PEBRA_GRAPH_REPAIR,
-                          models.ARM_PEBRA_HUMAN_REVIEW)]
+    complete = [
+        _o("B1", a, 0, "safe", False)
+        for a in orchestrator.run_pair.arms_for("safe")
+    ]
     assert ("B1", 0) in orchestrator._completed_units(complete, specs)
     assert orchestrator._completed_units(complete[:-1], specs) == set()  # missing an arm -> not complete
