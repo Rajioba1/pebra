@@ -13,6 +13,7 @@ Hard failures map to the decision enum. When several rules fire, the most severe
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import Any
@@ -36,6 +37,8 @@ _DECISION_RANK = {
     Decision.ASK_HUMAN: 4,
     Decision.REJECT: 5,
 }
+
+_GLOB_SCOPE_PREFIX = "glob:"
 
 
 @dataclass
@@ -102,11 +105,17 @@ def _file_part(scope_entry: str) -> str:
 
 
 def _is_covered(path: str, safe_scope_files: list[str]) -> bool:
-    # fnmatch follows each platform's filesystem case semantics (case-sensitive on Linux,
-    # case-insensitive on Windows). That is the fail-safe choice for a security gate: we must NOT
-    # lowercase, because on case-sensitive filesystems "src/Auth.py" and "src/auth.py" are distinct
-    # files and case-folding would let an out-of-scope file slip through as "covered".
-    return any(fnmatch(path, _file_part(p)) for p in safe_scope_files)
+    # Scope entries are literal unless they carry the explicit ``glob:`` prefix. This prevents a
+    # legitimate filename such as ``[ab].py`` from silently authorizing neighboring ``a.py`` and
+    # ``b.py`` files. ``fnmatch`` retains platform filesystem case semantics for explicit patterns.
+    for entry in safe_scope_files:
+        candidate = _file_part(entry)
+        if candidate.startswith(_GLOB_SCOPE_PREFIX):
+            if fnmatch(path, candidate.removeprefix(_GLOB_SCOPE_PREFIX)):
+                return True
+        elif os.path.normcase(path) == os.path.normcase(candidate):
+            return True
+    return False
 
 
 def _kind_severity(kind: str) -> int:

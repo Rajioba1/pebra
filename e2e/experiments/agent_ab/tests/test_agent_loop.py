@@ -133,6 +133,127 @@ def test_subject_result_and_trace_keep_context_receipts_host_only(tmp_path, monk
     assert trace["final"]["repository_context_receipts"] == [receipt]
 
 
+def test_run_records_total_and_whole_turn_understand_usage(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    setup = _setup(tmp_path)
+    setup.telemetry = SimpleNamespace(real_advisory_failures=[], repository_context_receipts=[])
+    setup.repository_context_backend = lambda _payload: {
+        "status": "available", "context": "current source", "related_files": [],
+        "related_tests": [], "warnings": [], "truncated": False,
+    }
+    turns = [
+        ModelTurn(
+            tool_calls=[{"id": "1", "name": "repository_context", "input": {"query": "a"}}],
+            stop_reason="tool_use", input_tokens=10, output_tokens=2,
+        ),
+        ModelTurn(text="done", stop_reason="end_turn", input_tokens=20, output_tokens=3),
+    ]
+    trace_path = tmp_path / "subject_trace.json"
+
+    result = agent_loop.run(
+        setup, _SPEC, 0, client=ScriptedClient(turns),
+        config=agent_loop.RunConfig(model="m", tools=("repository_context",)),
+        trace_path=trace_path,
+    )
+
+    assert result.token_usage["input_tokens"] == 30
+    assert result.token_usage["output_tokens"] == 5
+    assert result.understand_turn_usage["turn_count"] == 2
+    assert result.understand_turn_usage["input_tokens"] == 30
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace["token_usage"] == result.token_usage
+    assert trace["understand_turn_usage"] == result.understand_turn_usage
+    assert all("usage" in turn for turn in trace["turns"])
+
+
+@pytest.mark.parametrize("reserve", (30, -1, float("nan"), float("inf"), True, "5"))
+def test_run_config_rejects_invalid_reserve(reserve) -> None:
+    with pytest.raises(ValueError, match="apply_verify_reserve_seconds"):
+        agent_loop.RunConfig(
+            model="m", max_wall_seconds_per_run=30, apply_verify_reserve_seconds=reserve,
+        )
+
+
+def test_model_does_not_start_inside_apply_verify_reserve(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    client = ScriptedClient([ModelTurn(text="must not be served")])
+    clock = iter((0.0, 6.0))
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(clock, 6.0))
+
+    result = agent_loop.run(
+        _setup(tmp_path), _SPEC, 0, client=client,
+        config=agent_loop.RunConfig(
+            model="m", max_wall_seconds_per_run=10, apply_verify_reserve_seconds=5,
+        ),
+    )
+
+    assert client.calls == []
+    assert result.limit_reason == "closeout_budget_reserved"
+
+
+def test_model_timeout_excludes_reserved_closeout_budget(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    client = ScriptedClient([ModelTurn(text="done")])
+
+    agent_loop.run(
+        _setup(tmp_path), _SPEC, 0, client=client,
+        config=agent_loop.RunConfig(
+            model="m", max_wall_seconds_per_run=10, apply_verify_reserve_seconds=5,
+        ),
+    )
+
+    assert len(client.calls) == 1
+    assert 0 < client.calls[0]["timeout_seconds"] <= 5
+
+
+def test_advisory_does_not_start_inside_apply_verify_reserve(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    calls = []
+    setup = _setup(tmp_path, backend=lambda payload, **kwargs: calls.append((payload, kwargs)) or {})
+    clock = iter((0.0, 0.0, 6.0, 6.0, 6.0, 6.0))
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(clock, 6.0))
+
+    result = agent_loop.run(
+        setup, _SPEC, 0,
+        client=ScriptedClient([_tool("advisory_check", {"target_file": "a.cs"})]),
+        config=agent_loop.RunConfig(
+            model="m", max_wall_seconds_per_run=10, apply_verify_reserve_seconds=5,
+            tools=("advisory_check",),
+        ),
+    )
+
+    assert calls == []
+    assert result.limit_reason == "advisory_budget_exhausted"
+
+
+def test_advisory_timeout_excludes_reserved_closeout_budget(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    timeouts = []
+    setup = _setup(
+        tmp_path,
+        backend=lambda _payload, timeout_seconds=None: timeouts.append(timeout_seconds) or {
+            "recommended_decision": "proceed", "risk_level": "low", "advisory": "ok", "detail": {},
+        },
+    )
+    clock = iter((0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0))
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(clock, 2.0))
+
+    agent_loop.run(
+        setup, _SPEC, 0,
+        client=ScriptedClient([_tool("advisory_check", {
+            "target_file": "a.cs", "change_summary": "change a",
+            "proposed_patch": "diff --git a/a.cs b/a.cs\n",
+        }), ModelTurn(text="done")]),
+        config=agent_loop.RunConfig(
+            model="m", max_wall_seconds_per_run=20, apply_verify_reserve_seconds=5,
+            tools=("advisory_check",),
+        ),
+    )
+
+    assert len(timeouts) == 1
+    assert 0 < timeouts[0] <= 14.0
+
+
 def test_tool_call_captured_with_sequence(tmp_path, monkeypatch):
     _no_git(monkeypatch)
     client = ScriptedClient([_tool("list_dir"), ModelTurn(text="done", stop_reason="end_turn")])
@@ -950,6 +1071,7 @@ def test_full_understand_review_approval_apply_verify_lifecycle_is_deterministic
             "run_tests",
         ),
         max_tool_calls_per_run=8,
+        apply_verify_reserve_seconds=120,
     )
 
     result = agent_loop.run(setup, _SPEC, 0, client=client, config=cfg)

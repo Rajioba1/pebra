@@ -222,6 +222,32 @@ def test_decide_pass_when_not_impactful(tmp_path, monkeypatch):
     assert d.permission == "allow" and d.tier == "pass"
 
 
+def test_exact_candidate_gate_consults_nonimpactful_assessment(tmp_path, monkeypatch):
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: False)
+    monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
+    target = tmp_path / "src" / "a.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    event = _edit_event(tmp_path)
+    candidate = candidate_binding.binding_for_event(event, tmp_path)
+    db = tmp_path / ".pebra" / "pebra.db"
+    db.parent.mkdir(parents=True)
+    _seed(
+        db,
+        gca._repo_id(str(tmp_path)),
+        "HEAD1",
+        ["src/a.py"],
+        decision="proceed",
+        candidate=candidate,
+    )
+
+    decision = gca.decide(event, require_exact_match=True)
+
+    assert decision.permission == "allow"
+    assert decision.tier == "consulted"
+    assert decision.matched_assessment_id == "asm_1"
+
+
 def test_pending_restriction_prevents_low_impact_scope_bypass(tmp_path, monkeypatch):
     monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: False)
     monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")

@@ -187,6 +187,8 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         calibration_lanes=dict(result.calibration_lanes),
         prior_source=result.prior_source,
         prior_calibration_tags=result.prior_calibration_tags,
+        token_usage=dict(result.token_usage),
+        understand_turn_usage=dict(result.understand_turn_usage),
     )
 
 
@@ -282,6 +284,8 @@ def _error_outcome(
         calibration_lanes=dict(result.calibration_lanes),
         prior_source=result.prior_source,
         prior_calibration_tags=result.prior_calibration_tags,
+        token_usage=dict(result.token_usage),
+        understand_turn_usage=dict(result.understand_turn_usage),
     )
 
 

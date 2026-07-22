@@ -16,7 +16,12 @@ class CandidateGateDecision(Protocol):
 
 class CandidateGatePort(Protocol):
     def decide(
-        self, event: dict[str, Any], *, db_path: str, consult_only: bool
+        self,
+        event: dict[str, Any],
+        *,
+        db_path: str,
+        consult_only: bool,
+        require_exact_match: bool = False,
     ) -> CandidateGateDecision: ...
 
 

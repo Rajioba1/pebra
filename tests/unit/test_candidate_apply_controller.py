@@ -78,8 +78,8 @@ class FakeGate:
         self.result = result or GateResult()
         self.calls = []
 
-    def decide(self, event, *, db_path, consult_only):
-        self.calls.append((event, db_path, consult_only))
+    def decide(self, event, *, db_path, consult_only, require_exact_match=False):
+        self.calls.append((event, db_path, consult_only, require_exact_match))
         return self.result
 
 
@@ -156,7 +156,7 @@ def test_apply_authorizes_and_writes_inside_same_lock_then_deletes_replay() -> N
 
     assert outcome.assessment_id == "asm_7"
     assert outcome.changed_files == ("src/a.py",)
-    event, db_path, consult_only = gate.calls[0]
+    event, db_path, consult_only, require_exact_match = gate.calls[0]
     assert event == {
         "tool_name": "apply_patch",
         "cwd": "/repo",
@@ -164,6 +164,7 @@ def test_apply_authorizes_and_writes_inside_same_lock_then_deletes_replay() -> N
     }
     assert db_path == "/repo/.pebra/pebra.db"
     assert consult_only is True
+    assert require_exact_match is True
     assert replay.consumed == [_META]
     assert replay.deleted == [_META]
 

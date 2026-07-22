@@ -293,7 +293,7 @@ def learn(assessment_id: str, *, repo_root: Path | str, db: Path | str) -> dict:
 def verify(
     assessment_id: str, *, repo_root: Path | str, db: Path | str,
     completed_checks: dict[str, str] | None = None, scope: str = "staged",
-    dry_run_preview: bool = False,
+    dry_run_preview: bool = False, timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> tuple[bool, dict]:
     """Post-edit envelope check. Returns ``(passed, payload)`` — ``passed`` is True iff the CLI exits 0
     (pre_commit_decision PROCEED). Exit 2 (envelope violated) is a legitimate verify result, NOT a
@@ -311,7 +311,7 @@ def verify(
     cmd = [_python(), "-m", "pebra", *args]
     env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, env=env, timeout=DEFAULT_TIMEOUT_SECONDS
+        cmd, capture_output=True, text=True, env=env, timeout=timeout
     )
     if proc.returncode not in (0, 2):
         _check_exit(proc.returncode, cmd, proc.stderr)

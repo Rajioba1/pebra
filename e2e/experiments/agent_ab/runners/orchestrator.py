@@ -35,7 +35,14 @@ from e2e.experiments.agent_ab.models import (
     TaskSpec,
 )
 from e2e.experiments.agent_ab.reports import render_report
-from e2e.experiments.agent_ab.runners import preflight, run_artifacts, run_gate, run_pair, subject_protocol
+from e2e.experiments.agent_ab.runners import (
+    preflight,
+    run_artifacts,
+    run_gate,
+    run_pair,
+    subject_protocol,
+    token_accounting,
+)
 from e2e.experiments.agent_ab.tools import advisory_contract
 from e2e.experiments.agent_ab.specimens import loader as specimen_loader
 from e2e.external.utils import repo_source as rs
@@ -175,6 +182,105 @@ def _write_outcomes(
     if run_metadata is not None:
         payload["run_metadata"] = run_metadata
     run_artifacts.atomic_write_json(path, payload)
+
+
+def _token_report(
+    outcomes: list[RunOutcome], run_metadata: dict[str, Any]
+) -> dict[str, Any]:
+    """Describe provider usage without turning incomplete diagnostics into an efficiency claim."""
+    total = token_accounting.aggregate([outcome.token_usage for outcome in outcomes])
+    understand = token_accounting.aggregate(
+        [outcome.understand_turn_usage for outcome in outcomes],
+        label="understand_turn_usage",
+    )
+    analysis_blockers: list[str] = []
+    claim_design = run_metadata.get("claim_design")
+    token_design = claim_design.get("token_comparison") if isinstance(claim_design, dict) else None
+    token_design_valid = (
+        isinstance(token_design, dict)
+        and isinstance(token_design.get("baseline_arm"), str)
+        and isinstance(token_design.get("intervention_arm"), str)
+        and token_design["baseline_arm"] != token_design["intervention_arm"]
+        and token_design.get("metric") == "provider_input_plus_output"
+        and type(token_design.get("minimum_pairs")) is int
+        and token_design["minimum_pairs"] > 0
+        and type(token_design.get("minimum_independent_tasks")) is int
+        and token_design["minimum_independent_tasks"] >= 2
+    )
+    if not token_design_valid:
+        analysis_blockers.append("predeclared token comparison is absent")
+    if not total["usage_complete"]:
+        analysis_blockers.append("provider usage is incomplete")
+    seeds = run_metadata.get("seeds_per_arm")
+    if type(seeds) is not int or seeds < 3:
+        analysis_blockers.append("multi-seed requirement is not met")
+    paired_keys: set[tuple[str, int]] = set()
+    paired_mean_delta: float | None = None
+    if token_design_valid:
+        complete_by_arm = {
+            arm: {
+                (outcome.task_id, outcome.seed)
+                for outcome in outcomes
+                if outcome.arm == arm and outcome.token_usage.get("usage_complete") is True
+            }
+            for arm in (token_design["baseline_arm"], token_design["intervention_arm"])
+        }
+        paired_keys = set.intersection(*complete_by_arm.values())
+        if len(paired_keys) < token_design["minimum_pairs"]:
+            analysis_blockers.append("paired token sample requirement is not met")
+        if len({task_id for task_id, _seed in paired_keys}) < token_design[
+            "minimum_independent_tasks"
+        ]:
+            analysis_blockers.append("independent-task sample requirement is not met")
+        totals_by_arm_key = {
+            (outcome.arm, outcome.task_id, outcome.seed): (
+                outcome.token_usage["input_tokens"] + outcome.token_usage["output_tokens"]
+            )
+            for outcome in outcomes
+            if outcome.arm in {token_design["baseline_arm"], token_design["intervention_arm"]}
+            and outcome.token_usage.get("usage_complete") is True
+            and type(outcome.token_usage.get("input_tokens")) is int
+            and type(outcome.token_usage.get("output_tokens")) is int
+        }
+        deltas = [
+            totals_by_arm_key[(token_design["intervention_arm"], task_id, seed)]
+            - totals_by_arm_key[(token_design["baseline_arm"], task_id, seed)]
+            for task_id, seed in sorted(paired_keys)
+        ]
+        if deltas:
+            paired_mean_delta = sum(deltas) / len(deltas)
+    analysis_ready = not analysis_blockers
+    claim_blockers = list(analysis_blockers)
+    if token_design_valid:
+        if token_design.get("claim_rule") != "paired_mean_intervention_below_baseline":
+            claim_blockers.append("predeclared token claim rule is absent")
+        if paired_mean_delta is None:
+            claim_blockers.append("observed token contrast is unavailable")
+        elif paired_mean_delta >= 0:
+            claim_blockers.append("observed token contrast is not favorable")
+    return {
+        "provider_token_usage": total,
+        "understand_turn_usage": understand,
+        "understand_usage_note": (
+            "This subset counts whole provider turns that request or consume repository_context; "
+            "it does not isolate the causal tokens of retrieved context."
+        ),
+        "token_efficiency_analysis_ready": analysis_ready,
+        "analysis_blockers": analysis_blockers,
+        "paired_mean_delta_tokens": paired_mean_delta,
+        "token_efficiency_claim_allowed": not claim_blockers,
+        "claim_blockers": claim_blockers,
+        "complete_paired_samples": len(paired_keys),
+        "complete_paired_tasks": len({task_id for task_id, _seed in paired_keys}),
+    }
+
+
+def _reported_run_metadata(
+    run_metadata: dict[str, Any], outcomes: list[RunOutcome]
+) -> dict[str, Any]:
+    reported = copy.deepcopy(run_metadata)
+    reported["token_accounting"] = _token_report(outcomes, run_metadata)
+    return reported
 
 
 def _write_run_status(
@@ -325,6 +431,8 @@ def _experiment_design(
         "mode_config": mode_config,
         "gate_reason_treatment_version": GATE_REASON_TREATMENT_VERSION,
         "protocol_version": advisory_contract.EXPERIMENT_PROTOCOL_VERSION,
+        "run_namespace": advisory_contract.EXPERIMENT_RUN_NAMESPACE,
+        "learning_context_cohort": cfg.get("learning_context_cohort"),
         "graph_scope_digest": None,
         "subject_config": cfg.get("subject", {}),
         "thresholds": cfg.get("thresholds", {}),
@@ -352,6 +460,10 @@ def _experiment_design(
             "ordinary_real": models.ARM_PEBRA,
             "graph_real": models.ARM_PEBRA_GRAPH_CONTEXT,
         },
+        "factorial_interaction": (
+            "(pebra_graph_context - pebra) - (graph_context - sham)"
+        ),
+        "positive_control_role": "harness-validity ceiling; not an efficacy arm",
         "task_specs": [dataclasses.asdict(spec) for spec in specs],
         "arm_topology": {
             spec.task_id: list(
@@ -500,6 +612,10 @@ def _authenticated_design_identity(metadata: dict[str, Any]) -> tuple[str]:
         raise ValueError("stale gate reason treatment")
     if design.get("protocol_version") != advisory_contract.EXPERIMENT_PROTOCOL_VERSION:
         raise ValueError("stale subject protocol")
+    if design.get("run_namespace") != advisory_contract.EXPERIMENT_RUN_NAMESPACE:
+        raise ValueError("stale experiment run namespace")
+    if design.get("learning_context_cohort") != "empty":
+        raise ValueError("learning context cohort must be explicitly empty")
     graph_scope_digest = design.get("graph_scope_digest")
     if graph_scope_digest is not None and not (
         isinstance(graph_scope_digest, str)
@@ -966,10 +1082,14 @@ def main(argv: list[str] | None = None) -> int:
             _assert_active_harness_compatible(run_metadata)
             _assert_active_rca_compatible(run_metadata, cfg)
             _write_outcomes(
-                outcomes_path, outcomes, args.run_id, run_metadata=run_metadata
+                outcomes_path,
+                outcomes,
+                args.run_id,
+                run_metadata=_reported_run_metadata(run_metadata, outcomes),
             )  # incremental / crash-survivable
 
         served_models = _served_models(outcomes)
+        report_metadata = _reported_run_metadata(run_metadata, outcomes)
         if is_assay:
             assay = scorecard.aggregate_assay(outcomes, arms=list(_arms_for_mode(args.mode, "risky")),
                                               bootstrap_seed=cfg.get("bootstrap_seed", 0))
@@ -977,7 +1097,7 @@ def main(argv: list[str] | None = None) -> int:
                                              scoring_mode=scoring_mode,
                                              preflight_status=preflight_status,
                                              served_models=served_models,
-                                             run_metadata=run_metadata)
+                                             run_metadata=report_metadata)
         else:
             ab = scorecard.aggregate(outcomes, bootstrap_seed=cfg.get("bootstrap_seed", 0))
             render_report.write_report(ab, out_dir=out_dir / "reports", run_id=args.run_id,
@@ -986,7 +1106,7 @@ def main(argv: list[str] | None = None) -> int:
                                        served_models=served_models)
         _write_run_status(out_dir, args.mode, "finished",
                           preflight_status=preflight_status, scoring_mode=scoring_mode,
-                          served_models=served_models, run_metadata=run_metadata)
+                          served_models=served_models, run_metadata=report_metadata)
     except KeyboardInterrupt:
         _write_run_status(
             out_dir, args.mode, "interrupted",

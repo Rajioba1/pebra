@@ -46,6 +46,24 @@ def apply_risky_edit(repo_path: Path | str) -> None:
                    capture_output=True, text=True)
 
 
+def stage_exact_changed_files(repo_path: Path | str, changed_files: list[str]) -> None:
+    """Stage only the apply result, with Git pathspec metacharacters treated literally."""
+    subprocess.run(
+        ["git", "--literal-pathspecs", "add", "--", *changed_files],
+        cwd=str(repo_path), check=True, capture_output=True, text=True,
+    )
+
+
+def staged_files(repo_path: Path | str) -> tuple[str, ...]:
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "-z"], cwd=str(repo_path),
+        check=True, capture_output=True,
+    )
+    return tuple(
+        path.decode("utf-8") for path in result.stdout.split(b"\0") if path
+    )
+
+
 def reset_risky_edit(repo_path: Path | str) -> None:
     """Return the temp fixture repo to the committed pre-edit state."""
     repo_path = Path(repo_path)

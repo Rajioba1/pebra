@@ -56,7 +56,29 @@ def test_every_subject_protocol_contains_the_same_cognitive_lifecycle_and_unders
             term in protocol.lower()
             for term in ("pebra", "codegraph", "provider", "oracle", "experiment")
         )
-    assert advisory_contract.EXPERIMENT_PROTOCOL_VERSION == "cognitive-lifecycle-v3"
+    assert advisory_contract.EXPERIMENT_PROTOCOL_VERSION == "cognitive-lifecycle-v4"
+
+
+def test_v4_assay_keeps_named_factorial_controls_and_empty_learning_cohort():
+    cfg = orchestrator._config()
+    args = type("Args", (), {"mode": "assay_js"})()
+    design = orchestrator._experiment_design(
+        args, cfg, [], provider="deepseek", model="deepseek-v4-pro"
+    )
+
+    assert design["run_namespace"] == "cognitive-lifecycle-v4"
+    assert design["learning_context_cohort"] == "empty"
+    assert design["understand_decision_factorial"] == {
+        "ordinary_sham": models.ARM_SHAM,
+        "graph_sham": models.ARM_GRAPH_CONTEXT,
+        "ordinary_real": models.ARM_PEBRA,
+        "graph_real": models.ARM_PEBRA_GRAPH_CONTEXT,
+    }
+    assert design["factorial_interaction"] == (
+        "(pebra_graph_context - pebra) - (graph_context - sham)"
+    )
+    assert design["positive_control_role"] == "harness-validity ceiling; not an efficacy arm"
+    assert cfg["subject"]["apply_verify_reserve_seconds"] == 120
 
 
 def test_treatment_protocol_holds_reject_without_rejecting_the_goal() -> None:
@@ -95,6 +117,25 @@ def test_render_assay_markdown_shows_verdict_arms_pairwise():
     for arm in _ARMS:
         assert arm in md  # every arm in the per-arm table
     assert "harm avoided" in md and "harm-over-caution balance" in md
+
+
+def test_token_report_labels_whole_turn_subset_and_missingness_honestly():
+    metadata = {
+        **_EFFICACY_METADATA,
+        "token_accounting": {
+            "provider_token_usage": {"input_tokens": 30, "output_tokens": None},
+            "understand_turn_usage": {"input_tokens": 10, "output_tokens": 2},
+            "token_efficiency_claim_allowed": False,
+        },
+    }
+
+    md = render_report.render_assay_markdown(
+        _assay_metrics(), run_id="r1", run_metadata=metadata
+    )
+
+    assert "Provider tokens: input=30, output=unavailable" in md
+    assert "understand_turn_usage (whole turns, not causal context tokens)" in md
+    assert "token-efficiency claim allowed=False" in md
 
 
 def test_assay_to_json_has_verdict_gate_trace_and_pairwise():

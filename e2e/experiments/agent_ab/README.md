@@ -103,7 +103,7 @@ resumed or pooled with it; the treatment version and effective seed count are pa
 experiment design hash.
 
 Both subject protocols carry the same blinded cognitive lifecycle, versioned as
-`cognitive-lifecycle-v3`: Interpret → Understand → Design → Assess → Decide → Apply → Verify. The
+`cognitive-lifecycle-v4`: Interpret → Understand → Design → Assess → Decide → Apply → Verify. The
 Understand phase is composed from the same shared bytes in every arm: call `repository_context` once for
 significant or unfamiliar work, fall back to ordinary repository search/read tools if unavailable, and
 do not repeat equivalent exploration. The treatment protocol explains every restrictive decision, including that `reject` holds
@@ -126,6 +126,14 @@ advisory is not started with less than 30 seconds of run budget (the bounded gra
 may consume that window). These execution rules are part of the canonical design hash. Host-only traces
 record whether a skipped/failed advisory lacked wall budget or timed out; the model still receives the
 same arm-neutral unavailable response, and the graph-scope receipt gate remains strict.
+
+The v4 subject budget also reserves 120 seconds for applying and verifying an already-approved exact
+candidate. An advisory receives at most the wall time remaining after that reserve and does not start
+once the reserve boundary is reached. Provider input/output/cache counters are persisted per turn and
+aggregated per run; missing provider counters remain unavailable rather than becoming zero. The
+`understand_turn_usage` subset covers whole turns that request or consume `repository_context`, so it
+does not isolate the causal tokens of retrieved context and cannot by itself support a token-efficiency
+claim.
 
 Held candidates do not write, receive applied/proceeded-edit assessment attribution, or count as edit
 cycles; they remain visible only as intervention/unresolved observations. The `ask_human` review arm
@@ -485,7 +493,7 @@ $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="10"
 $env:E2E_AB_SEEDS_PER_ARM="1"
-$env:E2E_AB_RUN_ID="js4_s2_cogv3_1s_20260721_001"
+$env:E2E_AB_RUN_ID="js4_s2_cogv4_dspro_nt_1s_20260722_001"
 nox -s e2e-ab
 ```
 
@@ -514,7 +522,7 @@ $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="10"
 $env:E2E_AB_SEEDS_PER_ARM="1"
-$env:E2E_AB_RUN_ID="js4_s2_cogv3_1s_20260721_001"
+$env:E2E_AB_RUN_ID="js4_s2_cogv4_dspro_nt_1s_20260722_001"
 nox -s e2e-ab
 ```
 
@@ -542,7 +550,7 @@ E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
 E2E_AB_PARALLEL_ARMS=1 \
 E2E_AB_MAX_WORKERS=10 \
 E2E_AB_SEEDS_PER_ARM=1 \
-E2E_AB_RUN_ID=js4_s2_cogv3_1s_20260721_001 \
+E2E_AB_RUN_ID=js4_s2_cogv4_dspro_nt_1s_20260722_001 \
 nox -s e2e-ab
 ```
 

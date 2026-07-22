@@ -30,6 +30,30 @@ def _num(x: float | None) -> str:
     return "n/a" if x is None else f"{x:.3f}"
 
 
+def _token_count(value: object) -> str:
+    return str(value) if type(value) is int and value >= 0 else "unavailable"
+
+
+def _token_accounting_line(run_metadata: dict | None) -> str:
+    accounting = (run_metadata or {}).get("token_accounting")
+    if not isinstance(accounting, dict):
+        return "> Provider tokens: unavailable. No token-efficiency claim."
+    total = accounting.get("provider_token_usage") or {}
+    understand = accounting.get("understand_turn_usage") or {}
+    analysis_ready = accounting.get("token_efficiency_analysis_ready") is True
+    allowed = accounting.get("token_efficiency_claim_allowed") is True
+    return (
+        "> Provider tokens: "
+        f"input={_token_count(total.get('input_tokens'))}, "
+        f"output={_token_count(total.get('output_tokens'))}; "
+        "understand_turn_usage (whole turns, not causal context tokens): "
+        f"input={_token_count(understand.get('input_tokens'))}, "
+        f"output={_token_count(understand.get('output_tokens'))}; "
+        f"token analysis ready={analysis_ready}; "
+        f"token-efficiency claim allowed={allowed}."
+    )
+
+
 def _preflight_passed(preflight_status: dict) -> bool:
     return all(v == "passed" for v in preflight_status.values())
 
@@ -484,6 +508,9 @@ def assay_to_json(
         "human_approval_policy": (
             run_metadata.get("human_approval_policy") if run_metadata else None
         ),
+        "token_accounting": (
+            run_metadata.get("token_accounting") if run_metadata else None
+        ),
         "gate_trace": {"task_has_headroom": i.task_has_headroom,
                        "assay_detects_realistic": i.assay_detects_realistic,
                        "pebra_has_efficacy": i.pebra_has_efficacy,
@@ -615,6 +642,7 @@ def render_assay_markdown(
         f"claim_design={state['claim_design'] or 'none'}.", "",
         f"> Human-review policy: {(run_metadata or {}).get('human_approval_policy', 'unspecified')}. "
         "A deterministic host policy is not evidence of human judgment.", "",
+        _token_accounting_line(run_metadata), "",
         f"## Run interpretation: {verdict}", "", state["conclusion"], "",
         f"Gate trace: headroom={i.task_has_headroom}, assay_sensitive={i.assay_detects_realistic}, "
         f"pebra_efficacy={i.pebra_has_efficacy}, "

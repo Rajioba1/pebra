@@ -65,6 +65,7 @@ def _run_meta(*, mode="pilot", seeds_per_arm=1, specs=None) -> dict:
     cfg = {
         mode: {"tasks": [spec.task_id for spec in specs], "seeds_per_arm": seeds_per_arm},
         "bootstrap_seed": 0,
+        "learning_context_cohort": "empty",
     }
     args = type("Args", (), {"mode": mode})()
     design = orchestrator._experiment_design(
@@ -311,6 +312,177 @@ def test_run_metadata_records_diagnostic_thinking_override(monkeypatch):
     assert metadata["env"]["E2E_AB_THINKING"] == "0"
 
 
+def test_authorized_one_seed_shape_is_fully_pinned_before_any_paid_run(monkeypatch):
+    monkeypatch.setenv("E2E_AB_PROVIDER", "deepseek")
+    monkeypatch.setenv("E2E_AB_MODEL", "deepseek-v4-pro")
+    monkeypatch.setenv("E2E_AB_THINKING", "0")
+    monkeypatch.setenv("E2E_AB_SEEDS_PER_ARM", "1")
+    monkeypatch.setenv("E2E_AB_PRIOR_MODE", "shipped")
+    monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1")
+    monkeypatch.setenv("E2E_AB_MAX_WORKERS", "10")
+    args = type("Args", (), {"mode": "assay_js"})()
+
+    metadata = orchestrator._run_metadata(args, orchestrator._config())
+    design = metadata["experiment_design"]
+
+    assert metadata["provider"] == "deepseek"
+    assert metadata["model"] == "deepseek-v4-pro"
+    assert metadata["thinking_mode"] == "disabled"
+    assert metadata["seeds_per_arm"] == 1
+    assert metadata["parallel_arms"] is True
+    assert metadata["max_workers_env"] == "10"
+    assert metadata["prior_mode"] == "shipped"
+    assert metadata["run_intent"] == "diagnostic"
+    assert metadata["claim_design"] is None
+    assert design["protocol_version"] == "cognitive-lifecycle-v4"
+    assert design["run_namespace"] == "cognitive-lifecycle-v4"
+    assert design["learning_context_cohort"] == "empty"
+    assert design["subject_config"]["apply_verify_reserve_seconds"] == 120
+
+
+def test_token_report_is_totalled_but_never_claimed_without_predeclared_power():
+    outcomes = [
+        dataclasses.replace(
+            _outcome("T1", models.ARM_SHAM),
+            token_usage={
+                "turn_count": 2, "input_tokens": 30, "output_tokens": 5,
+                "cache_read_tokens": None, "cache_write_tokens": None,
+                "usage_complete": True,
+            },
+            understand_turn_usage={
+                "turn_count": 1, "input_tokens": 10, "output_tokens": 2,
+                "cache_read_tokens": None, "cache_write_tokens": None,
+                "usage_complete": True,
+            },
+        )
+    ]
+
+    report = orchestrator._token_report(outcomes, {"seeds_per_arm": 1})
+
+    assert report["provider_token_usage"]["input_tokens"] == 30
+    assert report["understand_turn_usage"]["input_tokens"] == 10
+    assert report["understand_turn_usage"]["scope"].startswith("whole provider turns")
+    assert report["token_efficiency_claim_allowed"] is False
+    assert any(
+        "predeclared token comparison" in blocker for blocker in report["claim_blockers"]
+    )
+
+
+def test_empty_token_comparison_cannot_unlock_efficiency_claim():
+    outcomes = [
+        dataclasses.replace(
+            _outcome(task, arm, seed),
+            token_usage={
+                "turn_count": 1,
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_read_tokens": None,
+                "cache_write_tokens": None,
+                "usage_complete": True,
+            },
+        )
+        for task in ("T1", "T2")
+        for seed in range(3)
+        for arm in (models.ARM_SHAM, models.ARM_PEBRA)
+    ]
+
+    report = orchestrator._token_report(
+        outcomes,
+        {
+            "seeds_per_arm": 3,
+            "claim_design": {"token_comparison": {}},
+        },
+    )
+
+    assert report["token_efficiency_claim_allowed"] is False
+    assert "predeclared token comparison is absent" in report["claim_blockers"]
+
+
+def test_valid_paired_token_design_is_analysis_ready_but_identical_usage_cannot_support_claim():
+    outcomes = [
+        dataclasses.replace(
+            _outcome(task, arm, seed),
+            token_usage={
+                "turn_count": 1,
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_read_tokens": None,
+                "cache_write_tokens": None,
+                "usage_complete": True,
+            },
+        )
+        for task in ("T1", "T2")
+        for seed in range(3)
+        for arm in (models.ARM_SHAM, models.ARM_PEBRA)
+    ]
+    design = {
+        "baseline_arm": models.ARM_SHAM,
+        "intervention_arm": models.ARM_PEBRA,
+        "metric": "provider_input_plus_output",
+        "minimum_pairs": 6,
+        "minimum_independent_tasks": 2,
+    }
+
+    report = orchestrator._token_report(
+        outcomes,
+        {"seeds_per_arm": 3, "claim_design": {"token_comparison": design}},
+    )
+
+    assert report["complete_paired_samples"] == 6
+    assert report["complete_paired_tasks"] == 2
+    assert report["token_efficiency_analysis_ready"] is True
+    assert report["paired_mean_delta_tokens"] == 0.0
+    assert report["token_efficiency_claim_allowed"] is False
+    assert "observed token contrast is not favorable" in report["claim_blockers"]
+
+
+def test_favorable_paired_token_contrast_requires_predeclared_claim_rule():
+    outcomes = [
+        dataclasses.replace(
+            _outcome(task, arm, seed),
+            token_usage={
+                "turn_count": 1,
+                "input_tokens": 20 if arm == models.ARM_SHAM else 10,
+                "output_tokens": 4 if arm == models.ARM_SHAM else 2,
+                "cache_read_tokens": None,
+                "cache_write_tokens": None,
+                "usage_complete": True,
+            },
+        )
+        for task in ("T1", "T2")
+        for seed in range(3)
+        for arm in (models.ARM_SHAM, models.ARM_PEBRA)
+    ]
+    design = {
+        "baseline_arm": models.ARM_SHAM,
+        "intervention_arm": models.ARM_PEBRA,
+        "metric": "provider_input_plus_output",
+        "minimum_pairs": 6,
+        "minimum_independent_tasks": 2,
+    }
+
+    without_rule = orchestrator._token_report(
+        outcomes,
+        {"seeds_per_arm": 3, "claim_design": {"token_comparison": design}},
+    )
+    with_rule = orchestrator._token_report(
+        outcomes,
+        {
+            "seeds_per_arm": 3,
+            "claim_design": {"token_comparison": {
+                **design,
+                "claim_rule": "paired_mean_intervention_below_baseline",
+            }},
+        },
+    )
+
+    assert without_rule["token_efficiency_analysis_ready"] is True
+    assert without_rule["paired_mean_delta_tokens"] == -12.0
+    assert without_rule["token_efficiency_claim_allowed"] is False
+    assert "predeclared token claim rule is absent" in without_rule["claim_blockers"]
+    assert with_rule["token_efficiency_claim_allowed"] is True
+
+
 def test_run_metadata_records_shipped_prior_mode(monkeypatch):
     monkeypatch.setenv("E2E_AB_PRIOR_MODE", "shipped")
     args = type("Args", (), {"mode": "assay_js"})()
@@ -406,7 +578,7 @@ def test_experiment_design_binds_protocol_version_and_graph_scope_digest():
 
     assert bound["graph_scope_digest"] == "a" * 64
     assert bound["experiment_design"]["graph_scope_digest"] == "a" * 64
-    assert bound["experiment_design"]["protocol_version"] == "cognitive-lifecycle-v3"
+    assert bound["experiment_design"]["protocol_version"] == "cognitive-lifecycle-v4"
     assert bound["experiment_design_sha256"] != unbound["experiment_design_sha256"]
 
 
@@ -590,6 +762,31 @@ def test_resume_accepts_identical_gate_reason_treatment(tmp_path):
     orchestrator._assert_resume_design_compatible(run_dir, metadata)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("run_namespace", "cognitive-lifecycle-v3"),
+        ("learning_context_cohort", "seeded"),
+    ),
+)
+def test_resume_rejects_stale_namespace_or_nonempty_learning_cohort(tmp_path, field, value):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    prior = _run_meta(mode="assay_js", seeds_per_arm=1)
+    prior["experiment_design"][field] = value
+    prior["experiment_design_sha256"] = orchestrator._design_sha256(
+        prior["experiment_design"]
+    )
+    (run_dir / "outcomes.json").write_text(
+        json.dumps({"outcomes": [], "run_metadata": prior}), encoding="utf-8"
+    )
+
+    with pytest.raises(orchestrator.ExperimentRunError, match="run design changed"):
+        orchestrator._assert_resume_design_compatible(
+            run_dir, _run_meta(mode="assay_js", seeds_per_arm=1)
+        )
+
+
 @pytest.mark.parametrize("mutation", ("missing-version", "changed-seeds"))
 def test_resume_rejects_forged_current_hash_over_corrupt_stored_design(
     tmp_path, mutation,
@@ -669,11 +866,11 @@ def test_aligned_live_run_documentation_uses_fresh_one_seed_run_id():
     normalized = " ".join(readme.split())
 
     assert "candidate-risk-summary-v2" in normalized
-    assert "cognitive-lifecycle-v3" in normalized
+    assert "cognitive-lifecycle-v4" in normalized
     assert "schema-2" in normalized
     assert "different graph-scope digests" in normalized
     assert 'E2E_AB_SEEDS_PER_ARM="1"' in readme
-    assert 'E2E_AB_RUN_ID="js4_s2_cogv3_1s_20260721_001"' in readme
+    assert 'E2E_AB_RUN_ID="js4_s2_cogv4_dspro_nt_1s_20260722_001"' in readme
     assert "js4_schema1_1seed_20260719_001" not in readme
     assert "js4_v4pro_sp_3seed_001" not in readme
 
@@ -1027,6 +1224,7 @@ def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):
         lambda: {
             "pilot": {"tasks": ["T1"], "seeds_per_arm": 1},
             "bootstrap_seed": 0,
+            "learning_context_cohort": "empty",
             **_rca_toolchain_config(),
         },
     )
@@ -1237,6 +1435,7 @@ def test_assay_js_stops_after_sham_stage_when_no_headroom(monkeypatch, tmp_path)
         lambda: {
             "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
             "bootstrap_seed": 0,
+            "learning_context_cohort": "empty",
             **_rca_toolchain_config(),
         },
     )
@@ -1285,7 +1484,11 @@ def test_assay_js_distinguishes_all_no_attempt_sham_from_no_headroom(monkeypatch
     monkeypatch.setattr(
         orchestrator,
         "_config",
-        lambda: {"assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1}, "bootstrap_seed": 0},
+        lambda: {
+            "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
+            "bootstrap_seed": 0,
+            "learning_context_cohort": "empty",
+        },
     )
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
     monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
@@ -1339,6 +1542,7 @@ def test_assay_js_resume_retries_unscorable_sham(monkeypatch, tmp_path):
         lambda: {
             "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
             "bootstrap_seed": 0,
+            "learning_context_cohort": "empty",
             **_rca_toolchain_config(),
         },
     )
@@ -1416,7 +1620,11 @@ def test_assay_js_reuses_passing_sham_stage_without_running_sham_twice(monkeypat
     monkeypatch.setattr(
         orchestrator,
         "_config",
-        lambda: {"assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1}, "bootstrap_seed": 0},
+        lambda: {
+            "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
+            "bootstrap_seed": 0,
+            "learning_context_cohort": "empty",
+        },
     )
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
     monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())

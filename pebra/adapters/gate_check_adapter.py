@@ -173,7 +173,13 @@ def extract_target_paths(event: dict[str, Any]) -> list[str]:
 
 # ---- decision ------------------------------------------------------------------------------
 
-def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: bool = False) -> GateDecision:
+def decide(
+    event: dict[str, Any],
+    *,
+    db_path: str | None = None,
+    consult_only: bool = False,
+    require_exact_match: bool = False,
+) -> GateDecision:
     targets = extract_target_paths(event)
     if not targets:
         tool_input = event.get("tool_input") if isinstance(event, dict) else None
@@ -210,8 +216,9 @@ def decide(event: dict[str, Any], *, db_path: str | None = None, consult_only: b
         impact_reason = None
     head: str | None = None
     rows: list[dict[str, Any]] | None = None
+    pending = 0
     db = db_path or str(Path(repo_root) / ".pebra" / "pebra.db")
-    if impactful is not True:
+    if impactful is not True and not require_exact_match:
         head = _head_sha(repo_root)
         if head is None:
             if impactful is None:

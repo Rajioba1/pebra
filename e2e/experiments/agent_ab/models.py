@@ -152,6 +152,8 @@ class SubjectResult:
     real_advisory_graph_scope_digests: tuple[str | None, ...] = ()
     real_advisory_failures: tuple[dict[str, Any], ...] = ()
     repository_context_receipts: tuple[dict[str, Any], ...] = ()
+    token_usage: dict[str, Any] = field(default_factory=dict)
+    understand_turn_usage: dict[str, Any] = field(default_factory=dict)
     post_edit_verify_ran: bool = False
     post_edit_verify_passed: bool | None = None
     post_edit_verify_assessment_id: str | None = None
@@ -318,6 +320,8 @@ class RunOutcome:
     calibration_lanes: dict[str, Any] = field(default_factory=dict)
     prior_source: str | None = None
     prior_calibration_tags: tuple[str, ...] = ()
+    token_usage: dict[str, Any] = field(default_factory=dict)
+    understand_turn_usage: dict[str, Any] = field(default_factory=dict)
 
 
 # ---- aggregated metrics -----------------------------------------------------------------------

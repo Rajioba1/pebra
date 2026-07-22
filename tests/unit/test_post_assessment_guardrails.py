@@ -16,7 +16,7 @@ def _clean_input(**overrides):
     base = dict(
         assessed_commit="abc123",
         current_head="abc123",
-        safe_scope_files=["src/auth.py", "src/auth/__tests__/**"],
+        safe_scope_files=["src/auth.py", "glob:src/auth/__tests__/**"],
         changed_files=["src/auth.py"],
         dependency_changed=False,
         schema_changed=False,
@@ -103,7 +103,28 @@ def test_unexpected_file_outside_safe_scope_is_scope_drift_inspect_first() -> No
 def test_glob_in_safe_scope_matches_test_files() -> None:
     r = pag.evaluate(_clean_input(changed_files=["src/auth.py", "src/auth/__tests__/test_login.py"]))
     assert r.unexpected_files == []
+
+
+def test_literal_metacharacter_filename_is_covered_before_glob_matching() -> None:
+    r = pag.evaluate(_clean_input(
+        safe_scope_files=["[ab].py::value"],
+        changed_files=["[ab].py"],
+    ))
+
+    assert r.unexpected_files == []
+    assert r.safe_scope_status == "ok"
     assert r.pre_commit_decision is Decision.PROCEED
+
+
+def test_literal_metacharacter_scope_does_not_authorize_glob_neighbors() -> None:
+    r = pag.evaluate(_clean_input(
+        safe_scope_files=["[ab].py::value", "[ab].py"],
+        changed_files=["[ab].py", "a.py", "b.py"],
+    ))
+
+    assert r.unexpected_files == ["a.py", "b.py"]
+    assert r.safe_scope_status == "violated"
+    assert r.pre_commit_decision is Decision.INSPECT_FIRST
 
 
 def test_dependency_change_is_broad_drift_ask_human() -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import math
 import subprocess
 import time
 from dataclasses import dataclass
@@ -24,8 +25,8 @@ from typing import Any
 
 from e2e.experiments.agent_ab.metrics import blinding
 from e2e.experiments.agent_ab.models import MUTATING_TOOLS, SubjectResult, ToolCallRecord
-from e2e.experiments.agent_ab.runners import run_artifacts, subject_protocol, tool_impl
-from e2e.experiments.agent_ab.runners.model_client import ScriptExhausted
+from e2e.experiments.agent_ab.runners import run_artifacts, subject_protocol, token_accounting, tool_impl
+from e2e.experiments.agent_ab.runners.model_client import ModelTurn, ScriptExhausted
 from e2e.experiments.agent_ab.tools import (
     advisory_contract,
     approval_contract,
@@ -47,9 +48,24 @@ class RunConfig:
     max_tool_calls_per_run: int = 50
     max_wall_seconds_per_run: int = 600
     max_output_tokens_per_turn: int = 4096
+    apply_verify_reserve_seconds: float = 0.0
     tools: tuple[str, ...] = ("read_file", "edit_file", "apply_patch", "write_file", "list_dir", "search_grep",
                               "run_build", "run_tests", "repository_context", "advisory_check",
                               "request_human_approval")
+
+    def __post_init__(self) -> None:
+        reserve = self.apply_verify_reserve_seconds
+        if (
+            isinstance(reserve, bool)
+            or not isinstance(reserve, (int, float))
+            or not math.isfinite(reserve)
+            or reserve < 0
+            or reserve >= self.max_wall_seconds_per_run
+        ):
+            raise ValueError(
+                "apply_verify_reserve_seconds must be a non-negative number smaller than "
+                "max_wall_seconds_per_run"
+            )
 
 
 @dataclass
@@ -406,6 +422,7 @@ def run(
     client,
     config: RunConfig,
     trace_path: Path | None = None,
+    deadline_monotonic: float | None = None,
 ) -> SubjectResult:
     """Drive one blinded subject run. Returns a SubjectResult with build/test fields UNSET (the
     orchestrator fills them after injecting the hidden evaluator tests)."""
@@ -424,26 +441,47 @@ def run(
     turns: list[dict[str, Any]] = []
     tools_seen: list[dict[str, Any]] = []
     limit_reason: str | None = None
-    deadline = start + config.max_wall_seconds_per_run
+    configured_deadline = start + config.max_wall_seconds_per_run
+    deadline = (
+        min(configured_deadline, deadline_monotonic)
+        if deadline_monotonic is not None
+        else configured_deadline
+    )
     lifecycle = _LifecycleState()
+    model_turns: list[ModelTurn] = []
+    understand_turns: list[ModelTurn] = []
+    consumes_understand_result = False
 
     try:
         while True:
-            # Wall-clock is checked BETWEEN turns (not during a tool call). A single tool is still
-            # bounded: build backends pass their own subprocess timeout=, so a hung
-            # build/test cannot run unbounded past this guard.
-            if time.monotonic() - start >= config.max_wall_seconds_per_run:
+            # The provider and advisory share one deadline with application + host verification.
+            # Once only the closeout reserve remains, do not spend it on another stochastic turn.
+            turn_started = time.monotonic()
+            remaining_before_turn = deadline - turn_started
+            if remaining_before_turn <= 0:
                 timed_out = True
                 limit_reason = "wall_clock"
+                break
+            model_timeout = remaining_before_turn - config.apply_verify_reserve_seconds
+            if model_timeout <= 0:
+                limit_reason = "closeout_budget_reserved"
                 break
             if seq >= config.max_tool_calls_per_run:
                 limit_reason = "tool_call_limit"
                 break
-            turn_started = time.monotonic()
             turn = client.send(messages, tools, setup.subject_prompt,
-                               max_tokens=config.max_output_tokens_per_turn)
+                               max_tokens=config.max_output_tokens_per_turn,
+                               timeout_seconds=model_timeout)
             turn_ended = time.monotonic()
             turn_count += 1
+            model_turns.append(turn)
+            requests_understand = any(
+                call.get("name") == repository_context_contract.TOOL_NAME
+                for call in turn.tool_calls
+            )
+            if requests_understand or consumes_understand_result:
+                understand_turns.append(turn)
+            consumes_understand_result = requests_understand
             final_stop_reason = turn.stop_reason
             if turn.served_model and turn.served_model not in served_models:
                 served_models.append(turn.served_model)
@@ -454,6 +492,12 @@ def run(
                 "latency_seconds": round(turn_ended - turn_started, 6),
                 "stop_reason": turn.stop_reason,
                 "served_model": turn.served_model,
+                "usage": {
+                    "input_tokens": turn.input_tokens,
+                    "output_tokens": turn.output_tokens,
+                    "cache_read_tokens": turn.cache_read_tokens,
+                    "cache_write_tokens": turn.cache_write_tokens,
+                },
                 "text": turn.text,
                 "tool_calls": [
                     {"id": tc.get("id"), "name": tc.get("name"), "input": tc.get("input", {})}
@@ -486,11 +530,18 @@ def run(
                     continue
                 name, args = tc["name"], tc.get("input", {})
                 tool_started = time.monotonic()
+                tool_timeout = max(0.001, deadline - tool_started)
+                if name == advisory_contract.TOOL_NAME:
+                    tool_timeout = deadline - tool_started - config.apply_verify_reserve_seconds
+                    if tool_timeout <= 0:
+                        limit_reason = "advisory_budget_exhausted"
+                        governance_stop = True
+                        break
                 result = _dispatch(
                     name,
                     args,
                     setup,
-                    timeout_seconds=max(0.001, deadline - tool_started),
+                    timeout_seconds=tool_timeout,
                 )
                 tool_ended = time.monotonic()
                 # Blinding: scan harness-authored outputs (advisory result AND any write reason — a gate
@@ -542,6 +593,10 @@ def run(
 
     modified = _git_diff_name_only(setup.repo_path)
     protocol_read = _protocol_file_read(records)
+    token_usage = token_accounting.summarize(model_turns)
+    understand_turn_usage = token_accounting.summarize(
+        understand_turns, label="understand_turn_usage"
+    )
     result = SubjectResult(
         task_id=spec.task_id, arm=setup.arm, seed=seed,
         transcript=tuple(transcript), tool_calls=tuple(records), modified_files=modified,
@@ -557,6 +612,8 @@ def run(
                 getattr(setup, "telemetry", None), "repository_context_receipts", ()
             )
         ),
+        token_usage=token_usage,
+        understand_turn_usage=understand_turn_usage,
     )
     if trace_path is not None:
         _write_subject_trace(trace_path, result, config, turns, tools_seen, limit_reason)
@@ -582,6 +639,7 @@ def _write_subject_trace(
             "max_tool_calls_per_run": config.max_tool_calls_per_run,
             "max_wall_seconds_per_run": config.max_wall_seconds_per_run,
             "max_output_tokens_per_turn": config.max_output_tokens_per_turn,
+            "apply_verify_reserve_seconds": config.apply_verify_reserve_seconds,
         },
         "final": {
             "timed_out": result.timed_out,
@@ -598,6 +656,8 @@ def _write_subject_trace(
             "repository_context_receipts": list(result.repository_context_receipts),
         },
         "transcript": list(result.transcript),
+        "token_usage": result.token_usage,
+        "understand_turn_usage": result.understand_turn_usage,
         "turns": turns,
         "tool_calls": tools_seen,
     }

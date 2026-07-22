@@ -12,6 +12,8 @@ goes through the real CLI path (no internal seeding, no lowered gate).
 
 from __future__ import annotations
 
+from e2e.utils import cli_harness as ch
+
 def test_seeded_learning_shifts_the_decision(seeded_learning_state):
     # 1. cold-start baseline (clean repo) — proceed for this fixture.
     baseline = seeded_learning_state.baseline
@@ -37,3 +39,19 @@ def test_seeded_learning_shifts_the_decision(seeded_learning_state):
     assert promo["risk"]["snapshot_id"] in applied_snapshot_ids
     assert learned["scores"]["rau"] < baseline_rau, (learned["scores"]["rau"], baseline_rau)
     assert learned["recommended_decision"] != baseline["recommended_decision"]
+
+    # 5. Routine verified completion also populated the separate historical recall store. Explore
+    # reads it before current graph retrieval; unavailable CodeGraph remains a non-blocking receipt.
+    recalled = ch.explore(
+        "token validation",
+        files=("auth_service.py",),
+        repo_root=seeded_learning_state.repo_path,
+    )
+    assert recalled["learning_context"]["status"] == "available"
+    assert recalled["learning_context"]["entries"]
+    assert recalled["repository_context"]["status"] in {"available", "unavailable"}
+    assert all(
+        entry["expected_loss"] is not None
+        and entry["benefit"] is not None
+        for entry in recalled["learning_context"]["entries"]
+    )

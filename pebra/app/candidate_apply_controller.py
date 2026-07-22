@@ -96,7 +96,12 @@ def apply_candidate(
         "tool_input": {"command": patch},
     }
     with applier.lock(repo_root):
-        decision = gate.decide(event, db_path=db_path, consult_only=True)
+        decision = gate.decide(
+            event,
+            db_path=db_path,
+            consult_only=True,
+            require_exact_match=True,
+        )
         if not (
             decision.permission == GatePermission.CONTINUE
             and decision.tier == GateTier.CONSULTED

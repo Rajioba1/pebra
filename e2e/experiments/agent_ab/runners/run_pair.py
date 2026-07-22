@@ -1573,15 +1573,20 @@ def _arm_token(arm: str, run_id: str) -> str:
     return hashlib.sha256(f"{arm}:{run_id}".encode()).hexdigest()[:12]
 
 
-def _remove_stale_arm_clone(dest: Path) -> None:
+def _remove_stale_arm_workspace(dest: Path) -> None:
     root = _AB_OUT.resolve()
     resolved = dest.resolve()
     try:
-        resolved.relative_to(root)
+        relative = resolved.relative_to(root)
     except ValueError as exc:
         raise RunPairError(f"refusing to remove arm clone outside {root}: {resolved}") from exc
-    if resolved.exists():
-        shutil.rmtree(resolved)
+    if resolved.name != "repo" or len(relative.parts) < 3:
+        raise RunPairError(f"refusing to remove malformed arm workspace: {resolved}")
+    workspace = resolved.parent
+    if workspace.exists():
+        # The assessment DB is a sibling of the clone. Retrying an authenticated run ID must reset
+        # both, otherwise an allegedly empty learning-context cohort can inherit prior lessons.
+        shutil.rmtree(workspace)
 
 
 def _validate_baseline(repo_path: Path, baseline) -> None:
@@ -1595,7 +1600,7 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
     """Clone an isolated worktree for one arm and prepare everything up to the agent call. No agent run."""
     # Arm-NEUTRAL path: an opaque hash token, not the arm name - so nothing the agent sees reveals its arm.
     dest = _AB_OUT / run_id / f"{spec.task_id}_seed{seed}_{_arm_token(arm, run_id)}" / "repo"
-    _remove_stale_arm_clone(dest)
+    _remove_stale_arm_workspace(dest)
     repo_path = rs.clone_at_recorded_head(external, dest)
     subject_protocol.install(repo_path, arm)
     cli_harness.setup_graph(repo_root=repo_path)
@@ -1711,7 +1716,12 @@ def _subject_api_key(provider: str) -> str:
     return os.environ[key_name]
 
 
-def _post_edit_verify(setup: ArmSetup, result: SubjectResult) -> SubjectResult:
+def _post_edit_verify(
+    setup: ArmSetup,
+    result: SubjectResult,
+    *,
+    deadline_monotonic: float | None = None,
+) -> SubjectResult:
     """Persist production guardrails for the exact assessed candidate the write gate allowed."""
     assessment_id = setup.telemetry.applied_assessment_id
     if setup.arm not in _REAL_ADVISORY_ARMS or not result.modified_files or assessment_id is None:
@@ -1758,14 +1768,25 @@ def _post_edit_verify(setup: ArmSetup, result: SubjectResult) -> SubjectResult:
             completed_checks[check] = "failed"
         elif True in outcomes:
             completed_checks[check] = "passed"
+    verify_kwargs: dict[str, Any] = {
+        "repo_root": setup.repo_path,
+        "db": setup.repo_path.parent / "pebra.db",
+        "scope": "all",
+        "completed_checks": completed_checks,
+    }
+    if deadline_monotonic is not None:
+        remaining = deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            return dataclasses.replace(
+                result,
+                post_edit_verify_ran=False,
+                post_edit_verify_passed=False,
+                post_edit_verify_assessment_id=assessment_id,
+                post_edit_verify_error="shared run deadline exhausted before host verification",
+            )
+        verify_kwargs["timeout"] = remaining
     try:
-        passed, payload = cli_harness.verify(
-            assessment_id,
-            repo_root=setup.repo_path,
-            db=setup.repo_path.parent / "pebra.db",
-            scope="all",
-            completed_checks=completed_checks,
-        )
+        passed, payload = cli_harness.verify(assessment_id, **verify_kwargs)
     except (cli_harness.CLIError, OSError, subprocess.SubprocessError, ValueError) as exc:
         return dataclasses.replace(
             result,
@@ -1838,6 +1859,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         max_tool_calls_per_run=cfg.get("max_tool_calls_per_run", 50),
         max_wall_seconds_per_run=cfg.get("max_wall_seconds_per_run", 600),
         max_output_tokens_per_turn=cfg.get("max_output_tokens_per_turn", 4096),
+        apply_verify_reserve_seconds=cfg.get("apply_verify_reserve_seconds", 0.0),
         tools=tuple(cfg.get("tools", ())),
     )
     client_kwargs: dict[str, Any] = {}
@@ -1849,6 +1871,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         api_key=_subject_api_key(provider),
         **client_kwargs,
     )
+    shared_deadline = time.monotonic() + run_cfg.max_wall_seconds_per_run
     result = agent_loop.run(
         setup,
         spec,
@@ -1856,11 +1879,12 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         client=client,
         config=run_cfg,
         trace_path=setup.repo_path.parent / "subject_trace.json",
+        deadline_monotonic=shared_deadline,
     )
 
     # Verify before hidden evaluator files are injected, so RCA and envelope checks observe only the
     # subject's applied edit. This is telemetry, not a replacement for the hidden outcome oracle.
-    result = _post_edit_verify(setup, result)
+    result = _post_edit_verify(setup, result, deadline_monotonic=shared_deadline)
 
     # HIDDEN oracle: inject evaluator tests post-agent, then build + test.
     build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec)

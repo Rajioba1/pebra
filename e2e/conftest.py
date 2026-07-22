@@ -49,7 +49,7 @@ def out_dir() -> Path:
 def seeded_learning_state(tmp_path_factory):
     base = tmp_path_factory.mktemp("seeded_learning")
     repo = repo_factory.create_risky_repo(base / "repo")
-    db = base / "pebra.db"
+    db = repo / ".pebra" / "pebra.db"
     first_request = _FIXTURES / "request_first_edit.json"
     second_request = _FIXTURES / "request_second_edit.json"
     return learning_scenario.build_seeded_learning_state(repo, db, first_request, second_request)

@@ -150,7 +150,8 @@ def test_invoke_subject_agent_honors_model_env_override(monkeypatch, tmp_path):
         }
     })
     monkeypatch.setattr(model_client, "AnthropicClient", CapturingClient)
-    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config, trace_path=None: SubjectResult(
+    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config,
+                        trace_path=None, deadline_monotonic=None: SubjectResult(
         task_id=spec.task_id, arm=setup.arm, seed=seed,
     ))
     monkeypatch.setattr(evaluator, "run_evaluator", lambda repo_path, task_id: (
@@ -191,7 +192,8 @@ def test_invoke_subject_agent_can_use_deepseek_provider(monkeypatch, tmp_path):
         }
     })
     monkeypatch.setattr(model_client, "AnthropicClient", CapturingClient)
-    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config, trace_path=None: SubjectResult(
+    monkeypatch.setattr(agent_loop, "run", lambda setup, spec, seed, *, client, config,
+                        trace_path=None, deadline_monotonic=None: SubjectResult(
         task_id=spec.task_id, arm=setup.arm, seed=seed,
     ))
     monkeypatch.setattr(evaluator, "run_evaluator", lambda repo_path, task_id: (
@@ -241,11 +243,14 @@ def test_prepare_arm_replaces_stale_clone_and_indexes_actual_arm(monkeypatch, tm
     stale = tmp_path / "rid" / f"T1_seed0_{run_pair._arm_token('treatment', 'rid')}" / "repo"
     stale.mkdir(parents=True)
     (stale / "old.txt").write_text("stale")
+    stale_db = stale.parent / "pebra.db"
+    stale_db.write_bytes(b"authenticated-run-must-not-reuse-this-learning-state")
 
     setup = run_pair.prepare_arm(_External(), _SPEC, "treatment", 0, "rid")
 
     assert setup.repo_path == stale
     assert not (stale / "old.txt").exists()
+    assert not stale_db.exists()
     assert (stale / "repo.txt").read_text() == "fresh"
     assert calls == [stale]
 
@@ -959,6 +964,60 @@ def test_post_edit_verify_persists_measured_benefit_for_applied_candidate(monkey
     assert verified.measured_benefit_deltas == {
         "complexity_delta": -2.0, "maintainability_index_delta": 4.0,
     }
+
+
+def test_post_edit_verify_uses_remaining_shared_run_deadline(monkeypatch, tmp_path):
+    setup = run_pair.ArmSetup(
+        arm=models.ARM_PEBRA,
+        repo_path=tmp_path,
+        advisory_backend=lambda payload: {},
+        baseline_build=None,
+        subject_prompt="x",
+        telemetry=run_pair.ArmTelemetry(applied_assessment_id="asm_7"),
+    )
+    result = SubjectResult(
+        task_id="T1", arm=models.ARM_PEBRA, seed=0, modified_files=("a.cs",),
+    )
+    seen = {}
+
+    def _verify(*_args, timeout, **_kwargs):
+        seen["timeout"] = timeout
+        return True, {}
+
+    monkeypatch.setattr(run_pair.cli_harness, "verify", _verify)
+    monkeypatch.setattr(run_pair.time, "monotonic", lambda: 95.0)
+
+    verified = run_pair._post_edit_verify(setup, result, deadline_monotonic=100.0)
+
+    assert 0 < seen["timeout"] <= 5.0
+    assert verified.post_edit_verify_ran is True
+    assert verified.post_edit_verify_passed is True
+
+
+def test_post_edit_verify_fails_closed_when_shared_deadline_is_exhausted(monkeypatch, tmp_path):
+    setup = run_pair.ArmSetup(
+        arm=models.ARM_PEBRA,
+        repo_path=tmp_path,
+        advisory_backend=lambda payload: {},
+        baseline_build=None,
+        subject_prompt="x",
+        telemetry=run_pair.ArmTelemetry(applied_assessment_id="asm_7"),
+    )
+    result = SubjectResult(
+        task_id="T1", arm=models.ARM_PEBRA, seed=0, modified_files=("a.cs",),
+    )
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "verify",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not verify")),
+    )
+    monkeypatch.setattr(run_pair.time, "monotonic", lambda: 100.0)
+
+    verified = run_pair._post_edit_verify(setup, result, deadline_monotonic=100.0)
+
+    assert verified.post_edit_verify_ran is False
+    assert verified.post_edit_verify_passed is False
+    assert "shared run deadline" in verified.post_edit_verify_error
 
 
 @pytest.mark.parametrize(

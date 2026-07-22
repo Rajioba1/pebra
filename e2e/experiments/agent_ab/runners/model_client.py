@@ -14,6 +14,7 @@ object — no network, no key. No pebra import.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -26,6 +27,10 @@ class ModelTurn:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)  # [{"id","name","input"}]
     stop_reason: str = "end_turn"  # "end_turn" | "tool_use" | "max_tokens"
     served_model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     # Exact provider blocks must be replayed after a thinking-mode tool call. Reconstructing only
     # text/tool_use drops DeepSeek's signed reasoning block and makes the next request invalid.
     provider_content: list[dict[str, Any]] = field(default_factory=list)
@@ -39,6 +44,7 @@ class ModelClient(Protocol):
         system: str,
         *,
         max_tokens: int,
+        timeout_seconds: float | None = None,
     ) -> ModelTurn: ...
 
 
@@ -54,9 +60,9 @@ class ScriptedClient:
         self._i = 0
         self.calls: list[dict[str, Any]] = []  # captured (messages,tools,system) per send, for assertions
 
-    def send(self, messages, tools, system, *, max_tokens) -> ModelTurn:
+    def send(self, messages, tools, system, *, max_tokens, timeout_seconds=None) -> ModelTurn:
         self.calls.append({"messages": messages, "tools": tools, "system": system,
-                           "max_tokens": max_tokens})
+                           "max_tokens": max_tokens, "timeout_seconds": timeout_seconds})
         if self._i >= len(self._turns):
             raise ScriptExhausted(f"ScriptedClient exhausted after {len(self._turns)} turn(s)")
         turn = self._turns[self._i]
@@ -107,10 +113,20 @@ def _response_to_turn(resp: Any) -> ModelTurn:
                 "data": getattr(block, "data", "") or "",
             })
     text = "\n".join(p for p in text_parts if p) or None
+    usage = getattr(resp, "usage", None)
     return ModelTurn(text=text, tool_calls=tool_calls,
                      stop_reason=getattr(resp, "stop_reason", None) or "end_turn",
                      served_model=getattr(resp, "model", None),
+                     input_tokens=_usage_count(usage, "input_tokens"),
+                     output_tokens=_usage_count(usage, "output_tokens"),
+                     cache_read_tokens=_usage_count(usage, "cache_read_input_tokens"),
+                     cache_write_tokens=_usage_count(usage, "cache_creation_input_tokens"),
                      provider_content=provider_content)
+
+
+def _usage_count(usage: Any, name: str) -> int | None:
+    value = getattr(usage, name, None)
+    return value if type(value) is int and value >= 0 else None
 
 
 class AnthropicClient:
@@ -133,13 +149,23 @@ class AnthropicClient:
         self._thinking_enabled = thinking_enabled
         self._client: Any = None  # lazily constructed on first send (needs the SDK + a real key)
 
-    def send(self, messages, tools, system, *, max_tokens) -> ModelTurn:  # pragma: no cover - live only
+    def send(  # pragma: no cover - live only
+        self, messages, tools, system, *, max_tokens, timeout_seconds=None
+    ) -> ModelTurn:
         if self._client is None:
-            kwargs = {"api_key": self._api_key}
+            # The SDK retries requests internally by default, with a fresh per-attempt timeout. Disable
+            # that hidden loop so this class's deadline-aware retry loop is the sole retry authority.
+            # DeepSeek uses this same Anthropic-compatible client, so the rule covers both providers.
+            kwargs = {"api_key": self._api_key, "max_retries": 0}
             if self._base_url is not None:
                 kwargs["base_url"] = self._base_url
             self._client = _import_anthropic().Anthropic(**kwargs)
         attempts = self._transient_retries + 1
+        deadline = (
+            time.monotonic() + timeout_seconds
+            if timeout_seconds is not None
+            else None
+        )
         for attempt in range(attempts):
             try:
                 request: dict[str, Any] = {
@@ -153,6 +179,11 @@ class AnthropicClient:
                     request["thinking"] = {
                         "type": "enabled" if self._thinking_enabled else "disabled"
                     }
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("model request exhausted its shared run budget")
+                    request["timeout"] = remaining
                 resp = self._client.messages.create(**request)
                 break
             except Exception as exc:

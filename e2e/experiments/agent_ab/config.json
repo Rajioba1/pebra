@@ -4,6 +4,7 @@
     "model": "claude-haiku-4-5-20251001",
     "max_tool_calls_per_run": 50,
     "max_wall_seconds_per_run": 600,
+    "apply_verify_reserve_seconds": 120,
     "max_output_tokens_per_turn": 4096,
     "tools": ["read_file", "edit_file", "apply_patch", "write_file", "list_dir", "search_grep", "run_build", "run_tests", "repository_context", "advisory_check", "request_human_approval"]
   },
@@ -17,6 +18,7 @@
     "advisory_tool_name": "advisory_check",
     "note": "SAME tool name + output shape in both arms; only the backend content differs."
   },
+  "learning_context_cohort": "empty",
   "smoke": {
     "tasks": ["T1"],
     "seeds_per_arm": 1,
