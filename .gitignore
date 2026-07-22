@@ -25,5 +25,5 @@ build/
 e2e/out/
 benchmarks/flow/corpus/private/
 benchmarks/flow/corpus/jit_szz/raw/
-z8.png
+z*.png
 .grok/settings.json
