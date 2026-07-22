@@ -9,6 +9,7 @@ from itertools import groupby
 from typing import Any, Mapping, Sequence
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
+_PRIOR_SOURCES = {"cold_start", "shipped", "local_learned", "mixed"}
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,38 @@ class LedgerGroup:
     primary_assessment_id: str
     assessment_ids: tuple[str, ...]
     latest_row: Mapping[str, Any]
+
+
+def prior_display_semantics(facet: object) -> tuple[str, int] | None:
+    """Validate the facet fields that determine the ledger's visible prior label."""
+    if not isinstance(facet, Mapping):
+        return None
+    source = facet.get("source")
+    count = facet.get("applied_target_count")
+    if (
+        not isinstance(source, str)
+        or source not in _PRIOR_SOURCES
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+    ):
+        return None
+    if count < 0 or (source in {"local_learned", "mixed"} and count <= 0):
+        return None
+    return str(source), count
+
+
+def _prior_grouping_semantics(facet: object) -> tuple[Any, ...] | None:
+    """Canonical persisted prior identity; malformed/unavailable facets never group."""
+    display = prior_display_semantics(facet)
+    if display is None or not isinstance(facet, Mapping):
+        return None
+    snapshot_ids = facet.get("snapshot_ids")
+    calibration_tags = facet.get("calibration_tags")
+    if not isinstance(snapshot_ids, list) or not isinstance(calibration_tags, list):
+        return None
+    if not all(isinstance(value, str) and value for value in (*snapshot_ids, *calibration_tags)):
+        return None
+    return (*display, tuple(snapshot_ids), tuple(calibration_tags))
 
 
 def _grouping_key(row: Mapping[str, Any], index: int) -> tuple[Any, ...]:
@@ -31,6 +64,9 @@ def _grouping_key(row: Mapping[str, Any], index: int) -> tuple[Any, ...]:
         for value in score_values
     ):
         return ("unique", index)
+    prior = _prior_grouping_semantics(row.get("prior_facet"))
+    if prior is None:
+        return ("unique", index)
     return (
         "candidate",
         fingerprint,
@@ -40,6 +76,7 @@ def _grouping_key(row: Mapping[str, Any], index: int) -> tuple[Any, ...]:
         row.get("task"),
         row.get("action_id"),
         tuple(row.get("target_files") or ()),
+        prior,
         *score_values,
     )
 

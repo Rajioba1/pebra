@@ -463,10 +463,19 @@ def test_grouped_row_opens_latest_assessment_and_shows_all_ids() -> None:
                 )
             return ObservatorySnapshot(
                 overview={"total": 2},
-                assessments=rows,
-                scores_series=[],
-                chain={"valid": True},
-            )
+                    assessments=rows,
+                    scores_series=[],
+                    chain={"valid": True},
+                    prior_facets={
+                        row["assessment_id"]: {
+                            "source": "cold_start",
+                            "snapshot_ids": [],
+                            "calibration_tags": [],
+                            "applied_target_count": 0,
+                        }
+                        for row in rows
+                    },
+                )
 
     async def scenario() -> None:
         data = _GroupedData()
@@ -484,6 +493,63 @@ def test_grouped_row_opens_latest_assessment_and_shows_all_ids() -> None:
                 "Assessment identity"
             ]
             assert identity["Contained assessment IDs"] == ["asm_2", "asm_1"]
+
+    asyncio.run(scenario())
+
+
+def test_grouping_never_hides_distinct_persisted_prior_identity() -> None:
+    class _PriorData(_RecordingData):
+        def refresh_snapshot(self) -> ObservatorySnapshot:
+            rows = [
+                {
+                    "assessment_id": assessment_id,
+                    "candidate_fingerprint": "a" * 64,
+                    "decision": "proceed",
+                    "assessed_commit": "abc1234",
+                    "terminal_status": None,
+                    "task": "Fix authentication",
+                    "action_id": "edit-auth",
+                    "target_files": ["src/auth.py"],
+                    "scores": {"rau": 0.2, "expected_loss": 0.1, "benefit": 0.3},
+                }
+                for assessment_id in ("asm_2", "asm_1")
+            ]
+            return ObservatorySnapshot(
+                overview={"total": 2},
+                assessments=rows,
+                scores_series=[],
+                chain={"valid": True},
+                prior_facets={
+                    "asm_2": {
+                        "source": "cold_start",
+                        "snapshot_ids": [],
+                        "calibration_tags": [],
+                        "applied_target_count": 0,
+                    },
+                    "asm_1": {
+                        "source": "local_learned",
+                        "snapshot_ids": ["rs_7"],
+                        "calibration_tags": [],
+                        "applied_target_count": 1,
+                    },
+                },
+            )
+
+    async def scenario() -> None:
+        data = _PriorData()
+        app = _Harness(ObservatoryScreen(data))
+        async with app.run_test() as pilot:
+            await pilot.press("g")
+            table = app.query_one("#ledger", DataTable)
+            assert table.row_count == 2
+            table.focus()
+            table.move_cursor(row=0, scroll=False)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, AssessmentDetailScreen)
+            assert data.detail_ids == ["asm_2"]
+            assert app.screen.assessment_ids == ("asm_2",)
 
     asyncio.run(scenario())
 

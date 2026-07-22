@@ -120,7 +120,15 @@ class ObservatoryScreen(Screen):
 
     def _visible_groups(self) -> tuple[LedgerGroup, ...]:
         if self.group_repeats:
-            return group_contiguous_assessments(self._rows)
+            return group_contiguous_assessments(
+                [
+                    {
+                        **row,
+                        "prior_facet": self._prior_facets.get(str(row.get("assessment_id"))),
+                    }
+                    for row in self._rows
+                ]
+            )
         return tuple(
             LedgerGroup(
                 primary_assessment_id=str(row["assessment_id"]),

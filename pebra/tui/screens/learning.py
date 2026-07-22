@@ -7,8 +7,6 @@ exploration, but its worker is only a short-lived SQLite read through ``Observat
 
 from __future__ import annotations
 
-from typing import Any
-
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -34,30 +32,32 @@ def _text(value: object, *, fallback: str = "—") -> str:
     return value if isinstance(value, str) and value else fallback
 
 
-def _snapshot_row(snapshot: dict[str, Any]) -> tuple[Content, Content, Content, Content, Content]:
+def _snapshot_row(snapshot: object) -> tuple[Content, Content, Content, Content, Content]:
     """Literal-safe compact snapshot lifecycle row from the shared DTO."""
+    data = snapshot if isinstance(snapshot, dict) else {}
     return tuple(
         Content(value)
         for value in (
-            _text(snapshot.get("snapshot_id")),
-            _text(snapshot.get("status")),
-            _text(snapshot.get("created_at"))[:16].replace("T", " "),
-            _text(snapshot.get("activated_at")),
-            _text(snapshot.get("promotion_reason")),
+            _text(data.get("snapshot_id")),
+            _text(data.get("status"), fallback="unavailable"),
+            _text(data.get("created_at"))[:16].replace("T", " "),
+            _text(data.get("activated_at")),
+            _text(data.get("promotion_reason")),
         )
     )  # type: ignore[return-value]
 
 
-def _fact_row(fact: dict[str, Any]) -> tuple[Content, Content, Content, Content, Content]:
+def _fact_row(fact: object) -> tuple[Content, Content, Content, Content, Content]:
     """Literal-safe compact learned-fact row; fact JSON stays out of the overview table."""
+    data = fact if isinstance(fact, dict) else {}
     return tuple(
         Content(value)
         for value in (
-            _text(fact.get("fact_id")),
-            _text(fact.get("snapshot_id")),
-            _text(fact.get("target_name")),
-            _text(fact.get("status")),
-            _text(fact.get("created_at"))[:16].replace("T", " "),
+            _text(data.get("fact_id")),
+            _text(data.get("snapshot_id")),
+            _text(data.get("target_name")),
+            _text(data.get("status"), fallback="unavailable"),
+            _text(data.get("created_at"))[:16].replace("T", " "),
         )
     )  # type: ignore[return-value]
 
@@ -100,6 +100,11 @@ class LearningScreen(Screen):
         facts = self.query_one("#learning-facts", DataTable)
         facts.add_columns("fact", "snapshot", "target", "status", "created")
         self.action_refresh()
+
+    def on_unmount(self) -> None:
+        """Invalidate a queued worker delivery before Textual prunes this screen's children."""
+        self._generation += 1
+        self._loading = False
 
     def action_back(self) -> None:
         self.dismiss()

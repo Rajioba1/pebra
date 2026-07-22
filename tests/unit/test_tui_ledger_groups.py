@@ -22,6 +22,12 @@ def _row(assessment_id: str, **overrides: Any) -> dict[str, Any]:
         "action_id": "edit-auth",
         "target_files": ["src/auth.py"],
         "scores": {"rau": 0.2, "expected_loss": 0.1, "benefit": 0.3},
+        "prior_facet": {
+            "source": "cold_start",
+            "snapshot_ids": [],
+            "calibration_tags": [],
+            "applied_target_count": 0,
+        },
     }
     row.update(overrides)
     return row
@@ -128,3 +134,51 @@ def test_group_preserves_every_assessment_id_in_order() -> None:
     )
     assert [group.latest_row for group in groups] == [rows[0], rows[2], rows[4]]
     assert rows[0]["assessment_id"] == "asm_5"
+
+
+def test_same_candidate_with_different_persisted_prior_semantics_never_groups() -> None:
+    cold = _row("asm_2")
+    learned = _row(
+        "asm_1",
+        prior_facet={
+            "source": "local_learned",
+            "snapshot_ids": ["rs_7"],
+            "calibration_tags": [],
+            "applied_target_count": 1,
+        },
+    )
+
+    groups = group_contiguous_assessments([cold, learned])
+
+    assert [group.assessment_ids for group in groups] == [("asm_2",), ("asm_1",)]
+
+
+def test_same_prior_label_with_different_snapshot_identity_never_groups() -> None:
+    def learned(assessment_id: str, snapshot_id: str) -> dict[str, Any]:
+        return _row(
+            assessment_id,
+            prior_facet={
+                "source": "local_learned",
+                "snapshot_ids": [snapshot_id],
+                "calibration_tags": [],
+                "applied_target_count": 1,
+            },
+        )
+
+    groups = group_contiguous_assessments([learned("asm_2", "rs_2"), learned("asm_1", "rs_1")])
+
+    assert [group.assessment_ids for group in groups] == [("asm_2",), ("asm_1",)]
+
+
+def test_matching_unavailable_or_malformed_prior_facets_never_group() -> None:
+    for facet in (
+        None,
+        {"source": "unavailable", "snapshot_ids": [], "calibration_tags": [], "applied_target_count": 0},
+        {"source": "local_learned", "snapshot_ids": [], "calibration_tags": [], "applied_target_count": 0},
+        {"source": "cold_start", "snapshot_ids": "bad", "calibration_tags": [], "applied_target_count": 0},
+        {"source": [], "snapshot_ids": [], "calibration_tags": [], "applied_target_count": 0},
+    ):
+        groups = group_contiguous_assessments(
+            [_row("asm_2", prior_facet=facet), _row("asm_1", prior_facet=facet)]
+        )
+        assert [group.assessment_ids for group in groups] == [("asm_2",), ("asm_1",)]

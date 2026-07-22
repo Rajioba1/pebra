@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from threading import Event
 
 import pytest
 
@@ -141,5 +142,85 @@ def test_learning_resize_does_not_drop_columns() -> None:
             await pilot.resize_terminal(70, 24)
             await pilot.pause()
             assert list(facts.columns) == expected
+
+    asyncio.run(scenario())
+
+
+def test_learning_screen_distinguishes_shadow_snapshot_and_candidate_fact() -> None:
+    async def scenario() -> None:
+        data = _Data(
+            ObservatoryLearningSnapshot(
+                [{"snapshot_id": "rs_2", "status": "shadow", "created_at": "2026-07-22"}],
+                [
+                    {
+                        "fact_id": "lrf_2",
+                        "snapshot_id": "rs_2",
+                        "target_name": "p_event.auth",
+                        "status": "candidate",
+                        "created_at": "2026-07-22",
+                    }
+                ],
+            )
+        )
+        screen = LearningScreen(data)  # type: ignore[arg-type]
+        async with _Harness(screen).run_test() as pilot:
+            await _pause_until(lambda: not screen.loading, pilot)
+            snapshots = screen.query_one("#learning-snapshots", DataTable)
+            facts = screen.query_one("#learning-facts", DataTable)
+            assert snapshots.get_cell_at((0, 1)).plain == "shadow"
+            assert facts.get_cell_at((0, 3)).plain == "candidate"
+
+    asyncio.run(scenario())
+
+
+def test_malformed_learning_rows_degrade_to_unavailable_cells() -> None:
+    async def scenario() -> None:
+        data = _Data(
+            ObservatoryLearningSnapshot(
+                [None],  # type: ignore[list-item]
+                [{"fact_id": ["bad"], "status": True}],
+            )
+        )
+        screen = LearningScreen(data)  # type: ignore[arg-type]
+        async with _Harness(screen).run_test() as pilot:
+            await _pause_until(lambda: not screen.loading, pilot)
+            snapshots = screen.query_one("#learning-snapshots", DataTable)
+            facts = screen.query_one("#learning-facts", DataTable)
+            assert snapshots.get_cell_at((0, 0)).plain == "—"
+            assert snapshots.get_cell_at((0, 1)).plain == "unavailable"
+            assert facts.get_cell_at((0, 0)).plain == "—"
+            assert facts.get_cell_at((0, 3)).plain == "unavailable"
+
+    asyncio.run(scenario())
+
+
+def test_inflight_learning_delivery_cannot_touch_dismissed_screen() -> None:
+    started = Event()
+    release = Event()
+    completed = Event()
+
+    class _BlockingData(_Data):
+        def learning_snapshot(self) -> ObservatoryLearningSnapshot:
+            self.calls += 1
+            started.set()
+            release.wait(timeout=5)
+            completed.set()
+            return ObservatoryLearningSnapshot(
+                [{"snapshot_id": "rs_1", "status": "active"}], []
+            )
+
+    async def scenario() -> None:
+        data = _BlockingData(ObservatoryLearningSnapshot([], []))
+        screen = LearningScreen(data)  # type: ignore[arg-type]
+        app = _Harness(Screen())
+        async with app.run_test() as pilot:
+            await app.push_screen(screen)
+            await _pause_until(started.is_set, pilot)
+            await app.pop_screen()
+            await _pause_until(lambda: not screen._can_update_children(), pilot)
+            release.set()
+            await _pause_until(completed.is_set, pilot)
+            await _pause_until(lambda: not screen.loading, pilot)
+            assert len(screen.query("#learning-snapshots")) == 0
 
     asyncio.run(scenario())

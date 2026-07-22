@@ -9,6 +9,7 @@ change, then review the SVGs before committing.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import sqlite3
 from types import SimpleNamespace
@@ -25,6 +26,8 @@ from pebra.core.constants import ActionStatus, Decision, RiskMode  # noqa: E402
 from pebra.core.models import AssessmentResult  # noqa: E402
 from pebra.observatory_context import ObservatoryContext  # noqa: E402
 from pebra.tui.app import ObservatoryApp  # noqa: E402
+from pebra.tui.data import ObservatoryLearningSnapshot  # noqa: E402
+from pebra.tui.screens.learning import LearningScreen  # noqa: E402
 
 # A fixed, decision-diverse ledger. The inspect_first row has a POSITIVE rau (+0.15) yet is held — the
 # case that proves the RAU lane (position) and the decision (color/glyph) are independent channels.
@@ -222,8 +225,18 @@ async def _toggle_grouping(pilot) -> None:
 
 async def _open_learning(pilot) -> None:
     await pilot.press("l")
-    for _ in range(3):
+    await _settle_learning(pilot)
+
+
+async def _settle_learning(pilot) -> None:
+    for _ in range(100):
+        screen = pilot.app.screen
+        if isinstance(screen, LearningScreen) and not screen.loading:
+            await pilot.pause()
+            return
         await pilot.pause()
+        await asyncio.sleep(0.01)
+    raise AssertionError("Learning screen did not settle")
 
 
 def test_snapshot_learning_empty_state(snap_compare, tmp_path) -> None:
@@ -232,6 +245,86 @@ def test_snapshot_learning_empty_state(snap_compare, tmp_path) -> None:
         terminal_size=(100, 30),
         run_before=_open_learning,
     )
+
+
+class _LearningData:
+    repo_id = "r"
+
+    def __init__(self, snapshot: ObservatoryLearningSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def learning_snapshot(self) -> ObservatoryLearningSnapshot:
+        return self._snapshot
+
+
+class _LearningApp(ObservatoryApp):
+    def __init__(self, snapshot: ObservatoryLearningSnapshot) -> None:
+        super().__init__(ObservatoryContext("unused.db", "r", None, True))
+        self._learning_data = _LearningData(snapshot)
+
+    def get_default_screen(self):
+        return LearningScreen(self._learning_data)  # type: ignore[arg-type]
+
+
+def test_snapshot_learning_active_state(snap_compare) -> None:
+    app = _LearningApp(
+        ObservatoryLearningSnapshot(
+            [
+                {
+                    "snapshot_id": "rs_7",
+                    "status": "active",
+                    "created_at": "2026-07-22T12:00:00+00:00",
+                    "activated_at": "2026-07-22T12:01:00+00:00",
+                    "promotion_reason": "verified calibration improvement",
+                }
+            ],
+            [
+                {
+                    "fact_id": "lrf_4",
+                    "snapshot_id": "rs_7",
+                    "target_name": "p_success",
+                    "status": "active",
+                    "created_at": "2026-07-22T12:00:00+00:00",
+                }
+            ],
+        )
+    )
+    assert snap_compare(app, terminal_size=(100, 30), run_before=_settle_learning)
+
+
+def test_snapshot_learning_candidate_held_state(snap_compare) -> None:
+    app = _LearningApp(
+        ObservatoryLearningSnapshot(
+            [
+                {
+                    "snapshot_id": "rs_8",
+                    "status": "shadow",
+                    "created_at": "2026-07-22T12:00:00+00:00",
+                    "promotion_reason": "candidate held by promotion gate",
+                }
+            ],
+            [
+                {
+                    "fact_id": "lrf_5",
+                    "snapshot_id": "rs_8",
+                    "target_name": "p_event.auth",
+                    "status": "candidate",
+                    "created_at": "2026-07-22T12:00:00+00:00",
+                }
+            ],
+        )
+    )
+    assert snap_compare(app, terminal_size=(100, 30), run_before=_settle_learning)
+
+
+def test_snapshot_learning_malformed_state(snap_compare) -> None:
+    app = _LearningApp(
+        ObservatoryLearningSnapshot(
+            [None],  # type: ignore[list-item]
+            [{"fact_id": ["bad"], "status": True}],
+        )
+    )
+    assert snap_compare(app, terminal_size=(100, 30), run_before=_settle_learning)
 
 
 def test_snapshot_grouped_ledger(snap_compare, tmp_path) -> None:

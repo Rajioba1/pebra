@@ -690,6 +690,15 @@ def test_grouping_toggle_is_raw_by_default_dynamic_and_reversible() -> None:
                 assessments=rows,
                 scores_series=[{"rau": 0.2}],
                 chain={"valid": True},
+                prior_facets={
+                    row["assessment_id"]: {
+                        "source": "cold_start",
+                        "snapshot_ids": [],
+                        "calibration_tags": [],
+                        "applied_target_count": 0,
+                    }
+                    for row in rows
+                },
             )
 
         def detail(self, assessment_id: str) -> dict:
@@ -767,6 +776,15 @@ def test_grouping_keeps_overview_and_trends_on_raw_assessments() -> None:
                 assessments=rows,
                 scores_series=series,
                 chain={"valid": True},
+                prior_facets={
+                    row["assessment_id"]: {
+                        "source": "cold_start",
+                        "snapshot_ids": [],
+                        "calibration_tags": [],
+                        "applied_target_count": 0,
+                    }
+                    for row in rows
+                },
             )
 
         def detail(self, assessment_id: str) -> dict:

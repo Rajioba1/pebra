@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 from textual.content import Content
 
 from pebra.core.constants import ActionStatus
+from pebra.tui.ledger_groups import prior_display_semantics
 from pebra.tui.theme import VERDICT_PALETTE, verdict_for
 
 # The ledger is a complete audit instrument at every terminal width. Narrow terminals expose the
@@ -191,12 +192,10 @@ def format_prior_facet(facet: Mapping[str, Any] | None) -> str:
     This deliberately does not inspect today's active snapshot.  The ledger answers what affected
     this historical assessment, not what would affect one assessed now.
     """
-    if not isinstance(facet, Mapping):
+    semantics = prior_display_semantics(facet)
+    if semantics is None:
         return "—"
-    source = facet.get("source")
-    count = facet.get("applied_target_count")
-    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-        return "—"
+    source, count = semantics
     if source == "cold_start":
         return "cold"
     if source == "shipped":
