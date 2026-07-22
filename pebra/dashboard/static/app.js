@@ -328,7 +328,7 @@
       lcard.appendChild(emptyMsg("No verified completed outcomes have produced recallable lessons yet."));
     } else {
       const t = el("table");
-      t.appendChild(headRow(["lesson", "assessment", "task", "outcome", "created"]));
+      t.appendChild(headRow(["record", "assessment", "task", "lesson", "verified outcome", "created"]));
       const tb = el("tbody");
       lessons.items.forEach((item) => {
         const tr = el("tr");
@@ -336,6 +336,7 @@
         tr.appendChild(cell(item.assessment_id, "mono"));
         tr.appendChild(cell(item.task));
         tr.appendChild(cell(item.lesson));
+        tr.appendChild(cell(item.verification_summary || item.terminal_status));
         tr.appendChild(cell((item.created_at || "").slice(0, 19), "mono"));
         tb.appendChild(tr);
       });

@@ -24,6 +24,7 @@ from pebra.core.learning_context import (
     is_valid_gate_identifier,
     is_valid_symbol,
 )
+from pebra.core.graph_snapshot import graph_snapshot_matches
 from pebra.ports.learning_context_port import LearningContextPort
 from pebra.ports.repository_explorer_port import RepositoryExplorer
 
@@ -292,6 +293,12 @@ def explore_repository(
         max_files=max_files,
         max_bytes=max_bytes,
     )
+    if not graph_snapshot_matches(
+        snapshot,
+        repository.snapshot,
+        result_available=repository.status == "available",
+    ):
+        raise RuntimeError("provider returned a mismatched graph snapshot")
     if repository.status != "available" and recall.entries:
         warnings = tuple(dict.fromkeys((*repository.warnings, _NON_CURRENT_WARNING)))
         repository = replace(repository, warnings=warnings)

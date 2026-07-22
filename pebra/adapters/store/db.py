@@ -1703,6 +1703,16 @@ class SqliteStore:
         "measured_benefit, lesson, source_assessment_hash, source_outcome_hash, created_at, row_hash"
     )
 
+    def _has_current_learning_context_schema(self) -> bool:
+        if not self._table_exists("learning_context"):
+            return False
+        columns = {
+            row[1] for row in self._con.execute("PRAGMA table_info(learning_context)")
+        }
+        required = set(self._LEARNING_ENTRY_COLUMNS.split(", "))
+        required.update(("previous_hash", "hash_version"))
+        return required.issubset(columns)
+
     @staticmethod
     def _learning_entry(row: Sequence[Any]) -> LearningContextEntry:
         values = list(row)
@@ -1756,7 +1766,16 @@ class SqliteStore:
         if type(limit) is not int:
             raise ValueError("invalid learning-context limit")
         limit = max(0, min(limit, 1000))
-        if not self._validate_learning_context_chain():
+        if not self._table_exists("learning_context"):
+            return []
+        if not self._has_current_learning_context_schema():
+            raise ValueError("unsupported legacy learning-context schema")
+        if not (
+            self._validate_assessment_chain()
+            and self._validate_outcome_chain()
+            and self._validate_guardrail_chain()
+            and self._validate_learning_context_chain()
+        ):
             raise ValueError("learning-context chain validation failed")
         params: list[Any] = [repo_id]
         where = "WHERE repo_id = ?"
@@ -2105,11 +2124,34 @@ class SqliteStore:
     def _validate_learning_context_chain(self) -> bool:
         if not self._table_exists("learning_context"):
             return True
+        if not self._has_current_learning_context_schema():
+            return False
         prev_hash = GENESIS
         rows = self._con.execute(
             f"SELECT {self._LEARNING_ENTRY_COLUMNS}, previous_hash, hash_version "
             "FROM learning_context ORDER BY id ASC"
+        ).fetchall()
+        if not rows:
+            return True
+        # Source-link verification is O(N) in row processing but constant in SQL count. Loading the
+        # source hashes once avoids a SELECT per lesson on every read-only Observatory refresh.
+        source_hashes: dict[str, tuple[str, str]] = {}
+        source_rows = self._con.execute(
+            "WITH latest_guardrails AS ("
+            "SELECT assessment_id, MAX(id) AS id FROM post_assessment_guardrails "
+            "GROUP BY assessment_id) "
+            "SELECT a.id, a.row_hash, o.row_hash, g.guardrails_json FROM assessments a "
+            "JOIN outcomes o ON o.assessment_id = a.id "
+            "JOIN latest_guardrails lg ON lg.assessment_id = a.id "
+            "JOIN post_assessment_guardrails g ON g.id = lg.id"
         )
+        for row_id, assessment_hash, outcome_hash, guardrails_json in source_rows:
+            guardrails = json.loads(guardrails_json)
+            if (
+                isinstance(guardrails, dict)
+                and guardrails.get("pre_commit_decision") == "proceed"
+            ):
+                source_hashes[f"asm_{row_id}"] = (assessment_hash, outcome_hash)
         for row in rows:
             try:
                 entry = self._learning_entry(row[:24])
@@ -2134,11 +2176,7 @@ class SqliteStore:
                 assessment_row_id = self._learning_assessment_row_id(entry.assessment_id)
             except KeyError:
                 return False
-            source = self._con.execute(
-                "SELECT a.row_hash, o.row_hash FROM assessments a "
-                "JOIN outcomes o ON o.assessment_id = a.id WHERE a.id = ?",
-                (assessment_row_id,),
-            ).fetchone()
+            source = source_hashes.get(f"asm_{assessment_row_id}")
             if source != (entry.source_assessment_hash, entry.source_outcome_hash):
                 return False
             prev_hash = entry.row_hash

@@ -5,6 +5,7 @@ Needs fastapi/jinja2/httpx -> nox only.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib.util
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 from pebra.adapters.store.db import SqliteStore
 from pebra.core.candidate_binding_contract import CANDIDATE_BINDING_ALGORITHM
 from pebra.core.constants import ActionStatus, Decision, RiskMode
+from pebra.core.learning_context import entry_hash
 from pebra.core.models import AssessmentResult
 
 pytestmark = pytest.mark.skipif(
@@ -101,6 +103,8 @@ def test_dashboard_learning_projection_includes_verified_lessons(tmp_path) -> No
     assert 'getJSON(rp("/learning/context?limit=200"))' in text
     assert 'card("Verified lessons")' in text
     assert "No verified completed outcomes" in text
+    assert 'headRow(["record", "assessment", "task", "lesson", "verified outcome", "created"])' in text
+    assert "cell(item.verification_summary" in text
 
 
 def test_assessments_route_lists_seeded(tmp_path) -> None:
@@ -178,6 +182,146 @@ def test_learning_context_route_degrades_tampered_history(tmp_path) -> None:
     assert _client(db).get(
         "/api/repos/r/learning/context", headers=_AUTH
     ).json() == {"status": "unavailable", "items": []}
+
+
+@pytest.mark.parametrize(
+    "table",
+    ["assessments", "outcomes", "post_assessment_guardrails", "learning_context"],
+)
+def test_learning_context_route_requires_every_trusted_source_chain(tmp_path, table) -> None:
+    db = str(tmp_path / f"{table}.db")
+    store = SqliteStore(db)
+    assessment_id = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED, requires_confirmation=False,
+            action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL, scores={},
+            repo_id="r", repo_root="/x",
+        ),
+        {"task": "Fix login", "action_id": "a1"},
+    )
+    store.persist_guardrails(assessment_id, {"pre_commit_decision": "proceed"})
+    store.record_outcome(assessment_id, "completed", {})
+    assert store.materialize_learning_context(assessment_id) is not None
+    store._con.execute(f"UPDATE {table} SET row_hash = ?", ("0" * 64,))
+    store._con.commit()
+    store.close()
+
+    response = _client(db).get("/api/repos/r/learning/context", headers=_AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "unavailable", "items": []}
+
+
+def test_learning_context_route_requires_a_current_proceed_guardrail(tmp_path) -> None:
+    db = str(tmp_path / "guardrail-deleted.db")
+    store = SqliteStore(db)
+    assessment_id = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED, requires_confirmation=False,
+            action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL, scores={},
+            repo_id="r", repo_root="/x",
+        ),
+        {"task": "Fix login", "action_id": "a1"},
+    )
+    store.persist_guardrails(assessment_id, {"pre_commit_decision": "proceed"})
+    store.record_outcome(assessment_id, "completed", {})
+    assert store.materialize_learning_context(assessment_id) is not None
+    store._con.execute("DELETE FROM post_assessment_guardrails")
+    store._con.commit()
+    store.close()
+
+    response = _client(db).get("/api/repos/r/learning/context", headers=_AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "unavailable", "items": []}
+
+
+def test_learning_context_route_rejects_a_valid_chain_with_a_wrong_source_link(tmp_path) -> None:
+    db = str(tmp_path / "wrong-source.db")
+    store = SqliteStore(db)
+    assessment_id = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED, requires_confirmation=False,
+            action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL, scores={},
+            repo_id="r", repo_root="/x",
+        ),
+        {"task": "Fix login", "action_id": "a1"},
+    )
+    store.persist_guardrails(assessment_id, {"pre_commit_decision": "proceed"})
+    store.record_outcome(assessment_id, "completed", {})
+    entry = store.materialize_learning_context(assessment_id)
+    assert entry is not None
+    previous_hash = store._con.execute(
+        "SELECT previous_hash FROM learning_context WHERE assessment_id = ?",
+        (assessment_id,),
+    ).fetchone()[0]
+    forged = replace(entry, source_outcome_hash="f" * 64)
+    store._con.execute(
+        "UPDATE learning_context SET source_outcome_hash = ?, row_hash = ? "
+        "WHERE assessment_id = ?",
+        (forged.source_outcome_hash, entry_hash(forged, previous_hash), assessment_id),
+    )
+    store._con.commit()
+    assert store._validate_learning_context_chain() is False
+    store.close()
+
+    response = _client(db).get("/api/repos/r/learning/context", headers=_AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "unavailable", "items": []}
+
+
+def test_learning_context_route_is_empty_for_readonly_legacy_store(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    store = SqliteStore(db)
+    store._con.execute("DROP TABLE learning_context_fts")
+    store._con.execute("DROP TABLE learning_context")
+    store._con.commit()
+    store.close()
+
+    from fastapi.testclient import TestClient
+    from pebra.dashboard.server import create_app
+
+    client = TestClient(
+        create_app(db, "tok", repo_id="r", read_only=True),
+        base_url="http://127.0.0.1",
+    )
+    response = client.get("/api/repos/r/learning/context", headers=_AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "empty", "items": []}
+
+
+def test_learning_context_route_is_unavailable_for_readonly_pre_gates_schema(tmp_path) -> None:
+    db = str(tmp_path / "legacy.db")
+    store = SqliteStore(db)
+    assessment_id = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED, requires_confirmation=False,
+            action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL, scores={},
+            repo_id="r", repo_root="/x",
+        ),
+        {"task": "Fix legacy login", "action_id": "legacy-login"},
+    )
+    store.persist_guardrails(assessment_id, {"pre_commit_decision": "proceed"})
+    store.record_outcome(assessment_id, "completed", {})
+    assert store.materialize_learning_context(assessment_id) is not None
+    assert store._con.execute("SELECT COUNT(*) FROM learning_context").fetchone()[0] == 1
+    store._con.execute("ALTER TABLE learning_context DROP COLUMN gates_fired")
+    store._con.commit()
+    store.close()
+
+    from fastapi.testclient import TestClient
+    from pebra.dashboard.server import create_app
+
+    client = TestClient(
+        create_app(db, "tok", repo_id="r", read_only=True),
+        base_url="http://127.0.0.1",
+    )
+    response = client.get("/api/repos/r/learning/context", headers=_AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "unavailable", "items": []}
 
 
 def test_dashboard_and_tui_return_identical_assessment_identity_fields(tmp_path) -> None:

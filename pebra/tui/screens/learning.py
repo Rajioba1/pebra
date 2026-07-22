@@ -64,7 +64,9 @@ def _fact_row(fact: object) -> tuple[Content, Content, Content, Content, Content
     )  # type: ignore[return-value]
 
 
-def _context_row(item: object) -> tuple[Content, Content, Content, Content, Content]:
+def _context_row(
+    item: object,
+) -> tuple[Content, Content, Content, Content, Content, Content]:
     data = item if isinstance(item, dict) else {}
     return tuple(
         Content(value)
@@ -73,6 +75,7 @@ def _context_row(item: object) -> tuple[Content, Content, Content, Content, Cont
             _text(data.get("assessment_id")),
             _text(data.get("task")),
             _text(data.get("lesson")),
+            _text(data.get("verification_summary"), fallback=_text(data.get("terminal_status"))),
             _text(data.get("created_at"))[:16].replace("T", " "),
         )
     )  # type: ignore[return-value]
@@ -119,7 +122,9 @@ class LearningScreen(Screen):
         facts = self.query_one("#learning-facts", DataTable)
         facts.add_columns("fact", "snapshot", "target", "status", "created")
         context = self.query_one("#learning-context", DataTable)
-        context.add_columns("lesson", "assessment", "task", "verified outcome", "created")
+        context.add_columns(
+            "record", "assessment", "task", "lesson", "verified outcome", "created"
+        )
         self.action_refresh()
 
     def on_unmount(self) -> None:

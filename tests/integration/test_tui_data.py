@@ -283,3 +283,102 @@ def test_learning_snapshot_is_explicit_and_separate_from_the_refresh_poll(tmp_pa
     assert learning.snapshots == []
     assert learning.facts == []
     assert learning.learning_context == {"status": "empty", "items": []}
+
+
+def test_legacy_readonly_store_without_learning_context_stays_usable(tmp_path) -> None:
+    db, _, _ = _seed(tmp_path)
+    store = SqliteStore(db)
+    store._con.execute("DROP TABLE learning_context_fts")
+    store._con.execute("DROP TABLE learning_context")
+    store._con.commit()
+    store.close()
+
+    data = ObservatoryData(_ctx(db))
+    refresh = data.refresh_snapshot()
+    learning = data.learning_snapshot()
+
+    assert refresh.overview["total"] == 2
+    assert refresh.lesson_facets == {}
+    assert learning.learning_context == {"status": "empty", "items": []}
+
+
+def test_legacy_readonly_store_with_pre_gates_learning_schema_stays_usable(tmp_path) -> None:
+    db = str(tmp_path / "legacy.db")
+    store = SqliteStore(db)
+    assessment_id = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED, requires_confirmation=False,
+            action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL, scores={},
+            repo_id="r", repo_root="/x",
+        ),
+        {"task": "Fix legacy login", "action_id": "legacy-login"},
+    )
+    store.persist_guardrails(assessment_id, {"pre_commit_decision": "proceed"})
+    store.record_outcome(assessment_id, "completed", {})
+    assert store.materialize_learning_context(assessment_id) is not None
+    assert store._con.execute("SELECT COUNT(*) FROM learning_context").fetchone()[0] == 1
+    store._con.execute("ALTER TABLE learning_context DROP COLUMN gates_fired")
+    store._con.commit()
+    store.close()
+
+    data = ObservatoryData(_ctx(db))
+    refresh = data.refresh_snapshot()
+    learning = data.learning_snapshot()
+
+    assert refresh.overview["total"] == 1
+    assert refresh.chain["valid"] is False
+    assert refresh.lesson_facets == {}
+    assert learning.learning_context == {"status": "unavailable", "items": []}
+
+
+def test_refresh_learning_validation_query_count_is_constant_for_one_or_many_lessons(
+    monkeypatch, tmp_path
+) -> None:
+    def seeded_db(name: str, count: int) -> str:
+        root = tmp_path / name
+        root.mkdir()
+        db = str(root / "pebra.db")
+        store = SqliteStore(db)
+        for index in range(count):
+            assessment_id = store.persist_assessment(
+                AssessmentResult(
+                    recommended_decision=Decision.PROCEED, requires_confirmation=False,
+                    action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL,
+                    scores={"rau": 0.2}, repo_id="r", repo_root="/x",
+                ),
+                {"task": f"Fix item {index}", "action_id": f"a{index}"},
+            )
+            store.persist_guardrails(
+                assessment_id, {"pre_commit_decision": "proceed"}
+            )
+            store.record_outcome(assessment_id, "completed", {})
+            assert store.materialize_learning_context(assessment_id) is not None
+        store.close()
+        return db
+
+    one = seeded_db("one", 1)
+    many = seeded_db("many", 6)
+    import pebra.tui.data as data_mod
+
+    real = data_mod.SqliteStore
+    traces: list[str] = []
+
+    class TracedStore(real):  # type: ignore[valid-type,misc]
+        def __init__(self, path, *, read_only=False):
+            super().__init__(path, read_only=read_only)
+            self._con.set_trace_callback(
+                lambda sql: traces.append(sql) if sql.lstrip().upper().startswith("SELECT") else None
+            )
+
+    monkeypatch.setattr(data_mod, "SqliteStore", TracedStore)
+
+    one_snapshot = ObservatoryData(_ctx(one)).refresh_snapshot()
+    one_count = len(traces)
+    traces.clear()
+    many_snapshot = ObservatoryData(_ctx(many)).refresh_snapshot()
+    many_count = len(traces)
+
+    assert len(one_snapshot.lesson_facets) == 1
+    assert len(many_snapshot.lesson_facets) == 6
+    assert many_count == one_count
+    assert not any("WHERE a.id =" in statement for statement in traces)

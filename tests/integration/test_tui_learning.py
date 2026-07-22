@@ -102,6 +102,8 @@ def test_learning_screen_renders_active_rows_as_literal_content_and_refreshes_on
                         "assessment_id": "asm_1",
                         "task": "Fix Dict[str, Any]",
                         "lesson": "Verified [bold] lesson",
+                        "terminal_status": "completed",
+                        "verification_summary": "PEBRA verify proceeded",
                         "created_at": "2026-07-22T12:00:00+00:00",
                     }],
                 },
@@ -117,8 +119,13 @@ def test_learning_screen_renders_active_rows_as_literal_content_and_refreshes_on
             assert snapshots.get_cell_at((0, 4)).plain == "[bold] verified"
             assert facts.get_cell_at((0, 2)).plain == "Dict[str, Any]"
             lessons = screen.query_one("#learning-context", DataTable)
+            assert [column.label.plain for column in lessons.columns.values()] == [
+                "record", "assessment", "task", "lesson", "verified outcome", "created"
+            ]
+            assert lessons.get_cell_at((0, 0)).plain == "lc_[1]"
             assert lessons.get_cell_at((0, 2)).plain == "Fix Dict[str, Any]"
             assert lessons.get_cell_at((0, 3)).plain == "Verified [bold] lesson"
+            assert lessons.get_cell_at((0, 4)).plain == "PEBRA verify proceeded"
             assert data.calls == 1
             await pilot.press("r")
             await _pause_until(lambda: not screen.loading, pilot)

@@ -10,7 +10,7 @@ from typing import Any, TypeAlias
 from textual.app import App
 
 from pebra.core.exploration import ExplorationResult
-from pebra.core.graph_snapshot import GraphSnapshot
+from pebra.core.graph_snapshot import GraphSnapshot, graph_snapshot_matches
 from pebra.core.learning_context import LearningContextRecall
 from pebra.ports.repository_explorer_port import (
     RepositoryExplorer,
@@ -156,24 +156,10 @@ class RepositoryExplorationCoordinator:
 
     @staticmethod
     def _snapshot_matches(prepared: GraphSnapshot, result: ExplorationResult) -> bool:
-        if result.status == "available":
-            return result.snapshot == prepared
-        return (
-            result.snapshot.provider,
-            result.snapshot.provider_version,
-            result.snapshot.index_version,
-            result.snapshot.repo_head,
-            result.snapshot.config_digest,
-            result.snapshot.graph_scope_digest,
-            result.snapshot.sync_performed,
-        ) == (
-            prepared.provider,
-            prepared.provider_version,
-            prepared.index_version,
-            prepared.repo_head,
-            prepared.config_digest,
-            prepared.graph_scope_digest,
-            prepared.sync_performed,
+        return graph_snapshot_matches(
+            prepared,
+            result.snapshot,
+            result_available=result.status == "available",
         )
 
     def _deliver_if_current(

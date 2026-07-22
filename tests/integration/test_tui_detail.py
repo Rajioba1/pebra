@@ -912,6 +912,45 @@ def test_mismatched_result_snapshot_is_rejected_before_render() -> None:
     asyncio.run(scenario())
 
 
+def test_m5b_tui_knowledge_path_rejects_mismatched_result_snapshot(tmp_path) -> None:
+    class MismatchedExplorer(_RecordingExplorer):
+        def explore(
+            self,
+            repo_root,
+            query,
+            *,
+            snapshot,
+            files=(),
+            max_files=8,
+            max_bytes=24_000,
+        ):
+            result = _exploration_result()
+            return replace(
+                result,
+                snapshot=replace(result.snapshot, graph_scope_digest="different"),
+            )
+
+    async def scenario() -> None:
+        db = _seed(tmp_path)
+        context = ObservatoryContext(db, "r", "/repo", True)
+        explorer = MismatchedExplorer()
+        data = ObservatoryData(context)
+        coordinator = RepositoryExplorationCoordinator(
+            lambda: explorer, knowledge_explorer=data.explore_repository
+        )
+        screen = AssessmentDetailScreen(
+            _detail(), repo_root="/repo", exploration=coordinator
+        )
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.press("x")
+            await _pause_until(lambda: not coordinator.busy, pilot)
+
+            assert "failed" in screen.query_one("#exploration-status").render().plain.lower()
+            assert screen.query_one("#exploration-result").render().plain == ""
+
+    asyncio.run(scenario())
+
+
 def test_single_flight_is_shared_across_detail_screens() -> None:
     async def scenario() -> None:
         explorer = _RecordingExplorer(block=True)

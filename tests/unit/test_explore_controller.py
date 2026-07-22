@@ -4,6 +4,8 @@ from dataclasses import asdict, replace
 import json
 import math
 
+import pytest
+
 from pebra.app import explore_controller
 from pebra.core.exploration import ExplorationResult
 from pebra.core.graph_snapshot import GraphSnapshot
@@ -294,6 +296,45 @@ def test_graph_unavailable_keeps_history_but_marks_it_non_current(tmp_path) -> N
     assert result.learning_context.entries
     assert result.repository_context.status == "unavailable"
     assert any("cannot establish current repository truth" in value for value in result.repository_context.warnings)
+
+
+def test_available_repository_result_must_match_prepared_snapshot(tmp_path) -> None:
+    calls: list[tuple] = []
+
+    class Mismatched(_Explorer):
+        def explore(self, repo_root, query, **kwargs):
+            result = super().explore(repo_root, query, **kwargs)
+            return replace(
+                result,
+                snapshot=replace(result.snapshot, graph_scope_digest="different"),
+            )
+
+    with pytest.raises(RuntimeError, match="mismatched graph snapshot"):
+        explore_controller.explore_repository(
+            str(tmp_path), "repo_1", "query",
+            learning_port=None, explorer=Mismatched(calls),
+        )
+
+
+def test_unavailable_repository_result_may_change_only_status_and_reason(tmp_path) -> None:
+    calls: list[tuple] = []
+
+    class QueryFailure(_Explorer):
+        def explore(self, repo_root, query, **kwargs):
+            prepared = kwargs["snapshot"]
+            failed = replace(prepared, status="error", fallback_reason="query failed")
+            return ExplorationResult(
+                status="error", snapshot=failed, context="", dependent_files=(),
+                affected_tests=(), warnings=(), fallback_reason="query failed", truncated=False,
+            )
+
+    result = explore_controller.explore_repository(
+        str(tmp_path), "repo_1", "query",
+        learning_port=None, explorer=QueryFailure(calls),
+    )
+
+    assert result.repository_context.status == "error"
+    assert result.repository_context.fallback_reason == "query failed"
 
 
 def test_recall_exceptions_fail_soft_before_current_graph(tmp_path) -> None:
