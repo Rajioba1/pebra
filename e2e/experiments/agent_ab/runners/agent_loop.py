@@ -240,6 +240,8 @@ def _is_exact_candidate_application(
     if name != "apply_patch":
         return False
     patch_id = args.get("candidate_patch_id")
+    if not isinstance(patch_id, str) or not patch_id:
+        return False
     assessment_id = getattr(setup, "candidate_assessments", {}).get(patch_id)
     return isinstance(assessment_id, str) and callable(
         getattr(setup, "apply_candidate_backend", None)

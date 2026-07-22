@@ -424,6 +424,43 @@ def test_exact_candidate_application_fails_closed_when_its_allocation_is_too_sma
     assert result.limit_reason == "candidate_application_budget_exhausted"
 
 
+@pytest.mark.parametrize("candidate_patch_id", ([], {}, None, ""))
+def test_malformed_candidate_patch_id_is_refused_without_crashing(
+    candidate_patch_id, tmp_path, monkeypatch
+):
+    _no_git(monkeypatch)
+    setup = _setup(tmp_path)
+    setup.candidate_assessments = {}
+    setup.apply_candidate_backend = lambda *_args, **_kwargs: pytest.fail(
+        "malformed candidate id must not reach production application"
+    )
+
+    result = agent_loop.run(
+        setup,
+        _SPEC,
+        0,
+        client=ScriptedClient(
+            [
+                _tool("apply_patch", {"candidate_patch_id": candidate_patch_id}),
+                ModelTurn(text="stopped", stop_reason="end_turn"),
+            ]
+        ),
+        config=agent_loop.RunConfig(
+            model="m",
+            max_wall_seconds_per_run=10,
+            apply_verify_reserve_seconds=6,
+            tools=("apply_patch",),
+        ),
+    )
+
+    assert result.error is None
+    assert result.tool_calls[0].result == {
+        "ok": False,
+        "blocked": False,
+        "reason": "provide exactly one of patch or candidate_patch_id",
+    }
+
+
 def test_tool_call_captured_with_sequence(tmp_path, monkeypatch):
     _no_git(monkeypatch)
     client = ScriptedClient([_tool("list_dir"), ModelTurn(text="done", stop_reason="end_turn")])
