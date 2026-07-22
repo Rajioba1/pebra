@@ -116,6 +116,36 @@ def test_explore_json_serializes_provider_neutral_dataclasses(monkeypatch, capsy
     assert "codegraph" not in payload
 
 
+def test_explore_json_is_currently_flat_without_learning_context(monkeypatch, capsys) -> None:
+    """Milestone 0 characterization: the current explore --json is a flat ExplorationResult with no
+    learning_context/repository_context sectioning. Locks the 'before' shape so Milestone 5A's
+    two-section restructure (recall first, current repository second) is a reviewable diff."""
+    monkeypatch.setattr(composition, "explore_repository", lambda *a, **k: _result())
+
+    assert main.main(["explore", "repository resolution", "--file", "src/target.py", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "status" in payload and "context" in payload  # flat, top-level structural fields
+    assert "learning_context" not in payload  # recall section does not exist yet
+    assert "repository_context" not in payload  # not sectioned yet
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 5A: learning_context recall section not implemented yet")
+def test_explore_json_returns_learning_context_before_repository_context(monkeypatch, capsys) -> None:
+    """Milestone 0 forward spec for Milestone 5A: explore --json returns a top-level learning_context
+    (historical recall) followed by repository_context (current structural retrieval), each with its
+    own status/provenance; the structural fields move under repository_context."""
+    monkeypatch.setattr(composition, "explore_repository", lambda *a, **k: _result())
+
+    assert main.main(["explore", "repository resolution", "--file", "src/target.py", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "learning_context" in payload and "repository_context" in payload
+    keys = list(payload.keys())
+    assert keys.index("learning_context") < keys.index("repository_context")
+    assert "status" in payload["repository_context"]
+
+
 def test_explore_human_output_includes_snapshot_context_impact_and_warnings(
     monkeypatch, capsys
 ) -> None:

@@ -295,6 +295,94 @@ def test_ledger_uses_locked_breakpoint_columns(tmp_path, width: int, expected: l
     asyncio.run(scenario())
 
 
+@pytest.mark.xfail(strict=True, reason="Milestone 1: complete column set at every width not implemented yet")
+@pytest.mark.parametrize("width", [70, 80, 100, 120])
+def test_every_width_requests_the_complete_semantic_column_set(tmp_path, width: int) -> None:
+    """Milestone 0 forward spec for Milestone 1: no width silently drops instrument fields; narrow
+    terminals scroll instead. Tolerant of Milestone 2's later loss/benefit header rename by matching
+    on substring anchors, so this XPASSes at M1 (columns present) regardless of M2's wording."""
+    from textual.widgets import DataTable
+
+    db = _seed(tmp_path, rows=2)
+    captured: dict[str, list[str]] = {}
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(width, 30)) as pilot:
+            await pilot.pause()
+            table = app.query_one("#ledger", DataTable)
+            assert table.fixed_columns == 1
+            captured["labels"] = [c.lower() for c in _column_labels(table)]
+
+    asyncio.run(scenario())
+    labels = captured["labels"]
+    # Every instrument field must be present at every width.
+    assert any("loss" in label for label in labels), labels
+    assert any("benefit" in label for label in labels), labels
+    for required in ("id", "target", "decision", "rau", "status", "prior", "task", "gate lane", "assessed time"):
+        assert any(required in label for label in labels), (required, labels)
+    assert len(labels) >= 12, labels
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 1: horizontal scroll to last column not implemented yet")
+def test_narrow_ledger_scrolls_to_last_column_without_changing_selection(tmp_path) -> None:
+    """Milestone 0 forward spec for Milestone 1: at 70 columns the full instrument overflows and the
+    last column is reachable by horizontal scroll, and scrolling never changes the selected row."""
+    from textual.widgets import DataTable
+
+    db = _seed(tmp_path, rows=3)
+    result: dict[str, object] = {}
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(70, 24)) as pilot:
+            table = app.query_one("#ledger", DataTable)
+            table.focus()
+            table.move_cursor(row=1, column=0, scroll=False)
+            selected = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+            await pilot.pause()
+            result["overflows"] = table.max_scroll_x > 0
+            await pilot.press("end")  # jump to the horizontal end (row-cursor mode -> scroll_x=max)
+            await pilot.pause()
+            result["reached_end"] = table.scroll_x == table.max_scroll_x
+            still = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+            result["selection_preserved"] = still == selected
+
+    asyncio.run(scenario())
+    assert result["overflows"] is True
+    assert result["reached_end"] is True
+    assert result["selection_preserved"] is True
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 1: horizontal scroll preserved across data refresh not implemented yet")
+def test_horizontal_scroll_survives_a_data_refresh(tmp_path) -> None:
+    """Milestone 0 forward spec for Milestone 1: a 5s/manual data refresh must not reset horizontal
+    scroll (columns are installed once, not rebuilt). Requires the complete overflowing column set."""
+    from textual.widgets import DataTable
+
+    db = _seed(tmp_path, rows=3)
+    result: dict[str, object] = {}
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(70, 24)) as pilot:
+            table = app.query_one("#ledger", DataTable)
+            table.focus()
+            await pilot.pause()
+            await pilot.press("end")  # scroll to the horizontal end
+            await pilot.pause()
+            before = table.scroll_x
+            await pilot.press("r")  # manual refresh
+            await pilot.pause()
+            result["before"] = before
+            result["overflowed"] = before > 0
+            result["after"] = table.scroll_x
+
+    asyncio.run(scenario())
+    assert result["overflowed"] is True
+    assert result["after"] == result["before"]  # refresh preserved horizontal scroll
+
+
 def test_resize_rebuild_preserves_selected_assessment(tmp_path) -> None:
     from textual.widgets import DataTable
 

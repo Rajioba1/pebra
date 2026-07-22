@@ -102,6 +102,30 @@ def test_assessments_route_lists_seeded(tmp_path) -> None:
     assert resp.json()["items"][0]["assessment_id"] == asm
 
 
+def test_learning_routes_characterize_current_items_envelope_and_auth(tmp_path) -> None:
+    """Milestone 0 characterization: lock the current /learning/snapshots and /learning/facts JSON
+    envelope + bearer enforcement before Milestone 3 rewires them through the shared controller.
+    Milestone 3 must preserve this byte-equivalent envelope."""
+    db, _ = _seed(tmp_path)
+    client = _client(db)
+    for route in ("/api/repos/r/learning/snapshots", "/api/repos/r/learning/facts"):
+        assert client.get(route).status_code == 401  # bearer required
+        resp = client.get(route, headers=_AUTH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "items" in body and isinstance(body["items"], list)  # {"items": [...]} envelope
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 5A: /learning/context route not implemented yet")
+def test_learning_context_route_serves_verified_lessons(tmp_path) -> None:
+    """Milestone 0 forward spec for Milestone 5A: a repo-scoped, bearer-guarded /learning/context
+    route exposes verified lessons through the same {'items': [...]} envelope."""
+    db, _ = _seed(tmp_path)
+    resp = _client(db).get("/api/repos/r/learning/context", headers=_AUTH)
+    assert resp.status_code == 200
+    assert "items" in resp.json()
+
+
 def test_dashboard_and_tui_return_identical_assessment_identity_fields(tmp_path) -> None:
     from pebra.observatory_context import ObservatoryContext
     from pebra.tui.data import ObservatoryData

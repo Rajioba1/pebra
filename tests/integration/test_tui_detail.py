@@ -143,6 +143,27 @@ def test_sections_split_scores_from_evidence_and_carry_guidance() -> None:
     assert sections["Guardrails"] == [{"decision": "proceed"}]
 
 
+def test_detail_scores_currently_carry_exact_decimals_without_unit_annotations() -> None:
+    """Milestone 0 characterization: detail currently exposes raw score decimals with no human-unit
+    annotation. Locks the 'before' state ahead of Milestone 2 adding 'X pts' / 'N/100'."""
+    detail = _detail()
+    detail["content"]["scores"] = {"rau": -0.14, "expected_loss": 0.1, "benefit": 0.82}
+    scores = dict(detail_sections(detail))["Scores"]
+    assert scores["expected_loss"] == 0.1 and scores["benefit"] == 0.82  # exact decimals preserved
+    assert "pts" not in repr(scores) and "/100" not in repr(scores)  # no annotation yet
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 2: detail unit annotations (pts, /100) not implemented yet")
+def test_detail_annotates_loss_points_and_benefit_score_beside_exact_decimals() -> None:
+    """Milestone 0 forward spec for Milestone 2: detail keeps the exact decimals AND shows the human
+    units — expected loss 0.100 (10 pts), benefit 0.820 (82/100). Exact decimals must remain."""
+    detail = _detail()
+    detail["content"]["scores"] = {"rau": -0.14, "expected_loss": 0.1, "benefit": 0.82}
+    rendered = repr(dict(detail_sections(detail)))
+    assert "10 pts" in rendered and "82/100" in rendered
+    assert "0.1" in rendered and "0.82" in rendered  # exact decimals still present
+
+
 def test_detail_lists_declared_and_bound_files_separately() -> None:
     sections = dict(detail_sections(_detail()))
     identity = sections["Assessment identity"]

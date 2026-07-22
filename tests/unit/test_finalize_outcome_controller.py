@@ -35,6 +35,44 @@ def _result(promoted=False):
     return SimpleNamespace(promoted=promoted, snapshot_id="rs_1" if promoted else None)
 
 
+class _NoVerifyStore(_Store):
+    def latest_guardrails(self, _assessment_id):
+        return None  # no passing pebra verify result was persisted
+
+
+class _RejectedVerifyStore(_Store):
+    def latest_guardrails(self, _assessment_id):
+        return {"pre_commit_decision": "reject"}  # verify ran but did not pass
+
+
+@pytest.mark.parametrize("store_factory", [_NoVerifyStore, _RejectedVerifyStore])
+def test_completed_requires_persisted_passing_verify_trust_gate(monkeypatch, store_factory) -> None:
+    """Milestone 0 characterization lock of the plan's core trust invariant.
+
+    A 'completed' outcome cannot be finalized — and therefore can never seed a learning_context
+    lesson in Milestone 5 — unless PEBRA's own verify guardrail independently persisted
+    ``pre_commit_decision == 'proceed'``. Trust comes from the persisted verification, not from the
+    caller identity or ``label_source``. This locks the gate at the finalize path (which routes
+    through ``record_outcome_controller.record_outcome``) before any later milestone materializes a
+    lesson from a completed outcome."""
+    monkeypatch.setattr(
+        foc.learning_controller, "measure_learning",
+        lambda *a, **k: SimpleNamespace(observed=1, censored=0),
+    )
+    monkeypatch.setattr(foc.promotion_controller, "run_promotion", lambda *a, **k: _result())
+    monkeypatch.setattr(foc.promotion_controller, "run_benefit_promotion", lambda *a, **k: _result())
+    monkeypatch.setattr(foc.promotion_controller, "run_review_cost_promotion", lambda *a, **k: _result())
+
+    store = store_factory()
+    with pytest.raises(ValueError):
+        foc.finalize_outcome(
+            "asm_1", "completed", detail={"actual_success": True}, store=store,
+            learning_port=object(),
+        )
+    # Fail-closed: no outcome row was written when the verify gate rejected.
+    assert store.outcomes == []
+
+
 def test_finalize_is_idempotent_and_uses_stable_promotion_triggers(monkeypatch) -> None:
     store = _Store()
     learning_calls = []

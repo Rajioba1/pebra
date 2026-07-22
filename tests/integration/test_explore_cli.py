@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
@@ -226,3 +228,35 @@ def test_dashboard_read_only_never_invokes_graph_launcher(tmp_path) -> None:
 
     assert proc.returncode == 0, proc.stderr
     assert _calls(log) == []
+
+
+def test_explore_json_output_is_currently_flat_without_learning_context(tmp_path) -> None:
+    """Milestone 0 characterization: the real explore CLI JSON is a flat ExplorationResult today —
+    no learning_context section. Locks the 'before' shape for the Milestone 5A restructure."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _repo(repo)
+    launcher, log = _launcher(tmp_path)
+
+    proc = _run(repo, launcher, log, "explore", "repository resolution", "--json")
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert "status" in payload
+    assert "learning_context" not in payload
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 5A: real explore CLI learning_context section not implemented yet")
+def test_explore_json_output_leads_with_learning_context(tmp_path) -> None:
+    """Milestone 0 forward spec for Milestone 5A: the real explore CLI JSON returns a top-level
+    learning_context (recall) followed by repository_context (current retrieval)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _repo(repo)
+    launcher, log = _launcher(tmp_path)
+
+    proc = _run(repo, launcher, log, "explore", "repository resolution", "--json")
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert "learning_context" in payload and "repository_context" in payload

@@ -72,6 +72,25 @@ def test_protocol_v3_enforces_the_ordered_cognitive_lifecycle() -> None:
         assert provider_detail not in normalized.lower()
 
 
+@pytest.mark.xfail(strict=True, reason="Milestone 6: protocol v4 (recall/calculate/enforce/learn) not implemented yet")
+def test_protocol_v4_teaches_recall_calculate_enforce_and_learn_phases() -> None:
+    """Milestone 0 forward spec for Milestone 6. v4 inserts historical-lesson recall before current-
+    repository retrieval, and names Calculate, Evaluate gates, Enforce, and Learn/promote as distinct
+    phases — while staying provider-neutral. PROTOCOL_VERSION == 4 is the unambiguous landing gate."""
+    assert agent_init.PROTOCOL_VERSION == 4
+
+    normalized = " ".join(agent_init._PROTOCOL_BODY.split()).lower()
+    # Recall (historical lessons) must precede current-repository retrieval, which precedes design.
+    ordered_markers = ("recall", "current repository", "design", "assess", "calculate", "gate", "enforce", "apply", "verify", "learn")
+    positions = [normalized.index(marker) for marker in ordered_markers]
+    assert positions == sorted(positions), normalized
+    # Recall stays advisory history, never authorization or trusted scoring evidence.
+    assert "advisory" in normalized
+    # Provider neutrality is retained under v4.
+    for provider_detail in ("codegraph", "mcp", "agentmemory", "provider selector"):
+        assert provider_detail not in normalized
+
+
 def test_non_negotiables_are_shared_by_rule_and_protocol() -> None:
     assert agent_init._NON_NEGOTIABLES in agent_init._PROTOCOL_BODY
     assert agent_init._NON_NEGOTIABLES in agent_init._CLAUDE_RULE_MD

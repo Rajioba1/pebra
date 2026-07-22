@@ -102,3 +102,72 @@ def test_task_display_is_bounded_without_mutating_row_data() -> None:
 
     assert format_task(row["task"]) == "Update authentication valid…"
     assert row["task"] == "  Update   authentication validation across every entry point  "
+
+
+# --- Milestone 0 characterization lock: forward-looking score-unit formatters ---------------
+# `format_loss_points` / `format_benefit_score` are introduced in Milestone 2. These xfail(strict)
+# cases are the executable spec for that milestone: when M2 lands them, the tests XPASS and strict
+# xfail fails, forcing removal of the marker. Imports live inside each test so the not-yet-existing
+# symbol raises at call time (an expected failure), never a collection error for this whole file.
+
+import math  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 2: format_loss_points not implemented yet")
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0.0, "0 pts"),
+        (0.1, "10 pts"),
+        (0.82, "82 pts"),
+        (1.45, "145 pts"),  # unbounded: expected_loss is Sigma(p*disutility), never clamped to 100
+    ],
+)
+def test_loss_points_render_unbounded_and_never_clamped(value: float, expected: str) -> None:
+    from pebra.tui.widgets.ledger_table import format_loss_points
+
+    assert format_loss_points(value) == expected
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 2: format_loss_points not implemented yet")
+@pytest.mark.parametrize("value", [None, True, float("nan"), float("inf"), float("-inf")])
+def test_loss_points_reject_missing_boolean_and_nonfinite(value: object) -> None:
+    from pebra.tui.widgets.ledger_table import format_loss_points
+
+    assert format_loss_points(value) == "—"
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 2: format_benefit_score not implemented yet")
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0.0, "0/100"), (0.1, "10/100"), (0.82, "82/100"), (1.0, "100/100")],
+)
+def test_benefit_score_renders_as_n_over_100(value: float, expected: str) -> None:
+    from pebra.tui.widgets.ledger_table import format_benefit_score
+
+    assert format_benefit_score(value) == expected
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 2: format_benefit_score not implemented yet")
+@pytest.mark.parametrize("value", [None, True, float("nan"), float("inf")])
+def test_benefit_score_rejects_missing_boolean_and_nonfinite(value: object) -> None:
+    from pebra.tui.widgets.ledger_table import format_benefit_score
+
+    assert format_benefit_score(value) == "—"
+
+
+def test_expected_loss_is_genuinely_unbounded_in_scoring_math() -> None:
+    """Characterization: the domain assumption behind '145 pts' — expected_loss can exceed 1.0.
+
+    Locks the fact (not just the display) so a future clamp anywhere upstream is caught here."""
+    from pebra.core.score_math import expected_loss
+
+    events = [
+        {"p_event": 1.0, "disutility": 0.8},
+        {"p_event": 1.0, "disutility": 0.65},
+    ]
+    total, _components = expected_loss(events)  # returns (total, per-event components)
+    assert total > 1.0 and math.isfinite(total)
+    assert round(total, 2) == 1.45  # the exact '145 pts' regression case

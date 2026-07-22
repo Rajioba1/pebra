@@ -14,6 +14,33 @@ import pytest
 from pebra.app import observatory_query_controller as oqc
 
 
+def test_observatory_read_port_currently_declares_exactly_four_methods() -> None:
+    """Milestone 0 characterization: lock the shared read-port surface before Milestone 3 extends it
+    with learning reads, so the extension is a reviewable, intentional diff."""
+    import inspect
+
+    from pebra.ports import observatory_read_port as orp
+
+    methods = {
+        name for name, value in vars(orp.ObservatoryReadPort).items()
+        if inspect.isfunction(value) and not name.startswith("_")
+    }
+    assert methods == {"assessment_facets", "list_assessments", "assessment_detail", "chain_status"}
+
+
+@pytest.mark.xfail(strict=True, reason="Milestone 3: learning read methods not on the port yet")
+def test_observatory_read_port_gains_shared_learning_read_methods() -> None:
+    """Milestone 0 forward spec for Milestone 3: the dashboard and TUI obtain snapshots, facts, and
+    per-assessment prior facets through the SAME port, not by duplicating store queries."""
+    import inspect
+
+    from pebra.ports import observatory_read_port as orp
+
+    methods = {name for name, value in vars(orp.ObservatoryReadPort).items() if inspect.isfunction(value)}
+    for method in ("list_risk_snapshots", "list_learned_risk_facts", "assessment_prior_facets"):
+        assert method in methods
+
+
 class _FakePort:
     """Structural ObservatoryReadPort. Rows are returned as-is (already repo-scoped by the caller in
     production); limit/offset slicing mirrors the store so pass-through is observable."""
