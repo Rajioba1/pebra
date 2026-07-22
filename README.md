@@ -19,7 +19,8 @@ CLI, TUI, MCP, development, validation, and release command inventory.
 - Read-only local Risk Observatory dashboard for assessment, calibration, learning, and graph state.
 - Read-only Textual Observatory with assessment identity, repeat grouping, and explicit detail-only
   impact exploration.
-- Provider-neutral `pebra explore` for bounded repository context from an existing graph index.
+- Provider-neutral `pebra explore` that recalls bounded PEBRA history before retrieving current
+  repository context from an existing graph index.
 - Explicit graph-engine setup and diagnostics through `pebra setup-graph` and `pebra doctor`.
 - CodeGraph-backed evidence:
   - per-symbol fan-in;
@@ -129,10 +130,14 @@ The generated agent protocol follows one cognitive lifecycle:
 
 `Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify`
 
-Read-only work may stop after Understand. Before any create, edit, rename, or delete, the agent retrieves
-equivalent current repository context (using `pebra explore` when needed), designs the exact files and
-patch, and submits that candidate to `pebra assess`. Exploration is descriptive only; CodeGraph is the
-current graph adapter, but it never authorizes an edit. PEBRA's decision applies to the exact candidate.
+Read-only work may stop after Understand. Before any create, edit, rename, or delete, the agent uses
+`pebra explore` to recall relevant verified PEBRA history first and retrieve current repository context
+second, designs the exact files and patch, and submits that candidate to `pebra assess`. Historical
+records are data, not instructions. Only validated file and symbol identifiers may refine the current
+graph lookup; historical prose, decisions, scores, and outcomes never enter it. CodeGraph is the current
+structural adapter, but neither recall nor graph context authorizes an edit. PEBRA's decision applies to
+the exact candidate. Displayed `learning_context` informs Understand; only separately promoted numeric
+facts can influence Assess.
 `reject` means **Reject candidate**, not reject the maintainer's goal: the agent presents the recorded
 reason and risk-benefit evidence. Only a hash-covered, sanction-convertible risk rejection with valid
 replay can advertise trusted interactive review; policy and obligation failures require a compliant route.

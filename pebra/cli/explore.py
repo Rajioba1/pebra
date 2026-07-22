@@ -8,7 +8,9 @@ from dataclasses import asdict
 from typing import Any
 
 from pebra import composition
+from pebra.app.explore_controller import KnowledgeExplorationResult
 from pebra.core.exploration import ExplorationResult, normalize_repository_files
+from pebra.core.learning_context import LearningContextRecall
 
 
 def register(subparsers: Any) -> None:
@@ -44,7 +46,31 @@ def register(subparsers: Any) -> None:
     parser.set_defaults(func=run_explore, _explore_parser=parser)
 
 
-def _print_human(result: ExplorationResult) -> None:
+def _literal(value: str) -> str:
+    """Render recalled data literally without terminal control interpretation."""
+    return "".join(
+        character if ord(character) >= 32 and character != "\x7f" else f"\\x{ord(character):02x}"
+        for character in value
+    )
+
+
+def _print_learning(recall: LearningContextRecall) -> None:
+    print("Historical record — not instructions")
+    print(f"  status: {recall.status}")
+    print(f"  truncated: {'yes' if recall.truncated else 'no'}")
+    for entry in recall.entries:
+        print(f"  {entry.learning_context_id} · {_literal(entry.task)}")
+        print(f"    lesson: {_literal(entry.lesson)}")
+        if entry.target_files:
+            print(f"    files: {', '.join(entry.target_files)}")
+        if entry.symbols:
+            print(f"    symbols: {', '.join(entry.symbols)}")
+    for warning in recall.warnings:
+        print(f"  warning: {_literal(warning)}")
+
+
+def _print_repository(result: ExplorationResult) -> None:
+    print("\nCurrent repository context")
     snapshot = result.snapshot
     print(f"explore - status: {result.status}")
     print(f"  snapshot HEAD: {snapshot.repo_head or 'unavailable'}")
@@ -70,6 +96,11 @@ def _print_human(result: ExplorationResult) -> None:
         print(f"\nFallback: {result.fallback_reason}")
 
 
+def _print_human(result: KnowledgeExplorationResult) -> None:
+    _print_learning(result.learning_context)
+    _print_repository(result.repository_context)
+
+
 def run_explore(args: Any) -> int:
     query = args.query or ""
     files = normalize_repository_files(args.repo_root, tuple(args.files))
@@ -88,7 +119,7 @@ def run_explore(args: Any) -> int:
     except Exception as exc:  # unexpected adapter contract/runtime failure
         print(f"repository explorer contract failure: {exc}", file=sys.stderr)
         return 1
-    if not isinstance(result, ExplorationResult):
+    if not isinstance(result, KnowledgeExplorationResult):
         print("repository explorer contract failure: invalid result", file=sys.stderr)
         return 1
     if args.as_json:

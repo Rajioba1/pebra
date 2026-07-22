@@ -33,7 +33,7 @@ from pebra.adapters.snapshot_read_store import SnapshotReadStore
 from pebra.adapters.store.db import SqliteStore
 from pebra.adapters.structural_feature_adapter import StructuralFeatureAdapter
 from pebra.core.models import AssessmentRequest, GraphRiskScope
-from pebra.core.exploration import ExplorationResult, clamp_bounds
+from pebra.app.explore_controller import KnowledgeExplorationResult
 from pebra.ports.sanction_port import SanctionPort
 from pebra.ports.repository_explorer_port import RepositoryExplorer
 
@@ -118,21 +118,32 @@ def explore_repository(
     files: tuple[str, ...] = (),
     max_files: int = 8,
     max_bytes: int = 24_000,
-) -> ExplorationResult:
-    """Prepare once, then query that exact fenced snapshot through one explorer instance."""
-    from pebra.adapters.codegraph_explorer import CodeGraphExplorer  # noqa: PLC0415
+) -> KnowledgeExplorationResult:
+    """Resolve one repo scope, recall its verified history, then query current structure."""
+    from pebra.app import explore_controller  # noqa: PLC0415
 
-    max_files, max_bytes = clamp_bounds(max_files, max_bytes)
-    explorer = CodeGraphExplorer()
-    snapshot = explorer.prepare(repo_root)
-    return explorer.explore(
-        repo_root,
-        query,
-        snapshot=snapshot,
-        files=files,
-        max_files=max_files,
-        max_bytes=max_bytes,
-    )
+    repo = RepositoryRegistry().identify(repo_root)
+    db_path = Path(repo.repo_root) / ".pebra" / "pebra.db"
+    store: SqliteStore | None = None
+    if db_path.is_file():
+        try:
+            store = SqliteStore(str(db_path), read_only=True)
+        except Exception:  # unreadable/corrupt recall must not suppress current retrieval
+            store = None
+    try:
+        return explore_controller.explore_repository(
+            repo.repo_root,
+            repo.repo_id,
+            query,
+            learning_port=store,
+            explorer=build_repository_explorer(),
+            files=files,
+            max_files=max_files,
+            max_bytes=max_bytes,
+        )
+    finally:
+        if store is not None:
+            store.close()
 
 
 def build_repository_explorer() -> RepositoryExplorer:

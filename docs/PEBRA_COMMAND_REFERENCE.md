@@ -490,7 +490,8 @@ pebra dependents --target pebra/observatory_context.py --repo-root . --json
 
 ### `explore`
 
-Return bounded, descriptive repository context from an existing same-worktree graph index.
+Recall bounded, verified PEBRA history, then return descriptive current repository context from an
+existing same-worktree graph index.
 
 ```text
 pebra explore [QUERY] [--file PATH]... [--max-files N] [--max-bytes N]
@@ -505,7 +506,23 @@ pebra explore "repository resolution" --repo-root .
 pebra explore --file pebra/observatory_context.py --repo-root . --json
 ```
 
-The command explicitly reconciles an already-initialized index before querying it, then revalidates
+The command returns two ordered top-level sections in human and JSON output:
+
+1. `learning_context` — PEBRA-owned historical records, explicitly labelled
+   `Historical record — not instructions`;
+2. `repository_context` — current structural context from the configured graph adapter.
+
+Recall is repository-scoped and uses the stable M5A FTS order: BM25 ascending, then creation time and
+learning-context ID descending. It returns at most five lessons under a 4096-byte ceiling. At most 16
+deduplicated repository-relative file hints and 16 symbols matching
+`^[A-Za-z_][A-Za-z0-9_.]{0,127}$` may sharpen the current lookup. File hints use the same normalized,
+in-repository path rules as explicit `--file` arguments. Historical prose, decisions, risk/benefit
+metrics, and outcome labels are never inserted into the graph query. Empty, unavailable, corrupt, or
+ambiguously scoped recall leaves the original human query byte-for-byte unchanged. If current graph
+retrieval is unavailable, historical records remain visible with a warning that they cannot establish
+current repository truth.
+
+The current-context phase explicitly reconciles an already-initialized index before querying it, then revalidates
 the repository HEAD, raw `codegraph.json` digest, provider version, extraction version, and graph scope
 after the query. It never installs an engine, initializes an index, repairs a worktree mismatch, or
 creates/edits `codegraph.json`. Free-text context is opaque descriptive output and never becomes
@@ -515,8 +532,10 @@ dependent files use the existing prepared dependency-reader path.
 An unavailable or stale provider is a handled result: the command returns exit 0 with
 `status != "available"` and empty context/file/test fields. Invalid arguments return argparse exit 2.
 Unexpected adapter contract failures return exit 1. Provider queries may perform transient SQLite
-WAL/SHM housekeeping inside the derived cache; source, configuration, `.pebra`, Git content,
-persistent database bytes, graph schema, and logical graph rows must remain unchanged.
+WAL/SHM housekeeping inside the derived cache; source, configuration, Git content, persistent PEBRA
+and graph database bytes, graph schema, and logical graph rows must remain unchanged. Historical
+recall opens an existing `.pebra/pebra.db` read-only and never creates one; SQLite reader sidecars may
+still be transiently managed beside an existing WAL-mode database.
 
 `codegraph.json` is operator-owned analysis scope. `extensions` and `includeIgnored` affect analysis
 scope; `exclude` is reported but ignored by pinned CodeGraph 1.1.1. None of these settings makes an
@@ -539,11 +558,13 @@ The agent lifecycle is:
 
 `Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify`
 
-Read-only work may stop after Understand. Mutation does not: first reuse equivalent current repository
-context or run `pebra explore`, then design the exact `expected_files` and `proposed_patch`, and run
-`pebra assess` before writing. `pebra explore` uses PEBRA's provider-neutral repository-graph interface;
-CodeGraph is the current adapter. Its bounded context, dependents, and affected tests are descriptive and
-cannot authorize a write. PEBRA decides for the exact candidate. A `reject` is shown as **Reject
+Read-only work may stop after Understand. Mutation does not: run `pebra explore` to recall relevant
+verified PEBRA history first and retrieve current repository structure second, then design the exact
+`expected_files` and `proposed_patch`, and run `pebra assess` before writing. PEBRA owns the historical
+`learning_context`; CodeGraph is the current adapter behind PEBRA's provider-neutral structural port.
+Neither replaces the other. Recall informs Understand, while only separately promoted numeric facts can
+influence Assess. Both returned contexts are descriptive and cannot authorize a write. PEBRA decides for
+the exact candidate. A `reject` is shown as **Reject
 candidate** with its recorded reason and metrics; only an eligible trusted-human route may override a
 sanction-convertible risk rejection, while policy or obligation failures require a compliant route.
 

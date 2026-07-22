@@ -13,8 +13,13 @@ from pebra.ports.repository_registry_port import RepoMetadata
 
 
 class RepositoryRegistry:
-    def resolve(self, start_path: str) -> RepoMetadata:
+    def identify(self, start_path: str) -> RepoMetadata:
+        """Return stable repository identity without creating local PEBRA state."""
         root = paths.find_repo_root(start_path)
-        paths.ensure_pebra_dir(root)
         repo_id = "repo_" + hashlib.sha1(str(root).encode("utf-8")).hexdigest()[:12]
         return RepoMetadata(repo_id=repo_id, repo_root=str(root))
+
+    def resolve(self, start_path: str) -> RepoMetadata:
+        repo = self.identify(start_path)
+        paths.ensure_pebra_dir(paths.find_repo_root(repo.repo_root))
+        return repo

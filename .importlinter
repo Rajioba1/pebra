@@ -203,6 +203,7 @@ source_modules =
 forbidden_modules =
     pebra.core.learning_context
     pebra.ports.learning_context_port
+    pebra.app.explore_controller
 
 [importlinter:contract:layers]
 name = layered architecture (surfaces > app > ports > core)

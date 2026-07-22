@@ -37,4 +37,13 @@ def test_recall_never_enters_scoring_or_authorization() -> None:
     assert contract["forbidden_modules"].split() == [
         "pebra.core.learning_context",
         "pebra.ports.learning_context_port",
+        "pebra.app.explore_controller",
     ]
+
+
+def test_core_exploration_remains_independent_of_historical_recall() -> None:
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "pebra" / "core" / "exploration.py").read_text(encoding="utf-8")
+
+    assert "learning_context" not in source
+    assert "explore_controller" not in source

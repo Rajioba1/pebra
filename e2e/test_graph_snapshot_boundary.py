@@ -215,8 +215,9 @@ def test_explore_subprocess_syncs_before_query_and_revalidates_after(tmp_path) -
 
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
-    assert payload["status"] == "available"
-    assert payload["context"] == "opaque current repository context\n"
+    assert payload["learning_context"]["status"] == "unavailable"
+    assert payload["repository_context"]["status"] == "available"
+    assert payload["repository_context"]["context"] == "opaque current repository context\n"
     assert [call[0] for call in _calls(log)] == [
         "status", "sync", "status", "explore", "status",
     ]
