@@ -308,6 +308,25 @@ def test_every_width_requests_the_complete_semantic_column_set(tmp_path, width: 
     )
 
 
+def test_observatory_learning_binding_opens_read_only_screen(tmp_path) -> None:
+    from pebra.tui.screens.learning import LearningScreen
+
+    db = _seed(tmp_path, rows=1)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test() as pilot:
+            assert app.active_bindings["l"].binding.description == "Learning"
+            await pilot.press("l")
+            await pilot.pause()
+            assert isinstance(app.screen, LearningScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen.__class__.__name__ == "ObservatoryScreen"
+
+    asyncio.run(scenario())
+
+
 def test_loss_points_cell_auto_sizes_without_clipping_at_narrow_width(tmp_path) -> None:
     from textual.widgets import DataTable
 

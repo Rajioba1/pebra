@@ -220,6 +220,20 @@ async def _toggle_grouping(pilot) -> None:
     await pilot.pause()
 
 
+async def _open_learning(pilot) -> None:
+    await pilot.press("l")
+    for _ in range(3):
+        await pilot.pause()
+
+
+def test_snapshot_learning_empty_state(snap_compare, tmp_path) -> None:
+    assert snap_compare(
+        _app(_seed(tmp_path, specs=[])),
+        terminal_size=(100, 30),
+        run_before=_open_learning,
+    )
+
+
 def test_snapshot_grouped_ledger(snap_compare, tmp_path) -> None:
     repeated = [
         (Decision.PROCEED, "aaaa111", {"rau": 0.21, "expected_loss": 0.05, "benefit": 0.55}),

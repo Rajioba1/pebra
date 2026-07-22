@@ -42,6 +42,38 @@ _PROVENANCE_LABELS = {
 }
 
 
+def applied_learning_payload(detail: dict[str, Any]) -> dict[str, Any]:
+    """Project only the assessment-time prediction provenance, never current learning state."""
+    provenance = detail.get("prior_provenance")
+    if not isinstance(provenance, dict):
+        return {"Status": "unavailable"}
+    source = provenance.get("source")
+    sources = provenance.get("sources")
+    targets = provenance.get("targets")
+    if not isinstance(source, str) or not isinstance(sources, list) or not isinstance(targets, dict):
+        return {"Status": "unavailable"}
+    payload: dict[str, Any] = {
+        "Status": source,
+        "Sources": list(sources),
+        "Snapshot IDs": list(provenance.get("snapshot_ids") or ()),
+        "Calibration tags": list(provenance.get("calibration_tags") or ()),
+    }
+    target_rows: list[dict[str, Any]] = []
+    for target_name, target in targets.items():
+        if not isinstance(target_name, str) or not isinstance(target, dict):
+            return {"Status": "unavailable"}
+        row = {"target": target_name, "source": target.get("source", "unavailable")}
+        if target.get("snapshot_id") is not None:
+            row["snapshot_id"] = target["snapshot_id"]
+        if target.get("calibration_tag") is not None:
+            row["calibration_tag"] = target["calibration_tag"]
+        if target.get("winning_fact_id") is not None:
+            row["winning_fact_id"] = target["winning_fact_id"]
+        target_rows.append(row)
+    payload["Targets"] = target_rows
+    return payload
+
+
 def _detail_scores(scores: dict[str, Any]) -> dict[str, Any]:
     """Add human units beside the exact persisted decimals in the detail-only projection."""
     displayed = dict(scores)
@@ -119,6 +151,7 @@ def detail_sections(
         ("Candidate decision", decision_payload),
         ("Scores", plain_scores),
         ("Evidence", evidence),
+        ("Applied learning", applied_learning_payload(detail)),
         ("Guidance", detail.get("model_guidance_packet")),
         ("Guardrails", detail.get("guardrails") or []),
         ("Outcomes", detail.get("outcomes") or []),

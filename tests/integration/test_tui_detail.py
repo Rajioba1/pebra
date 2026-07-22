@@ -997,3 +997,47 @@ def test_cancel_invalidates_a_blocked_completed_delivery() -> None:
             assert screen.query_one("#exploration-result").render().plain == ""
 
     asyncio.run(scenario())
+
+
+def test_detail_applied_learning_uses_only_persisted_prior_provenance() -> None:
+    from pebra.tui.screens.detail import applied_learning_payload, detail_sections
+
+    detail = _detail()
+    detail["prior_provenance"] = {
+        "source": "local_learned",
+        "sources": ["local_learned"],
+        "snapshot_ids": ["rs_7"],
+        "calibration_tags": ["repo-cal-v1"],
+        "targets": {
+            "p_success": {
+                "source": "local_learned",
+                "snapshot_id": "rs_7",
+                "winning_fact_id": "lrf_4",
+            }
+        },
+    }
+    payload = applied_learning_payload(detail)
+
+    assert payload == {
+        "Status": "local_learned",
+        "Sources": ["local_learned"],
+        "Snapshot IDs": ["rs_7"],
+        "Calibration tags": ["repo-cal-v1"],
+        "Targets": [
+            {
+                "target": "p_success",
+                "source": "local_learned",
+                "snapshot_id": "rs_7",
+                "winning_fact_id": "lrf_4",
+            }
+        ],
+    }
+    assert dict(detail_sections(detail))["Applied learning"] == payload
+
+
+def test_detail_applied_learning_degrades_malformed_persisted_provenance() -> None:
+    from pebra.tui.screens.detail import applied_learning_payload
+
+    assert applied_learning_payload({"prior_provenance": {"source": "cold_start"}}) == {
+        "Status": "unavailable"
+    }

@@ -20,6 +20,7 @@ from pebra.ports.repository_explorer_port import RepositoryExplorerFactory
 from pebra.tui.data import ObservatoryData
 from pebra.tui.exploration import RepositoryExplorationCoordinator
 from pebra.tui.screens.observatory import ObservatoryScreen
+from pebra.tui.screens.learning import LearningScreen
 from pebra.tui.theme import css_variables
 
 _CSS_PATH = Path(__file__).parent / "theme.tcss"
@@ -119,6 +120,9 @@ class ObservatoryApp(App[None]):
                 "Toggle contiguous exact-candidate grouping",
                 screen.action_toggle_grouping,
             )
+            yield SystemCommand("Learning", "Show read-only snapshot and fact lifecycle", screen.action_learning)
+        if isinstance(screen, LearningScreen):
+            yield SystemCommand("Refresh learning", "Reload snapshots and learned facts", screen.action_refresh)
         yield SystemCommand("Help", "Show the key bindings", self.action_show_help_panel)
 
     def _command_refresh(self) -> None:

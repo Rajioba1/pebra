@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pebra.adapters.store.db import SqliteStore
@@ -39,7 +39,7 @@ class ObservatorySnapshot:
     assessments: list[dict[str, Any]]
     scores_series: list[dict[str, Any]]
     chain: dict[str, Any]
-    prior_facets: dict[str, dict[str, Any]]
+    prior_facets: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

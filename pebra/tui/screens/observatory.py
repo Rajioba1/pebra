@@ -25,6 +25,7 @@ from pebra.tui.exploration import RepositoryExplorationCoordinator
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot, ObservatoryStoreUnavailable
 from pebra.tui.ledger_groups import LedgerGroup, group_contiguous_assessments
 from pebra.tui.screens.detail import AssessmentDetailScreen
+from pebra.tui.screens.learning import LearningScreen
 from pebra.tui.widgets.banner import PebraBanner
 from pebra.tui.widgets.ledger_table import (
     LEDGER_COLUMN_WIDTHS,
@@ -42,7 +43,11 @@ _REFRESH_INTERVAL = 5.0  # seconds; SQLite-only poll — never the graph/RCA eng
 
 
 class ObservatoryScreen(Screen):
-    BINDINGS = [("r", "refresh", "Refresh"), ("g", "toggle_grouping", "Group repeats")]
+    BINDINGS = [
+        ("r", "refresh", "Refresh"),
+        ("g", "toggle_grouping", "Group repeats"),
+        ("l", "learning", "Learning"),
+    ]
 
     def __init__(
         self,
@@ -56,6 +61,7 @@ class ObservatoryScreen(Screen):
         self._repo_root = repo_root
         self._exploration = exploration
         self._rows: list[dict[str, Any]] = []
+        self._prior_facets: dict[str, dict[str, Any]] = {}
         self._overview: dict[str, Any] = {}
         self._ledger_columns: tuple[str, ...] = ()
         self.group_repeats = False
@@ -150,9 +156,13 @@ class ObservatoryScreen(Screen):
     def _add_ledger_rows(self, table: DataTable) -> None:
         dark = self._is_dark()
         for group in self._visible_groups():
+            row = {
+                **group.latest_row,
+                "prior_facet": self._prior_facets.get(str(group.latest_row.get("assessment_id"))),
+            }
             table.add_row(
                 *ledger_row(
-                    group.latest_row,
+                    row,
                     columns=self._ledger_columns,
                     dark=dark,
                     group_size=len(group.assessment_ids),
@@ -231,6 +241,10 @@ class ObservatoryScreen(Screen):
         ]
         self.refresh_bindings()
         self.call_after_refresh(self._update_scroll_hint)
+
+    def action_learning(self) -> None:
+        """Open the explicit, read-only learning view; never from the poll timer."""
+        self.app.push_screen(LearningScreen(self._data))
 
     def _update_ledger_caption(self) -> None:
         caption = self.query_one("#ledger-caption", Static)
@@ -324,7 +338,10 @@ class ObservatoryScreen(Screen):
         old_scroll_x = table.scroll_x
         old_scroll_y = table.scroll_y
         had_focus = table.has_focus
+        # Keep raw rows for grouping/selection. The render joins only the already-batched persisted
+        # facet; it never asks what snapshot is active today.
         self._rows = rows
+        self._prior_facets = snapshot.prior_facets
         self._overview = snapshot.overview
         latest_commit = rows[0].get("assessed_commit") if rows else None
         self.query_one("#status", StatusHeader).update_status(

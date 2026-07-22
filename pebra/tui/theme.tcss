@@ -84,3 +84,21 @@ Screen {
     padding: 0 1;
     border-left: solid $observatory-hairline;
 }
+
+#learning-body {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+#learning-status,
+#learning-message {
+    height: auto;
+    color: $observatory-muted;
+    text-wrap: wrap;
+}
+
+.learning-table {
+    height: auto;
+    min-height: 3;
+    margin-top: 1;
+}

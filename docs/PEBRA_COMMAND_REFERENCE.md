@@ -580,6 +580,7 @@ Product-defined keys:
 | `Escape` | Close help panel or return from assessment detail |
 | `r` | Refresh the Observatory ledger |
 | `g` | Toggle contiguous exact-candidate grouping (`Group repeats` / `Show raw`) |
+| `l` | Open the read-only Learning screen (snapshots and learned facts load only on open or manual refresh) |
 | `x` | Explore impact from assessment detail only |
 
 The detail-only `x` action requires repository context and an injected explorer; a read-only replay

@@ -8,6 +8,7 @@ overflow is shown with an arrow, and the numeric RAU value (rendered separately)
 from __future__ import annotations
 
 from textual.content import Content
+import pytest
 
 from pebra.core.constants import ActionStatus
 from pebra.tui.theme import VERDICT_PALETTE
@@ -131,6 +132,33 @@ def test_complete_ledger_reserves_literal_cells_for_persisted_text() -> None:
     assert by_column["assessed_at"].plain == "[bold]time"
 
 
+@pytest.mark.parametrize(
+    ("facet", "expected"),
+    [
+        ({"source": "cold_start", "applied_target_count": 0}, "cold"),
+        ({"source": "shipped", "applied_target_count": 0}, "shipped"),
+        ({"source": "local_learned", "applied_target_count": 2}, "learned ×2"),
+        ({"source": "mixed", "applied_target_count": 3}, "mixed ×3"),
+        ({"source": "unavailable", "applied_target_count": 0}, "—"),
+        (None, "—"),
+        ({"source": "cold_start", "applied_target_count": True}, "—"),
+    ],
+)
+def test_prior_cell_uses_only_honest_persisted_facet(facet, expected) -> None:
+    from pebra.tui.widgets.ledger_table import format_prior_facet
+
+    assert format_prior_facet(facet) == expected
+
+
+def test_ledger_prior_cell_is_literal_content() -> None:
+    cells = ledger_row(
+        {"scores": {}, "prior_facet": {"source": "local_learned", "applied_target_count": 2}}
+    )
+    prior = dict(zip(LEDGER_COLUMNS, cells, strict=True))["prior"]
+    assert isinstance(prior, Content)
+    assert prior.plain == "learned ×2"
+
+
 def test_status_column_fits_every_terminal_status_without_clipping() -> None:
     supported = {status.value for status in ActionStatus} | {"pending"}
 
@@ -146,9 +174,6 @@ def test_status_column_fits_every_terminal_status_without_clipping() -> None:
 # The ledger renders expected loss as unbounded points and normalized benefit as a score out of 100.
 
 import math  # noqa: E402
-
-import pytest  # noqa: E402
-
 
 @pytest.mark.parametrize(
     ("value", "expected"),

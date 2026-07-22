@@ -185,6 +185,29 @@ def decision_cell(decision: str, *, dark: bool = True) -> Content:
     )
 
 
+def format_prior_facet(facet: Mapping[str, Any] | None) -> str:
+    """Render only the assessment's persisted applied-prior facet.
+
+    This deliberately does not inspect today's active snapshot.  The ledger answers what affected
+    this historical assessment, not what would affect one assessed now.
+    """
+    if not isinstance(facet, Mapping):
+        return "—"
+    source = facet.get("source")
+    count = facet.get("applied_target_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return "—"
+    if source == "cold_start":
+        return "cold"
+    if source == "shipped":
+        return "shipped"
+    if source == "local_learned":
+        return f"learned ×{count}"
+    if source == "mixed":
+        return f"mixed ×{count}"
+    return "—"
+
+
 def ledger_row(
     assessment: Mapping[str, Any],
     *,
@@ -210,9 +233,8 @@ def ledger_row(
         "expected_loss": format_loss_points(scores.get("expected_loss")),
         "benefit": format_benefit_score(scores.get("benefit")),
         "status": Content(str(assessment.get("terminal_status") or "pending")),
-        # M3/M4 reserve these slots before their read-model projections land. Content makes the
-        # eventual persisted strings literal rather than Rich markup.
-        "prior": Content("—"),
+        # Controller-projected, assessment-time provenance only. Content keeps persisted text literal.
+        "prior": Content(format_prior_facet(assessment.get("prior_facet"))),
         "lesson": Content("—"),
         "assessed_at": Content(format_assessed_at(assessment.get("assessed_at"))),
     }
