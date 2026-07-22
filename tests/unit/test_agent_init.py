@@ -74,18 +74,31 @@ def test_protocol_v3_enforces_the_ordered_cognitive_lifecycle() -> None:
 
 @pytest.mark.xfail(strict=True, reason="Milestone 6: protocol v4 (recall/calculate/enforce/learn) not implemented yet")
 def test_protocol_v4_teaches_recall_calculate_enforce_and_learn_phases() -> None:
-    """Milestone 0 forward spec for Milestone 6. v4 inserts historical-lesson recall before current-
-    repository retrieval, and names Calculate, Evaluate gates, Enforce, and Learn/promote as distinct
-    phases — while staying provider-neutral. PROTOCOL_VERSION == 4 is the unambiguous landing gate."""
+    """Milestone 0 forward spec for Milestone 6. v4 lifecycle order (plan): Interpret -> Recall
+    verified lessons -> Retrieve current repository context -> Design -> Assess -> Calculate ->
+    Evaluate gates -> Decide -> Enforce -> Apply -> Verify -> Record -> Learn/promote.
+
+    The ordering is checked ONLY within the lifecycle section, obtained by splitting the body on the
+    known ``_NON_NEGOTIABLES`` preamble constant. This is essential: the preamble already contains
+    "Assess"/"apply"/"verify" as its first line, so a whole-body substring search could never satisfy
+    the order (a won't-flip xfail). Splitting on the constant excludes the preamble regardless of M6's
+    exact wording, so this XPASSes only when M6 genuinely lands the ordered v4 phases."""
     assert agent_init.PROTOCOL_VERSION == 4
 
     normalized = " ".join(agent_init._PROTOCOL_BODY.split()).lower()
-    # Recall (historical lessons) must precede current-repository retrieval, which precedes design.
-    ordered_markers = ("recall", "current repository", "design", "assess", "calculate", "gate", "enforce", "apply", "verify", "learn")
-    positions = [normalized.index(marker) for marker in ordered_markers]
-    assert positions == sorted(positions), normalized
+    non_negs = " ".join(agent_init._NON_NEGOTIABLES.split()).lower()
+    lifecycle = normalized.split(non_negs, 1)[-1]  # phases only, preamble excluded
+    assert lifecycle != normalized  # the preamble was actually found and stripped
+
+    # Every v4 phase name, in order, within the lifecycle section only.
+    ordered_markers = (
+        "interpret", "recall", "current repository", "design", "assess", "calculate",
+        "gate", "decide", "enforce", "apply", "verify", "record", "learn",
+    )
+    positions = [lifecycle.index(marker) for marker in ordered_markers]
+    assert positions == sorted(positions), lifecycle
     # Recall stays advisory history, never authorization or trusted scoring evidence.
-    assert "advisory" in normalized
+    assert "advisory" in lifecycle
     # Provider neutrality is retained under v4.
     for provider_detail in ("codegraph", "mcp", "agentmemory", "provider selector"):
         assert provider_detail not in normalized
