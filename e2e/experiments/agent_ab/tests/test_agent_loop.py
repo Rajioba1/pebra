@@ -254,6 +254,176 @@ def test_advisory_timeout_excludes_reserved_closeout_budget(tmp_path, monkeypatc
     assert 0 < timeouts[0] <= 14.0
 
 
+def test_repository_context_does_not_start_inside_apply_verify_reserve(
+    tmp_path, monkeypatch
+):
+    _no_git(monkeypatch)
+    calls = []
+    setup = _setup(tmp_path)
+    setup.telemetry = SimpleNamespace(
+        real_advisory_failures=[], repository_context_receipts=[]
+    )
+    setup.repository_context_backend = lambda payload, **kwargs: calls.append(
+        (payload, kwargs)
+    ) or {"status": "available", "context": "must not run"}
+    clock = iter((0.0, 0.0, 6.0, 6.0, 6.0, 6.0))
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(clock, 6.0))
+
+    result = agent_loop.run(
+        setup,
+        _SPEC,
+        0,
+        client=ScriptedClient([_tool("repository_context", {"query": "helper"})]),
+        config=agent_loop.RunConfig(
+            model="m",
+            max_wall_seconds_per_run=10,
+            apply_verify_reserve_seconds=5,
+            tools=("repository_context",),
+        ),
+    )
+
+    assert calls == []
+    assert result.limit_reason == "closeout_budget_reserved"
+
+
+@pytest.mark.parametrize("tool_name", ("run_build", "run_tests"))
+def test_build_and_tests_do_not_start_inside_apply_verify_reserve(
+    tool_name, tmp_path, monkeypatch
+):
+    _no_git(monkeypatch)
+    calls = []
+
+    class Backend:
+        def run_build(self, *_args, **_kwargs):
+            calls.append("run_build")
+
+        def run_tests(self, *_args, **_kwargs):
+            calls.append("run_tests")
+
+    setup = _setup(tmp_path)
+    setup.build_backend = Backend()
+    setup.build_solution = ""
+    setup.spec = _SPEC
+    clock = iter((0.0, 0.0, 6.0, 6.0, 6.0, 6.0))
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(clock, 6.0))
+
+    result = agent_loop.run(
+        setup,
+        _SPEC,
+        0,
+        client=ScriptedClient([_tool(tool_name)]),
+        config=agent_loop.RunConfig(
+            model="m",
+            max_wall_seconds_per_run=10,
+            apply_verify_reserve_seconds=5,
+            tools=(tool_name,),
+        ),
+    )
+
+    assert calls == []
+    assert result.limit_reason == "closeout_budget_reserved"
+
+
+def test_ordinary_patch_does_not_start_inside_apply_verify_reserve(tmp_path, monkeypatch):
+    _no_git(monkeypatch)
+    target = tmp_path / "a.ts"
+    target.write_text("const a = 1;\n", encoding="utf-8")
+    patch = """diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-const a = 1;
++const a = 2;
+"""
+    setup = _setup(tmp_path)
+    setup.gate_check_backend = lambda _event: {"permission": "allow"}
+    clock = iter((0.0, 0.0, 6.0, 6.0, 6.0, 6.0))
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(clock, 6.0))
+
+    result = agent_loop.run(
+        setup,
+        _SPEC,
+        0,
+        client=ScriptedClient([_tool("apply_patch", {"patch": patch})]),
+        config=agent_loop.RunConfig(
+            model="m",
+            max_wall_seconds_per_run=10,
+            apply_verify_reserve_seconds=5,
+            tools=("apply_patch",),
+        ),
+    )
+
+    assert target.read_text(encoding="utf-8") == "const a = 1;\n"
+    assert result.limit_reason == "closeout_budget_reserved"
+
+
+def test_exact_candidate_application_uses_only_its_half_of_closeout_reserve(
+    tmp_path, monkeypatch
+):
+    _no_git(monkeypatch, files=("a.ts",))
+    patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n"
+    patch_id = advisory_contract.candidate_patch_id(patch)
+    setup = _setup(tmp_path)
+    setup.candidate_patches[patch_id] = patch
+    setup.candidate_assessments = {patch_id: "asm_7"}
+    calls = []
+    setup.apply_candidate_backend = lambda assessment_id, **kwargs: calls.append(
+        (assessment_id, kwargs)
+    ) or {"status": "applied", "changed_files": ["a.ts"]}
+    setup.write_applied_backend = lambda _payload: None
+    clock = iter((0.0, 0.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0))
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(clock, 5.0))
+
+    result = agent_loop.run(
+        setup,
+        _SPEC,
+        0,
+        client=ScriptedClient([_tool("apply_patch", {"candidate_patch_id": patch_id})]),
+        config=agent_loop.RunConfig(
+            model="m",
+            max_wall_seconds_per_run=10,
+            apply_verify_reserve_seconds=6,
+            tools=("apply_patch",),
+        ),
+    )
+
+    assert calls == [("asm_7", {"timeout_seconds": pytest.approx(2.0)})]
+    assert result.tool_calls[0].result["ok"] is True
+
+
+def test_exact_candidate_application_fails_closed_when_its_allocation_is_too_small(
+    tmp_path, monkeypatch
+):
+    _no_git(monkeypatch)
+    patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n"
+    patch_id = advisory_contract.candidate_patch_id(patch)
+    setup = _setup(tmp_path)
+    setup.candidate_patches[patch_id] = patch
+    setup.candidate_assessments = {patch_id: "asm_7"}
+    calls = []
+    setup.apply_candidate_backend = lambda assessment_id, **kwargs: calls.append(
+        (assessment_id, kwargs)
+    )
+    clock = iter((0.0, 0.0, 6.5, 6.5, 6.5, 6.5))
+    monkeypatch.setattr(agent_loop.time, "monotonic", lambda: next(clock, 6.5))
+
+    result = agent_loop.run(
+        setup,
+        _SPEC,
+        0,
+        client=ScriptedClient([_tool("apply_patch", {"candidate_patch_id": patch_id})]),
+        config=agent_loop.RunConfig(
+            model="m",
+            max_wall_seconds_per_run=10,
+            apply_verify_reserve_seconds=6,
+            tools=("apply_patch",),
+        ),
+    )
+
+    assert calls == []
+    assert result.limit_reason == "candidate_application_budget_exhausted"
+
+
 def test_tool_call_captured_with_sequence(tmp_path, monkeypatch):
     _no_git(monkeypatch)
     client = ScriptedClient([_tool("list_dir"), ModelTurn(text="done", stop_reason="end_turn")])

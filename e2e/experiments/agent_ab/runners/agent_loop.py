@@ -101,6 +101,7 @@ class _LifecycleState:
 _SEED_USER = "Please complete the task now, using the tools available."
 _HARNESS_PATH_PREFIXES = (".codegraph/", ".pebra/", ".agent-instructions/")
 _PEBRA_GITIGNORE_ENTRY = ".pebra/"
+_MIN_BOUNDED_TOOL_SECONDS = 1.0
 
 # Inline tool schemas (deterministic; advisory_check comes from the shared contract).
 _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -230,6 +231,19 @@ def _dispatch(
             timeout_seconds=timeout_seconds,
         )
     return {"error": f"unknown tool {name!r}"}
+
+
+def _is_exact_candidate_application(
+    name: str, args: dict[str, Any], setup: "ArmSetup"
+) -> bool:
+    """Identify the one mutating tool allowed to enter the reserved closeout window."""
+    if name != "apply_patch":
+        return False
+    patch_id = args.get("candidate_patch_id")
+    assessment_id = getattr(setup, "candidate_assessments", {}).get(patch_id)
+    return isinstance(assessment_id, str) and callable(
+        getattr(setup, "apply_candidate_backend", None)
+    )
 
 
 def _gated_write(
@@ -530,11 +544,39 @@ def run(
                     continue
                 name, args = tc["name"], tc.get("input", {})
                 tool_started = time.monotonic()
-                tool_timeout = max(0.001, deadline - tool_started)
-                if name == advisory_contract.TOOL_NAME:
-                    tool_timeout = deadline - tool_started - config.apply_verify_reserve_seconds
-                    if tool_timeout <= 0:
-                        limit_reason = "advisory_budget_exhausted"
+                exact_candidate_application = _is_exact_candidate_application(
+                    name, args, setup
+                )
+                if exact_candidate_application:
+                    # Split the closeout reserve evenly. Exact production application may use the
+                    # first half but cannot consume the second half reserved for host verification.
+                    application_budget = config.apply_verify_reserve_seconds / 2
+                    tool_timeout = (
+                        min(
+                            application_budget,
+                            deadline - application_budget - tool_started,
+                        )
+                        if application_budget > 0
+                        else deadline - tool_started
+                    )
+                    if tool_timeout < _MIN_BOUNDED_TOOL_SECONDS:
+                        limit_reason = "candidate_application_budget_exhausted"
+                        governance_stop = True
+                        break
+                else:
+                    # Every model-directed tool other than exact production application is
+                    # pre-closeout. Do not start one if its bounded budget would enter the reserve.
+                    tool_timeout = (
+                        deadline
+                        - config.apply_verify_reserve_seconds
+                        - tool_started
+                    )
+                    if tool_timeout < _MIN_BOUNDED_TOOL_SECONDS:
+                        limit_reason = (
+                            "advisory_budget_exhausted"
+                            if name == advisory_contract.TOOL_NAME
+                            else "closeout_budget_reserved"
+                        )
                         governance_stop = True
                         break
                 result = _dispatch(

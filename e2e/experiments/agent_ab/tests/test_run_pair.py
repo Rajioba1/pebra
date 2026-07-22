@@ -994,6 +994,71 @@ def test_post_edit_verify_uses_remaining_shared_run_deadline(monkeypatch, tmp_pa
     assert verified.post_edit_verify_passed is True
 
 
+def test_post_edit_verify_uses_only_its_allocated_closeout_budget(monkeypatch, tmp_path):
+    setup = run_pair.ArmSetup(
+        arm=models.ARM_PEBRA,
+        repo_path=tmp_path,
+        advisory_backend=lambda payload: {},
+        baseline_build=None,
+        subject_prompt="x",
+        telemetry=run_pair.ArmTelemetry(applied_assessment_id="asm_7"),
+    )
+    result = SubjectResult(
+        task_id="T1", arm=models.ARM_PEBRA, seed=0, modified_files=("a.cs",),
+    )
+    seen = {}
+
+    def _verify(*_args, timeout, **_kwargs):
+        seen["timeout"] = timeout
+        return True, {}
+
+    monkeypatch.setattr(run_pair.cli_harness, "verify", _verify)
+    monkeypatch.setattr(run_pair.time, "monotonic", lambda: 50.0)
+
+    verified = run_pair._post_edit_verify(
+        setup,
+        result,
+        deadline_monotonic=100.0,
+        verify_budget_seconds=10.0,
+    )
+
+    assert seen["timeout"] == pytest.approx(10.0)
+    assert verified.post_edit_verify_passed is True
+
+
+def test_post_edit_verify_fails_closed_when_allocated_budget_is_below_cli_floor(
+    monkeypatch, tmp_path
+):
+    setup = run_pair.ArmSetup(
+        arm=models.ARM_PEBRA,
+        repo_path=tmp_path,
+        advisory_backend=lambda payload: {},
+        baseline_build=None,
+        subject_prompt="x",
+        telemetry=run_pair.ArmTelemetry(applied_assessment_id="asm_7"),
+    )
+    result = SubjectResult(
+        task_id="T1", arm=models.ARM_PEBRA, seed=0, modified_files=("a.cs",),
+    )
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "verify",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not verify")),
+    )
+    monkeypatch.setattr(run_pair.time, "monotonic", lambda: 99.5)
+
+    verified = run_pair._post_edit_verify(
+        setup,
+        result,
+        deadline_monotonic=100.0,
+        verify_budget_seconds=10.0,
+    )
+
+    assert verified.post_edit_verify_ran is False
+    assert verified.post_edit_verify_passed is False
+    assert "insufficient" in verified.post_edit_verify_error
+
+
 def test_post_edit_verify_fails_closed_when_shared_deadline_is_exhausted(monkeypatch, tmp_path):
     setup = run_pair.ArmSetup(
         arm=models.ARM_PEBRA,

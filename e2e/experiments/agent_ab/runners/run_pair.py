@@ -93,6 +93,7 @@ _DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 _CANDIDATE_VERIFICATION_TIMEOUT_SECONDS = 300
 # A real assessment cannot even guarantee its bounded graph-status probe below this budget.
 _MIN_REAL_ADVISORY_BUDGET_SECONDS = 30.0
+_MIN_CLOSEOUT_CLI_SECONDS = 1.0
 _REAL_ADVISORY_ARMS_SERIALIZED = True
 _VERIFICATION_FEEDBACK = {
     "patch_unparseable": "The candidate patch format could not be parsed. Submit a complete unified diff.",
@@ -1721,6 +1722,7 @@ def _post_edit_verify(
     result: SubjectResult,
     *,
     deadline_monotonic: float | None = None,
+    verify_budget_seconds: float | None = None,
 ) -> SubjectResult:
     """Persist production guardrails for the exact assessed candidate the write gate allowed."""
     assessment_id = setup.telemetry.applied_assessment_id
@@ -1774,17 +1776,31 @@ def _post_edit_verify(
         "scope": "all",
         "completed_checks": completed_checks,
     }
-    if deadline_monotonic is not None:
-        remaining = deadline_monotonic - time.monotonic()
-        if remaining <= 0:
+    if deadline_monotonic is not None or verify_budget_seconds is not None:
+        remaining = (
+            deadline_monotonic - time.monotonic()
+            if deadline_monotonic is not None
+            else verify_budget_seconds
+        )
+        timeout = (
+            min(remaining, verify_budget_seconds)
+            if verify_budget_seconds is not None
+            else remaining
+        )
+        if timeout is None or timeout < _MIN_CLOSEOUT_CLI_SECONDS:
+            error = (
+                "shared run deadline exhausted before host verification"
+                if verify_budget_seconds is None and remaining is not None and remaining <= 0
+                else "insufficient allocated closeout budget for host verification"
+            )
             return dataclasses.replace(
                 result,
                 post_edit_verify_ran=False,
                 post_edit_verify_passed=False,
                 post_edit_verify_assessment_id=assessment_id,
-                post_edit_verify_error="shared run deadline exhausted before host verification",
+                post_edit_verify_error=error,
             )
-        verify_kwargs["timeout"] = remaining
+        verify_kwargs["timeout"] = timeout
     try:
         passed, payload = cli_harness.verify(assessment_id, **verify_kwargs)
     except (cli_harness.CLIError, OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -1884,7 +1900,13 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
 
     # Verify before hidden evaluator files are injected, so RCA and envelope checks observe only the
     # subject's applied edit. This is telemetry, not a replacement for the hidden outcome oracle.
-    result = _post_edit_verify(setup, result, deadline_monotonic=shared_deadline)
+    verify_budget = run_cfg.apply_verify_reserve_seconds / 2
+    result = _post_edit_verify(
+        setup,
+        result,
+        deadline_monotonic=shared_deadline,
+        verify_budget_seconds=verify_budget if verify_budget > 0 else None,
+    )
 
     # HIDDEN oracle: inject evaluator tests post-agent, then build + test.
     build, test, _injected = evaluator.run_evaluator(setup.repo_path, spec)
