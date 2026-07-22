@@ -232,7 +232,7 @@ def test_dashboard_read_only_never_invokes_graph_launcher(tmp_path) -> None:
 
 def test_explore_json_output_is_currently_flat_without_learning_context(tmp_path) -> None:
     """Milestone 0 characterization: the real explore CLI JSON is a flat ExplorationResult today —
-    no learning_context section. Locks the 'before' shape for the Milestone 5A restructure."""
+    no learning_context section. Locks the 'before' shape for the Milestone 5B restructure."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _repo(repo)

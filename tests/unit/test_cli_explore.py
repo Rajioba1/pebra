@@ -118,7 +118,7 @@ def test_explore_json_serializes_provider_neutral_dataclasses(monkeypatch, capsy
 
 def test_explore_json_is_currently_flat_without_learning_context(monkeypatch, capsys) -> None:
     """Milestone 0 characterization: the current explore --json is a flat ExplorationResult with no
-    learning_context/repository_context sectioning. Locks the 'before' shape so Milestone 5A's
+    learning_context/repository_context sectioning. Locks the 'before' shape so Milestone 5B's
     two-section restructure (recall first, current repository second) is a reviewable diff."""
     monkeypatch.setattr(composition, "explore_repository", lambda *a, **k: _result())
 
