@@ -70,7 +70,6 @@ LEDGER_COLUMN_WIDTHS = {
     "assessed_commit": len(LEDGER_LABELS["assessed_commit"]),
     "gate_lane": LEDGER_LANE_WIDTH,
     "decision": max(Content(f"{v.glyph} {v.label}").cell_length for v in VERDICT_PALETTE.values()),
-    "expected_loss": len(LEDGER_LABELS["expected_loss"]),
     "status": max(len(LEDGER_LABELS["status"]), *(len(status.value) for status in ActionStatus)),
     "assessed_at": 16,
 }
@@ -112,23 +111,42 @@ def format_rau(rau: float | None) -> str:
     return f"{rau:+.2f}"
 
 
-def _format_points(value: float) -> str:
+def _num(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def format_exact_score(value: object) -> str:
+    """Return a round-trippable finite score representation for the detail view."""
+    number = _num(value)
+    return repr(number) if number is not None else "—"
+
+
+def _format_points(value: float) -> str | None:
     """Keep score units compact without changing their stored precision."""
-    return f"{value * 100:.12g}"
+    points = value * 100
+    return f"{points:.12g}" if math.isfinite(points) else None
 
 
 def format_loss_points(value: object) -> str:
     """Render finite expected loss as unbounded points; never clamp it to a percentage."""
     number = _num(value)
-    return f"{_format_points(number)} pts" if number is not None and math.isfinite(number) else "—"
+    points = _format_points(number) if number is not None else None
+    return f"{points} pts" if points is not None else "—"
 
 
 def format_benefit_score(value: object) -> str:
     """Render a finite normalized benefit as a score out of 100."""
     number = _num(value)
-    if number is None or not math.isfinite(number) or not 0.0 <= number <= 1.0:
+    if number is None or not 0.0 <= number <= 1.0:
         return "—"
-    return f"{_format_points(number)}/100"
+    points = _format_points(number)
+    return f"{points}/100" if points is not None else "—"
 
 
 def format_target(paths: Sequence[str]) -> str:
@@ -150,10 +168,6 @@ def format_task(value: str | None, *, width: int = 28) -> str:
     if not text:
         return "—"
     return text if len(text) <= width else f"{text[: width - 1]}…"
-
-
-def _num(value: Any) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def short_commit(commit: Any) -> str:

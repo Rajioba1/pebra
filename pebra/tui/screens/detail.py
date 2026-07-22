@@ -8,7 +8,6 @@ evidence is unavailable rather than reconstructing it from scores.
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from textual.app import ComposeResult
@@ -23,6 +22,7 @@ from pebra.core.exploration import ExplorationResult
 from pebra.tui.exploration import RepositoryExplorationCoordinator
 from pebra.tui.widgets.ledger_table import (
     format_benefit_score,
+    format_exact_score,
     format_loss_points,
     short_commit,
 )
@@ -42,31 +42,21 @@ _PROVENANCE_LABELS = {
 }
 
 
-def _exact_score_decimal(value: object) -> str:
-    """Render persisted finite score decimals without changing their stored/API values."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return "—"
-    value = float(value)
-    if not math.isfinite(value):
-        return "—"
-    return f"{value:.3f}"
-
-
 def _detail_scores(scores: dict[str, Any]) -> dict[str, Any]:
     """Add human units beside the exact persisted decimals in the detail-only projection."""
     displayed = dict(scores)
     if "expected_loss" in scores:
-        exact = _exact_score_decimal(scores["expected_loss"])
+        exact = format_exact_score(scores["expected_loss"])
         units = format_loss_points(scores["expected_loss"])
         displayed["expected_loss"] = f"{exact} ({units})" if exact != "—" and units != "—" else "—"
     if "benefit" in scores:
-        exact = _exact_score_decimal(scores["benefit"])
+        exact = format_exact_score(scores["benefit"])
         units = format_benefit_score(scores["benefit"])
         displayed["benefit"] = f"{exact} ({units})" if exact != "—" and units != "—" else "—"
     if "expected_utility" in scores:
-        displayed["expected_utility"] = _exact_score_decimal(scores["expected_utility"])
+        displayed["expected_utility"] = format_exact_score(scores["expected_utility"])
     if "utility_sd" in scores:
-        displayed["utility_sd"] = _exact_score_decimal(scores["utility_sd"])
+        displayed["utility_sd"] = format_exact_score(scores["utility_sd"])
     return displayed
 
 

@@ -116,7 +116,7 @@ def _seed(tmp_path, *, rows: int = 2) -> str:
     db = str(tmp_path / "pebra.db")
     store = SqliteStore(db)
     specs = [
-        (Decision.PROCEED, "aaaa111", {"rau": 0.14, "expected_loss": 0.05, "benefit": 0.52}),
+        (Decision.PROCEED, "aaaa111", {"rau": 0.14, "expected_loss": 1.45, "benefit": 0.52}),
         (Decision.ASK_HUMAN, "bbbb222", {"rau": -0.14, "expected_loss": 0.15, "benefit": 0.53}),
     ]
     for decision, commit, scores in specs[:rows]:
@@ -306,6 +306,30 @@ def test_every_width_requests_the_complete_semantic_column_set(tmp_path, width: 
         "id", "target", "decision", "rau", "loss", "benefit", "status", "prior", "lesson", "task",
         "assessed commit", "gate lane", "assessed time",
     )
+
+
+def test_loss_points_cell_auto_sizes_without_clipping_at_narrow_width(tmp_path) -> None:
+    from textual.widgets import DataTable
+
+    db = _seed(tmp_path, rows=2)
+
+    async def scenario() -> None:
+        app = ObservatoryApp(_ctx_for(db))
+        async with app.run_test(size=(70, 24)) as pilot:
+            table = app.query_one("#ledger", DataTable)
+            loss_column = table.columns["expected_loss"]
+            assert loss_column.auto_width is True
+            assert loss_column.content_width >= len("145 pts")
+            assert table.get_cell("asm_1", "expected_loss") == "145 pts"
+
+            table.focus()
+            table.move_cursor(row=0, column=0, scroll=False)
+            await pilot.pause()
+            await pilot.press("end")
+            await pilot.pause()
+            assert table.scroll_x == table.max_scroll_x
+
+    asyncio.run(scenario())
 
 
 def test_narrow_ledger_scrolls_to_last_column_without_changing_selection(tmp_path) -> None:

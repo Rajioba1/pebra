@@ -165,7 +165,10 @@ def test_loss_points_render_unbounded_and_never_clamped(value: float, expected: 
     assert format_loss_points(value) == expected
 
 
-@pytest.mark.parametrize("value", [None, True, float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    "value",
+    [None, True, 10**1000, 1e308, float("nan"), float("inf"), float("-inf")],
+)
 def test_loss_points_reject_missing_boolean_and_nonfinite(value: object) -> None:
     from pebra.tui.widgets.ledger_table import format_loss_points
 
@@ -182,7 +185,9 @@ def test_benefit_score_renders_as_n_over_100(value: float, expected: str) -> Non
     assert format_benefit_score(value) == expected
 
 
-@pytest.mark.parametrize("value", [None, True, -0.01, 1.01, float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "value", [None, True, 10**1000, -0.01, 1.01, float("nan"), float("inf")]
+)
 def test_benefit_score_rejects_missing_boolean_and_nonfinite(value: object) -> None:
     from pebra.tui.widgets.ledger_table import format_benefit_score
 
@@ -199,6 +204,10 @@ def test_ledger_row_uses_honest_loss_and_benefit_units() -> None:
     by_column = dict(zip(LEDGER_COLUMNS, cells, strict=True))
     assert by_column["expected_loss"] == "145 pts"
     assert by_column["benefit"] == "82/100"
+
+
+def test_loss_column_uses_content_width_instead_of_clipping_to_header() -> None:
+    assert "expected_loss" not in LEDGER_COLUMN_WIDTHS
 
 
 def test_expected_loss_is_genuinely_unbounded_in_scoring_math() -> None:

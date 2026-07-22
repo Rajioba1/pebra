@@ -29,7 +29,7 @@ from pebra.tui.app import ObservatoryApp  # noqa: E402
 # A fixed, decision-diverse ledger. The inspect_first row has a POSITIVE rau (+0.15) yet is held — the
 # case that proves the RAU lane (position) and the decision (color/glyph) are independent channels.
 _SPECS = [
-    (Decision.PROCEED, "aaaa111", {"rau": 0.21, "expected_loss": 0.05, "benefit": 0.55}),
+    (Decision.PROCEED, "aaaa111", {"rau": 0.21, "expected_loss": 1.45, "benefit": 0.55}),
     (Decision.INSPECT_FIRST, "bbbb222", {"rau": 0.15, "expected_loss": 0.09, "benefit": 0.40}),
     (Decision.ASK_HUMAN, "cccc333", {"rau": -0.14, "expected_loss": 0.15, "benefit": 0.53}),
     (Decision.REJECT, "dddd444", {"rau": -0.31, "expected_loss": 0.36, "benefit": 0.20}),

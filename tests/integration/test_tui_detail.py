@@ -147,8 +147,8 @@ def test_detail_scores_keep_exact_decimals_with_human_unit_annotations() -> None
     detail = _detail()
     detail["content"]["scores"] = {"rau": -0.14, "expected_loss": 0.1, "benefit": 0.82}
     scores = dict(detail_sections(detail))["Scores"]
-    assert scores["expected_loss"] == "0.100 (10 pts)"
-    assert scores["benefit"] == "0.820 (82/100)"
+    assert scores["expected_loss"] == "0.1 (10 pts)"
+    assert scores["benefit"] == "0.82 (82/100)"
 
 
 def test_detail_annotates_loss_points_and_benefit_score_beside_exact_decimals() -> None:
@@ -158,7 +158,7 @@ def test_detail_annotates_loss_points_and_benefit_score_beside_exact_decimals() 
     detail["content"]["scores"] = {"rau": -0.14, "expected_loss": 0.1, "benefit": 0.82}
     rendered = repr(dict(detail_sections(detail)))
     assert "10 pts" in rendered and "82/100" in rendered
-    assert "0.100" in rendered and "0.820" in rendered  # exact decimals still present
+    assert "0.1" in rendered and "0.82" in rendered  # round-trippable decimals remain
 
 
 def test_detail_exposes_persisted_expected_utility_and_uncertainty() -> None:
@@ -168,8 +168,26 @@ def test_detail_exposes_persisted_expected_utility_and_uncertainty() -> None:
         "utility_sd": 0.06,
     }
     scores = dict(detail_sections(detail))["Scores"]
-    assert scores["expected_utility"] == "0.387"
-    assert scores["utility_sd"] == "0.060"
+    assert scores["expected_utility"] == "0.3868"
+    assert scores["utility_sd"] == "0.06"
+
+
+def test_detail_score_decimals_are_round_trippable() -> None:
+    value = 0.123456789
+    detail = _detail()
+    detail["content"]["scores"] = {
+        "expected_loss": value,
+        "benefit": value,
+        "expected_utility": value,
+        "utility_sd": value,
+    }
+    scores = dict(detail_sections(detail))["Scores"]
+    assert scores["expected_loss"] == "0.123456789 (12.3456789 pts)"
+    assert scores["benefit"] == "0.123456789 (12.3456789/100)"
+    assert scores["expected_utility"] == "0.123456789"
+    assert scores["utility_sd"] == "0.123456789"
+    for key in ("expected_loss", "benefit", "expected_utility", "utility_sd"):
+        assert float(scores[key].split()[0]) == value
 
 
 def test_detail_marks_invalid_display_scores_unavailable() -> None:
