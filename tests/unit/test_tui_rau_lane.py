@@ -210,6 +210,19 @@ def test_loss_column_uses_content_width_instead_of_clipping_to_header() -> None:
     assert "expected_loss" not in LEDGER_COLUMN_WIDTHS
 
 
+def test_exact_score_preserves_finite_integer_digits_beyond_float_precision() -> None:
+    from pebra.tui.widgets.ledger_table import format_exact_score
+
+    assert format_exact_score(9_007_199_254_740_993) == "9007199254740993"
+
+
+@pytest.mark.parametrize("value", [True, 10**1000, float("nan"), float("inf")])
+def test_exact_score_rejects_boolean_overflow_and_nonfinite_values(value: object) -> None:
+    from pebra.tui.widgets.ledger_table import format_exact_score
+
+    assert format_exact_score(value) == "—"
+
+
 def test_expected_loss_is_genuinely_unbounded_in_scoring_math() -> None:
     """Characterization: the domain assumption behind '145 pts' — expected_loss can exceed 1.0.
 

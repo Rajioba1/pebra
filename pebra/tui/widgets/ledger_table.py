@@ -124,7 +124,9 @@ def _num(value: Any) -> float | None:
 def format_exact_score(value: object) -> str:
     """Return a round-trippable finite score representation for the detail view."""
     number = _num(value)
-    return repr(number) if number is not None else "—"
+    if number is None:
+        return "—"
+    return str(value) if isinstance(value, int) else repr(number)
 
 
 def _format_points(value: float) -> str | None:

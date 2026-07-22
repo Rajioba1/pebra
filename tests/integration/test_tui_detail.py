@@ -153,7 +153,7 @@ def test_detail_scores_keep_exact_decimals_with_human_unit_annotations() -> None
 
 def test_detail_annotates_loss_points_and_benefit_score_beside_exact_decimals() -> None:
     """Milestone 0 forward spec for Milestone 2: detail keeps the exact decimals AND shows the human
-    units — expected loss 0.100 (10 pts), benefit 0.820 (82/100). Exact decimals must remain."""
+    units — expected loss 0.1 (10 pts), benefit 0.82 (82/100). Exact decimals must remain."""
     detail = _detail()
     detail["content"]["scores"] = {"rau": -0.14, "expected_loss": 0.1, "benefit": 0.82}
     rendered = repr(dict(detail_sections(detail)))
