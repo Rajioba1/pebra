@@ -437,16 +437,14 @@ def test_grouped_refresh_preserves_exact_selection_focus_scroll_and_open_detail(
     asyncio.run(scenario())
 
 
-def test_columns_currently_vary_by_width_before_milestone_1() -> None:
-    """Milestone 0 characterization: the ledger currently returns different column sets per width, so
-    a refresh/resize at a narrow width re-renders a reduced set. Locks the 'before' state."""
+def test_columns_are_width_independent() -> None:
+    """Every width retains the same schema; horizontal scrolling changes only the viewport."""
     from pebra.tui.widgets.ledger_table import columns_for_width
 
     sets = {columns_for_width(w) for w in (70, 80, 100, 120)}
-    assert len(sets) > 1  # width-dependent today
+    assert len(sets) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 1: single width-independent complete column set not implemented yet")
 def test_columns_are_width_independent_so_refresh_never_drops_fields() -> None:
     """Milestone 0 forward spec for Milestone 1: one complete column set at every width, so a 5s or
     manual refresh (which re-renders the ledger) can never silently drop instrument fields."""

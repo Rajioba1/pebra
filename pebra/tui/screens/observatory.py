@@ -28,8 +28,8 @@ from pebra.tui.screens.detail import AssessmentDetailScreen
 from pebra.tui.widgets.banner import PebraBanner
 from pebra.tui.widgets.ledger_table import (
     LEDGER_COLUMN_WIDTHS,
+    LEDGER_COLUMNS,
     LEDGER_LABELS,
-    columns_for_width,
     decision_cell,
     ledger_row,
 )
@@ -83,7 +83,7 @@ class ObservatoryScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self._rebuild_ledger_columns(columns_for_width(self.size.width))
+        self._install_ledger_columns()
         self.app.theme_changed_signal.subscribe(self, self._on_theme_changed)
         self.reload()  # initial load is synchronous so the first paint has data
         self.set_interval(_REFRESH_INTERVAL, self._tick)
@@ -98,10 +98,8 @@ class ObservatoryScreen(Screen):
         self._apply_snapshot(snapshot)
 
     def on_resize(self, event: events.Resize) -> None:
-        columns = columns_for_width(event.size.width)
-        if self._ledger_columns and columns != self._ledger_columns:
-            self._rebuild_ledger_columns(columns)
-        # The overflow hint depends on the settled layout, so update it after the next refresh.
+        # Terminal width changes only the visible viewport. Rebuilding columns here would silently
+        # discard fields and reset a reader's horizontal position.
         self.call_after_refresh(self._update_scroll_hint)
 
     def _selected_assessment_id(self, table: DataTable) -> str | None:
@@ -189,33 +187,16 @@ class ObservatoryScreen(Screen):
             return
         table.scroll_to(x=x, y=y, animate=False, force=True, immediate=True)
 
-    def _rebuild_ledger_columns(self, columns: tuple[str, ...]) -> None:
-        """Rebuild only across a width breakpoint; retain row identity/focus, reset horizontal view."""
+    def _install_ledger_columns(self) -> None:
+        """Install the complete immutable ledger schema once when the screen mounts."""
         table = self.query_one("#ledger", DataTable)
-        selected_id = self._capture_selected_underlying(table)
-        old_row = table.cursor_coordinate.row
-        old_column = table.cursor_coordinate.column
-        old_scroll_y = table.scroll_y
-        had_focus = table.has_focus
         table.clear(columns=True)
-        self._ledger_columns = columns
-        for column in columns:
+        self._ledger_columns = LEDGER_COLUMNS
+        for column in self._ledger_columns:
             table.add_column(
                 LEDGER_LABELS[column], key=column, width=LEDGER_COLUMN_WIDTHS.get(column)
             )
         self._add_ledger_rows(table)
-        self._restore_cursor(
-            table,
-            assessment_id=selected_id,
-            fallback_row=old_row,
-            column=old_column,
-        )
-        if had_focus:
-            table.focus(scroll_visible=False)
-        table.scroll_to(x=0, y=old_scroll_y, animate=False, force=True, immediate=True)
-        table.call_after_refresh(
-            self._restore_ledger_scroll, table, x=0, y=old_scroll_y
-        )
 
     def action_toggle_grouping(self) -> None:
         table = self.query_one("#ledger", DataTable)
@@ -260,7 +241,7 @@ class ObservatoryScreen(Screen):
         caption.display = self.group_repeats
 
     def _update_scroll_hint(self) -> None:
-        # Show the affordance only when the active breakpoint's columns actually overflow the pane.
+        # Show the affordance only when the complete ledger overflows the current pane.
         if not self._can_update_children():
             return
         overflowing = self.query_one("#ledger", DataTable).max_scroll_x > 0

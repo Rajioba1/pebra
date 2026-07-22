@@ -16,25 +16,23 @@ from textual.content import Content
 
 from pebra.tui.theme import VERDICT_PALETTE, verdict_for
 
-# Semantic column keys and their breakpoint-specific ordering. A data refresh keeps the current set;
-# only a width-breakpoint crossing rebuilds it.
-WIDE_COLUMNS = (
+# The ledger is a complete audit instrument at every terminal width. Narrow terminals expose the
+# rightmost fields by the DataTable's native horizontal scrolling; they must never disappear.
+LEDGER_COLUMNS = (
     "assessment_id",
     "target",
-    "task",
-    "assessed_commit",
-    "gate_lane",
     "decision",
     "rau",
     "expected_loss",
     "benefit",
     "status",
+    "prior",
+    "lesson",
+    "task",
+    "assessed_commit",
+    "gate_lane",
     "assessed_at",
 )
-NORMAL_COLUMNS = (
-    "assessment_id", "target", "assessed_commit", "decision", "rau", "status",
-)
-NARROW_COLUMNS = ("assessment_id", "target", "decision", "rau")
 
 LEDGER_LABELS = {
     "assessment_id": "ID",
@@ -44,9 +42,11 @@ LEDGER_LABELS = {
     "gate_lane": "gate lane",
     "decision": "decision",
     "rau": "RAU",
-    "expected_loss": "expected loss",
+    "expected_loss": "loss",
     "benefit": "benefit",
     "status": "status",
+    "prior": "prior",
+    "lesson": "lesson",
     "assessed_at": "assessed time",
 }
 
@@ -75,11 +75,8 @@ LEDGER_COLUMN_WIDTHS = {
 
 
 def columns_for_width(width: int) -> tuple[str, ...]:
-    if width >= 120:
-        return WIDE_COLUMNS
-    if width >= 80:
-        return NORMAL_COLUMNS
-    return NARROW_COLUMNS
+    """Return the immutable audit-column order; width only changes the visible viewport."""
+    return LEDGER_COLUMNS
 
 
 def render_rau_lane(rau: float | None, *, width: int = 13) -> str:
@@ -159,7 +156,7 @@ def decision_cell(decision: str, *, dark: bool = True) -> Content:
 def ledger_row(
     assessment: Mapping[str, Any],
     *,
-    columns: Sequence[str] = WIDE_COLUMNS,
+    columns: Sequence[str] = LEDGER_COLUMNS,
     dark: bool = True,
     group_size: int = 1,
 ) -> tuple[Any, ...]:
@@ -170,7 +167,7 @@ def ledger_row(
         "assessment_id": (
             f"{assessment.get('assessment_id', '—')} ×{group_size}"
             if group_size > 1
-            else assessment.get("assessment_id", "—")
+            else str(assessment.get("assessment_id", "—"))
         ),
         "target": Content(format_target(assessment.get("target_files") or ())),
         "task": Content(format_task(assessment.get("task"))),
@@ -180,7 +177,11 @@ def ledger_row(
         "rau": format_rau(rau),
         "expected_loss": _fmt_score(scores.get("expected_loss")),
         "benefit": _fmt_score(scores.get("benefit")),
-        "status": assessment.get("terminal_status") or "pending",
+        "status": Content(str(assessment.get("terminal_status") or "pending")),
+        # M3/M4 reserve these slots before their read-model projections land. Content makes the
+        # eventual persisted strings literal rather than Rich markup.
+        "prior": Content("—"),
+        "lesson": Content("—"),
         "assessed_at": format_assessed_at(assessment.get("assessed_at")),
     }
     return tuple(cells[column] for column in columns)

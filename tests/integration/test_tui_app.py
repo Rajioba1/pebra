@@ -178,7 +178,7 @@ def test_content_columns_preserve_the_full_lane_and_decision_label(tmp_path) -> 
         app = ObservatoryApp(_ctx_for(db))
         async with app.run_test(size=(120, 30)):
             columns = list(app.query_one("#ledger", DataTable).columns.values())
-            lane, decision = columns[4], columns[5]
+            lane, decision = columns[11], columns[2]
             assert lane.auto_width is False
             assert lane.width == LEDGER_LANE_WIDTH == len(render_rau_lane(0.0, width=LEDGER_LANE_WIDTH))
             assert decision.auto_width is False
@@ -264,22 +264,8 @@ def _column_labels(table) -> list[str]:
     return [column.label.plain for column in table.columns.values()]
 
 
-@pytest.mark.parametrize(
-    ("width", "expected"),
-    [
-        (70, ["ID", "target", "decision", "RAU"]),
-        (80, ["ID", "target", "assessed commit", "decision", "RAU", "status"]),
-        (100, ["ID", "target", "assessed commit", "decision", "RAU", "status"]),
-        (
-            120,
-            [
-                "ID", "target", "task", "assessed commit", "gate lane", "decision", "RAU",
-                "expected loss", "benefit", "status", "assessed time",
-            ],
-        ),
-    ],
-)
-def test_ledger_uses_locked_breakpoint_columns(tmp_path, width: int, expected: list[str]) -> None:
+@pytest.mark.parametrize("width", [70, 80, 100, 120])
+def test_ledger_uses_locked_complete_columns_at_every_width(tmp_path, width: int) -> None:
     from textual.widgets import DataTable
 
     db = _seed(tmp_path, rows=2)
@@ -290,17 +276,18 @@ def test_ledger_uses_locked_breakpoint_columns(tmp_path, width: int, expected: l
             await pilot.pause()
             table = app.query_one("#ledger", DataTable)
             assert table.fixed_columns == 1
-            assert _column_labels(table) == expected
+            assert _column_labels(table) == [
+                "ID", "target", "decision", "RAU", "loss", "benefit", "status", "prior",
+                "lesson", "task", "assessed commit", "gate lane", "assessed time",
+            ]
 
     asyncio.run(scenario())
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 1: complete column set at every width not implemented yet")
 @pytest.mark.parametrize("width", [70, 80, 100, 120])
 def test_every_width_requests_the_complete_semantic_column_set(tmp_path, width: int) -> None:
     """Milestone 0 forward spec for Milestone 1: no width silently drops instrument fields; narrow
-    terminals scroll instead. The full ordered instrument is locked here; only the M2 spelling
-    ``expected loss`` -> ``loss`` is normalized so this XPASSes when M1 lands, before M2 renames it."""
+    terminals scroll instead. The full ordered instrument is locked here."""
     from textual.widgets import DataTable
 
     db = _seed(tmp_path, rows=2)
@@ -315,14 +302,12 @@ def test_every_width_requests_the_complete_semantic_column_set(tmp_path, width: 
             captured["labels"] = [c.lower() for c in _column_labels(table)]
 
     asyncio.run(scenario())
-    labels = tuple({"expected loss": "loss"}.get(label, label) for label in captured["labels"])
-    assert labels == (
+    assert tuple(captured["labels"]) == (
         "id", "target", "decision", "rau", "loss", "benefit", "status", "prior", "lesson", "task",
         "assessed commit", "gate lane", "assessed time",
     )
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 1: horizontal scroll to last column not implemented yet")
 def test_narrow_ledger_scrolls_to_last_column_without_changing_selection(tmp_path) -> None:
     """Milestone 0 forward spec for Milestone 1: at 70 columns the full instrument overflows and the
     last column is reachable by horizontal scroll, and scrolling never changes the selected row."""
@@ -352,7 +337,6 @@ def test_narrow_ledger_scrolls_to_last_column_without_changing_selection(tmp_pat
     assert result["selection_preserved"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 1: horizontal scroll preserved across data refresh not implemented yet")
 def test_horizontal_scroll_survives_a_data_refresh(tmp_path) -> None:
     """Milestone 0 forward spec for Milestone 1: a 5s/manual data refresh must not reset horizontal
     scroll (columns are installed once, not rebuilt). Requires the complete overflowing column set."""
@@ -381,7 +365,7 @@ def test_horizontal_scroll_survives_a_data_refresh(tmp_path) -> None:
     assert result["after"] == result["before"]  # refresh preserved horizontal scroll
 
 
-def test_resize_rebuild_preserves_selected_assessment(tmp_path) -> None:
+def test_resize_preserves_selected_assessment(tmp_path) -> None:
     from textual.widgets import DataTable
 
     db = _seed(tmp_path, rows=2)
@@ -434,14 +418,14 @@ def test_task_and_target_cells_render_brackets_literally_through_textual(tmp_pat
         async with app.run_test(size=(120, 30)):
             table = app.query_one("#ledger", DataTable)
             target = default_cell_formatter(table.get_cell_at((0, 1)))
-            task = default_cell_formatter(table.get_cell_at((0, 2)))
+            task = default_cell_formatter(table.get_cell_at((0, 9)))
             assert target.plain == "[bold].py"
             assert task.plain == "refactor Dict[str, Any] and…"
 
     asyncio.run(scenario())
 
 
-def test_breakpoint_rebuild_resets_horizontal_scroll(tmp_path) -> None:
+def test_resize_preserves_horizontal_scroll(tmp_path) -> None:
     from textual.widgets import DataTable
 
     db = _seed(tmp_path, rows=2)
@@ -457,12 +441,12 @@ def test_breakpoint_rebuild_resets_horizontal_scroll(tmp_path) -> None:
             assert table.scroll_x > 0
             await pilot.resize_terminal(100, 24)
             await pilot.pause()
-            assert table.scroll_x == 0
+            assert table.scroll_x == 20
 
     asyncio.run(scenario())
 
 
-def test_breakpoint_rebuild_preserves_vertical_scroll_with_offscreen_selection(tmp_path) -> None:
+def test_resize_preserves_interaction_state_with_offscreen_selection(tmp_path) -> None:
     from pebra.adapters.store.db import SqliteStore
     from pebra.core.constants import ActionStatus, Decision, RiskMode
     from pebra.core.models import AssessmentResult
@@ -508,7 +492,7 @@ def test_breakpoint_rebuild_preserves_vertical_scroll_with_offscreen_selection(t
                 await pilot.pause()
 
             assert table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value == selected
-            assert table.scroll_x == 0
+            assert table.scroll_x == 12
             assert table.scroll_y == old_scroll_y
             assert table.has_focus
 
@@ -524,7 +508,7 @@ def test_snapshot_width_growth_reveals_scroll_hint_without_a_resize(tmp_path) ->
 
     async def scenario() -> None:
         app = ObservatoryApp(_ctx_for(db))
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(240, 24)) as pilot:
             # Drain the initial resize/layout callbacks so a pending startup update cannot mask the
             # behavior under test.
             for _ in range(5):
@@ -534,7 +518,7 @@ def test_snapshot_width_growth_reveals_scroll_hint_without_a_resize(tmp_path) ->
             assert app.query_one("#scroll-hint").display is False
 
             snapshot = app.screen._data.refresh_snapshot()
-            long_id = "asm_" + ("9" * 24)
+            long_id = "asm_" + ("9" * 256)
             wider_rows = [{**snapshot.assessments[0], "assessment_id": long_id}]
             app.screen._apply_snapshot(replace(snapshot, assessments=wider_rows))
             for _ in range(3):
@@ -612,11 +596,11 @@ def test_theme_change_recolors_existing_decision_cells_without_reloading(tmp_pat
         app = ObservatoryApp(_ctx_for(db))
         async with app.run_test() as pilot:
             table = app.query_one("#ledger", DataTable)
-            dark_cell = table.get_cell_at(Coordinate(0, 3))
+            dark_cell = table.get_cell_at(Coordinate(0, 2))
             assert dark_cell.spans[0].style == decision_cell("proceed", dark=True).spans[0].style
             app.theme = "textual-light"
             await pilot.pause()
-            light_cell = table.get_cell_at(Coordinate(0, 3))
+            light_cell = table.get_cell_at(Coordinate(0, 2))
             assert light_cell.spans[0].style == decision_cell("proceed", dark=False).spans[0].style
 
     asyncio.run(scenario())

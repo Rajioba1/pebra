@@ -92,7 +92,7 @@ After activating the environment, the shorter `python`, `pebra`, `nox`, and `tex
 | Packaged development | `python -m scripts.dev_package` | builds and tests a clean temporary wheel; does not publish |
 | Isolated demo | `python -m scripts.demo_observatory` | temporary synthetic DB, `repo_demo_*`, visible `DEMO`; not a root command |
 | Browser Observatory | `pebra dashboard` | read-only web view of the selected ledger |
-| Terminal Observatory | `pebra tui` | read-only Textual view of the same ledger |
+| Terminal Observatory | `pebra tui` | read-only Textual view of the same ledger; every ledger column remains available through horizontal scrolling |
 
 ## Installed Entrypoints
 
@@ -609,6 +609,11 @@ Ledger/DataTable navigation under the current Textual 8.2.x environment:
 | `Ctrl+Home` / `Ctrl+End` | First/last row |
 | `Tab` / `Shift+Tab` | Move focus |
 | `Ctrl+C` / `Super+C` | Copy selected text |
+
+The terminal Observatory always keeps its complete audit instrument visible in the table model: ID,
+target, decision, RAU, loss, benefit, status, prior, lesson, task, assessed commit, gate lane, and
+assessed time. At a narrow width, use the horizontal bindings above rather than expecting columns to be
+removed.
 
 PEBRA command-palette commands:
 

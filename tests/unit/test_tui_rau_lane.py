@@ -7,12 +7,16 @@ overflow is shown with an arrow, and the numeric RAU value (rendered separately)
 
 from __future__ import annotations
 
+from textual.content import Content
+
 from pebra.tui.theme import VERDICT_PALETTE
 from pebra.tui.widgets.ledger_table import (
+    LEDGER_COLUMNS,
     format_assessed_at,
     format_rau,
     format_target,
     format_task,
+    ledger_row,
     render_rau_lane,
 )
 
@@ -102,6 +106,25 @@ def test_task_display_is_bounded_without_mutating_row_data() -> None:
 
     assert format_task(row["task"]) == "Update authentication valid…"
     assert row["task"] == "  Update   authentication validation across every entry point  "
+
+
+def test_complete_ledger_reserves_literal_cells_for_persisted_text() -> None:
+    cells = ledger_row(
+        {
+            "assessment_id": "asm_[one]",
+            "target_files": ["src/[target].py"],
+            "task": "update Dict[str, Any]",
+            "assessed_commit": "abcdef0",
+            "terminal_status": "[pending]",
+            "assessed_at": "2026-07-20T12:34:56+00:00",
+            "scores": {"rau": 0.1, "expected_loss": 0.2, "benefit": 0.3},
+        }
+    )
+    by_column = dict(zip(LEDGER_COLUMNS, cells, strict=True))
+
+    for name in ("target", "task", "status", "prior", "lesson"):
+        assert isinstance(by_column[name], Content)
+    assert by_column["status"].plain == "[pending]"
 
 
 # --- Milestone 0 characterization lock: forward-looking score-unit formatters ---------------
