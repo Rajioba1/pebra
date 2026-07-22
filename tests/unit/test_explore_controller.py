@@ -316,6 +316,20 @@ def test_available_repository_result_must_match_prepared_snapshot(tmp_path) -> N
         )
 
 
+def test_available_repository_result_requires_available_preparation(tmp_path) -> None:
+    calls: list[tuple] = []
+
+    class FalseAvailable(_Explorer):
+        def explore(self, repo_root, query, **kwargs):
+            return replace(super().explore(repo_root, query, **kwargs), status="available")
+
+    with pytest.raises(RuntimeError, match="mismatched graph snapshot"):
+        explore_controller.explore_repository(
+            str(tmp_path), "repo_1", "query",
+            learning_port=None, explorer=FalseAvailable(calls, "unavailable"),
+        )
+
+
 def test_unavailable_repository_result_may_change_only_status_and_reason(tmp_path) -> None:
     calls: list[tuple] = []
 

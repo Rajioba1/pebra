@@ -35,7 +35,7 @@ def graph_snapshot_matches(
     and sync provenance remain fixed.
     """
     if result_available:
-        return returned == prepared
+        return prepared.status == "available" and returned == prepared
     return (
         returned.provider,
         returned.provider_version,

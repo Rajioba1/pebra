@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from pebra.core.exploration import (
@@ -11,7 +13,7 @@ from pebra.core.exploration import (
     clamp_bounds,
     unavailable_result,
 )
-from pebra.core.graph_snapshot import GraphSnapshot
+from pebra.core.graph_snapshot import GraphSnapshot, graph_snapshot_matches
 from pebra.ports.repository_explorer_port import RepositoryExplorer
 
 
@@ -27,6 +29,20 @@ def _snapshot(status: str = "unavailable") -> GraphSnapshot:
         sync_performed=False,
         fallback_reason="graph unavailable",
     )
+
+
+@pytest.mark.parametrize("status", ["unavailable", "stale", "error"])
+def test_available_result_requires_an_available_prepared_snapshot(status: str) -> None:
+    snapshot = _snapshot(status)
+
+    assert graph_snapshot_matches(snapshot, snapshot, result_available=True) is False
+
+
+def test_unavailable_result_keeps_the_existing_status_and_reason_exception() -> None:
+    prepared = _snapshot("unavailable")
+    returned = replace(prepared, status="error", fallback_reason="query failed")
+
+    assert graph_snapshot_matches(prepared, returned, result_available=False) is True
 
 
 @pytest.mark.parametrize(
