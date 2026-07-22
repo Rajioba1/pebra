@@ -141,6 +141,13 @@ def _api_get(port: int, token: str, path: str) -> dict:
         return json.loads(resp.read())
 
 
+def _history_cell_text_by_header(row, header: str) -> str:
+    table = row.locator("xpath=ancestor::table")
+    headers = table.locator("thead th").all_inner_texts()
+    index = [h.strip().lower() for h in headers].index(header.lower())
+    return row.locator("td").nth(index).inner_text()
+
+
 def test_dashboard_exposes_measured_rca_benefit(tmp_path, require_accepted_rca):
     repo = _repo(tmp_path / "repo", "calc.py", _BEFORE)
     db = tmp_path / "p.db"
@@ -260,11 +267,16 @@ def test_dashboard_history_renders_revise_safer_risk_benefit_math(tmp_path):
                     '[data-testid="history"][data-loaded="true"]', timeout=15000
                 )
                 row = page.locator("tr.clickable").filter(has_text=payload["assessment_id"])
-                cells = row.locator("td")
-                assert cells.nth(1).inner_text() == "revise_safer"
-                assert cells.nth(2).inner_text() == f'{scores["expected_loss"]:.3f}'
-                assert cells.nth(3).inner_text() == f'{scores["benefit"]:.3f}'
-                assert cells.nth(4).inner_text() == f'{scores["expected_utility"]:.3f}'
-                assert cells.nth(5).inner_text() == f'{scores["rau"]:.3f}'
+                assert _history_cell_text_by_header(row, "decision") == "revise_safer"
+                assert _history_cell_text_by_header(row, "expected loss") == (
+                    f'{scores["expected_loss"] * 100:.0f}%'
+                )
+                assert _history_cell_text_by_header(row, "benefit") == (
+                    f'{scores["benefit"] * 100:.0f}%'
+                )
+                assert _history_cell_text_by_header(row, "expected utility") == (
+                    f'{scores["expected_utility"]:.3f}'
+                )
+                assert _history_cell_text_by_header(row, "rau") == f'{scores["rau"]:.3f}'
             finally:
                 browser.close()

@@ -126,7 +126,9 @@ def test_dashboard_visual_all_views_no_csp_violations(seeded_learning_state, out
     csp_errors: list[str] = []
     page_errors: list[str] = []
 
-    with dh.running_dashboard(seeded_learning_state.repo_path, seeded_learning_state.db_path) as info:
+    with dh.running_dashboard(
+        seeded_learning_state.repo_path, seeded_learning_state.db_path, dev=True
+    ) as info:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             try:
@@ -170,7 +172,9 @@ def test_dashboard_visual_all_views_no_csp_violations(seeded_learning_state, out
 def test_dashboard_live_refresh_preserves_interaction_state(seeded_learning_state):
     from playwright.sync_api import sync_playwright
 
-    with dh.running_dashboard(seeded_learning_state.repo_path, seeded_learning_state.db_path) as info:
+    with dh.running_dashboard(
+        seeded_learning_state.repo_path, seeded_learning_state.db_path, dev=True
+    ) as info:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             try:

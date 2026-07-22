@@ -518,7 +518,12 @@ def explore(
 
 
 def dashboard_proc(
-    *, repo_root: Path | str, db: Path | str, port: int = 0, auth: str | None = None
+    *,
+    repo_root: Path | str,
+    db: Path | str,
+    port: int = 0,
+    auth: str | None = None,
+    dev: bool = False,
 ) -> subprocess.Popen:
     """Start ``pebra dashboard`` as a long-running process. The caller reads stdout for the URL line and
     is responsible for teardown (see dashboard_harness). ``auth`` forwards ``--auth`` (e.g. "token")."""
@@ -528,6 +533,8 @@ def dashboard_proc(
     ]
     if auth is not None:
         cmd += ["--auth", auth]
+    if dev:
+        cmd.append("--dev")
     # PYTHONUNBUFFERED + -u: the URL line is print()ed before uvicorn.run() blocks, so it must flush
     # immediately or the reader never sees it (a pipe is block-buffered, unlike a tty).
     env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT), "PYTHONUNBUFFERED": "1"}

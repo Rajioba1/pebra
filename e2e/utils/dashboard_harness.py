@@ -57,9 +57,14 @@ def _wait_until_ready(port: int, token: str, *, timeout: float) -> None:
 
 @contextmanager
 def running_dashboard(
-    repo_root: Path | str, db: Path | str, *, timeout: float = 30.0, auth: str | None = None
+    repo_root: Path | str,
+    db: Path | str,
+    *,
+    timeout: float = 30.0,
+    auth: str | None = None,
+    dev: bool = False,
 ):
-    proc = ch.dashboard_proc(repo_root=repo_root, db=db, port=0, auth=auth)
+    proc = ch.dashboard_proc(repo_root=repo_root, db=db, port=0, auth=auth, dev=dev)
     q: queue.Queue = queue.Queue()
     stderr_lines: list[str] = []
     threading.Thread(target=_pump, args=(proc.stdout, q), daemon=True).start()
