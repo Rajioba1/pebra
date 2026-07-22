@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from e2e.experiments.agent_ab import models
@@ -149,6 +151,166 @@ def test_graph_context_uses_public_explore_and_keeps_receipt_host_only(
     assert receipt["source"] == "graph"
     assert receipt["repo_head"] == head
     assert receipt["graph_scope_digest"] == "a" * 64
+
+
+def test_graph_context_receipt_retains_sanitized_failure_reason(tmp_path, monkeypatch) -> None:
+    repo = _repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    def explore(*_args, **_kwargs):
+        return {
+            "status": "unavailable",
+            "snapshot": {"status": "stale_after_sync", "repo_head": head},
+            "warnings": [],
+            "fallback_reason": "CodeGraph sync failed in C:/Users/RajLord_new/Desktop/pebra",
+        }
+
+    monkeypatch.setattr(run_pair.cli_harness, "explore", explore)
+    telemetry = run_pair.ArmTelemetry()
+    backend = run_pair._repository_context_backend(
+        models.ARM_GRAPH_CONTEXT, repo, telemetry
+    )
+
+    output = backend({"query": "helper", "files": ["src/a.ts"]}, timeout_seconds=5)
+
+    assert output["status"] == "unavailable"
+    serialized_output = json.dumps(output).lower()
+    assert "codegraph" not in serialized_output
+    assert "pebra" not in serialized_output
+    assert "repository context is temporarily unavailable" in serialized_output
+    receipt = telemetry.repository_context_receipts[-1]
+    assert receipt["status"] == "unavailable"
+    assert receipt["failure_stage"] == "explore"
+    assert receipt["snapshot_status"] == "stale_after_sync"
+    assert "CodeGraph" not in receipt["fallback_reason"]
+    assert "pebra" not in receipt["fallback_reason"].lower()
+
+
+def test_graph_context_malformed_explore_response_fails_closed_with_receipt(
+    tmp_path, monkeypatch
+) -> None:
+    repo = _repo(tmp_path)
+
+    monkeypatch.setattr(run_pair.cli_harness, "explore", lambda *_args, **_kwargs: None)
+    telemetry = run_pair.ArmTelemetry()
+    backend = run_pair._repository_context_backend(
+        models.ARM_GRAPH_CONTEXT, repo, telemetry
+    )
+
+    output = backend({"query": "helper", "files": ["src/a.ts"]}, timeout_seconds=5)
+
+    assert output["status"] == "unavailable"
+    receipt = telemetry.repository_context_receipts[-1]
+    assert receipt["status"] == "unavailable"
+    assert receipt["failure_stage"] == "explore"
+    assert receipt["snapshot_status"] == "malformed"
+
+
+def test_graph_context_exception_still_records_unavailable_receipt(tmp_path, monkeypatch) -> None:
+    repo = _repo(tmp_path)
+
+    def explore(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("pebra explore", 5)
+
+    monkeypatch.setattr(run_pair.cli_harness, "explore", explore)
+    telemetry = run_pair.ArmTelemetry()
+    backend = run_pair._repository_context_backend(
+        models.ARM_GRAPH_CONTEXT, repo, telemetry
+    )
+
+    output = backend({"query": "helper", "files": ["src/a.ts"]}, timeout_seconds=5)
+
+    assert output["status"] == "unavailable"
+    assert output["warnings"] == ["Repository context is temporarily unavailable."]
+    receipt = telemetry.repository_context_receipts[-1]
+    assert receipt["status"] == "unavailable"
+    assert receipt["failure_stage"] == "explore"
+    assert receipt["fallback_reason"] == "TimeoutExpired"
+
+
+def test_graph_context_explore_calls_are_not_serialized_inside_tool_call(tmp_path, monkeypatch) -> None:
+    repo = _repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    active = 0
+    max_active = 0
+
+    def explore(*_args, **_kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        time.sleep(0.05)
+        active -= 1
+        return {
+            "status": "available",
+            "snapshot": {
+                "status": "available",
+                "repo_head": head,
+                "graph_scope_digest": "a" * 64,
+            },
+            "context": "helper",
+            "dependent_files": [],
+            "affected_tests": [],
+            "warnings": [],
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(run_pair.cli_harness, "explore", explore)
+    first = run_pair._repository_context_backend(
+        models.ARM_GRAPH_CONTEXT, repo, run_pair.ArmTelemetry()
+    )
+    second = run_pair._repository_context_backend(
+        models.ARM_PEBRA_GRAPH_CONTEXT, repo, run_pair.ArmTelemetry()
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(
+            lambda item: item[0]({"query": item[1], "files": []}, timeout_seconds=10),
+            ((first, "first"), (second, "second")),
+        ))
+
+    assert max_active == 2
+
+
+def test_ordinary_context_forwards_remaining_timeout_to_search(tmp_path, monkeypatch) -> None:
+    repo = _repo(tmp_path)
+    seen: list[float | None] = []
+
+    def search_grep(_term, _repo_path, **kwargs):
+        seen.append(kwargs.get("timeout_seconds"))
+        return {"matches": []}
+
+    monkeypatch.setattr(run_pair.tool_impl, "search_grep", search_grep)
+
+    run_pair._ordinary_repository_context(
+        repo, "helper symbol query", ("src/a.ts",), timeout_seconds=3.5
+    )
+
+    assert seen
+    assert all(value is not None and 0 < value <= 3.5 for value in seen)
+
+
+def test_ordinary_context_does_not_read_requested_files_after_deadline(
+    tmp_path, monkeypatch
+) -> None:
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(
+        run_pair.tool_impl,
+        "read_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("file read must not start after deadline")
+        ),
+    )
+
+    output = run_pair._ordinary_repository_context(
+        repo, "helper", ("src/a.ts",), timeout_seconds=0.0
+    )
+
+    assert output["status"] == "unavailable"
+    assert output["truncated"] is True
 
 
 def test_context_cache_invalidates_when_repository_head_changes(tmp_path, monkeypatch) -> None:

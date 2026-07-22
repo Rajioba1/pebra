@@ -1382,6 +1382,41 @@ def test_main_runs_revise_safer_calibration_for_assay(monkeypatch, tmp_path):
     assert seen["preflight_status"]["revise_safer"] == "passed"
 
 
+def test_main_passes_preflight_graph_digest_to_assay_trial(monkeypatch, tmp_path):
+    gamma = TaskSpec(
+        "MNGAMMA", "d", ("src/Gamma.cs",), "risky", ("src/Gamma.cs",), "test_failure", False,
+        evaluator_test_project="tests/Tests.csproj", evaluator_test_filter="FullyQualifiedName~GammaTests",
+        build_solution="MathNet.Numerics.sln",
+    )
+    seen_kwargs: list[dict] = []
+
+    monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
+    monkeypatch.setattr(orchestrator, "load_corpus", lambda: [gamma])
+    monkeypatch.setattr(orchestrator, "_config", lambda: {
+        "assay": {"tasks": ["MNGAMMA"], "seeds_per_arm": 1},
+        "bootstrap_seed": 0,
+        **_SUBJECT_CONFIG,
+    })
+    monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
+    monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
+    monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", lambda *a, **k: "a" * 64)
+    monkeypatch.setattr(orchestrator.preflight, "run_revise_safer_calibration", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator, "_assert_trial_graph_scope_compatible", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator.render_report, "write_assay_report", lambda *a, **k: None)
+
+    def _trial(spec, seed, run_id, **kwargs):
+        seen_kwargs.append(kwargs)
+        return (_subject(spec.task_id, models.ARM_SHAM, seed),)
+
+    monkeypatch.setattr(orchestrator.run_pair, "run_trial", _trial)
+
+    assert orchestrator.main(["--run-id", "assay-digest", "--mode", "assay"]) == 0
+    assert seen_kwargs == [{"expected_graph_scope_digest": "a" * 64}]
+
+
 def test_preflight_only_js_assay_skips_paid_run_gate_and_subject(monkeypatch, tmp_path):
     js1 = TaskSpec(
         "JS1", "d", ("packages/zod/src/v3/types.ts",), "risky",

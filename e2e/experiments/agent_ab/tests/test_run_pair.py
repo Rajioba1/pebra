@@ -2084,35 +2084,37 @@ def test_real_advisory_records_host_only_timeout_diagnostic(monkeypatch, tmp_pat
     }]
 
 
-def test_parallel_trial_serializes_real_advisory_arms_only(monkeypatch, tmp_path):
+def test_parallel_trial_serializes_graph_backed_arms_before_invocation(monkeypatch, tmp_path):
     monkeypatch.setenv("E2E_AB_PARALLEL_ARMS", "1")
     monkeypatch.setenv("E2E_AB_MAX_WORKERS", "5")
-    active_real = 0
-    max_active_real = 0
+    active_graph = 0
+    max_active_graph = 0
     active_total = 0
     max_active_total = 0
     guard = threading.Lock()
 
     def _invoke(setup, _spec, _seed):
-        nonlocal active_real, max_active_real, active_total, max_active_total
-        is_real = setup.arm in models.REAL_ADVISORY_ARMS
+        nonlocal active_graph, max_active_graph, active_total, max_active_total
+        is_graph = setup.arm in run_pair._GRAPH_ARMS
         with guard:
             active_total += 1
             max_active_total = max(max_active_total, active_total)
-            if is_real:
-                active_real += 1
-                max_active_real = max(max_active_real, active_real)
+            if is_graph:
+                active_graph += 1
+                max_active_graph = max(max_active_graph, active_graph)
         time.sleep(0.05)
         with guard:
             active_total -= 1
-            if is_real:
-                active_real -= 1
+            if is_graph:
+                active_graph -= 1
         return SubjectResult(task_id="T1", arm=setup.arm, seed=0)
 
     monkeypatch.setattr(run_pair, "_invoke_trial_setup", _invoke)
     setups = [
         _dummy_setup(tmp_path),
         replace(_dummy_setup(tmp_path), arm=models.ARM_PEBRA),
+        replace(_dummy_setup(tmp_path), arm=models.ARM_BLAST_RADIUS),
+        replace(_dummy_setup(tmp_path), arm=models.ARM_GRAPH_CONTEXT),
         replace(_dummy_setup(tmp_path), arm=models.ARM_PEBRA_GRAPH_REPAIR),
         replace(_dummy_setup(tmp_path), arm=models.ARM_PEBRA_HUMAN_REVIEW),
     ]
@@ -2120,7 +2122,7 @@ def test_parallel_trial_serializes_real_advisory_arms_only(monkeypatch, tmp_path
     results = run_pair._invoke_trial_setups(setups, _SPEC, 0)
 
     assert {result.arm for result in results} == {setup.arm for setup in setups}
-    assert max_active_real == 1
+    assert max_active_graph == 1
     assert max_active_total > 1
 
 
@@ -2487,6 +2489,39 @@ def test_subject_forged_candidate_verification_is_stripped_on_every_arm(monkeypa
                              "verified_patch_hash": "host"}          # attempt 1: host-produced, not "forged"
 
 
+def test_blast_radius_advisory_is_not_serialized_inside_tool_call(monkeypatch, tmp_path):
+    active = 0
+    max_active = 0
+
+    def advise(_payload, **_kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        time.sleep(0.05)
+        active -= 1
+        return {
+            "recommended_decision": None,
+            "risk_level": "unknown",
+            "advisory": "ok",
+            "detail": {},
+        }
+
+    monkeypatch.setattr(run_pair.advisory_blast_radius, "advise", advise)
+    backend = run_pair._advisory_backend(
+        models.ARM_BLAST_RADIUS, tmp_path, tmp_path / "pebra.db"
+    )
+    payload = {
+        "target_file": "src/a.ts",
+        "change_summary": "change a",
+        "proposed_patch": "diff --git a/src/a.ts b/src/a.ts",
+    }
+
+    with run_pair.ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(lambda _idx: backend(payload), range(2)))
+
+    assert max_active == 2
+
+
 def test_repair_candidate_verification_rejects_target_patch_mismatch(monkeypatch, tmp_path):
     patch = (
         "diff --git a/src/B.cs b/src/B.cs\n"
@@ -2700,6 +2735,82 @@ def test_prepare_arm_uses_language_backend_for_baseline(monkeypatch, tmp_path):
 
     assert seen == {"language": "typescript"}
     assert setup.spec is spec
+
+
+def test_run_trial_aborts_failed_graph_context_readiness_before_subject(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(run_pair, "_AB_OUT", tmp_path)
+    monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: _External())
+    monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
+
+    def _clone(_external, dest):
+        dest.mkdir(parents=True)
+        (dest / "src").mkdir()
+        (dest / "src" / "a.cs").write_text("class A {}\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=dest, check=True)
+        subprocess.run(["git", "config", "user.name", "PEBRA test"], cwd=dest, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@users.noreply.github.com"],
+            cwd=dest,
+            check=True,
+        )
+        subprocess.run(["git", "add", "."], cwd=dest, check=True)
+        subprocess.run(["git", "commit", "-qm", "fixture"], cwd=dest, check=True)
+        return dest
+
+    monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head", _clone)
+    monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "graph_node_counts",
+        lambda *, repo_root: {"csharp_callable": 700},
+    )
+    monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec: _FakeBackend())
+    monkeypatch.setattr(
+        run_pair.cli_harness,
+        "explore",
+        lambda *_args, **_kwargs: {
+            "status": "unavailable",
+            "snapshot": {"status": "stale_after_sync"},
+            "fallback_reason": "sync failed",
+        },
+    )
+    monkeypatch.setattr(
+        run_pair,
+        "_invoke_trial_setups",
+        lambda *_args, **_kwargs: pytest.fail("subject must not be invoked"),
+    )
+
+    with pytest.raises(run_pair.RunPairError, match="graph context readiness"):
+        run_pair.run_trial(
+            _SPEC,
+            0,
+            "rid",
+            arms=(models.ARM_GRAPH_CONTEXT,),
+            expected_graph_scope_digest="a" * 64,
+        )
+
+
+def test_graph_context_readiness_malformed_explore_response_fails_closed(
+    monkeypatch, tmp_path
+):
+    repo = tmp_path
+    (repo / "src").mkdir()
+    (repo / "src" / "a.cs").write_text("class A {}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "PEBRA test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@users.noreply.github.com"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+    monkeypatch.setattr(run_pair.cli_harness, "explore", lambda *_args, **_kwargs: [])
+
+    with pytest.raises(run_pair.RunPairError, match="graph context readiness"):
+        run_pair._assert_graph_context_ready(_SPEC, models.ARM_GRAPH_CONTEXT, repo)
 
 
 def test_prepare_arm_still_applies_csharp_floor_to_legacy_graph_task(monkeypatch, tmp_path):

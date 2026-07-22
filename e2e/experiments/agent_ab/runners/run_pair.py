@@ -315,12 +315,48 @@ def _context_files(payload: dict[str, Any]) -> tuple[str, ...]:
     return tuple(values[:8])
 
 
+def _graph_call(fn, *args, **kwargs):
+    """Invoke a graph-backed operation.
+
+    Graph-backed assay arms are serialized at the scheduler boundary so any
+    wait occurs before that arm's run clock starts. Keeping this helper
+    lock-free prevents scheduler-dependent tool-call wait from contaminating
+    per-arm wall-clock budgets.
+    """
+    return fn(*args, **kwargs)
+
+
+def _safe_receipt_reason(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    safe = tool_impl.model_safe_text(" ".join(value.split()))
+    return safe[:300] or None
+
+
+def _graph_failure_stage(raw: dict[str, Any], *, valid: bool) -> str | None:
+    if valid:
+        return None
+    status = raw.get("status")
+    if status != "available":
+        return "explore"
+    return "receipt_validation"
+
+
 def _ordinary_repository_context(
-    repo_path: Path, query: str, files: tuple[str, ...]
+    repo_path: Path, query: str, files: tuple[str, ...], *,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
+    started = time.monotonic()
     related: list[str] = list(files)
     sections: list[str] = []
+    timed_out = False
     for path in files:
+        if (
+            timeout_seconds is not None
+            and time.monotonic() - started >= timeout_seconds
+        ):
+            timed_out = True
+            break
         result = tool_impl.read_file(path, repo_path)
         content = result.get("content") if isinstance(result, dict) else None
         if isinstance(content, str):
@@ -328,7 +364,17 @@ def _ordinary_repository_context(
     terms = list(dict.fromkeys(re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)))[:6]
     matches: list[str] = []
     for term in terms:
-        result = tool_impl.search_grep(term, repo_path)
+        remaining = (
+            timeout_seconds - (time.monotonic() - started)
+            if timeout_seconds is not None
+            else None
+        )
+        if remaining is not None and remaining <= 0:
+            timed_out = True
+            break
+        result = tool_impl.search_grep(term, repo_path, timeout_seconds=remaining)
+        if isinstance(result, dict) and result.get("truncated") is True:
+            timed_out = True
         for match in result.get("matches", []) if isinstance(result, dict) else []:
             if isinstance(match, str) and match not in matches:
                 matches.append(match)
@@ -338,6 +384,8 @@ def _ordinary_repository_context(
             if len(matches) >= 80:
                 break
         if len(matches) >= 80:
+            break
+        if timed_out:
             break
     if matches:
         sections.append("## Search matches\n" + "\n".join(matches))
@@ -349,8 +397,12 @@ def _ordinary_repository_context(
         "context": "\n\n".join(sections),
         "related_files": related,
         "related_tests": tests,
-        "warnings": [] if sections else ["No matching repository context was found."],
-        "truncated": False,
+        "warnings": (
+            ["Repository context search reached its time budget."]
+            if timed_out
+            else ([] if sections else ["No matching repository context was found."])
+        ),
+        "truncated": timed_out,
     }
 
 
@@ -380,15 +432,28 @@ def _repository_context_backend(
             return dict(cached["output"])
 
         digest: str | None = None
+        failure_stage: str | None = None
+        snapshot_status: str | None = None
+        fallback_reason: str | None = None
         if source == "graph":
-            raw = cli_harness.explore(
-                query,
-                files=files,
-                repo_root=repo_path,
-                max_files=8,
-                max_bytes=12_000,
-                timeout=max(1, int(timeout_seconds or cli_harness.DEFAULT_TIMEOUT_SECONDS)),
-            )
+            try:
+                raw_value = _graph_call(
+                    cli_harness.explore,
+                    query,
+                    files=files,
+                    repo_root=repo_path,
+                    max_files=8,
+                    max_bytes=12_000,
+                    timeout=max(1, int(timeout_seconds or cli_harness.DEFAULT_TIMEOUT_SECONDS)),
+                )
+            except Exception as exc:  # defensive: graph context is diagnostic, not fatal
+                raw_value = {
+                    "status": "unavailable",
+                    "snapshot": {"status": "exception"},
+                    "warnings": [],
+                    "fallback_reason": type(exc).__name__,
+                }
+            raw = raw_value if isinstance(raw_value, dict) else {}
             snapshot = raw.get("snapshot") if isinstance(raw, dict) else None
             snapshot = snapshot if isinstance(snapshot, dict) else {}
             raw_head = snapshot.get("repo_head")
@@ -401,6 +466,21 @@ def _repository_context_backend(
                 and re.fullmatch(r"[0-9a-f]{64}", raw_digest) is not None
             )
             digest = raw_digest if valid else None
+            failure_stage = _graph_failure_stage(raw, valid=valid)
+            raw_snapshot_status = snapshot.get("status")
+            snapshot_status = (
+                raw_snapshot_status if isinstance(raw_snapshot_status, str) else None
+            )
+            if not isinstance(raw_value, dict):
+                snapshot_status = "malformed"
+            fallback_reason = _safe_receipt_reason(raw.get("fallback_reason"))
+            warnings = [
+                tool_impl.model_safe_text(item)
+                for item in raw.get("warnings", [])
+                if isinstance(item, str)
+            ]
+            if not valid and not warnings:
+                warnings = ["Repository context is temporarily unavailable."]
             output = {
                 "status": "available" if valid else "unavailable",
                 "context": tool_impl.model_safe_text(str(raw.get("context") or "")),
@@ -414,15 +494,13 @@ def _repository_context_backend(
                     for item in raw.get("affected_tests", [])
                     if isinstance(item, str)
                 ],
-                "warnings": [
-                    tool_impl.model_safe_text(item)
-                    for item in raw.get("warnings", [])
-                    if isinstance(item, str)
-                ],
+                "warnings": warnings,
                 "truncated": raw.get("truncated") is True,
             }
         else:
-            output = _ordinary_repository_context(repo_path, query, files)
+            output = _ordinary_repository_context(
+                repo_path, query, files, timeout_seconds=timeout_seconds
+            )
             output = {
                 **output,
                 "context": tool_impl.model_safe_text(str(output.get("context") or "")),
@@ -446,6 +524,12 @@ def _repository_context_backend(
             "cache_hit": False,
             "status": output["status"],
         }
+        if failure_stage is not None:
+            receipt["failure_stage"] = failure_stage
+        if snapshot_status is not None:
+            receipt["snapshot_status"] = snapshot_status
+        if fallback_reason is not None:
+            receipt["fallback_reason"] = fallback_reason
         telemetry.repository_context_receipts.append(receipt)
         if output["status"] == "available":
             telemetry.repository_context_cache[key] = {
@@ -1233,7 +1317,7 @@ def _advisory_backend(
                 scope_receipt_index = len(telemetry.real_advisory_graph_scope_digests)
                 telemetry.real_advisory_graph_scope_digests.append(None)
             try:
-                result = advisory_check_real.advise(payload, **advise_kwargs)
+                result = _graph_call(advisory_check_real.advise, payload, **advise_kwargs)
             except Exception as exc:
                 if telemetry is not None:
                     telemetry.real_advisory_failures.append({
@@ -1342,8 +1426,11 @@ def _advisory_backend(
                 repo_path=repo_path,
                 timeout_seconds=kwargs.get("timeout_seconds"),
             )
-            result = advisory_blast_radius.advise(
-                prepared, repo_root=repo_path, db=db_path,
+            result = _graph_call(
+                advisory_blast_radius.advise,
+                prepared,
+                repo_root=repo_path,
+                db=db_path,
                 timeout_seconds=kwargs.get("timeout_seconds"),
             )
             return advisory_contract.with_candidate_patch(
@@ -1597,16 +1684,73 @@ def _validate_baseline(repo_path: Path, baseline) -> None:
         raise RunPairError(f"baseline build failed for {repo_path}: {baseline.error_summary}")
 
 
-def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, run_id: str) -> ArmSetup:
+def _assert_graph_context_ready(
+    spec: TaskSpec,
+    arm: str,
+    repo_path: Path,
+    *,
+    expected_graph_scope_digest: str | None = None,
+) -> None:
+    """Unpaid runtime readiness probe for graph-backed Understand arms."""
+    if arm not in _GRAPH_CONTEXT_ARMS:
+        return
+    head = _repo_head(repo_path)
+    raw_value = _graph_call(
+        cli_harness.explore,
+        spec.description,
+        files=tuple(spec.target_hints),
+        repo_root=repo_path,
+        max_files=8,
+        max_bytes=12_000,
+        timeout=cli_harness.DEFAULT_TIMEOUT_SECONDS,
+    )
+    raw = raw_value if isinstance(raw_value, dict) else {}
+    snapshot = raw.get("snapshot") if isinstance(raw, dict) else None
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    raw_head = snapshot.get("repo_head")
+    raw_digest = snapshot.get("graph_scope_digest")
+    valid_digest = isinstance(raw_digest, str) and re.fullmatch(r"[0-9a-f]{64}", raw_digest)
+    if (
+        raw.get("status") == "available"
+        and isinstance(raw_head, str)
+        and raw_head.lower() == head
+        and valid_digest
+        and (
+            expected_graph_scope_digest is None
+            or raw_digest == expected_graph_scope_digest
+        )
+    ):
+        return
+    reason = _safe_receipt_reason(raw.get("fallback_reason")) or str(raw.get("status") or "unavailable")
+    snapshot_status = snapshot.get("status") if isinstance(snapshot.get("status"), str) else "unknown"
+    if not isinstance(raw_value, dict):
+        snapshot_status = "malformed"
+        reason = "malformed"
+    raise RunPairError(
+        "graph context readiness failed for "
+        f"{arm}: status={raw.get('status')!r}, snapshot_status={snapshot_status!r}, "
+        f"reason={reason}"
+    )
+
+
+def prepare_arm(
+    external: rs.ExternalRepo,
+    spec: TaskSpec,
+    arm: str,
+    seed: int,
+    run_id: str,
+    *,
+    expected_graph_scope_digest: str | None = None,
+) -> ArmSetup:
     """Clone an isolated worktree for one arm and prepare everything up to the agent call. No agent run."""
     # Arm-NEUTRAL path: an opaque hash token, not the arm name - so nothing the agent sees reveals its arm.
     dest = _AB_OUT / run_id / f"{spec.task_id}_seed{seed}_{_arm_token(arm, run_id)}" / "repo"
     _remove_stale_arm_workspace(dest)
     repo_path = rs.clone_at_recorded_head(external, dest)
     subject_protocol.install(repo_path, arm)
-    cli_harness.setup_graph(repo_root=repo_path)
+    _graph_call(cli_harness.setup_graph, repo_root=repo_path)
     if arm in _GRAPH_ARMS:
-        counts = cli_harness.graph_node_counts(repo_root=repo_path)
+        counts = _graph_call(cli_harness.graph_node_counts, repo_root=repo_path)
         # Legacy graph tasks are C# specimens and keep the independent C# node floor. Explicit
         # multi-language tasks are validated by the mandatory graph preflight using the assessed
         # language capability tier; prepare_arm does not have an assess payload to infer that language.
@@ -1629,6 +1773,12 @@ def prepare_arm(external: rs.ExternalRepo, spec: TaskSpec, arm: str, seed: int, 
     build_backend = backends.backend_for_spec(spec)
     baseline = build_backend.run_build_delta(repo_path, spec)
     _validate_baseline(repo_path, baseline)
+    _assert_graph_context_ready(
+        spec,
+        arm,
+        repo_path,
+        expected_graph_scope_digest=expected_graph_scope_digest,
+    )
     return ArmSetup(
         arm=arm,
         repo_path=repo_path,
@@ -2006,11 +2156,11 @@ def _max_arm_workers(arm_count: int) -> int:
 def _invoke_trial_setups(setups: list[ArmSetup], spec: TaskSpec, seed: int) -> tuple[SubjectResult, ...]:
     if not _parallel_arms_enabled() or len(setups) <= 1:
         return tuple(_invoke_trial_setup(setup, spec, seed) for setup in setups)
-    real_advisory_lock = threading.Lock()
+    graph_arm_lock = threading.Lock()
 
     def _invoke(setup: ArmSetup) -> SubjectResult:
-        if setup.arm in _REAL_ADVISORY_ARMS:
-            with real_advisory_lock:
+        if setup.arm in _GRAPH_ARMS:
+            with graph_arm_lock:
                 return _invoke_trial_setup(setup, spec, seed)
         return _invoke_trial_setup(setup, spec, seed)
 
@@ -2025,13 +2175,27 @@ def _invoke_trial_setup(setup: ArmSetup, spec: TaskSpec, seed: int) -> SubjectRe
     return _invoke_subject_agent(setup, spec, seed)
 
 
-def run_trial(spec: TaskSpec, seed: int, run_id: str, *, arms: tuple[str, ...] | None = None,
-              ) -> tuple[SubjectResult, ...]:
+def run_trial(
+    spec: TaskSpec,
+    seed: int,
+    run_id: str,
+    *,
+    arms: tuple[str, ...] | None = None,
+    expected_graph_scope_digest: str | None = None,
+) -> tuple[SubjectResult, ...]:
     """Prepare and run the N assay arms for one (task, seed). Arms default by harm_label
     (risky: sham/oracle_positive/blast_radius/pebra; safe: sham/blast_radius/pebra). Each arm is an
     isolated clone under its own opaque token; results carry ``result.arm`` for scoring."""
     _preflight_run_gate_contract(run_id)
     external = rs.prepare_external_repo()
     arm_list = arms if arms is not None else arms_for(spec.harm_label)
-    setups = [prepare_arm(external, spec, arm, seed, run_id) for arm in arm_list]
+    prepare_kwargs = (
+        {"expected_graph_scope_digest": expected_graph_scope_digest}
+        if expected_graph_scope_digest is not None
+        else {}
+    )
+    setups = [
+        prepare_arm(external, spec, arm, seed, run_id, **prepare_kwargs)
+        for arm in arm_list
+    ]
     return _invoke_trial_setups(setups, spec, seed)

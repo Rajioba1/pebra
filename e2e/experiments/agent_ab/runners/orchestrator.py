@@ -1069,9 +1069,23 @@ def main(argv: list[str] | None = None) -> int:
                         arm for arm in _arms_for_mode(args.mode, spec.harm_label)
                         if arm not in present_arms
                     )
-                    results = run_pair.run_trial(spec, seed, args.run_id, arms=missing_arms)
+                    trial_kwargs: dict[str, Any] = {"arms": missing_arms}
+                    if run_metadata.get("graph_scope_digest") is not None:
+                        trial_kwargs["expected_graph_scope_digest"] = run_metadata.get(
+                            "graph_scope_digest"
+                        )
+                    results = run_pair.run_trial(
+                        spec, seed, args.run_id, **trial_kwargs
+                    )
                 else:
-                    results = run_pair.run_trial(spec, seed, args.run_id)
+                    trial_kwargs = {}
+                    if run_metadata.get("graph_scope_digest") is not None:
+                        trial_kwargs["expected_graph_scope_digest"] = run_metadata.get(
+                            "graph_scope_digest"
+                        )
+                    results = run_pair.run_trial(
+                        spec, seed, args.run_id, **trial_kwargs
+                    )
             else:
                 results = run_pair.run_pair(spec, seed, args.run_id)
             for res in results:

@@ -203,7 +203,8 @@ def _dispatch(
         return tool_impl.list_dir(args.get("path"), repo)
     if name == "search_grep":
         return tool_impl.search_grep(args.get("pattern", ""), repo,
-                                     path=args.get("path"), file_glob=args.get("file_glob"))
+                                     path=args.get("path"), file_glob=args.get("file_glob"),
+                                     timeout_seconds=timeout_seconds)
     if name == "run_build":
         return tool_impl.run_build(repo, backend=getattr(setup, "build_backend", None),
                                    spec=getattr(setup, "spec", None), sln=setup.build_solution,

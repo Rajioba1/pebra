@@ -11,10 +11,13 @@ No pebra import.
 
 from __future__ import annotations
 
+import fnmatch
 import inspect
+import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -31,6 +34,7 @@ _MAX_LIST_ENTRIES = 500
 _MAX_MATCHES = 200
 _MAX_GREP_FILE_BYTES = 1_000_000
 _HIDDEN_DIRS = {".git", ".codegraph", ".pebra"}
+_SEARCH_SKIP_DIRS = _HIDDEN_DIRS | {"node_modules", ".venv", "venv"}
 _WRITE_PROTECTED_DIRS = _HIDDEN_DIRS | {".agent-instructions"}
 _REDACTION = "[redacted]"
 _PATCH_PATH_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
@@ -90,9 +94,11 @@ def read_file(path: str, repo_root: Path) -> dict[str, Any]:
         return {"error": "hidden path requested"}
     if not target.is_file():
         return {"error": model_safe_text(f"not a file: {path}")}
-    data = target.read_bytes()[:_MAX_READ_BYTES]
-    text = data.decode("utf-8", errors="replace")
-    if target.stat().st_size > _MAX_READ_BYTES:
+    with target.open("rb") as stream:
+        data = stream.read(_MAX_READ_BYTES + 1)
+    truncated = len(data) > _MAX_READ_BYTES
+    text = data[:_MAX_READ_BYTES].decode("utf-8", errors="replace")
+    if truncated:
         text += "\n[... truncated ...]"
     return {"content": text}
 
@@ -257,8 +263,14 @@ def list_dir(path: str | None, repo_root: Path) -> dict[str, Any]:
     return {"entries": entries[:_MAX_LIST_ENTRIES]}
 
 
-def search_grep(pattern: str, repo_root: Path, *, path: str | None = None,
-                file_glob: str | None = None) -> dict[str, Any]:
+def search_grep(
+    pattern: str,
+    repo_root: Path,
+    *,
+    path: str | None = None,
+    file_glob: str | None = None,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     """Python-native recursive line scan (no rg dependency). Returns up to _MAX_MATCHES lines."""
     try:
         root = _resolve_guarded(path or ".", repo_root)
@@ -266,13 +278,35 @@ def search_grep(pattern: str, repo_root: Path, *, path: str | None = None,
         return {"matches": [], "error": "path escapes repo boundary"}
     if file_glob and (Path(file_glob).is_absolute() or ".." in Path(file_glob).parts):
         return {"matches": [], "error": "file_glob escapes repo boundary"}
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
     matches: list[str] = []
     repo = repo_root.resolve()
+    timed_out = False
+
+    def _expired() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    def _iter_files():
+        if root.is_file():
+            yield root
+            return
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                name for name in dirnames
+                if name not in _SEARCH_SKIP_DIRS
+            ]
+            base = Path(dirpath)
+            for filename in filenames:
+                yield base / filename
+
     try:
-        files = [root] if root.is_file() else root.rglob(file_glob or "*")
+        file_iter = _iter_files()
     except (OSError, ValueError) as exc:
         return {"matches": [], "error": model_safe_text(f"search failed: {type(exc).__name__}")}
-    for fp in files:
+    for fp in file_iter:
+        if _expired():
+            timed_out = True
+            break
         if len(matches) >= _MAX_MATCHES:
             break
         try:
@@ -281,20 +315,36 @@ def search_grep(pattern: str, repo_root: Path, *, path: str | None = None,
             rel_path = resolved.relative_to(repo)
         except (OSError, ValueError):
             continue
-        if not resolved.is_file() or _contains_hidden_part(rel_path):
+        rel_posix = rel_path.as_posix()
+        if file_glob and not (
+            fnmatch.fnmatch(rel_posix, file_glob)
+            or fnmatch.fnmatch(rel_path.name, file_glob)
+        ):
+            continue
+        if not resolved.is_file() or _contains_hidden_part(rel_path) or any(
+            part in _SEARCH_SKIP_DIRS for part in rel_path.parts
+        ):
             continue
         try:
             if resolved.stat().st_size > _MAX_GREP_FILE_BYTES:
                 continue
-            rel = rel_path.as_posix()
-            for n, line in enumerate(resolved.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                if pattern in line:
-                    matches.append(f"{rel}:{n}:{line.strip()[:200]}")
-                    if len(matches) >= _MAX_MATCHES:
+            with resolved.open("r", encoding="utf-8", errors="replace") as stream:
+                for n, line in enumerate(stream, 1):
+                    if _expired():
+                        timed_out = True
                         break
+                    if pattern in line:
+                        matches.append(f"{rel_posix}:{n}:{line.strip()[:200]}")
+                        if len(matches) >= _MAX_MATCHES:
+                            break
         except OSError:
             continue
-    return {"matches": matches}
+        if timed_out:
+            break
+    output: dict[str, Any] = {"matches": matches}
+    if timed_out:
+        output.update({"truncated": True, "error": "search timed out"})
+    return output
 
 
 def run_build(

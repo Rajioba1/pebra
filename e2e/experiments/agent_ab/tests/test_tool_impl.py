@@ -25,6 +25,20 @@ def test_write_then_read_roundtrip(tmp_path):
     assert tool_impl.read_file("src/A.cs", tmp_path) == {"content": "hello"}
 
 
+def test_read_file_does_not_use_unbounded_read_bytes(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "A.cs").write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(
+        tool_impl.Path,
+        "read_bytes",
+        lambda _self: (_ for _ in ()).throw(
+            AssertionError("read_file must stream a bounded prefix")
+        ),
+    )
+
+    assert tool_impl.read_file("src/A.cs", tmp_path) == {"content": "hello"}
+
+
 def test_write_file_rejects_truncated_large_file_overwrite_and_points_to_edit(tmp_path):
     target = tmp_path / "large.ts"
     original = "x" * (tool_impl._MAX_READ_BYTES + 1)  # noqa: SLF001
@@ -343,6 +357,56 @@ def test_search_grep_hides_codegraph(tmp_path):
     (tmp_path / ".codegraph").mkdir()
     (tmp_path / ".codegraph" / "codegraph.db").write_text("needle")
     assert tool_impl.search_grep("needle", tmp_path)["matches"] == []
+
+
+def test_search_grep_preserves_path_style_file_globs(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "index.ts").write_text("needle", encoding="utf-8")
+    (tmp_path / "other.ts").write_text("needle", encoding="utf-8")
+
+    out = tool_impl.search_grep("needle", tmp_path, file_glob="**/index.ts")
+
+    assert out["matches"] == ["src/index.ts:1:needle"]
+
+
+def test_search_grep_skips_dependency_trees(tmp_path):
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "large.ts").write_text("needle")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.ts").write_text("needle")
+
+    out = tool_impl.search_grep("needle", tmp_path)
+
+    assert out["matches"] == ["src/a.ts:1:needle"]
+
+
+def test_search_grep_skips_dependency_trees_and_honors_timeout(tmp_path, monkeypatch):
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "large.ts").write_text("needle")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.ts").write_text("needle")
+    ticks = iter((0.0, 2.0))
+    monkeypatch.setattr(tool_impl.time, "monotonic", lambda: next(ticks))
+
+    out = tool_impl.search_grep("needle", tmp_path, timeout_seconds=1.0)
+
+    assert out["matches"] == []
+    assert out["truncated"] is True
+    assert "timed out" in out["error"]
+
+
+def test_search_grep_checks_timeout_while_streaming_file(tmp_path, monkeypatch):
+    target = tmp_path / "src" / "a.ts"
+    target.parent.mkdir()
+    target.write_text("first\nneedle\n", encoding="utf-8")
+    ticks = iter((0.0, 0.5, 2.0))
+    monkeypatch.setattr(tool_impl.time, "monotonic", lambda: next(ticks))
+
+    out = tool_impl.search_grep("needle", tmp_path, timeout_seconds=1.0)
+
+    assert out["matches"] == []
+    assert out["truncated"] is True
+    assert "timed out" in out["error"]
 
 
 def test_advisory_check_dispatches_and_normalizes(tmp_path):
