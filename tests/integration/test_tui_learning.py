@@ -63,6 +63,9 @@ def test_learning_screen_has_honest_empty_states_and_escape_returns() -> None:
             assert "Recorded outcomes do not become active" in screen.query_one(
                 "#learning-facts-empty", Static
             ).render().plain
+            assert "No verified completed outcomes" in screen.query_one(
+                "#learning-context-empty", Static
+            ).render().plain
             await pilot.press("escape")
             await pilot.pause()
             assert app.screen is not screen
@@ -92,6 +95,16 @@ def test_learning_screen_renders_active_rows_as_literal_content_and_refreshes_on
                         "created_at": "2026-07-22T12:00:00+00:00",
                     }
                 ],
+                {
+                    "status": "available",
+                    "items": [{
+                        "learning_context_id": "lc_[1]",
+                        "assessment_id": "asm_1",
+                        "task": "Fix Dict[str, Any]",
+                        "lesson": "Verified [bold] lesson",
+                        "created_at": "2026-07-22T12:00:00+00:00",
+                    }],
+                },
             )
         )
         screen = LearningScreen(data)  # type: ignore[arg-type]
@@ -103,6 +116,9 @@ def test_learning_screen_renders_active_rows_as_literal_content_and_refreshes_on
             assert snapshots.get_cell_at((0, 0)).plain == "rs_[7]"
             assert snapshots.get_cell_at((0, 4)).plain == "[bold] verified"
             assert facts.get_cell_at((0, 2)).plain == "Dict[str, Any]"
+            lessons = screen.query_one("#learning-context", DataTable)
+            assert lessons.get_cell_at((0, 2)).plain == "Fix Dict[str, Any]"
+            assert lessons.get_cell_at((0, 3)).plain == "Verified [bold] lesson"
             assert data.calls == 1
             await pilot.press("r")
             await _pause_until(lambda: not screen.loading, pilot)

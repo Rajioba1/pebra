@@ -26,6 +26,8 @@ _EMPTY_FACTS = (
     "No learned facts are available. Recorded outcomes do not become active until learn and "
     "promotion gates succeed."
 )
+_EMPTY_CONTEXT = "No verified completed outcomes have produced recallable lessons yet."
+_UNAVAILABLE_CONTEXT = "Verified lesson history is unavailable or failed integrity validation."
 
 
 def _text(value: object, *, fallback: str = "—") -> str:
@@ -62,6 +64,20 @@ def _fact_row(fact: object) -> tuple[Content, Content, Content, Content, Content
     )  # type: ignore[return-value]
 
 
+def _context_row(item: object) -> tuple[Content, Content, Content, Content, Content]:
+    data = item if isinstance(item, dict) else {}
+    return tuple(
+        Content(value)
+        for value in (
+            _text(data.get("learning_context_id")),
+            _text(data.get("assessment_id")),
+            _text(data.get("task")),
+            _text(data.get("lesson")),
+            _text(data.get("created_at"))[:16].replace("T", " "),
+        )
+    )  # type: ignore[return-value]
+
+
 class LearningScreen(Screen):
     """Explicit read-only snapshots/facts view with single-flight refresh semantics."""
 
@@ -91,6 +107,9 @@ class LearningScreen(Screen):
             yield Static("Learned facts", classes="section-title")
             yield DataTable(id="learning-facts", classes="learning-table", cursor_type="row")
             yield Static("", id="learning-facts-empty", markup=False)
+            yield Static("Verified lessons", classes="section-title")
+            yield DataTable(id="learning-context", classes="learning-table", cursor_type="row")
+            yield Static("", id="learning-context-empty", markup=False)
             yield Static("", id="learning-message", markup=False)
         yield Footer()
 
@@ -99,6 +118,8 @@ class LearningScreen(Screen):
         snapshots.add_columns("snapshot", "status", "created", "activated", "promotion")
         facts = self.query_one("#learning-facts", DataTable)
         facts.add_columns("fact", "snapshot", "target", "status", "created")
+        context = self.query_one("#learning-context", DataTable)
+        context.add_columns("lesson", "assessment", "task", "verified outcome", "created")
         self.action_refresh()
 
     def on_unmount(self) -> None:
@@ -156,14 +177,22 @@ class LearningScreen(Screen):
     def _render_snapshot(self, snapshot: ObservatoryLearningSnapshot) -> None:
         snapshots = self.query_one("#learning-snapshots", DataTable)
         facts = self.query_one("#learning-facts", DataTable)
+        context = self.query_one("#learning-context", DataTable)
         snapshots.clear()
         facts.clear()
+        context.clear()
         for item in snapshot.snapshots:
             snapshots.add_row(*_snapshot_row(item))
         for item in snapshot.facts:
             facts.add_row(*_fact_row(item))
+        lesson_items = snapshot.learning_context.get("items", [])
+        for item in lesson_items if isinstance(lesson_items, list) else []:
+            context.add_row(*_context_row(item))
         self._set_empty("#learning-snapshots-empty", _EMPTY_SNAPSHOTS, not snapshot.snapshots)
         self._set_empty("#learning-facts-empty", _EMPTY_FACTS, not snapshot.facts)
+        context_status = snapshot.learning_context.get("status")
+        context_empty = _UNAVAILABLE_CONTEXT if context_status == "unavailable" else _EMPTY_CONTEXT
+        self._set_empty("#learning-context-empty", context_empty, not lesson_items)
 
     def _set_empty(self, selector: str, text: str, visible: bool) -> None:
         widget = self.query_one(selector, Static)

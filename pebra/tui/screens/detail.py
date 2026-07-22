@@ -19,6 +19,7 @@ from textual.widgets import Footer, Header, Pretty, Static
 from pebra.core.assessment_history import project_assessment_identity
 from pebra.core.human_review import controlling_gate, reject_override_eligible
 from pebra.core.exploration import ExplorationResult
+from pebra.core.learning_context import LearningContextRecall
 from pebra.tui.exploration import RepositoryExplorationCoordinator
 from pebra.tui.widgets.ledger_table import (
     format_benefit_score,
@@ -152,6 +153,7 @@ def detail_sections(
         ("Scores", plain_scores),
         ("Evidence", evidence),
         ("Applied learning", applied_learning_payload(detail)),
+        ("Verified lesson", detail.get("learning_context") or {"Status": "not available"}),
         ("Guidance", detail.get("model_guidance_packet")),
         ("Guardrails", detail.get("guardrails") or []),
         ("Outcomes", detail.get("outcomes") or []),
@@ -273,7 +275,11 @@ class AssessmentDetailScreen(Screen):
             f"Exploration failed — existing {preserved} is preserved."
         )
 
-    def _finish_explore_result(self, result: ExplorationResult) -> None:
+    def _finish_explore_result(
+        self,
+        result: ExplorationResult,
+        recall: LearningContextRecall | None = None,
+    ) -> None:
         if not self._can_update_children():
             return
         status = self.query_one("#exploration-status", Static)
@@ -282,9 +288,24 @@ class AssessmentDetailScreen(Screen):
             status.update(f"Exploration failed — {reason}")
             return
         status.update("Repository impact loaded from the accepted graph snapshot.")
-        self.query_one("#exploration-result", Static).update(
-            format_exploration_result(result)
-        )
+        rendered = format_exploration_result(result)
+        if recall is not None:
+            rendered = f"{format_learning_context(recall)}\n\nCurrent repository context\n{rendered}"
+        self.query_one("#exploration-result", Static).update(rendered)
+
+
+def format_learning_context(recall: LearningContextRecall) -> str:
+    """Render bounded controller-sanitized history as data before current graph context."""
+    lines = ["Past verified lessons", f"Recall status: {recall.status}"]
+    for entry in recall.entries:
+        lines.append(f"- {entry.lesson}")
+    if not recall.entries:
+        lines.append("- none")
+    if recall.warnings:
+        lines.extend(f"- warning: {warning}" for warning in recall.warnings)
+    if recall.truncated:
+        lines.append("- additional history was truncated")
+    return "\n".join(lines)
 
 
 def format_exploration_result(result: ExplorationResult) -> str:

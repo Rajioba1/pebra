@@ -95,6 +95,14 @@ def test_dashboard_calibration_control_lists_review_cost(tmp_path) -> None:
     assert '["cost_continuous", "review cost (continuous)"]' in text
 
 
+def test_dashboard_learning_projection_includes_verified_lessons(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+    assert 'getJSON(rp("/learning/context?limit=200"))' in text
+    assert 'card("Verified lessons")' in text
+    assert "No verified completed outcomes" in text
+
+
 def test_assessments_route_lists_seeded(tmp_path) -> None:
     db, asm = _seed(tmp_path)
     resp = _client(db).get("/api/repos/r/assessments", headers=_AUTH)
@@ -116,14 +124,60 @@ def test_learning_routes_characterize_current_items_envelope_and_auth(tmp_path) 
         assert body == {"items": []}
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 5C: /learning/context route not implemented yet")
 def test_learning_context_route_serves_verified_lessons(tmp_path) -> None:
     """Milestone 0 forward spec for Milestone 5C: a repo-scoped, bearer-guarded /learning/context
     route exposes verified lessons through the same {'items': [...]} envelope."""
-    db, _ = _seed(tmp_path)
-    resp = _client(db).get("/api/repos/r/learning/context", headers=_AUTH)
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    assessment_id = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED,
+            requires_confirmation=False,
+            action_status=ActionStatus.PENDING,
+            risk_mode=RiskMode.NORMAL,
+            scores={"expected_loss": 0.1, "benefit": 0.82, "rau": 0.31},
+            repo_id="r", repo_root="/x", assessed_commit="abc123",
+        ),
+        {
+            "task": "Fix [login]", "action_id": "edit-auth",
+            "revision_envelope": {"expected_files": ["src/auth.py"]},
+        },
+    )
+    store.persist_guardrails(assessment_id, {"pre_commit_decision": "proceed"})
+    store.record_outcome(assessment_id, "completed", {})
+    assert store.materialize_learning_context(assessment_id) is not None
+    store.close()
+    client = _client(db)
+    assert client.get("/api/repos/r/learning/context").status_code == 401
+    resp = client.get("/api/repos/r/learning/context", headers=_AUTH)
     assert resp.status_code == 200
-    assert "items" in resp.json()
+    assert resp.json()["status"] == "available"
+    assert resp.json()["items"][0]["lesson"] == (
+        "Verified completed outcome for Fix [login]; PEBRA decision was proceed."
+    )
+
+
+def test_learning_context_route_degrades_tampered_history(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    assessment_id = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED, requires_confirmation=False,
+            action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL, scores={},
+            repo_id="r", repo_root="/x",
+        ),
+        {"task": "Fix login", "action_id": "a1"},
+    )
+    store.persist_guardrails(assessment_id, {"pre_commit_decision": "proceed"})
+    store.record_outcome(assessment_id, "completed", {})
+    assert store.materialize_learning_context(assessment_id) is not None
+    store._con.execute("UPDATE learning_context SET lesson = 'tampered'")
+    store._con.commit()
+    store.close()
+
+    assert _client(db).get(
+        "/api/repos/r/learning/context", headers=_AUTH
+    ).json() == {"status": "unavailable", "items": []}
 
 
 def test_dashboard_and_tui_return_identical_assessment_identity_fields(tmp_path) -> None:
@@ -259,6 +313,7 @@ _REPO_COLLECTION_PATHS = (
     "/api/repos/other/calibration",
     "/api/repos/other/learning/snapshots",
     "/api/repos/other/learning/facts",
+    "/api/repos/other/learning/context",
 )
 
 

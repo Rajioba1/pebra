@@ -1742,6 +1742,49 @@ class SqliteStore:
         ).fetchone()
         return self._learning_entry(row) if row else None
 
+    def list_learning_context(
+        self,
+        repo_id: str,
+        assessment_ids: Sequence[str] | None = None,
+        limit: int = 200,
+    ) -> list[LearningContextEntry]:
+        """Read verified lessons in one repo-scoped query, optionally for visible assessments.
+
+        The full learning-context chain and its source links are validated before any lesson is
+        returned.  Invalid history is an unavailable read, never partially trusted display data.
+        """
+        if type(limit) is not int:
+            raise ValueError("invalid learning-context limit")
+        limit = max(0, min(limit, 1000))
+        if not self._validate_learning_context_chain():
+            raise ValueError("learning-context chain validation failed")
+        params: list[Any] = [repo_id]
+        where = "WHERE repo_id = ?"
+        if assessment_ids is not None:
+            ids: list[str] = []
+            for value in assessment_ids:
+                if (
+                    isinstance(value, str)
+                    and value not in ids
+                    and len(ids) < 100
+                ):
+                    try:
+                        self._learning_assessment_row_id(value)
+                    except KeyError:
+                        continue
+                    ids.append(value)
+            if not ids or limit == 0:
+                return []
+            where += f" AND assessment_id IN ({', '.join('?' for _ in ids)})"
+            params.extend(ids)
+        params.append(limit)
+        rows = self._con.execute(
+            f"SELECT {self._LEARNING_ENTRY_COLUMNS} FROM learning_context {where} "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [self._learning_entry(row) for row in rows]
+
     def materialize_learning_context(
         self, assessment_id: str
     ) -> LearningContextEntry | None:

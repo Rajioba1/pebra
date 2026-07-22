@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from pebra.app import observatory_query_controller as oqc
+from pebra.core.learning_context import LearningContextEntry
 
 
 def test_observatory_read_port_declares_shared_learning_read_methods() -> None:
@@ -27,6 +28,7 @@ def test_observatory_read_port_declares_shared_learning_read_methods() -> None:
     assert methods == {
         "assessment_facets", "list_assessments", "assessment_detail", "chain_status",
         "list_risk_snapshots", "list_learned_risk_facts", "assessment_prior_facets",
+        "list_learning_context",
     }
 
 
@@ -84,6 +86,30 @@ class _FakePort:
         self.calls.append(("assessment_prior_facets", (repo_id, tuple(assessment_ids))))
         return {assessment_id: {"source": "cold_start"} for assessment_id in assessment_ids}
 
+    def list_learning_context(
+        self,
+        repo_id: str,
+        assessment_ids: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[LearningContextEntry]:
+        self.calls.append(
+            ("list_learning_context", (repo_id, tuple(assessment_ids or ()), limit))
+        )
+        entry = LearningContextEntry(
+            learning_context_id="lc_1", repo_id="r", assessment_id="asm_1",
+            task="Fix [login]", action_id="edit-auth", target_files=("src/auth.py",),
+            symbols=("auth.login",), assessed_commit="abc123", candidate_fingerprint="a" * 64,
+            decision="proceed", gates_fired=("rau",), expected_loss=0.1, benefit=0.82,
+            expected_utility=0.4, utility_sd=0.2, rau=0.31, terminal_status="completed",
+            verification_summary="PEBRA verify proceeded", measured_benefit=0.5,
+            lesson="Verified [bold] lesson", source_assessment_hash="b" * 64,
+            source_outcome_hash="c" * 64, created_at="2026-07-22T12:00:00+00:00",
+            row_hash="d" * 64,
+        )
+        if repo_id != "r" or (assessment_ids is not None and "asm_1" not in assessment_ids):
+            return []
+        return [entry]
+
 
 def _row(**over: Any) -> dict[str, Any]:
     base = {
@@ -119,6 +145,29 @@ def test_list_assessments_preserves_projected_identity_fields() -> None:
     port = _FakePort([projected])
 
     assert oqc.list_assessments("r", port=port)[0] == projected
+
+
+def test_verified_learning_context_is_one_shared_canonical_projection() -> None:
+    port = _FakePort()
+
+    result = oqc.learning_context("r", ["asm_1", "asm_2"], port=port)
+
+    assert result["status"] == "available"
+    assert result["items"][0]["lesson"] == "Verified [bold] lesson"
+    assert result["items"][0]["source_assessment_hash"] == "b" * 64
+    assert result["items"][0]["expected_loss"] == 0.1
+    assert result["items"][0]["benefit"] == 0.82
+    assert result["items"][0]["measured_benefit"] == 0.5
+    assert port.calls[-1] == (
+        "list_learning_context", ("r", ("asm_1", "asm_2"), 200)
+    )
+
+
+def test_verified_learning_context_degrades_malformed_rows_without_leaking() -> None:
+    port = _FakePort()
+    port.list_learning_context = lambda *_args, **_kwargs: [None]  # type: ignore[method-assign]
+
+    assert oqc.learning_context("r", port=port) == {"status": "unavailable", "items": []}
 
 
 def test_overview_counts_decisions_status_and_includes_chain() -> None:

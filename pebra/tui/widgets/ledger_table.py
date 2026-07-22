@@ -173,6 +173,14 @@ def format_task(value: str | None, *, width: int = 28) -> str:
     return text if len(text) <= width else f"{text[: width - 1]}…"
 
 
+def format_lesson(value: str | None, *, width: int = 24) -> str:
+    """Bound a verified lesson for the ledger; detail retains the full canonical record."""
+    text = " ".join((value or "").split())
+    if not text:
+        return "—"
+    return text if len(text) <= width else f"{text[: width - 1].rstrip()}…"
+
+
 def short_commit(commit: Any) -> str:
     return commit[:7] if isinstance(commit, str) and commit else "—"
 
@@ -234,7 +242,9 @@ def ledger_row(
         "status": Content(str(assessment.get("terminal_status") or "pending")),
         # Controller-projected, assessment-time provenance only. Content keeps persisted text literal.
         "prior": Content(format_prior_facet(assessment.get("prior_facet"))),
-        "lesson": Content("—"),
+        "lesson": Content(
+            format_lesson((assessment.get("lesson_facet") or {}).get("lesson"))
+        ),
         "assessed_at": Content(format_assessed_at(assessment.get("assessed_at"))),
     }
     return tuple(cells[column] for column in columns)

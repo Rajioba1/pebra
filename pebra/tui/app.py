@@ -51,7 +51,10 @@ class ObservatoryApp(App[None]):
         super().__init__()
         # NOTE: not `self._context` — that name is a Textual App internal (the app-context manager).
         self.observatory_context = context
-        self.exploration = RepositoryExplorationCoordinator(explorer_factory)
+        self._data = ObservatoryData(context)
+        self.exploration = RepositoryExplorationCoordinator(
+            explorer_factory, knowledge_explorer=self._data.explore_repository
+        )
         # Source provenance in the header subtitle, so you can tell the checkout from the released wheel.
         # Computed once here (may shell out to git for an editable install) — never on the 5s refresh.
         provenance = provenance_line(prefix=False)
@@ -60,7 +63,7 @@ class ObservatoryApp(App[None]):
 
     def get_default_screen(self) -> Screen:
         return ObservatoryScreen(
-            ObservatoryData(self.observatory_context),
+            self._data,
             repo_root=self.observatory_context.repo_root,
             exploration=self.exploration,
         )

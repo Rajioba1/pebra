@@ -5,23 +5,35 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from concurrent.futures import CancelledError
-from typing import Any
+from typing import Any, TypeAlias
 
 from textual.app import App
 
 from pebra.core.exploration import ExplorationResult
 from pebra.core.graph_snapshot import GraphSnapshot
+from pebra.core.learning_context import LearningContextRecall
 from pebra.ports.repository_explorer_port import (
     RepositoryExplorer,
     RepositoryExplorerFactory,
 )
 
+KnowledgeExplorer: TypeAlias = Callable[
+    [str, str, tuple[str, ...], RepositoryExplorer],
+    tuple[LearningContextRecall, ExplorationResult],
+]
+
 
 class RepositoryExplorationCoordinator:
     """Own one app-wide flight while creating a fresh provider session per command."""
 
-    def __init__(self, factory: RepositoryExplorerFactory | None) -> None:
+    def __init__(
+        self,
+        factory: RepositoryExplorerFactory | None,
+        *,
+        knowledge_explorer: KnowledgeExplorer | None = None,
+    ) -> None:
         self._factory = factory
+        self._knowledge_explorer = knowledge_explorer
         self._lock = threading.Lock()
         self._busy = False
         self._shutting_down = False
@@ -46,7 +58,7 @@ class RepositoryExplorationCoordinator:
         repo_root: str,
         query: str,
         files: tuple[str, ...],
-        on_result: Callable[[ExplorationResult], None],
+        on_result: Callable[..., None],
         on_error: Callable[[], None],
     ) -> bool:
         with self._lock:
@@ -81,7 +93,7 @@ class RepositoryExplorationCoordinator:
         repo_root: str,
         query: str,
         files: tuple[str, ...],
-        on_result: Callable[[ExplorationResult], None],
+        on_result: Callable[..., None],
         on_error: Callable[[], None],
     ) -> None:
         callback: Callable[..., None] = on_error
@@ -98,22 +110,28 @@ class RepositoryExplorationCoordinator:
             if shutting_down:
                 explorer.cancel()
                 return
-            snapshot = explorer.prepare(repo_root)
-            with self._lock:
-                shutting_down = self._shutting_down
-            if shutting_down:
-                explorer.cancel()
-                return
-            result = explorer.explore(
-                repo_root,
-                query,
-                snapshot=snapshot,
-                files=files,
-            )
-            if not self._snapshot_matches(snapshot, result):
-                raise RuntimeError("provider returned a mismatched graph snapshot")
+            if self._knowledge_explorer is not None:
+                recall, result = self._knowledge_explorer(
+                    repo_root, query, files, explorer
+                )
+                callback_args = (result, recall)
+            else:
+                snapshot = explorer.prepare(repo_root)
+                with self._lock:
+                    shutting_down = self._shutting_down
+                if shutting_down:
+                    explorer.cancel()
+                    return
+                result = explorer.explore(
+                    repo_root,
+                    query,
+                    snapshot=snapshot,
+                    files=files,
+                )
+                if not self._snapshot_matches(snapshot, result):
+                    raise RuntimeError("provider returned a mismatched graph snapshot")
+                callback_args = (result,)
             callback = on_result
-            callback_args = (result,)
         except Exception:  # provider/runtime boundary: the TUI remains read-only and usable
             callback = on_error
             callback_args = ()

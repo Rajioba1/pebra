@@ -279,8 +279,9 @@
 
   // ---- Learning ----
   async function renderLearning(view) {
-    const [snaps, facts] = await Promise.all([
+    const [snaps, facts, lessons] = await Promise.all([
       getJSON(rp("/learning/snapshots?limit=50")), getJSON(rp("/learning/facts?limit=200")),
+      getJSON(rp("/learning/context?limit=200")),
     ]);
     clear(view);
     const scard = card("Learning snapshots");
@@ -319,6 +320,28 @@
       t.appendChild(tb); fcard.appendChild(t);
     }
     view.appendChild(fcard);
+
+    const lcard = card("Verified lessons");
+    if (lessons.status === "unavailable") {
+      lcard.appendChild(emptyMsg("Verified lesson history is unavailable or failed integrity validation."));
+    } else if (!lessons.items.length) {
+      lcard.appendChild(emptyMsg("No verified completed outcomes have produced recallable lessons yet."));
+    } else {
+      const t = el("table");
+      t.appendChild(headRow(["lesson", "assessment", "task", "outcome", "created"]));
+      const tb = el("tbody");
+      lessons.items.forEach((item) => {
+        const tr = el("tr");
+        tr.appendChild(cell(item.learning_context_id, "mono"));
+        tr.appendChild(cell(item.assessment_id, "mono"));
+        tr.appendChild(cell(item.task));
+        tr.appendChild(cell(item.lesson));
+        tr.appendChild(cell((item.created_at || "").slice(0, 19), "mono"));
+        tb.appendChild(tr);
+      });
+      t.appendChild(tb); lcard.appendChild(t);
+    }
+    view.appendChild(lcard);
   }
 
   // ---- Graph (the signature) ----

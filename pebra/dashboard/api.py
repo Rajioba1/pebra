@@ -130,6 +130,18 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         finally:
             store.close()
 
+    @router.get("/repos/{repo_id}/learning/context")
+    def learning_context(
+        repo_id: str, request: Request, limit: int = Query(200, ge=0, le=1000)
+    ) -> dict[str, Any]:
+        """Verified outcome lessons, repo-scoped and shaped by the shared read controller."""
+        _require_bound_repo(request, repo_id)
+        store = _open(request)
+        try:
+            return oqc.learning_context(repo_id, limit=limit, port=store)
+        finally:
+            store.close()
+
     @router.get("/repos/{repo_id}/graph/hotspot")
     def graph_hotspot(
         repo_id: str,

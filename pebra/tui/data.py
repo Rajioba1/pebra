@@ -16,7 +16,11 @@ from typing import Any
 
 from pebra.adapters.store.db import SqliteStore
 from pebra.app import observatory_query_controller as oqc
+from pebra.app import explore_controller
+from pebra.core.exploration import ExplorationResult
+from pebra.core.learning_context import LearningContextRecall
 from pebra.observatory_context import ObservatoryContext
+from pebra.ports.repository_explorer_port import RepositoryExplorer
 
 _ASSESSMENTS_LIMIT = 100
 _SERIES_LIMIT = 200
@@ -40,6 +44,7 @@ class ObservatorySnapshot:
     scores_series: list[dict[str, Any]]
     chain: dict[str, Any]
     prior_facets: dict[str, dict[str, Any]] = field(default_factory=dict)
+    lesson_facets: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,9 @@ class ObservatoryLearningSnapshot:
 
     snapshots: list[dict[str, Any]]
     facts: list[dict[str, Any]]
+    learning_context: dict[str, Any] = field(
+        default_factory=lambda: {"status": "empty", "items": []}
+    )
 
 
 class ObservatoryData:
@@ -95,6 +103,14 @@ class ObservatoryData:
                         [row["assessment_id"] for row in assessments],
                         port=store,
                     ),
+                    lesson_facets={
+                        item["assessment_id"]: item
+                        for item in oqc.learning_context(
+                            self._repo_id,
+                            [row["assessment_id"] for row in assessments],
+                            port=store,
+                        )["items"]
+                    },
                 )
             finally:
                 store.close()
@@ -109,6 +125,7 @@ class ObservatoryData:
                 return ObservatoryLearningSnapshot(
                     snapshots=oqc.learning_snapshots(self._repo_id, port=store),
                     facts=oqc.learning_facts(self._repo_id, port=store),
+                    learning_context=oqc.learning_context(self._repo_id, port=store),
                 )
             finally:
                 store.close()
@@ -121,8 +138,44 @@ class ObservatoryData:
         try:
             store = self._open()
             try:
-                return oqc.assessment_detail_for_repo(assessment_id, self._repo_id, port=store)
+                detail = oqc.assessment_detail_for_repo(
+                    assessment_id, self._repo_id, port=store
+                )
+                context = oqc.learning_context(
+                    self._repo_id, [assessment_id], port=store
+                )
+                return {
+                    **detail,
+                    "learning_context": context["items"][0] if context["items"] else None,
+                }
             finally:
                 store.close()
         except (sqlite3.Error, json.JSONDecodeError) as exc:
             raise ObservatoryStoreUnavailable(str(exc)) from exc
+
+    def explore_repository(
+        self,
+        repo_root: str,
+        query: str,
+        files: tuple[str, ...],
+        explorer: RepositoryExplorer,
+    ) -> tuple[LearningContextRecall, ExplorationResult]:
+        """Run the M5B recall-then-current controller for one explicit TUI command."""
+        store: SqliteStore | None = None
+        try:
+            try:
+                store = self._open()
+            except ObservatoryStoreUnavailable:
+                store = None
+            result = explore_controller.explore_repository(
+                repo_root,
+                self._repo_id,
+                query,
+                learning_port=store,
+                explorer=explorer,
+                files=files,
+            )
+            return result.learning_context, result.repository_context
+        finally:
+            if store is not None:
+                store.close()

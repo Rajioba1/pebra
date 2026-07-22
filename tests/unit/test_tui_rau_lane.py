@@ -236,6 +236,18 @@ def test_ledger_row_uses_honest_loss_and_benefit_units() -> None:
     assert by_column["benefit"] == "82/100"
 
 
+def test_ledger_lesson_is_bounded_and_literal_safe() -> None:
+    cells = ledger_row(
+        {
+            "assessment_id": "asm_1",
+            "scores": {},
+            "lesson_facet": {"lesson": "Verified [bold] lesson with enough text to truncate"},
+        }
+    )
+    lesson = dict(zip(LEDGER_COLUMNS, cells, strict=True))["lesson"]
+    assert lesson.plain == "Verified [bold] lesson…"
+
+
 def test_loss_column_uses_content_width_instead_of_clipping_to_header() -> None:
     assert "expected_loss" not in LEDGER_COLUMN_WIDTHS
 

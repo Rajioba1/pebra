@@ -4,13 +4,15 @@ controller depends on.
 Both surfaces that show assessment history — the FastAPI dashboard and the Textual TUI — read through
 ``pebra.app.observatory_query_controller``, which depends only on this port. ``SqliteStore`` satisfies it
 structurally, so the app-layer controller never imports the adapter (the app-no-adapters contract holds).
-It is strictly read-only: the four methods below are the entire surface, and none of them mutates.
+It is strictly read-only: every method below is a persisted projection and none mutates.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from typing import Any, Protocol
+
+from pebra.core.learning_context import LearningContextEntry
 
 
 class ObservatoryReadPort(Protocol):
@@ -46,4 +48,13 @@ class ObservatoryReadPort(Protocol):
         self, repo_id: str, assessment_ids: Sequence[str]
     ) -> dict[str, dict[str, Any]]:
         """Persisted applied-prior summaries for visible assessment rows in one repository."""
+        ...
+
+    def list_learning_context(
+        self,
+        repo_id: str,
+        assessment_ids: Sequence[str] | None = None,
+        limit: int = 200,
+    ) -> list[LearningContextEntry]:
+        """Verified lessons for a repository, optionally batched over visible assessment IDs."""
         ...

@@ -186,6 +186,94 @@ def test_refresh_snapshot_includes_visible_row_prior_facets_but_not_full_learnin
     assert {facet["source"] for facet in snapshot.prior_facets.values()} == {"cold_start"}
 
 
+def test_refresh_snapshot_batches_verified_lesson_facets_for_visible_rows(monkeypatch, tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    assessment_id = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED,
+            requires_confirmation=False,
+            action_status=ActionStatus.PENDING,
+            risk_mode=RiskMode.NORMAL,
+            scores={"expected_loss": 0.1, "benefit": 0.82, "rau": 0.31},
+            repo_id="r", repo_root="/x", assessed_commit="abc123",
+        ),
+        {
+            "task": "Fix [login] validation", "action_id": "edit-auth",
+            "revision_envelope": {"expected_files": ["src/auth.py"]},
+        },
+    )
+    store.persist_guardrails(assessment_id, {"pre_commit_decision": "proceed"})
+    store.record_outcome(assessment_id, "completed", {})
+    assert store.materialize_learning_context(assessment_id) is not None
+    store.close()
+
+    import pebra.tui.data as data_mod
+
+    real = data_mod.oqc.learning_context
+    calls: list[tuple[str, ...]] = []
+
+    def spy(repo_id, assessment_ids=None, limit=200, *, port):
+        calls.append(tuple(assessment_ids or ()))
+        return real(repo_id, assessment_ids, limit, port=port)
+
+    monkeypatch.setattr(data_mod.oqc, "learning_context", spy)
+    snapshot = ObservatoryData(_ctx(db)).refresh_snapshot()
+
+    assert calls == [(assessment_id,)]
+    assert snapshot.lesson_facets[assessment_id]["lesson"] == (
+        "Verified completed outcome for Fix [login] validation; PEBRA decision was proceed."
+    )
+
+
+def test_five_second_refresh_path_never_runs_recall_graph_or_learning_writes(
+    monkeypatch, tmp_path
+) -> None:
+    db, _, _ = _seed(tmp_path)
+    import pebra.tui.data as data_mod
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("explicit exploration or learning mutation entered ledger refresh")
+
+    monkeypatch.setattr(data_mod.SqliteStore, "recall_learning_context", forbidden)
+    monkeypatch.setattr(data_mod.SqliteStore, "materialize_learning_context", forbidden)
+    monkeypatch.setattr(data_mod.explore_controller, "explore_repository", forbidden)
+
+    snapshot = ObservatoryData(_ctx(db)).refresh_snapshot()
+
+    assert snapshot.overview["total"] == 2
+
+
+def test_detail_includes_full_verified_lesson_projection(tmp_path) -> None:
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    assessment_id = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED,
+            requires_confirmation=False,
+            action_status=ActionStatus.PENDING,
+            risk_mode=RiskMode.NORMAL,
+            scores={"expected_loss": 0.1, "benefit": 0.82, "rau": 0.31},
+            repo_id="r", repo_root="/x", assessed_commit="abc123",
+        ),
+        {
+            "task": "Fix login", "action_id": "edit-auth",
+            "revision_envelope": {"expected_files": ["src/auth.py"]},
+        },
+    )
+    store.persist_guardrails(assessment_id, {"pre_commit_decision": "proceed"})
+    store.record_outcome(assessment_id, "completed", {})
+    entry = store.materialize_learning_context(assessment_id)
+    assert entry is not None
+    store.close()
+
+    detail = ObservatoryData(_ctx(db)).detail(assessment_id)
+
+    assert detail["learning_context"]["source_assessment_hash"] == entry.source_assessment_hash
+    assert detail["learning_context"]["source_outcome_hash"] == entry.source_outcome_hash
+    assert detail["learning_context"]["expected_loss"] == 0.1
+
+
 def test_learning_snapshot_is_explicit_and_separate_from_the_refresh_poll(tmp_path) -> None:
     db, _, _ = _seed(tmp_path)
     data = ObservatoryData(_ctx(db))
@@ -194,3 +282,4 @@ def test_learning_snapshot_is_explicit_and_separate_from_the_refresh_poll(tmp_pa
 
     assert learning.snapshots == []
     assert learning.facts == []
+    assert learning.learning_context == {"status": "empty", "items": []}

@@ -20,6 +20,7 @@ from textual.widgets import DataTable, Pretty  # noqa: E402
 from pebra.app.observatory_query_controller import AssessmentNotFoundError  # noqa: E402
 from pebra.core.exploration import ExplorationResult  # noqa: E402
 from pebra.core.graph_snapshot import GraphSnapshot  # noqa: E402
+from pebra.core.learning_context import LearningContextEntry, LearningContextRecall  # noqa: E402
 from pebra.observatory_context import ObservatoryContext  # noqa: E402
 from pebra.tui.app import ObservatoryApp  # noqa: E402
 from pebra.tui.data import ObservatoryData, ObservatorySnapshot  # noqa: E402
@@ -61,6 +62,23 @@ def _exploration_result() -> ExplorationResult:
     )
 
 
+def _recalled_lesson() -> LearningContextRecall:
+    entry = LearningContextEntry(
+        learning_context_id="lc_1", repo_id="r", assessment_id="asm_1",
+        task="Fix login validation", action_id="edit-auth", target_files=("src/auth.py",),
+        symbols=("AuthService.validate",), assessed_commit="abc123", candidate_fingerprint="a" * 64,
+        decision="proceed", gates_fired=("rau",), expected_loss=0.1, benefit=0.82,
+        expected_utility=0.4, utility_sd=0.2, rau=0.31, terminal_status="completed",
+        verification_summary="PEBRA verify proceeded", measured_benefit=0.5,
+        lesson="Verified [bold] login lesson", source_assessment_hash="b" * 64,
+        source_outcome_hash="c" * 64, created_at="2026-07-22T12:00:00+00:00",
+        row_hash="d" * 64,
+    )
+    return LearningContextRecall(
+        "available", (entry,), ("src/auth.py",), ("AuthService.validate",), (), False
+    )
+
+
 class _RecordingExplorer:
     def __init__(self, *, fail: bool = False, block: bool = False) -> None:
         self.fail = fail
@@ -90,6 +108,37 @@ class _RecordingExplorer:
     def cancel(self) -> None:
         self.cancelled.set()
         self.release.set()
+
+
+def test_explicit_exploration_renders_verified_lessons_before_current_context() -> None:
+    async def scenario() -> None:
+        explorer = _RecordingExplorer()
+        calls: list[tuple[str, str, tuple[str, ...]]] = []
+
+        def knowledge(repo_root, query, files, provider):
+            calls.append((repo_root, query, files))
+            snapshot = provider.prepare(repo_root)
+            return (
+                _recalled_lesson(),
+                provider.explore(repo_root, query, snapshot=snapshot, files=files),
+            )
+
+        coordinator = RepositoryExplorationCoordinator(
+            lambda: explorer, knowledge_explorer=knowledge
+        )
+        screen = AssessmentDetailScreen(_detail(), repo_root="/repo", exploration=coordinator)
+        async with _Harness(screen).run_test() as pilot:
+            await pilot.press("x")
+            await _pause_until(lambda: not coordinator.busy, pilot)
+            rendered = screen.query_one("#exploration-result").render().plain
+            assert rendered.index("Past verified lessons") < rendered.index(
+                "Current repository context"
+            )
+            assert "Verified [bold] login lesson" in rendered
+            assert "AuthService validates" in rendered
+            assert calls == [("/repo", "Fix login validation", ("src/bound.py",))]
+
+    asyncio.run(scenario())
 
 
 async def _pause_until(predicate, pilot, *, attempts: int = 100) -> None:
@@ -141,6 +190,29 @@ def test_sections_split_scores_from_evidence_and_carry_guidance() -> None:
     assert set(sections["Evidence"]) == {"symbol_scope_evidence", "variance_breakdown"}
     assert sections["Guidance"] == {"decision": "ask_human"}
     assert sections["Guardrails"] == [{"decision": "proceed"}]
+
+
+def test_detail_sections_show_full_canonical_verified_lesson() -> None:
+    detail = _detail()
+    detail["learning_context"] = {
+        "learning_context_id": "lc_1",
+        "assessment_id": "asm_1",
+        "lesson": "Verified [bold] lesson without ledger truncation",
+        "source_assessment_hash": "a" * 64,
+        "source_outcome_hash": "b" * 64,
+        "terminal_status": "completed",
+        "expected_loss": 0.1,
+        "benefit": 0.82,
+        "rau": 0.31,
+    }
+
+    lesson = dict(detail_sections(detail))["Verified lesson"]
+
+    assert lesson["lesson"] == "Verified [bold] lesson without ledger truncation"
+    assert lesson["source_assessment_hash"] == "a" * 64
+    assert lesson["source_outcome_hash"] == "b" * 64
+    assert lesson["terminal_status"] == "completed"
+    assert lesson["expected_loss"] == 0.1
 
 
 def test_detail_scores_keep_exact_decimals_with_human_unit_annotations() -> None:

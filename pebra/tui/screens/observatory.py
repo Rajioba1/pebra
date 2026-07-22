@@ -62,6 +62,7 @@ class ObservatoryScreen(Screen):
         self._exploration = exploration
         self._rows: list[dict[str, Any]] = []
         self._prior_facets: dict[str, dict[str, Any]] = {}
+        self._lesson_facets: dict[str, dict[str, Any]] = {}
         self._overview: dict[str, Any] = {}
         self._ledger_columns: tuple[str, ...] = ()
         self.group_repeats = False
@@ -125,6 +126,7 @@ class ObservatoryScreen(Screen):
                     {
                         **row,
                         "prior_facet": self._prior_facets.get(str(row.get("assessment_id"))),
+                        "lesson_facet": self._lesson_facets.get(str(row.get("assessment_id"))),
                     }
                     for row in self._rows
                 ]
@@ -167,6 +169,7 @@ class ObservatoryScreen(Screen):
             row = {
                 **group.latest_row,
                 "prior_facet": self._prior_facets.get(str(group.latest_row.get("assessment_id"))),
+                "lesson_facet": self._lesson_facets.get(str(group.latest_row.get("assessment_id"))),
             }
             table.add_row(
                 *ledger_row(
@@ -350,6 +353,7 @@ class ObservatoryScreen(Screen):
         # facet; it never asks what snapshot is active today.
         self._rows = rows
         self._prior_facets = snapshot.prior_facets
+        self._lesson_facets = snapshot.lesson_facets
         self._overview = snapshot.overview
         latest_commit = rows[0].get("assessed_commit") if rows else None
         self.query_one("#status", StatusHeader).update_status(

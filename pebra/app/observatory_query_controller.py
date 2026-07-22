@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import asdict
 from typing import Any
 
 from pebra.ports.observatory_read_port import ObservatoryReadPort
@@ -116,3 +117,28 @@ def assessment_prior_facets(
 ) -> dict[str, dict[str, Any]]:
     """Persisted, repo-scoped applied-prior summaries for the currently visible ledger rows."""
     return port.assessment_prior_facets(repo_id, assessment_ids)
+
+
+def learning_context(
+    repo_id: str,
+    assessment_ids: Sequence[str] | None = None,
+    limit: int = 200,
+    *,
+    port: ObservatoryReadPort,
+) -> dict[str, Any]:
+    """Canonical verified-lesson DTO shared by the dashboard and TUI.
+
+    A malformed or tamper-invalid store read degrades to an unavailable projection rather than
+    exposing partially trusted history.  Empty is distinct from unavailable so surfaces can tell a
+    genuine no-history repository from a damaged/unreadable history.
+    """
+    try:
+        entries = port.list_learning_context(repo_id, assessment_ids, limit)
+        if not isinstance(entries, list) or any(
+            getattr(entry, "repo_id", None) != repo_id for entry in entries
+        ):
+            raise ValueError("malformed learning-context projection")
+        items = [asdict(entry) for entry in entries]
+    except (TypeError, ValueError):
+        return {"status": "unavailable", "items": []}
+    return {"status": "available" if items else "empty", "items": items}
