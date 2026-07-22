@@ -131,7 +131,7 @@ def test_command_reference_pins_every_pebra_defined_tui_binding() -> None:
         for binding in bindings
     }
 
-    assert keys == {"q", "?", "escape", "r", "g", "x"}
+    assert keys == {"q", "?", "escape", "r", "g", "x", "l"}
     for key in keys:
         assert f"| `{key}` |" in table.lower()
     assert "detail-only" in table
