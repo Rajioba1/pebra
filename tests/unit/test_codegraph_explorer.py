@@ -124,6 +124,22 @@ def test_file_only_mode_skips_free_text_explore_and_normalizes_duplicate_windows
     assert result.truncated is False
 
 
+def test_query_whitespace_is_only_an_emptiness_check_and_original_bytes_reach_engine() -> None:
+    graph = _Graph()
+    runner = _Runner()
+    explorer = _explorer(graph, runner)
+    snapshot = explorer.prepare("/repo")
+
+    explorer.explore("/repo", "  exact query  ", snapshot=snapshot)
+    assert runner.calls[0][1:3] == ["explore", "  exact query  "]
+
+    runner.calls.clear()
+    explorer.explore(
+        "/repo", " \t ", snapshot=snapshot, files=("src/target.py",)
+    )
+    assert all("explore" not in call for call in runner.calls)
+
+
 def test_files_canonicalize_and_reject_every_path_outside_resolved_repo(tmp_path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

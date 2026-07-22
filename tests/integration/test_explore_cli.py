@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from pebra.adapters.repository_registry import RepositoryRegistry
 from pebra.adapters.store.db import SqliteStore
 from pebra.app import record_outcome_controller
@@ -264,18 +266,10 @@ def test_explore_json_output_leads_with_learning_context(tmp_path) -> None:
     assert list(payload).index("learning_context") < list(payload).index("repository_context")
 
 
-def test_second_explore_recalls_verified_outcome_and_refines_only_with_identifiers(tmp_path) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    head = _repo(repo)
-    launcher, log = _launcher(tmp_path)
-
-    first = _run(repo, launcher, log, "explore", "fix login", "--json")
-    assert first.returncode == 0, first.stderr
-    assert json.loads(first.stdout)["learning_context"]["status"] == "unavailable"
-
+def _materialize_verified_learning(repo: Path, head: str) -> tuple[str, Path]:
     metadata = RepositoryRegistry().resolve(str(repo))
-    store = SqliteStore(str(repo / ".pebra" / "pebra.db"))
+    db_path = repo / ".pebra" / "pebra.db"
+    store = SqliteStore(str(db_path))
     assessment_id = store.persist_assessment(
         AssessmentResult(
             recommended_decision=Decision.PROCEED,
@@ -308,7 +302,47 @@ def test_second_explore_recalls_verified_outcome_and_refines_only_with_identifie
     )
     assert recorded.context_materialized is True
     store.close()
-    db_path = repo / ".pebra" / "pebra.db"
+    return assessment_id, db_path
+
+
+@pytest.mark.parametrize("recall_status", ("unavailable", "empty", "corrupt"))
+def test_real_launcher_preserves_original_query_for_non_available_recall(
+    tmp_path, recall_status
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    head = _repo(repo)
+    launcher, log = _launcher(tmp_path)
+    if recall_status == "empty":
+        metadata = RepositoryRegistry().resolve(str(repo))
+        assert metadata.repo_id
+        SqliteStore(str(repo / ".pebra" / "pebra.db")).close()
+    elif recall_status == "corrupt":
+        _, db_path = _materialize_verified_learning(repo, head)
+        store = SqliteStore(str(db_path))
+        store._con.execute("UPDATE learning_context SET lesson = 'tampered'")
+        store.close()
+
+    query = "  fix login  "
+    proc = _run(repo, launcher, log, "explore", query, "--json")
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["learning_context"]["status"] == recall_status
+    explore_call = next(call for call in _calls(log) if call[0] == "explore")
+    assert explore_call[1] == query
+
+
+def test_second_explore_recalls_verified_outcome_and_refines_only_with_identifiers(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    head = _repo(repo)
+    launcher, log = _launcher(tmp_path)
+
+    first = _run(repo, launcher, log, "explore", "fix login", "--json")
+    assert first.returncode == 0, first.stderr
+    assert json.loads(first.stdout)["learning_context"]["status"] == "unavailable"
+
+    assessment_id, db_path = _materialize_verified_learning(repo, head)
     db_before = db_path.read_bytes()
 
     log.write_text("", encoding="utf-8")

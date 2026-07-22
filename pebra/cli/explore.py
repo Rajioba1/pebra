@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import unicodedata
 from dataclasses import asdict
 from typing import Any
 
@@ -48,10 +49,18 @@ def register(subparsers: Any) -> None:
 
 def _literal(value: str) -> str:
     """Render recalled data literally without terminal control interpretation."""
-    return "".join(
-        character if ord(character) >= 32 and character != "\x7f" else f"\\x{ord(character):02x}"
-        for character in value
-    )
+    rendered: list[str] = []
+    for character in value:
+        codepoint = ord(character)
+        if unicodedata.category(character) not in {"Cc", "Cf", "Cs"}:
+            rendered.append(character)
+        elif codepoint <= 0xFF:
+            rendered.append(f"\\x{codepoint:02x}")
+        elif codepoint <= 0xFFFF:
+            rendered.append(f"\\u{codepoint:04x}")
+        else:
+            rendered.append(f"\\U{codepoint:08x}")
+    return "".join(rendered)
 
 
 def _print_learning(recall: LearningContextRecall) -> None:
@@ -59,12 +68,12 @@ def _print_learning(recall: LearningContextRecall) -> None:
     print(f"  status: {recall.status}")
     print(f"  truncated: {'yes' if recall.truncated else 'no'}")
     for entry in recall.entries:
-        print(f"  {entry.learning_context_id} · {_literal(entry.task)}")
+        print(f"  {_literal(entry.learning_context_id)} · {_literal(entry.task)}")
         print(f"    lesson: {_literal(entry.lesson)}")
         if entry.target_files:
-            print(f"    files: {', '.join(entry.target_files)}")
+            print(f"    files: {', '.join(_literal(value) for value in entry.target_files)}")
         if entry.symbols:
-            print(f"    symbols: {', '.join(entry.symbols)}")
+            print(f"    symbols: {', '.join(_literal(value) for value in entry.symbols)}")
     for warning in recall.warnings:
         print(f"  warning: {_literal(warning)}")
 

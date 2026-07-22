@@ -513,7 +513,9 @@ The command returns two ordered top-level sections in human and JSON output:
 2. `repository_context` — current structural context from the configured graph adapter.
 
 Recall is repository-scoped and uses the stable M5A FTS order: BM25 ascending, then creation time and
-learning-context ID descending. It returns at most five lessons under a 4096-byte ceiling. At most 16
+learning-context ID descending. Its complete canonical JSON envelope—including entries, duplicated
+file/symbol hints, warnings, status, and truncation metadata—is greedily packed in stable order under a
+4096-byte ceiling and contains at most five lessons. At most 16
 deduplicated repository-relative file hints and 16 symbols matching
 `^[A-Za-z_][A-Za-z0-9_.]{0,127}$` may sharpen the current lookup. File hints use the same normalized,
 in-repository path rules as explicit `--file` arguments. Historical prose, decisions, risk/benefit

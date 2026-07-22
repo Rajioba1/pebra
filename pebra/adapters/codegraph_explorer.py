@@ -158,8 +158,8 @@ class CodeGraphExplorer:
                 snapshot, snapshot.fallback_reason or "repository graph unavailable"
             )
         normalized_files = self._files(repo_root, files)
-        query = query.strip()
-        if not query and not normalized_files:
+        has_query = bool(query.strip())
+        if not has_query and not normalized_files:
             failed = replace(
                 snapshot, status="error", fallback_reason="query or file is required"
             )
@@ -178,7 +178,7 @@ class CodeGraphExplorer:
         affected_tests: tuple[str, ...] = ()
         dependent_files: set[str] = set()
 
-        if query:
+        if has_query:
             context_raw, error, provider_truncated = self._run(
                 engine,
                 ["explore", query, "--path", repo_root, "--max-files", str(max_files)],

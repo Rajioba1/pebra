@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 import json
+import math
+import re
 from typing import Literal
 
+from pebra.core.constants import Decision
 from pebra.core.exploration import (
     ExplorationResult,
     clamp_bounds,
@@ -18,6 +21,7 @@ from pebra.core.exploration import (
 from pebra.core.learning_context import (
     LearningContextEntry,
     LearningContextRecall,
+    is_valid_gate_identifier,
     is_valid_symbol,
 )
 from pebra.ports.learning_context_port import LearningContextPort
@@ -32,6 +36,10 @@ _NON_CURRENT_WARNING = (
     "Historical record cannot establish current repository truth; current repository context "
     "is unavailable."
 )
+_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_LEARNING_ID_PATTERN = re.compile(r"^lc_[1-9][0-9]*$")
+_ASSESSMENT_ID_PATTERN = re.compile(r"^asm_[1-9][0-9]*$")
+_DECISIONS = frozenset(value.value for value in Decision)
 
 
 @dataclass(frozen=True)
@@ -47,6 +55,121 @@ def _empty_recall(
     return LearningContextRecall(status, (), (), (), warnings, False)
 
 
+def _text(value: object, *, allow_empty: bool = False) -> bool:
+    if not isinstance(value, str) or (not allow_empty and not value):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _optional_text(value: object) -> bool:
+    return value is None or _text(value)
+
+
+def _finite_or_none(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def _valid_entry(entry: LearningContextEntry, repo_root: str, repo_id: str) -> bool:
+    required_text = (
+        entry.repo_id, entry.task, entry.action_id, entry.decision,
+        entry.terminal_status, entry.verification_summary, entry.lesson, entry.created_at,
+    )
+    if (
+        any(not _text(value) for value in required_text)
+        or entry.repo_id != repo_id
+        or not isinstance(entry.learning_context_id, str)
+        or _LEARNING_ID_PATTERN.fullmatch(entry.learning_context_id) is None
+        or not isinstance(entry.assessment_id, str)
+        or _ASSESSMENT_ID_PATTERN.fullmatch(entry.assessment_id) is None
+        or entry.decision not in _DECISIONS
+        or entry.terminal_status != "completed"
+        or not _optional_text(entry.assessed_commit)
+        or not (
+            entry.candidate_fingerprint is None
+            or (
+                isinstance(entry.candidate_fingerprint, str)
+                and _HASH_PATTERN.fullmatch(entry.candidate_fingerprint) is not None
+            )
+        )
+        or not all(
+            isinstance(value, str) and _HASH_PATTERN.fullmatch(value) is not None
+            for value in (
+                entry.source_assessment_hash, entry.source_outcome_hash, entry.row_hash
+            )
+        )
+        or not all(
+            _finite_or_none(value)
+            for value in (
+                entry.expected_loss, entry.benefit, entry.expected_utility,
+                entry.utility_sd, entry.rau, entry.measured_benefit,
+            )
+        )
+        or not isinstance(entry.target_files, tuple)
+        or len(entry.target_files) > MAX_RECALLED_FILES
+        or not isinstance(entry.symbols, tuple)
+        or len(entry.symbols) > MAX_RECALLED_SYMBOLS
+        or not isinstance(entry.gates_fired, tuple)
+        or len(entry.gates_fired) > 16
+        or not all(is_valid_symbol(value) for value in entry.symbols)
+        or not all(is_valid_gate_identifier(value) for value in entry.gates_fired)
+    ):
+        return False
+    for path in entry.target_files:
+        if not _text(path) or "::" in path:
+            return False
+        if not normalize_repository_files(repo_root, (path,)):
+            return False
+    return True
+
+
+def _recall_size(recall: LearningContextRecall) -> int:
+    return len(
+        json.dumps(asdict(recall), sort_keys=True, ensure_ascii=False).encode("utf-8")
+    )
+
+
+def _hints(
+    repo_root: str, entries: tuple[LearningContextEntry, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
+    files = normalize_repository_files(
+        repo_root, tuple(path for entry in entries for path in entry.target_files)
+    )
+    symbols = tuple(dict.fromkeys(symbol for entry in entries for symbol in entry.symbols))
+    truncated = len(files) > MAX_RECALLED_FILES or len(symbols) > MAX_RECALLED_SYMBOLS
+    return files[:MAX_RECALLED_FILES], symbols[:MAX_RECALLED_SYMBOLS], truncated
+
+
+def _pack_warnings(
+    status: Literal["available", "empty", "unavailable", "corrupt"],
+    entries: tuple[LearningContextEntry, ...],
+    files: tuple[str, ...],
+    symbols: tuple[str, ...],
+    warnings: tuple[str, ...],
+) -> tuple[tuple[str, ...], bool]:
+    selected: list[str] = []
+    truncated = len(warnings) > 8
+    for warning in warnings[:8]:
+        candidate = LearningContextRecall(
+            status, entries, files, symbols, tuple((*selected, warning)), False
+        )
+        if _recall_size(candidate) <= RECALL_BYTE_LIMIT:
+            selected.append(warning)
+        else:
+            truncated = True
+    return tuple(selected), truncated
+
+
 def _sanitize_recall(
     recall: object, repo_root: str, repo_id: str
 ) -> LearningContextRecall:
@@ -58,61 +181,62 @@ def _sanitize_recall(
         return _empty_recall("corrupt", "learning-context status was malformed")
     if type(recall.truncated) is not bool or not isinstance(recall.warnings, tuple):
         return _empty_recall("corrupt", "learning-context result was malformed")
+    if not all(_text(value, allow_empty=True) for value in recall.warnings):
+        return _empty_recall("corrupt", "learning-context warnings were malformed")
     if recall.status != "available":
-        warnings = tuple(
-            value[:256]
-            for value in recall.warnings[:8]
-            if isinstance(value, str)
+        warnings, warnings_truncated = _pack_warnings(
+            recall.status, (), (), (), recall.warnings
         )
-        return LearningContextRecall(recall.status, (), (), (), warnings, recall.truncated)
+        return LearningContextRecall(
+            recall.status, (), (), (), warnings, recall.truncated or warnings_truncated
+        )
     if not isinstance(recall.entries, tuple):
         return _empty_recall("corrupt", "learning-context entries were malformed")
 
-    entries: list[LearningContextEntry] = []
-    used = 0
-    truncated = bool(recall.truncated)
+    validated: list[LearningContextEntry] = []
     for raw_entry in recall.entries:
-        if not isinstance(raw_entry, LearningContextEntry) or raw_entry.repo_id != repo_id:
-            return _empty_recall("corrupt", "learning-context entry scope was malformed")
-        try:
-            size = len(
-                json.dumps(asdict(raw_entry), sort_keys=True, ensure_ascii=False).encode("utf-8")
-            )
-        except (TypeError, ValueError, OverflowError, RecursionError):
+        if not isinstance(raw_entry, LearningContextEntry) or not _valid_entry(
+            raw_entry, repo_root, repo_id
+        ):
             return _empty_recall("corrupt", "learning-context entry was malformed")
-        if len(entries) >= MAX_RECALLED_LESSONS or used + size > RECALL_BYTE_LIMIT:
-            truncated = True
+        validated.append(raw_entry)
+
+    entries: list[LearningContextEntry] = []
+    truncated = recall.truncated or len(validated) > MAX_RECALLED_LESSONS
+    for entry in validated:
+        if len(entries) >= MAX_RECALLED_LESSONS:
             continue
-        entries.append(raw_entry)
-        used += size
+        candidate_entries = tuple((*entries, entry))
+        files, symbols, hints_truncated = _hints(repo_root, candidate_entries)
+        candidate = LearningContextRecall(
+            "available", candidate_entries, files, symbols, (), False
+        )
+        if _recall_size(candidate) <= RECALL_BYTE_LIMIT:
+            entries.append(entry)
+            truncated = truncated or hints_truncated
+        else:
+            truncated = True
 
     if not entries:
-        return LearningContextRecall("empty", (), (), (), (), truncated)
+        warnings, warnings_truncated = _pack_warnings(
+            "empty", (), (), (), recall.warnings
+        )
+        return LearningContextRecall(
+            "empty", (), (), (), warnings, truncated or warnings_truncated
+        )
 
-    raw_files: list[str] = []
-    raw_symbols: list[str] = []
-    for entry in entries:
-        if not isinstance(entry.target_files, tuple) or not isinstance(entry.symbols, tuple):
-            return _empty_recall("corrupt", "learning-context identifiers were malformed")
-        raw_files.extend(value for value in entry.target_files if isinstance(value, str))
-        raw_symbols.extend(value for value in entry.symbols if is_valid_symbol(value))
-
-    normalized_files = normalize_repository_files(repo_root, tuple(raw_files))
-    unique_symbols = tuple(dict.fromkeys(raw_symbols))
-    if len(normalized_files) > MAX_RECALLED_FILES or len(unique_symbols) > MAX_RECALLED_SYMBOLS:
-        truncated = True
-    warnings = tuple(
-        value[:256]
-        for value in recall.warnings[:8]
-        if isinstance(value, str)
+    selected_entries = tuple(entries)
+    files, symbols, hints_truncated = _hints(repo_root, selected_entries)
+    warnings, warnings_truncated = _pack_warnings(
+        "available", selected_entries, files, symbols, recall.warnings
     )
     return LearningContextRecall(
         "available",
-        tuple(entries),
-        normalized_files[:MAX_RECALLED_FILES],
-        unique_symbols[:MAX_RECALLED_SYMBOLS],
+        selected_entries,
+        files,
+        symbols,
         warnings,
-        truncated,
+        truncated or hints_truncated or warnings_truncated,
     )
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
+import json
+import math
 
 from pebra.app import explore_controller
 from pebra.core.exploration import ExplorationResult
@@ -32,7 +34,7 @@ def _entry(**changes) -> LearningContextEntry:
         target_files=("src/auth.py",),
         symbols=("Auth.validate",),
         assessed_commit="old-head",
-        candidate_fingerprint="a" * 16,
+        candidate_fingerprint="a" * 64,
         decision="proceed",
         gates_fired=("public_api",),
         expected_loss=0.1,
@@ -92,8 +94,8 @@ def test_recall_precedes_graph_and_only_validated_identifiers_refine_it(tmp_path
     (tmp_path / "src").mkdir()
     calls: list[tuple] = []
     valid = _entry(
-        target_files=("src/auth.py", "../escape.py", "src/auth.py"),
-        symbols=("Auth.validate", "bad symbol", "Auth.validate", "_safe"),
+        target_files=("src/auth.py", "src/auth.py"),
+        symbols=("Auth.validate", "Auth.validate", "_safe"),
     )
     recall = LearningContextRecall(
         "available", (valid,), ("spoof.py",), ("Spoof",), (), False
@@ -155,11 +157,11 @@ def test_controller_rebounds_entries_files_symbols_and_total_bytes(tmp_path) -> 
         _entry(
             learning_context_id=f"lc_{index}",
             assessment_id=f"asm_{index}",
-            target_files=tuple(f"src/f{value}.py" for value in range(20)),
-            symbols=tuple(f"Symbol{value}" for value in range(20)),
+            target_files=tuple(f"src/f{index}_{value}.py" for value in range(4)),
+            symbols=tuple(f"Symbol{index}_{value}" for value in range(4)),
             lesson=("x" * 1300),
         )
-        for index in range(8)
+        for index in range(1, 9)
     )
     result = explore_controller.explore_repository(
         str(tmp_path), "repo_1", "query",
@@ -214,6 +216,71 @@ def test_malformed_recall_container_fields_fail_soft_to_original_query(tmp_path)
         assert result.learning_context.status == "corrupt"
         assert result.repository_context.status == "available"
         assert calls[-1][2] == "query"
+
+
+def test_every_malformed_rendered_entry_field_fails_closed_without_invalid_json(tmp_path) -> None:
+    malformed_fields = (
+        ("learning_context_id", 1), ("repo_id", None), ("assessment_id", []),
+        ("task", {}), ("action_id", False), ("target_files", ["src/a.py"]),
+        ("target_files", (1,)), ("symbols", ["Good.Symbol"]),
+        ("symbols", ("bad symbol",)), ("assessed_commit", 1),
+        ("candidate_fingerprint", "not-a-hash"), ("decision", 1),
+        ("gates_fired", ["gate"]), ("gates_fired", ("bad-gate",)),
+        ("expected_loss", True), ("expected_loss", 10**1000), ("benefit", math.inf),
+        ("expected_utility", "0.2"), ("utility_sd", math.nan), ("rau", object()),
+        ("terminal_status", None), ("verification_summary", []),
+        ("measured_benefit", False), ("lesson", 1),
+        ("source_assessment_hash", "bad"), ("source_outcome_hash", None),
+        ("created_at", []), ("row_hash", "bad"),
+    )
+    for field, value in malformed_fields:
+        calls: list[tuple] = []
+        entry = replace(_entry(candidate_fingerprint="d" * 64), **{field: value})
+        result = explore_controller.explore_repository(
+            str(tmp_path), "repo_1", "  query  ",
+            learning_port=_Recall(
+                LearningContextRecall("available", (entry,), (), (), (), False), calls
+            ),
+            explorer=_Explorer(calls),
+        )
+        assert result.learning_context.status == "corrupt", field
+        assert calls[-1][2] == "  query  ", field
+        json.dumps(asdict(result), allow_nan=False)
+
+
+def test_complete_learning_envelope_is_deterministically_bounded(tmp_path) -> None:
+    entries = tuple(
+        _entry(
+            learning_context_id=f"lc_{index}",
+            assessment_id=f"asm_{index}",
+            candidate_fingerprint="d" * 64,
+            target_files=tuple(f"src/long-path-{index}-{value}.py" for value in range(8)),
+            symbols=tuple(f"Pkg.Symbol{index}_{value}" for value in range(8)),
+            lesson="lesson " + ("x" * 550),
+        )
+        for index in range(1, 7)
+    )
+    source = LearningContextRecall(
+        "available", entries, (), (), tuple("warning " + ("💥" * 200) for _ in range(8)), False
+    )
+
+    results = []
+    for _ in range(2):
+        calls: list[tuple] = []
+        result = explore_controller.explore_repository(
+            str(tmp_path), "repo_1", "query",
+            learning_port=_Recall(source, calls), explorer=_Explorer(calls),
+        )
+        encoded = json.dumps(
+            asdict(result.learning_context), sort_keys=True, ensure_ascii=False
+        ).encode("utf-8")
+        assert len(encoded) <= explore_controller.RECALL_BYTE_LIMIT
+        assert result.learning_context.truncated is True
+        assert len(result.learning_context.entries) <= 5
+        assert len(result.learning_context.file_hints) <= 16
+        assert len(result.learning_context.symbol_hints) <= 16
+        results.append(result.learning_context)
+    assert results[0] == results[1]
 
 
 def test_graph_unavailable_keeps_history_but_marks_it_non_current(tmp_path) -> None:

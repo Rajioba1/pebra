@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import pytest
@@ -46,7 +47,7 @@ def _knowledge(status: str = "available") -> KnowledgeExplorationResult:
 def _learning_entry() -> LearningContextEntry:
     return LearningContextEntry(
         "lc_1", "repo_1", "asm_1", "Fix [bold] login", "a1", ("src/auth.py",),
-        ("Auth.validate",), "old", "a" * 16, "proceed", (), 0.1, 0.8, 0.7, 0.1,
+        ("Auth.validate",), "old", "a" * 64, "proceed", (), 0.1, 0.8, 0.7, 0.1,
         0.5, "completed", "PEBRA verify proceeded", 0.8,
         "Historical [bold] lesson", "a" * 64, "b" * 64,
         "2026-07-22T00:00:00+00:00", "c" * 64,
@@ -192,6 +193,40 @@ def test_explore_human_output_includes_snapshot_context_impact_and_warnings(
     assert "tests/test_target.py" in output
     assert "bounded warning" in output
     assert "truncated: yes" in output
+
+
+def test_historical_human_fields_escape_terminal_controls_but_json_preserves_data(
+    monkeypatch, capsys
+) -> None:
+    dangerous = "src/ansi\x1b]8;;https://evil.example\x07\n\x9b\u202e\u200b.py"
+    entry = _learning_entry()
+    entry = replace(
+        entry,
+        learning_context_id="lc_\x1b[31m1",
+        task="task\x1b[31m red",
+        lesson="lesson\u202ehidden",
+        target_files=(dangerous,),
+        symbols=("Symbol\u200bHidden",),
+    )
+    knowledge = KnowledgeExplorationResult(
+        LearningContextRecall(
+            "available", (entry,), (dangerous,), ("Symbol\u200bHidden",),
+            ("warning\x9bcontrol",), False,
+        ),
+        _result(),
+    )
+    monkeypatch.setattr(composition, "explore_repository", lambda *a, **k: knowledge)
+
+    assert main.main(["explore", "q"]) == 0
+    human = capsys.readouterr().out
+    for raw in ("\x1b", "\x07", "\x9b", "\u202e", "\u200b"):
+        assert raw not in human
+    for visible in ("\\x1b", "\\x07", "\\x9b", "\\u202e", "\\u200b", "\\x0a"):
+        assert visible in human
+
+    assert main.main(["explore", "q", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["learning_context"]["entries"][0]["target_files"] == [dangerous]
 
 
 def test_handled_unavailable_result_returns_zero_and_reports_fallback(monkeypatch, capsys) -> None:
