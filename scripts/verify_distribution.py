@@ -77,10 +77,10 @@ _AGENT_CHECK_KEYS = {
     "declared_support",
     "effective_enforcement",
 }
-_EXPECTED_AGENT_SKILL_SHA256 = "9936c732502cf8b24bdd27109cbb2a78ec4b4408c06bf968abb886c79e6942ed"
+_EXPECTED_AGENT_SKILL_SHA256 = "44ffb770c023035872a48c0b73434437f345e3bb45f92e5f6f4d46c4533dac63"
 _EXPECTED_CLAUDE_RULE_SHA256 = "8be4b8bccc167ea3e9f32d7a0348f47c7d1d9119f267d3ec60a16484af31c432"
 _EXPECTED_CODEX_MANAGED_BLOCK_SHA256 = (
-    "34f03924f10e9696fbaa1894f0563b725f93858e14a96bfcfa964bc81e70935f"
+    "f1d847d98b47e3d707cbb579866181052b482ebc15593ea87292bd734d970c30"
 )
 _CODEX_SENTINEL = "# Pre-existing Codex distribution-verifier sentinel\nPreserve this instruction.\n"
 _MANAGED_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
@@ -123,6 +123,8 @@ _AGENT_SEMANTIC_OBLIGATIONS = (
     "returns an already-applied result.",
     "do not run",
     "`pebra apply-candidate` or apply it again.",
+    "After `pebra accept-risk --apply`, use its returned `reassessment_id` for Verify "
+    "and Record; never use the original held assessment ID.",
     "pebra verify --assessment-id <id> --scope staged",
     "pebra record-outcome --assessment-id <id> --status completed",
     "Only this verified-completed outcome path",
@@ -353,7 +355,11 @@ def _read_agent_artifact(path: Path, *, label: str) -> tuple[bytes, str]:
 
 
 def _verify_agent_semantics(text: str, *, label: str) -> None:
-    if any(obligation not in text for obligation in _AGENT_SEMANTIC_OBLIGATIONS):
+    normalized = " ".join(text.split())
+    if any(
+        " ".join(obligation.split()) not in normalized
+        for obligation in _AGENT_SEMANTIC_OBLIGATIONS
+    ):
         raise DistributionVerificationError(
             f"installed {label} is missing a semantic obligation"
         )

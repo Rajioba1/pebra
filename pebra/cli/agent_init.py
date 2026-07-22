@@ -110,7 +110,8 @@ Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Ver
    patch. On the human-review path, `pebra accept-risk --apply` performs trusted interactive approval,
    reassesses and applies the exact candidate itself, and returns an already-applied result. Its reassessment
    must return `proceed` with `risk_mode=controlled_high_risk`; after success, do not run
-   `pebra apply-candidate` or apply it again.
+   `pebra apply-candidate` or apply it again. After `pebra accept-risk --apply`, use its returned
+   `reassessment_id` for Verify and Record; never use the original held assessment ID.
 11. **Verify.** Run `pebra verify --assessment-id <id> --scope staged` and resolve scope drift or failed checks.
 12. **Record.** After passing verification, run
    `pebra record-outcome --assessment-id <id> --status completed`. Only this verified-completed outcome path

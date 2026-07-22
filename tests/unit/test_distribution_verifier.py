@@ -410,6 +410,14 @@ def test_installed_artifact_verifier_accepts_independent_expected_files(
     distribution_verifier._verify_agent_init_artifacts(tmp_path, target)
 
 
+def test_distribution_oracle_requires_human_review_reassessment_id() -> None:
+    assert (
+        "After `pebra accept-risk --apply`, use its returned `reassessment_id` for Verify "
+        "and Record; never use the original held assessment ID."
+        in distribution_verifier._AGENT_SEMANTIC_OBLIGATIONS
+    )
+
+
 @pytest.mark.parametrize("target", ("claude", "codex"))
 def test_installed_artifact_verifier_rejects_skill_byte_drift(tmp_path, target) -> None:
     _write_agent_init_artifacts(tmp_path, target)

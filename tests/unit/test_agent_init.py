@@ -293,6 +293,10 @@ def test_skill_distinguishes_ordinary_apply_from_human_review_apply(tmp_path):
     assert "reassesses and applies the exact candidate itself" in body
     assert "already-applied result" in body
     assert "do not run `pebra apply-candidate` or apply it again" in body
+    assert (
+        "after `pebra accept-risk --apply`, use its returned `reassessment_id` for verify "
+        "and record; never use the original held assessment id"
+    ) in body
 
 
 def test_codex_creates_agents_md(tmp_path):
