@@ -198,6 +198,7 @@ def test_inflight_learning_delivery_cannot_touch_dismissed_screen() -> None:
     started = Event()
     release = Event()
     completed = Event()
+    finish_callback_delivered = Event()
 
     class _BlockingData(_Data):
         def learning_snapshot(self) -> ObservatoryLearningSnapshot:
@@ -216,11 +217,24 @@ def test_inflight_learning_delivery_cannot_touch_dismissed_screen() -> None:
         async with app.run_test() as pilot:
             await app.push_screen(screen)
             await _pause_until(started.is_set, pilot)
+            stale_generation = screen._generation
             await app.pop_screen()
             await _pause_until(lambda: not screen._can_update_children(), pilot)
+
+            def deliver_queued_finish() -> None:
+                screen._finish_ok(
+                    stale_generation,
+                    ObservatoryLearningSnapshot(
+                        [{"snapshot_id": "rs_late", "status": "active"}], []
+                    ),
+                )
+                finish_callback_delivered.set()
+
+            app.call_later(deliver_queued_finish)
+            await _pause_until(finish_callback_delivered.is_set, pilot)
             release.set()
             await _pause_until(completed.is_set, pilot)
-            await _pause_until(lambda: not screen.loading, pilot)
+            assert not screen.loading
             assert len(screen.query("#learning-snapshots")) == 0
 
     asyncio.run(scenario())

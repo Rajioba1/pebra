@@ -32,7 +32,9 @@ def prior_display_semantics(facet: object) -> tuple[str, int] | None:
         or not isinstance(count, int)
     ):
         return None
-    if count < 0 or (source in {"local_learned", "mixed"} and count <= 0):
+    if (source in {"cold_start", "shipped"} and count != 0) or (
+        source in {"local_learned", "mixed"} and count <= 0
+    ):
         return None
     return str(source), count
 

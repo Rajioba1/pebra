@@ -175,6 +175,8 @@ def test_matching_unavailable_or_malformed_prior_facets_never_group() -> None:
         None,
         {"source": "unavailable", "snapshot_ids": [], "calibration_tags": [], "applied_target_count": 0},
         {"source": "local_learned", "snapshot_ids": [], "calibration_tags": [], "applied_target_count": 0},
+        {"source": "cold_start", "snapshot_ids": [], "calibration_tags": [], "applied_target_count": 1},
+        {"source": "shipped", "snapshot_ids": [], "calibration_tags": [], "applied_target_count": 1},
         {"source": "cold_start", "snapshot_ids": "bad", "calibration_tags": [], "applied_target_count": 0},
         {"source": [], "snapshot_ids": [], "calibration_tags": [], "applied_target_count": 0},
     ):

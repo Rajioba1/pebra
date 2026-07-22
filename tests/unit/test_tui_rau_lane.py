@@ -144,6 +144,8 @@ def test_complete_ledger_reserves_literal_cells_for_persisted_text() -> None:
         ({"source": "cold_start", "applied_target_count": True}, "—"),
         ({"source": "local_learned", "applied_target_count": 0}, "—"),
         ({"source": "mixed", "applied_target_count": -1}, "—"),
+        ({"source": "cold_start", "applied_target_count": 1}, "—"),
+        ({"source": "shipped", "applied_target_count": 1}, "—"),
         ({"source": [], "applied_target_count": 0}, "—"),
     ],
 )
