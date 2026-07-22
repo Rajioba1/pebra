@@ -131,6 +131,13 @@ def test_v1_learning_rows_remain_chain_valid_after_gate_column_migration(tmp_pat
     recall = store.recall_learning_context("r1", "legacy")
     assert recall.status == "available"
     assert recall.entries[0].gates_fired == ()
+    # Version 1 never hashed a gate field. Only the migration default [] is trustworthy;
+    # otherwise an attacker could smuggle unverified gate names beside a still-valid v1 hash.
+    store._con.execute(
+        "UPDATE learning_context SET gates_fired = '[\"unhashed_gate\"]' WHERE id = 1"
+    )
+    assert store.validate_chain() is False
+    assert store.recall_learning_context("r1", "legacy").status == "corrupt"
     store.close()
 
 

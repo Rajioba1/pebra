@@ -2075,6 +2075,8 @@ class SqliteStore:
             stored_prev, hash_version = row[24:]
             if stored_prev != prev_hash or hash_version not in (1, LEARNING_CONTEXT_HASH_VERSION):
                 return False
+            if hash_version == 1 and entry.gates_fired:
+                return False
             expected = hashlib.sha256(
                 (
                     prev_hash
