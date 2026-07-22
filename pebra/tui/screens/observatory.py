@@ -37,7 +37,7 @@ from pebra.tui.widgets.score_sparklines import ScoreSparklines
 from pebra.tui.widgets.status_header import StatusHeader
 
 _EMPTY = "No assessments recorded for this repository yet."
-_SCROLL_HINT = "←/→ more columns · Home/End"
+_SCROLL_HINT = "←/→ columns · Home/End edges"
 _REFRESH_INTERVAL = 5.0  # seconds; SQLite-only poll — never the graph/RCA engines
 
 

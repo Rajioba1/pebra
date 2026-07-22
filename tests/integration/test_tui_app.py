@@ -328,12 +328,18 @@ def test_narrow_ledger_scrolls_to_last_column_without_changing_selection(tmp_pat
             await pilot.press("end")  # jump to the horizontal end (row-cursor mode -> scroll_x=max)
             await pilot.pause()
             result["reached_end"] = table.scroll_x == table.max_scroll_x
+            last_cell = table.get_cell_at((1, 12))
+            last_column = list(table.columns.values())[-1]
+            result["last_cell_full"] = (
+                len(last_cell.plain) == 16 and last_column.width >= len(last_cell.plain)
+            )
             still = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
             result["selection_preserved"] = still == selected
 
     asyncio.run(scenario())
     assert result["overflows"] is True
     assert result["reached_end"] is True
+    assert result["last_cell_full"] is True
     assert result["selection_preserved"] is True
 
 
@@ -525,7 +531,9 @@ def test_snapshot_width_growth_reveals_scroll_hint_without_a_resize(tmp_path) ->
                 await pilot.pause()
 
             assert table.max_scroll_x > 0
-            assert app.query_one("#scroll-hint").display is True
+            hint = app.query_one("#scroll-hint")
+            assert hint.display is True
+            assert hint.render().plain == "←/→ columns · Home/End edges"
 
     asyncio.run(scenario())
 

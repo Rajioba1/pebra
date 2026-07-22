@@ -108,7 +108,7 @@ def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False, groupable: bool 
     db = str(tmp_path / "pebra.db")
     store = SqliteStore(db)
     for decision, commit, scores in specs:
-        store.persist_assessment(
+        assessment_id = store.persist_assessment(
             AssessmentResult(
                 recommended_decision=decision,
                 requires_confirmation=decision is not Decision.PROCEED,
@@ -142,6 +142,8 @@ def _seed(tmp_path, *, specs=_SPECS, break_chain: bool = False, groupable: bool 
                 },
             },
         )
+        if decision is Decision.PROCEED:
+            store.record_outcome(assessment_id, ActionStatus.COMPLETED.value)
     store.close()
     if break_chain:
         con = sqlite3.connect(db)

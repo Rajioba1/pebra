@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from textual.content import Content
 
+from pebra.core.constants import ActionStatus
 from pebra.tui.theme import VERDICT_PALETTE
 from pebra.tui.widgets.ledger_table import (
+    LEDGER_COLUMN_WIDTHS,
     LEDGER_COLUMNS,
     format_assessed_at,
     format_rau,
@@ -114,17 +116,30 @@ def test_complete_ledger_reserves_literal_cells_for_persisted_text() -> None:
             "assessment_id": "asm_[one]",
             "target_files": ["src/[target].py"],
             "task": "update Dict[str, Any]",
-            "assessed_commit": "abcdef0",
+            "assessed_commit": "[bold]abcdef0",
             "terminal_status": "[pending]",
-            "assessed_at": "2026-07-20T12:34:56+00:00",
+            "assessed_at": "[bold]time",
             "scores": {"rau": 0.1, "expected_loss": 0.2, "benefit": 0.3},
         }
     )
     by_column = dict(zip(LEDGER_COLUMNS, cells, strict=True))
 
-    for name in ("target", "task", "status", "prior", "lesson"):
+    for name in ("target", "task", "assessed_commit", "status", "prior", "lesson", "assessed_at"):
         assert isinstance(by_column[name], Content)
+    assert by_column["assessed_commit"].plain == "[bold]a"
     assert by_column["status"].plain == "[pending]"
+    assert by_column["assessed_at"].plain == "[bold]time"
+
+
+def test_status_column_fits_every_terminal_status_without_clipping() -> None:
+    supported = {status.value for status in ActionStatus} | {"pending"}
+
+    assert LEDGER_COLUMN_WIDTHS["status"] >= max(map(len, supported))
+    for status in ("pending", "completed"):
+        cells = ledger_row({"terminal_status": status, "scores": {}})
+        cell = dict(zip(LEDGER_COLUMNS, cells, strict=True))["status"]
+        assert isinstance(cell, Content)
+        assert cell.plain == status
 
 
 # --- Milestone 0 characterization lock: forward-looking score-unit formatters ---------------

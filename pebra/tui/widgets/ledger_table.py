@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 
 from textual.content import Content
 
+from pebra.core.constants import ActionStatus
 from pebra.tui.theme import VERDICT_PALETTE, verdict_for
 
 # The ledger is a complete audit instrument at every terminal width. Narrow terminals expose the
@@ -70,6 +71,7 @@ LEDGER_COLUMN_WIDTHS = {
     "gate_lane": LEDGER_LANE_WIDTH,
     "decision": max(Content(f"{v.glyph} {v.label}").cell_length for v in VERDICT_PALETTE.values()),
     "expected_loss": len(LEDGER_LABELS["expected_loss"]),
+    "status": max(len(LEDGER_LABELS["status"]), *(len(status.value) for status in ActionStatus)),
     "assessed_at": 16,
 }
 
@@ -171,7 +173,7 @@ def ledger_row(
         ),
         "target": Content(format_target(assessment.get("target_files") or ())),
         "task": Content(format_task(assessment.get("task"))),
-        "assessed_commit": short_commit(assessment.get("assessed_commit")),
+        "assessed_commit": Content(short_commit(assessment.get("assessed_commit"))),
         "gate_lane": Content(render_rau_lane(rau, width=LEDGER_LANE_WIDTH)),
         "decision": decision_cell(str(assessment.get("decision", "")), dark=dark),
         "rau": format_rau(rau),
@@ -182,6 +184,6 @@ def ledger_row(
         # eventual persisted strings literal rather than Rich markup.
         "prior": Content("—"),
         "lesson": Content("—"),
-        "assessed_at": format_assessed_at(assessment.get("assessed_at")),
+        "assessed_at": Content(format_assessed_at(assessment.get("assessed_at"))),
     }
     return tuple(cells[column] for column in columns)
