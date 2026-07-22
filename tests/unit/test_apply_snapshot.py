@@ -388,6 +388,59 @@ def test_benefit_binary_fact_overrides_immediate_benefit() -> None:
     assert out.applied_snapshot_provenance["applied_facts"][0]["target"] == "immediate_benefit_realized"
 
 
+def test_benefit_binary_fact_carries_learned_variance_to_assessment_input() -> None:
+    out = apply_snapshot(
+        _inp(),
+        _bundle(_fact(
+            target_type="benefit_binary",
+            target_name="immediate_benefit_realized",
+            value=0.8,
+            variance=0.0005,
+            aleatoric_variance=0.001,
+        )),
+    )
+
+    assert out.benefit_variance_override == pytest.approx(0.0015)
+    assert out.applied_snapshot_provenance["applied_facts"][0]["applied_variance"] == pytest.approx(0.0015)
+
+
+def test_benefit_learned_variance_cannot_collapse_below_floor_or_exceed_prior_cap() -> None:
+    floor = COLD_START_VARIANCES["benefit"] * LEARNED_VARIANCE_FLOOR_RATIO
+    low = apply_snapshot(
+        _inp(),
+        _bundle(_fact(
+            target_type="benefit_binary",
+            target_name="immediate_benefit_realized",
+            value=0.8,
+            variance=0.0,
+            aleatoric_variance=0.0,
+        )),
+    )
+    high = apply_snapshot(
+        _inp(),
+        _bundle(_fact(
+            target_type="benefit_binary",
+            target_name="immediate_benefit_realized",
+            value=0.8,
+            variance=100.0,
+            aleatoric_variance=100.0,
+        )),
+    )
+    legacy = apply_snapshot(
+        _inp(),
+        _bundle(_fact(
+            target_type="benefit_binary",
+            target_name="immediate_benefit_realized",
+            value=0.8,
+            variance=0.0,
+        )),
+    )
+
+    assert low.benefit_variance_override == pytest.approx(floor)
+    assert high.benefit_variance_override == pytest.approx(COLD_START_VARIANCES["benefit"])
+    assert legacy.benefit_variance_override == pytest.approx(COLD_START_VARIANCES["benefit"])
+
+
 def test_benefit_continuous_delta_fact_updates_delta_evidence() -> None:
     inp = replace(
         _inp(),
@@ -410,12 +463,42 @@ def test_benefit_continuous_delta_fact_updates_delta_evidence() -> None:
     assert out.benefit_delta_evidence.file_deltas == {}
 
 
+def test_benefit_delta_fact_carries_learned_variance_to_assessment_input() -> None:
+    out = apply_snapshot(
+        _inp(),
+        _bundle(_fact(
+            target_type="benefit_continuous",
+            target_name="maintainability_delta.complexity_delta",
+            value=-3.0,
+            variance=0.0008,
+            aleatoric_variance=0.0007,
+        )),
+    )
+
+    assert out.benefit_variance_override == pytest.approx(0.0015)
+
+
 def test_measured_benefit_fact_sets_final_benefit_override() -> None:
     out = apply_snapshot(
         _inp(),
         _bundle(_fact(target_type="benefit_continuous", target_name="measured_benefit", value=0.9)),
     )
     assert out.benefit_override == pytest.approx(0.9)
+
+
+def test_measured_benefit_fact_carries_learned_variance_to_assessment_input() -> None:
+    out = apply_snapshot(
+        _inp(),
+        _bundle(_fact(
+            target_type="benefit_continuous",
+            target_name="measured_benefit",
+            value=0.9,
+            variance=0.0005,
+            aleatoric_variance=0.001,
+        )),
+    )
+
+    assert out.benefit_variance_override == pytest.approx(0.0015)
 
 
 def test_review_cost_fact_updates_cost_and_variance() -> None:

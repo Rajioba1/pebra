@@ -24,7 +24,9 @@
   <nav class="tabs" role="tablist" aria-label="Views">
     <a class="tab" href="#overview" data-tab="overview" role="tab">Overview</a>
     <a class="tab" href="#history" data-tab="history" role="tab">History</a>
+    {% if dev_mode %}
     <a class="tab" href="#calibration" data-tab="calibration" role="tab">Calibration</a>
+    {% endif %}
     <a class="tab" href="#learning" data-tab="learning" role="tab">Learning</a>
     <a class="tab" href="#graph" data-tab="graph" role="tab">Graph</a>
   </nav>
@@ -32,7 +34,9 @@
   <main id="app" data-testid="app">
     <section class="view" id="view-overview" data-testid="overview" hidden></section>
     <section class="view" id="view-history" data-testid="history" hidden></section>
+    {% if dev_mode %}
     <section class="view" id="view-calibration" data-testid="calibration" hidden></section>
+    {% endif %}
     <section class="view" id="view-learning" data-testid="learning" hidden></section>
     <section class="view" id="view-graph" data-testid="graph" hidden></section>
     <p class="boot" id="boot">Loading telemetry…</p>

@@ -528,6 +528,9 @@ class AssessmentInput:
     # Benefit-continuous learned override for the final projected/measured benefit target. None unless an
     # active ``measured_benefit`` fact applied; assessment_builder owns the actual score replacement.
     benefit_override: float | None = None
+    # Learned predictive variance for benefit-side overrides. None means the benefit model retains its
+    # fixed projected/measured variance constants.
+    benefit_variance_override: float | None = None
 
 
 @dataclass

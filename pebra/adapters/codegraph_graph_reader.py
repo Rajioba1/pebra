@@ -32,6 +32,8 @@ from pebra.adapters.codegraph_adapter import (
 )
 from pebra.core.graph_version import in_accepted_range
 
+_SETUP_GRAPH_HINT = "run: pebra setup-graph --fix"
+
 
 def _empty(available: bool, freshness: str, reason: str | None, **extra: Any) -> dict[str, Any]:
     base = {
@@ -59,17 +61,19 @@ class CodeGraphReader:
         Returns ``(con, freshness, reason)`` — ``con is None`` (with a reason) on any gate failure."""
         status = self._status_fn(repo_root)
         if status is None:
-            return None, "unknown", "codegraph CLI not found"
+            return None, "unknown", f"codegraph CLI not found; {_SETUP_GRAPH_HINT}"
         runtime_ver = status.get("version")
         if runtime_ver and not in_accepted_range(runtime_ver):
-            return None, "unknown", f"codegraph version {runtime_ver} outside accepted range"
+            return None, "unknown", (
+                f"codegraph version {runtime_ver} outside accepted range; {_SETUP_GRAPH_HINT}"
+            )
         if status.get("initialized") is False:
-            return None, "unknown", "codegraph index not initialized"
+            return None, "unknown", f"codegraph index not initialized; {_SETUP_GRAPH_HINT}"
         if not _is_fresh(status):
-            return None, "stale", "codegraph index stale or worktree-mismatched"
+            return None, "stale", f"codegraph index stale or worktree-mismatched; {_SETUP_GRAPH_HINT}"
         db_path = _db_path_from_status(repo_root, status)
         if not db_path.is_file():
-            return None, "unknown", "codegraph DB not found"
+            return None, "unknown", f"codegraph DB not found; {_SETUP_GRAPH_HINT}"
         try:
             con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
         except (sqlite3.Error, OSError, ValueError) as exc:

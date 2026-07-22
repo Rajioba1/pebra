@@ -10,7 +10,7 @@ import pebra.cli.dashboard as cli_dash
 
 def _args(**over):
     base = dict(read_only=False, db=None, repo_id=None, repo_root=None, host="127.0.0.1",
-                port=None, instance=0, token=False, auth="auto", open=False)
+                port=None, instance=0, token=False, auth="auto", open=False, dev=False)
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -94,3 +94,24 @@ def test_normal_dashboard_prepares_graph_once_and_injects_reader(monkeypatch, tm
     assert rc == 0
     assert seen["prepared"] == (str(tmp_path.resolve()), False)
     assert seen["graph_reader"] is reader
+
+
+def test_dashboard_dev_flag_is_passed_to_server(monkeypatch, tmp_path):
+    seen = {}
+    db = tmp_path / "pebra.db"
+
+    monkeypatch.setattr(
+        cli_dash.composition,
+        "prepare_dashboard_graph_reader",
+        lambda repo_root, *, read_only: object(),
+    )
+    monkeypatch.setattr(
+        "pebra.dashboard.server.serve",
+        lambda _db_path, **kwargs: seen.update(kwargs),
+    )
+    monkeypatch.setattr("pebra.dashboard.server.resolve_dashboard_token", lambda host, mode: None)
+
+    rc = cli_dash.run(_args(repo_root=str(tmp_path), db=str(db), dev=True))
+
+    assert rc == 0
+    assert seen["dev_mode"] is True

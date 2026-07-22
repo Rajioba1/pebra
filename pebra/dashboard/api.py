@@ -178,9 +178,9 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
             }
             for i, qn in enumerate(qnames)
         ]
-        return request.app.state.graph_reader.hot_subgraph(
+        return _with_graph_setup_hint(request.app.state.graph_reader.hot_subgraph(
             symbols, repo_root, max_depth=max_depth, max_nodes=max_nodes
-        )
+        ))
 
     @router.get("/repos/{repo_id}/graph/overview")
     def graph_overview(
@@ -189,12 +189,8 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         _require_bound_repo(request, repo_id)
         repo_root = getattr(request.app.state, "repo_root", None)
         if not repo_root:
-            return {
-                "available": False, "graph_freshness": "unknown",
-                "fallback_reason": "dashboard is not bound to a repo root",
-                "files": [], "truncated": False, "total_file_count": 0,
-            }
-        return request.app.state.graph_reader.file_overview(repo_root, top_n=top_n)
+            return _graph_overview_unavailable("dashboard is not bound to a repo root")
+        return _with_graph_setup_hint(request.app.state.graph_reader.file_overview(repo_root, top_n=top_n))
 
     @router.get("/repos/{repo_id}/assessments/{assessment_id}")
     def repo_detail(repo_id: str, assessment_id: str, request: Request) -> dict[str, Any]:
@@ -232,10 +228,43 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
 
 
 def _graph_unavailable(reason: str) -> dict[str, Any]:
-    return {
+    return _with_graph_setup_hint({
         "available": False, "graph_freshness": "unknown", "fallback_reason": reason,
         "nodes": [], "edges": [], "truncated": False, "total_node_count": 0,
-    }
+    })
+
+
+def _graph_overview_unavailable(reason: str) -> dict[str, Any]:
+    return _with_graph_setup_hint({
+        "available": False, "graph_freshness": "unknown",
+        "fallback_reason": reason,
+        "files": [], "truncated": False, "total_file_count": 0,
+    })
+
+
+def _with_graph_setup_hint(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("available") is False:
+        payload["fallback_reason"] = _public_graph_fallback_reason(payload.get("fallback_reason"))
+        payload["setup_command"] = "pebra setup-graph --fix --repo-root ."
+        payload["setup_hint"] = "Initialize or repair the local CodeGraph index, then refresh this tab."
+    return payload
+
+
+def _public_graph_fallback_reason(reason: object) -> str:
+    text = reason if isinstance(reason, str) else ""
+    safe_prefixes = (
+        "dashboard is not bound to a repo root",
+        "codegraph CLI not found",
+        "codegraph version ",
+        "codegraph index not initialized",
+        "codegraph index stale or worktree-mismatched",
+        "codegraph DB not found",
+        "codegraph schema below v",
+        "no matching symbols in the current graph",
+    )
+    if any(text.startswith(prefix) for prefix in safe_prefixes):
+        return text
+    return "codegraph graph data unavailable"
 
 
 def _require_bound_repo(request: Request, repo_id: str) -> None:

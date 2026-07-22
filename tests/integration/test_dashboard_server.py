@@ -70,6 +70,28 @@ def test_index_served_with_csp_nonce(tmp_path) -> None:
     assert nonce in resp.text  # same nonce on the inline <script> tag
 
 
+def test_index_hides_calibration_tab_by_default(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    resp = _client(db).get("/")
+
+    assert resp.status_code == 200
+    assert 'data-tab="calibration"' not in resp.text
+
+
+def test_index_shows_calibration_tab_in_dev_mode(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from pebra.dashboard.server import create_app
+
+    db, _ = _seed(tmp_path)
+    resp = TestClient(
+        create_app(db, "tok", dev_mode=True), base_url="http://127.0.0.1"
+    ).get("/")
+
+    assert resp.status_code == 200
+    assert 'data-tab="calibration"' in resp.text
+
+
 def test_api_requires_bearer(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     assert _client(db).get("/api/chain-status").status_code == 401
@@ -105,6 +127,59 @@ def test_dashboard_learning_projection_includes_verified_lessons(tmp_path) -> No
     assert "No verified completed outcomes" in text
     assert 'headRow(["record", "assessment", "task", "lesson", "verified outcome", "created"])' in text
     assert "cell(item.verification_summary" in text
+
+
+def test_dashboard_history_numeric_headers_are_aligned_with_numeric_cells(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+    css = _client(db).get("/static/style.css").text
+
+    assert '{ label: "expected loss", cls: "num" }' in text
+    assert '{ label: "benefit", cls: "num" }' in text
+    assert '{ label: "expected utility", cls: "num" }' in text
+    assert '{ label: "rau", cls: "num" }' in text
+    assert '{ label: "confidence", cls: "num" }' in text
+    assert "th.num" in css
+
+
+def test_dashboard_history_labels_terminal_status_as_outcome(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+
+    assert '"outcome"' in text
+    assert '{ label: "confidence", cls: "num" },\n        "status",' not in text
+
+
+def test_dashboard_history_renders_expected_loss_and_benefit_as_percentages(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+
+    assert '{ label: "expected loss", cls: "num" }' in text
+    assert "cell(fmtPct(s.expected_loss), \"num\")" in text
+    assert "cell(fmtPct(s.benefit), \"num\")" in text
+    assert "cell(fmt(s.rau), \"num\")" in text
+
+
+def test_dashboard_history_includes_identity_and_lesson_columns(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+
+    assert 'getJSON(rp("/learning/context?limit=200"))' in text
+    assert '"task", "target", "fingerprint"' in text
+    assert "formatTask(it.task)" in text
+    assert "formatTarget(it.target_files)" in text
+    assert "formatFingerprint(it.candidate_fingerprint)" in text
+    assert "lessonIndicator(lessonByAssessment[it.assessment_id], lessons.status)" in text
+
+
+def test_dashboard_history_wide_table_scrolls_horizontally(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+    css = _client(db).get("/static/style.css").text
+
+    assert 'el("div", "table-scroll")' in text
+    assert ".table-scroll" in css
+    assert "overflow-x: auto" in css
 
 
 def test_assessments_route_lists_seeded(tmp_path) -> None:
@@ -838,6 +913,29 @@ class _StubReader:
         return {"available": True, "files": [{"file_path": "src/Gamma.cs"}]}
 
 
+class _UnavailableReader:
+    def hot_subgraph(self, symbols, repo_root, *, max_depth=2, max_nodes=300):
+        return {
+            "available": False,
+            "graph_freshness": "unknown",
+            "fallback_reason": "codegraph DB could not be opened: C:\\Users\\Raj\\secret\\codegraph.db",
+            "nodes": [],
+            "edges": [],
+            "truncated": False,
+            "total_node_count": 0,
+        }
+
+    def file_overview(self, repo_root, *, top_n=200):
+        return {
+            "available": False,
+            "graph_freshness": "unknown",
+            "fallback_reason": "codegraph DB query failed: /home/raj/secret/codegraph.db",
+            "files": [],
+            "truncated": False,
+            "total_file_count": 0,
+        }
+
+
 def test_graph_hotspot_passes_resolved_names_and_repo_root(tmp_path) -> None:
     db, asm = _seed_rich(tmp_path)
     from pebra.dashboard.server import create_app
@@ -850,6 +948,8 @@ def test_graph_hotspot_passes_resolved_names_and_repo_root(tmp_path) -> None:
     body = client.get(f"/api/repos/r/graph/hotspot?assessment_id={asm}", headers=_AUTH).json()
 
     assert body["available"] is True and body["nodes"] == [{"id": "n1"}]
+    assert "setup_command" not in body
+    assert "setup_hint" not in body
     assert stub.calls == [
         (
             [
@@ -894,6 +994,25 @@ def test_graph_hotspot_failsoft_without_repo_root(tmp_path) -> None:
     resp = _client(db).get(f"/api/repos/r/graph/hotspot?assessment_id={asm}", headers=_AUTH)
     assert resp.status_code == 200  # never 500
     assert resp.json()["available"] is False
+    assert "pebra setup-graph --fix" in resp.json()["setup_command"]
+
+
+def test_graph_hotspot_sanitizes_reader_unavailable_reason(tmp_path) -> None:
+    db, asm = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _UnavailableReader()
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    body = client.get(f"/api/repos/r/graph/hotspot?assessment_id={asm}", headers=_AUTH).json()
+
+    assert body["available"] is False
+    assert body["fallback_reason"] == "codegraph graph data unavailable"
+    assert body["setup_command"] == "pebra setup-graph --fix --repo-root ."
+    assert "Users" not in str(body)
+    assert "secret" not in str(body)
 
 
 def test_graph_overview_failsoft_without_repo_root(tmp_path) -> None:
@@ -901,6 +1020,34 @@ def test_graph_overview_failsoft_without_repo_root(tmp_path) -> None:
     resp = _client(db).get("/api/repos/r/graph/overview", headers=_AUTH)
     assert resp.status_code == 200
     assert resp.json()["available"] is False
+    assert "pebra setup-graph --fix" in resp.json()["setup_command"]
+
+
+def test_graph_overview_sanitizes_reader_unavailable_reason(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _UnavailableReader()
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    body = client.get("/api/repos/r/graph/overview", headers=_AUTH).json()
+
+    assert body["available"] is False
+    assert body["fallback_reason"] == "codegraph graph data unavailable"
+    assert body["setup_command"] == "pebra setup-graph --fix --repo-root ."
+    assert "home" not in str(body)
+    assert "secret" not in str(body)
+
+
+def test_dashboard_graph_fallback_renders_setup_guidance(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    text = _client(db).get("/static/app.js").text
+
+    assert "Graph setup:" in text
+    assert "setup_command" in text
+    assert "pebra setup-graph --fix" in text
 
 
 def test_graph_overview_rejects_url_repo_that_does_not_match_launched_repo(tmp_path) -> None:
@@ -925,3 +1072,5 @@ def test_graph_overview_accepts_launched_repo(tmp_path) -> None:
     body = client.get("/api/repos/r/graph/overview", headers=_AUTH).json()
     assert body["available"] is True
     assert body["files"] == [{"file_path": "src/Gamma.cs"}]
+    assert "setup_command" not in body
+    assert "setup_hint" not in body

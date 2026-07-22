@@ -366,6 +366,53 @@ def test_builder_uses_first_order_variance_when_no_explicit_breakdown() -> None:
     assert a.scores["variance_breakdown"]["benefit"] == pytest.approx((0.74**2) * 0.04)
 
 
+def test_builder_uses_learned_benefit_variance_override_when_present() -> None:
+    inp = replace(
+        _worked_example_input(),
+        variance_breakdown=None,
+        benefit_variance_override=0.0015,
+    )
+
+    scores = ab.build_assessment(inp).scores
+
+    assert scores["variance_source"] == "first_order"
+    assert scores["benefit_breakdown"].benefit_variance == pytest.approx(0.0015)
+    assert scores["variance_breakdown"]["benefit"] == pytest.approx((0.74**2) * 0.0015)
+
+
+def test_builder_consumes_benefit_variance_from_applied_snapshot() -> None:
+    from pebra.core.apply_snapshot import SnapshotBundle, SnapshotFact, apply_snapshot
+
+    inp = replace(_worked_example_input(), variance_breakdown=None)
+    learned = apply_snapshot(
+        inp,
+        SnapshotBundle(
+            snapshot_id="rs_1",
+            facts=(
+                SnapshotFact(
+                    fact_id="lrf_1",
+                    target_type="benefit_binary",
+                    target_name="immediate_benefit_realized",
+                    scope_kind="global",
+                    scope_value="",
+                    specificity_rank=0,
+                    value=0.8,
+                    sample_size=50,
+                    created_at="2026-07-22T00:00:00Z",
+                    calibration_method="observed_rate_v1",
+                    variance=0.0005,
+                    aleatoric_variance=0.001,
+                ),
+            ),
+        ),
+    )
+
+    scores = ab.build_assessment(learned).scores
+
+    assert scores["benefit_breakdown"].benefit_variance == pytest.approx(0.0015)
+    assert scores["variance_breakdown"]["benefit"] == pytest.approx((0.74**2) * 0.0015)
+
+
 def test_builder_propagates_learned_event_probability_variance() -> None:
     inp = replace(
         _worked_example_input(),

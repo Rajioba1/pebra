@@ -56,6 +56,21 @@
   }
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
   function fmt(x, d) { return x == null || Number.isNaN(x) ? "—" : Number(x).toFixed(d == null ? 3 : d); }
+  function fmtPct(x, d) { return x == null || Number.isNaN(x) ? "—" : (Number(x) * 100).toFixed(d == null ? 0 : d) + "%"; }
+  function tailPath(path) {
+    const parts = String(path || "").split(/[\\/]/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "—";
+  }
+  function formatTask(task) { return task ? String(task) : "—"; }
+  function formatTarget(paths) {
+    if (!Array.isArray(paths) || !paths.length) return "—";
+    return paths.length === 1 ? tailPath(paths[0]) : tailPath(paths[0]) + " +" + (paths.length - 1);
+  }
+  function formatFingerprint(value) { return value ? String(value).slice(0, 12) : "—"; }
+  function lessonIndicator(entry, status) {
+    if (status === "unavailable") return "unavailable";
+    return entry ? "learned" : "—";
+  }
   function pct(x) { return x == null ? "—" : (100 * x).toFixed(0) + "%"; }
   function pill(decision) {
     const p = el("span", "pill " + (decision || ""), decision || "—");
@@ -146,10 +161,15 @@
   // ---- History ----
   const historyState = { assessment_id: null };
   async function renderHistory(view) {
-    const [data, series] = await Promise.all([
+    const [data, series, lessons] = await Promise.all([
       getJSON(rp("/assessments?limit=100")), getJSON(rp("/scores-series?limit=200")),
+      getJSON(rp("/learning/context?limit=200")).catch(() => ({ status: "unavailable", items: [] })),
     ]);
     clear(view);
+    const lessonByAssessment = {};
+    if (lessons.status !== "unavailable") {
+      (lessons.items || []).forEach((item) => { lessonByAssessment[item.assessment_id] = item; });
+    }
 
     const tcard = card("Risk, benefit & expected utility over time");
     const chartBox = el("div", "chart");
@@ -169,20 +189,31 @@
     else {
       const table = el("table");
       table.appendChild(headRow([
-        "assessment", "decision", "risk", "benefit", "expected utility", "rau", "confidence", "status",
+        "assessment", "task", "target", "fingerprint", "decision",
+        { label: "expected loss", cls: "num" },
+        { label: "benefit", cls: "num" },
+        { label: "expected utility", cls: "num" },
+        { label: "rau", cls: "num" },
+        { label: "confidence", cls: "num" },
+        "outcome",
+        "lesson",
       ]));
       const tb = el("tbody");
       data.items.forEach((it) => {
         const s = it.scores || {};
         const tr = el("tr", "clickable");
         tr.appendChild(cell(it.assessment_id, "mono"));
+        tr.appendChild(cell(formatTask(it.task)));
+        tr.appendChild(cell(formatTarget(it.target_files), "mono"));
+        tr.appendChild(cell(formatFingerprint(it.candidate_fingerprint), "mono"));
         const dcell = el("td"); dcell.appendChild(pill(it.decision)); tr.appendChild(dcell);
-        tr.appendChild(cell(fmt(s.expected_loss), "num"));
-        tr.appendChild(cell(fmt(s.benefit), "num"));
+        tr.appendChild(cell(fmtPct(s.expected_loss), "num"));
+        tr.appendChild(cell(fmtPct(s.benefit), "num"));
         tr.appendChild(cell(fmt(s.expected_utility), "num"));
         tr.appendChild(cell(fmt(s.rau), "num"));
         tr.appendChild(cell(fmt(s.edit_confidence, 2), "num"));
         tr.appendChild(cell(it.terminal_status || "pending", "mono"));
+        tr.appendChild(cell(lessonIndicator(lessonByAssessment[it.assessment_id], lessons.status), "mono"));
         tr.addEventListener("click", function () {
           historyState.assessment_id = it.assessment_id;
           showMeasuredBenefit(it.assessment_id, bbody);
@@ -190,7 +221,9 @@
         tb.appendChild(tr);
       });
       table.appendChild(tb);
-      hcard.appendChild(table);
+      const tableScroll = el("div", "table-scroll");
+      tableScroll.appendChild(table);
+      hcard.appendChild(tableScroll);
     }
     view.appendChild(hcard);
     view.appendChild(bcard);
@@ -354,7 +387,7 @@
     try {
       const ov = await getJSON(rp("/graph/overview?top_n=15"));
       if (!ov.available) {
-        overviewCard.appendChild(fallback(ov.fallback_reason));
+        overviewCard.appendChild(fallback(ov));
       } else if (!ov.files.length) {
         overviewCard.appendChild(emptyMsg("No fan-in in the current graph."));
       } else {
@@ -400,7 +433,7 @@
     try {
       const g = await getJSON(rp("/graph/hotspot?assessment_id=" + encodeURIComponent(graphState.assessment_id)));
       if (seq !== hotspotSeq) return;
-      if (!g.available) { hotCard.appendChild(fallback(g.fallback_reason)); clearCanvas(canvas); return; }
+      if (!g.available) { hotCard.appendChild(fallback(g)); clearCanvas(canvas); return; }
       if (!g.nodes.length) { hotCard.appendChild(el("p", "chart-note", g.fallback_reason || "No graph-resolved symbols for this assessment.")); clearCanvas(canvas); return; }
       drawGraph(canvas, g.nodes, g.edges);
       const msg = g.nodes.length + " node(s), " + g.edges.length + " edge(s)" + (g.truncated ? " (truncated)" : "");
@@ -411,7 +444,16 @@
     }
   }
 
-  function fallback(reason) { return el("p", "empty warn", "Graph unavailable — " + (reason || "no codegraph index")); }
+  function fallback(info) {
+    const reason = typeof info === "string" ? info : (info && info.fallback_reason);
+    const setup = typeof info === "object" && info ? info.setup_command : null;
+    const hint = typeof info === "object" && info ? info.setup_hint : null;
+    const wrap = el("div", "empty warn");
+    wrap.appendChild(el("p", null, "Graph unavailable — " + (reason || "no codegraph index")));
+    wrap.appendChild(el("p", null, "Graph setup: " + (hint || "Initialize or repair the local CodeGraph index, then refresh this tab.")));
+    wrap.appendChild(el("code", null, setup || "pebra setup-graph --fix --repo-root ."));
+    return wrap;
+  }
   function graphLegend() {
     const l = el("div", "graph-legend");
     l.appendChild(swatchLabel(ACCENT, "changed symbol"));
@@ -540,7 +582,13 @@
   // ---- small DOM helpers ----
   function headRow(cols) {
     const thead = el("thead"); const tr = el("tr");
-    cols.forEach((c) => tr.appendChild(el("th", null, c)));
+    cols.forEach((c) => {
+      if (typeof c === "string") {
+        tr.appendChild(el("th", null, c));
+      } else {
+        tr.appendChild(el("th", c.cls || null, c.label));
+      }
+    });
     thead.appendChild(tr); return thead;
   }
   function cell(text, cls) { return el("td", cls || null, text == null ? "—" : String(text)); }
@@ -558,7 +606,7 @@
   function rp(suffix) { return "/api/repos/" + encodeURIComponent(repo) + suffix; }
 
   // ---- router ----
-  const TABS = ["overview", "history", "calibration", "learning", "graph"];
+  const TABS = Array.from(document.querySelectorAll(".tab[data-tab]")).map((a) => a.dataset.tab);
   const RENDER = {
     overview: renderOverview, history: renderHistory, calibration: renderCalibration,
     learning: renderLearning, graph: renderGraph,

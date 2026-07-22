@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pebra.core import risk_fact_decay
-from pebra.core.constants import CONSEQUENCE_BEARING_EVENTS
+from pebra.core.constants import COLD_START_VARIANCES, CONSEQUENCE_BEARING_EVENTS
 from pebra.core.models import AssessmentInput
 from pebra.core.prediction_capture import (
     BENEFIT_BINARY,
@@ -371,6 +371,15 @@ def _bounded_learned_variance(prov: dict[str, Any] | None, component: str) -> fl
     return bounded.applied_variance
 
 
+def _combine_benefit_variance(current: float | None, learned: float | None) -> float | None:
+    """Conservatively combine benefit-side learned uncertainty without exceeding the cold-start cap."""
+    if learned is None:
+        return current
+    if current is None:
+        return learned
+    return min(COLD_START_VARIANCES["benefit"], current + learned)
+
+
 def apply_snapshot(
     inp: AssessmentInput,
     snapshot: SnapshotBundle | None = None,
@@ -437,12 +446,17 @@ def apply_snapshot(
         applied.append(prov)  # type: ignore[arg-type]
 
     new_immediate_benefit = inp.immediate_benefit
+    new_benefit_variance_override = inp.benefit_variance_override
     val, prov = _resolve_target(
         snapshot.facts, "immediate_benefit_realized", inp.immediate_benefit,
         inp, features, pool_config,
     )
     if val is not None:
         new_immediate_benefit = val
+        new_benefit_variance_override = _combine_benefit_variance(
+            new_benefit_variance_override,
+            _bounded_learned_variance(prov, "benefit"),
+        )
         applied.append(prov)  # type: ignore[arg-type]
 
     new_benefit_delta_evidence = inp.benefit_delta_evidence
@@ -470,6 +484,10 @@ def apply_snapshot(
             # Clear those rows instead of publishing a contradictory decomposition.
             file_deltas={},
         )
+        new_benefit_variance_override = _combine_benefit_variance(
+            new_benefit_variance_override,
+            _bounded_learned_variance(prov, "benefit"),
+        )
         applied.append(prov)  # type: ignore[arg-type]
 
     new_benefit_override = inp.benefit_override
@@ -479,6 +497,10 @@ def apply_snapshot(
     )
     if val is not None:
         new_benefit_override = val
+        new_benefit_variance_override = _combine_benefit_variance(
+            new_benefit_variance_override,
+            _bounded_learned_variance(prov, "benefit"),
+        )
         applied.append(prov)  # type: ignore[arg-type]
 
     new_review_cost = inp.review_cost
@@ -506,6 +528,7 @@ def apply_snapshot(
         immediate_benefit=new_immediate_benefit,
         benefit_delta_evidence=new_benefit_delta_evidence,
         benefit_override=new_benefit_override,
+        benefit_variance_override=new_benefit_variance_override,
         review_cost=new_review_cost,
         review_cost_variance=new_review_cost_variance,
         applied_snapshot_provenance={"snapshot_id": snapshot.snapshot_id, "applied_facts": applied},

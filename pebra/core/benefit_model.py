@@ -109,6 +109,7 @@ def resolve_benefit(
     deltas: dict[str, float],
     source_type: str,
     future_change_exposure: float = 0.0,
+    variance_override: float | None = None,
 ) -> BenefitBreakdown:
     """Compute ``benefit`` and ``Var(benefit)`` from the immediate benefit + maintainability deltas.
 
@@ -124,6 +125,16 @@ def resolve_benefit(
     else:
         credited = gain
         variance = MEASURED_BENEFIT_VARIANCE
+    if variance_override is not None:
+        if (
+            isinstance(variance_override, bool)
+            or not isinstance(variance_override, (int, float))
+            or not math.isfinite(variance_override)
+            or variance_override < 0.0
+        ):
+            variance = PROJECTED_BENEFIT_VARIANCE
+        else:
+            variance = min(PROJECTED_BENEFIT_VARIANCE, float(variance_override))
     benefit = _unit_benefit(bounded_immediate + credited)
     return BenefitBreakdown(
         immediate_benefit=bounded_immediate,

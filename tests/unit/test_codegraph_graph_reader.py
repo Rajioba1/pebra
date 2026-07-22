@@ -144,6 +144,7 @@ def test_hot_subgraph_failsoft_when_graph_stale(tmp_path) -> None:
     assert out["available"] is False
     assert out["graph_freshness"] == "stale"
     assert out["nodes"] == [] and out["edges"] == []
+    assert "pebra setup-graph --fix" in out["fallback_reason"]
 
 
 def test_hot_subgraph_failsoft_when_graph_absent(tmp_path) -> None:
@@ -151,6 +152,35 @@ def test_hot_subgraph_failsoft_when_graph_absent(tmp_path) -> None:
     out = gr.CodeGraphReader(status_fn=lambda r: None).hot_subgraph(["X"], str(tmp_path))
     assert out["available"] is False
     assert out["nodes"] == []
+    assert "pebra setup-graph --fix" in out["fallback_reason"]
+
+
+def test_file_overview_uninitialized_graph_has_setup_guidance(tmp_path) -> None:
+    out = gr.CodeGraphReader(
+        status_fn=lambda _r: {"initialized": False, "version": "1.1.1"}
+    ).file_overview(str(tmp_path))
+
+    assert out["available"] is False
+    assert "not initialized" in out["fallback_reason"]
+    assert "pebra setup-graph --fix" in out["fallback_reason"]
+
+
+def test_file_overview_out_of_range_graph_has_setup_guidance(tmp_path) -> None:
+    out = gr.CodeGraphReader(
+        status_fn=lambda _r: {"initialized": True, "version": "9.0.0"}
+    ).file_overview(str(tmp_path))
+
+    assert out["available"] is False
+    assert "outside accepted range" in out["fallback_reason"]
+    assert "pebra setup-graph --fix" in out["fallback_reason"]
+
+
+def test_file_overview_missing_db_has_setup_guidance(tmp_path) -> None:
+    out = gr.CodeGraphReader(status_fn=lambda _r: FRESH).file_overview(str(tmp_path))
+
+    assert out["available"] is False
+    assert "DB not found" in out["fallback_reason"]
+    assert "pebra setup-graph --fix" in out["fallback_reason"]
 
 
 def test_hot_subgraph_failsoft_on_corrupt_db(tmp_path) -> None:

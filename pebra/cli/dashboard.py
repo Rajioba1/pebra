@@ -49,6 +49,11 @@ def register(subparsers: Any) -> None:
         "--token", action="store_true", help="Force a bearer token even on loopback (alias for --auth token)."
     )
     p.add_argument("--open", action="store_true", help="Open the dashboard URL in a browser.")
+    p.add_argument(
+        "--dev",
+        action="store_true",
+        help="Show developer diagnostics such as calibration.",
+    )
     p.set_defaults(func=run)
 
 
@@ -84,5 +89,6 @@ def run(args: Any) -> int:
         read_only=ctx.read_only,
         open_browser=args.open,
         graph_reader=graph_reader,
+        dev_mode=args.dev,
     )
     return 0

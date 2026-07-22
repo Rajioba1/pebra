@@ -136,3 +136,15 @@ def test_projected_mode_uses_spec_variance_floor() -> None:
         future_change_exposure=0.0,
     )
     assert projected.benefit_variance == pytest.approx(0.04)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), -0.1, True])
+def test_invalid_benefit_variance_override_falls_back_to_projected_variance(bad) -> None:
+    result = bm.resolve_benefit(
+        immediate_benefit=0.82,
+        deltas={},
+        source_type="measured",
+        variance_override=bad,
+    )
+
+    assert result.benefit_variance == pytest.approx(bm.PROJECTED_BENEFIT_VARIANCE)
