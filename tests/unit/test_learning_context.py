@@ -14,7 +14,11 @@ def _content() -> dict:
         "decision": "proceed",
         "assessed_commit": "abc123",
         "scores": {"expected_loss": 0.1, "benefit": 0.82, "expected_utility": 0.5, "utility_sd": 0.2, "rau": 0.31},
-        "gates_fired": ["gate-1"],
+        "gates_fired": [
+            {"name": "evidence_validity", "reason": "never recall this prose"},
+            {"name": "policy_boundary"},
+            {"name": "bad-gate"},
+        ],
         "request": {
             "task": "Fix [bold] login",
             "action_id": "a1",
@@ -44,7 +48,11 @@ def test_builder_is_deterministic_and_treats_task_as_data() -> None:
     assert first.target_files == ("src/auth.py",)
     assert first.symbols == ("auth.login", "auth.validate")
     assert first.measured_benefit == 0.42
-    assert first.verification_summary == "PEBRA verify proceeded"
+    assert first.gates_fired == ("evidence_validity", "policy_boundary")
+    assert first.verification_summary == (
+        "PEBRA verify proceeded; gates: evidence_validity, policy_boundary"
+    )
+    assert "never recall this prose" not in first.lesson
 
 
 def test_builder_refuses_non_proceed_or_non_completed() -> None:
@@ -118,3 +126,23 @@ def test_literal_fts_query_never_preserves_operators() -> None:
     )
     assert literal_fts_query("[]()---") == ""
     assert literal_fts_query(None) == ""
+
+
+def test_gate_identifiers_have_explicit_grammar_and_count_bound() -> None:
+    content = _content()
+    content["gates_fired"] = [
+        {"name": f"gate_{index:02}", "reason": "ignored"} for index in range(20)
+    ] + [
+        {"name": "GateUpper"}, {"name": "bad-hyphen"}, {"name": "x" * 65},
+        "legacy_gate",
+    ]
+    entry = build_learning_context_entry(
+        learning_context_id="lc_1", assessment_id="asm_1", content=content,
+        assessment_hash="a" * 64, outcome_hash="b" * 64,
+        outcome={"terminal_status": "completed"},
+        guardrails={"pre_commit_decision": "proceed"},
+        created_at="2026-01-01T00:00:00+00:00", previous_hash="GENESIS",
+    )
+    assert entry is not None
+    assert entry.gates_fired == tuple(f"gate_{index:02}" for index in range(16))
+    assert all("ignored" not in value for value in entry.gates_fired)

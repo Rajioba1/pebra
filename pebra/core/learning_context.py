@@ -17,10 +17,13 @@ from pebra.core.assessment_history import project_assessment_identity
 
 
 SYMBOL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
+GATE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-HASH_VERSION = 1
+HASH_VERSION = 2
 MAX_TARGET_FILES = 16
 MAX_SYMBOLS = 16
+MAX_GATES = 16
+RECALL_CANDIDATE_WINDOW = 64
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ class LearningContextEntry:
     assessed_commit: str | None
     candidate_fingerprint: str | None
     decision: str
+    gates_fired: tuple[str, ...]
     expected_loss: float | None
     benefit: float | None
     expected_utility: float | None
@@ -64,6 +68,10 @@ def is_valid_symbol(value: object) -> bool:
     return isinstance(value, str) and SYMBOL_PATTERN.fullmatch(value) is not None
 
 
+def is_valid_gate_identifier(value: object) -> bool:
+    return isinstance(value, str) and GATE_PATTERN.fullmatch(value) is not None
+
+
 def literal_fts_query(value: object) -> str:
     """Return literal lexical terms, never FTS syntax supplied by a caller."""
     if not isinstance(value, str):
@@ -72,7 +80,9 @@ def literal_fts_query(value: object) -> str:
     return " ".join(f'"{term}"' for term in terms[:32])
 
 
-def canonical_entry_content(entry: LearningContextEntry, previous_hash: str) -> str:
+def canonical_entry_content(
+    entry: LearningContextEntry, previous_hash: str, *, hash_version: int = HASH_VERSION
+) -> str:
     content = {
         "learning_context_id": entry.learning_context_id,
         "repo_id": entry.repo_id,
@@ -96,13 +106,17 @@ def canonical_entry_content(entry: LearningContextEntry, previous_hash: str) -> 
         "source_assessment_hash": entry.source_assessment_hash,
         "source_outcome_hash": entry.source_outcome_hash,
         "created_at": entry.created_at,
-        "hash_version": HASH_VERSION,
+        "hash_version": hash_version,
     }
+    if hash_version >= 2:
+        content["gates_fired"] = entry.gates_fired
     return json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def entry_hash(entry: LearningContextEntry, previous_hash: str) -> str:
-    return hashlib.sha256((previous_hash + canonical_entry_content(entry, previous_hash)).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        (previous_hash + canonical_entry_content(entry, previous_hash)).encode("utf-8")
+    ).hexdigest()
 
 
 def _finite(value: object) -> float | None:
@@ -115,9 +129,21 @@ def _finite(value: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _summary(_guardrails: Mapping[str, Any]) -> str:
+def _gate_identifiers(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    identifiers: set[str] = set()
+    for item in value:
+        candidate = item.get("name") if isinstance(item, Mapping) else item
+        if is_valid_gate_identifier(candidate):
+            identifiers.add(candidate)
+    return tuple(sorted(identifiers)[:MAX_GATES])
+
+
+def _summary(gates_fired: tuple[str, ...]) -> str:
     # Never echo free-form persisted/caller-adjacent prose into recalled instructions.
-    return "PEBRA verify proceeded"
+    suffix = f"; gates: {', '.join(gates_fired)}" if gates_fired else ""
+    return f"PEBRA verify proceeded{suffix}"
 
 
 def build_learning_context_entry(
@@ -183,7 +209,12 @@ def build_learning_context_entry(
     })[:MAX_SYMBOLS]
     measured_benefit = _finite(guardrails.get("measured_benefit"))
     decision = content.get("decision") if isinstance(content.get("decision"), str) else ""
-    lesson = f"Verified completed outcome for {task}; PEBRA decision was {decision or 'unknown'}."
+    gates_fired = _gate_identifiers(content.get("gates_fired"))
+    gate_clause = f" Stable gates: {', '.join(gates_fired)}." if gates_fired else ""
+    lesson = (
+        f"Verified completed outcome for {task}; PEBRA decision was {decision or 'unknown'}."
+        f"{gate_clause}"
+    )
     provisional = LearningContextEntry(
         learning_context_id=learning_context_id, repo_id=repo_id, assessment_id=assessment_id,
         task=task, action_id=action_id,
@@ -191,9 +222,11 @@ def build_learning_context_entry(
         symbols=tuple(symbols),
         assessed_commit=content.get("assessed_commit") if isinstance(content.get("assessed_commit"), str) else None,
         candidate_fingerprint=identity.candidate_fingerprint, decision=decision,
+        gates_fired=gates_fired,
         expected_loss=_finite(scores.get("expected_loss")), benefit=_finite(scores.get("benefit")),
         expected_utility=_finite(scores.get("expected_utility")), utility_sd=_finite(scores.get("utility_sd")),
-        rau=_finite(scores.get("rau")), terminal_status="completed", verification_summary=_summary(guardrails),
+        rau=_finite(scores.get("rau")), terminal_status="completed",
+        verification_summary=_summary(gates_fired),
         measured_benefit=measured_benefit, lesson=lesson, source_assessment_hash=assessment_hash,
         source_outcome_hash=outcome_hash, created_at=created_at, row_hash="",
     )

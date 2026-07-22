@@ -8,6 +8,7 @@ status, else pending.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from pebra.core import outcome_labels
@@ -50,7 +51,7 @@ def record_outcome(
     outcome_labels.validate_labels(persisted_detail)
     if status == ActionStatus.COMPLETED.value:
         latest = outcome_port.latest_guardrails(assessment_id)
-        if latest is None:
+        if not isinstance(latest, Mapping):
             raise ValueError(
                 "completed outcome requires a latest passing pebra verify result"
             )

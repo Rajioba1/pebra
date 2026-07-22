@@ -25,10 +25,13 @@ from pebra.core.assessment_history import project_assessment_identity
 from pebra.core.constants import MIN_CALIBRATION_SAMPLES
 from pebra.core.learning_context import (
     HASH_VERSION as LEARNING_CONTEXT_HASH_VERSION,
+    MAX_GATES,
+    RECALL_CANDIDATE_WINDOW,
     LearningContextEntry,
     LearningContextRecall,
     build_learning_context_entry,
     canonical_entry_content,
+    is_valid_gate_identifier,
     literal_fts_query,
 )
 from pebra.core.models import AssessmentResult
@@ -587,6 +590,7 @@ class SqliteStore:
                 assessed_commit TEXT,
                 candidate_fingerprint TEXT,
                 decision TEXT NOT NULL,
+                gates_fired TEXT NOT NULL DEFAULT '[]',
                 expected_loss REAL,
                 benefit REAL,
                 expected_utility REAL,
@@ -622,6 +626,7 @@ class SqliteStore:
         )
 
     def _migrate_schema(self) -> None:
+        self._ensure_column("learning_context", "gates_fired", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("model_guidance_packets", "guidance_packet_id", "TEXT")
         self._ensure_column("outcomes", "guidance_packet_id", "TEXT")
         # Migration defaults backfill pre-existing rows as v1 legacy chain rows. Every new insert
@@ -1693,7 +1698,7 @@ class SqliteStore:
 
     _LEARNING_ENTRY_COLUMNS = (
         "learning_context_id, repo_id, assessment_id, task, action_id, target_files, symbols, "
-        "assessed_commit, candidate_fingerprint, decision, expected_loss, benefit, "
+        "assessed_commit, candidate_fingerprint, decision, gates_fired, expected_loss, benefit, "
         "expected_utility, utility_sd, rau, terminal_status, verification_summary, "
         "measured_benefit, lesson, source_assessment_hash, source_outcome_hash, created_at, row_hash"
     )
@@ -1703,20 +1708,33 @@ class SqliteStore:
         values = list(row)
         target_files = json.loads(values[5])
         symbols = json.loads(values[6])
+        gates_fired = json.loads(values[10])
         if (
             not isinstance(target_files, list)
             or not all(isinstance(value, str) for value in target_files)
             or not isinstance(symbols, list)
             or not all(isinstance(value, str) for value in symbols)
+            or not isinstance(gates_fired, list)
+            or len(gates_fired) > MAX_GATES
+            or not all(is_valid_gate_identifier(value) for value in gates_fired)
         ):
             raise ValueError("malformed learning-context list field")
         values[5] = tuple(target_files)
         values[6] = tuple(symbols)
+        values[10] = tuple(gates_fired)
         return LearningContextEntry(*values)
+
+    @classmethod
+    def _learning_assessment_row_id(cls, assessment_id: str) -> int:
+        row_id = cls._row_id(assessment_id)
+        if row_id <= 0 or assessment_id != f"asm_{row_id}":
+            raise KeyError(f"invalid assessment id format: {assessment_id!r}")
+        return row_id
 
     def learning_context_for_assessment(
         self, assessment_id: str
     ) -> LearningContextEntry | None:
+        self._learning_assessment_row_id(assessment_id)
         row = self._con.execute(
             f"SELECT {self._LEARNING_ENTRY_COLUMNS} FROM learning_context "
             "WHERE assessment_id = ?",
@@ -1732,7 +1750,7 @@ class SqliteStore:
         The guardrail is re-read inside the write transaction. Merely having a raw
         ``completed`` outcome in the store never invokes this method.
         """
-        row_id = self._row_id(assessment_id)
+        row_id = self._learning_assessment_row_id(assessment_id)
         try:
             self._con.execute("BEGIN IMMEDIATE")
             if not (
@@ -1758,15 +1776,16 @@ class SqliteStore:
             if existing is not None:
                 self._con.commit()
                 return self._learning_entry(existing)
-            source = self._con.execute(
+            sources = self._con.execute(
                 "SELECT a.content_json, a.row_hash, o.terminal_status, o.detail_json, "
                 "o.recorded_at, o.row_hash FROM assessments a "
                 "JOIN outcomes o ON o.assessment_id = a.id WHERE a.id = ?",
                 (row_id,),
-            ).fetchone()
-            if source is None:
+            ).fetchall()
+            if len(sources) != 1:
                 self._con.commit()
                 return None
+            source = sources[0]
             content_json, assessment_hash, status, detail_json, created_at, outcome_hash = source
             next_id = self._con.execute(
                 "SELECT COALESCE(MAX(id), 0) + 1 FROM learning_context"
@@ -1795,15 +1814,18 @@ class SqliteStore:
             self._con.execute(
                 "INSERT INTO learning_context ("
                 "learning_context_id, repo_id, assessment_id, task, action_id, target_files, "
-                "symbols, assessed_commit, candidate_fingerprint, decision, expected_loss, benefit, "
+                "symbols, assessed_commit, candidate_fingerprint, decision, gates_fired, "
+                "expected_loss, benefit, "
                 "expected_utility, utility_sd, rau, terminal_status, verification_summary, "
                 "measured_benefit, lesson, source_assessment_hash, source_outcome_hash, created_at, "
                 "previous_hash, hash_version, row_hash) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     entry.learning_context_id, entry.repo_id, entry.assessment_id, entry.task,
                     entry.action_id, target_files, symbols, entry.assessed_commit,
-                    entry.candidate_fingerprint, entry.decision, entry.expected_loss, entry.benefit,
+                    entry.candidate_fingerprint, entry.decision,
+                    json.dumps(entry.gates_fired, separators=(",", ":")),
+                    entry.expected_loss, entry.benefit,
                     entry.expected_utility, entry.utility_sd, entry.rau, entry.terminal_status,
                     entry.verification_summary, entry.measured_benefit, entry.lesson,
                     entry.source_assessment_hash, entry.source_outcome_hash, entry.created_at,
@@ -1829,6 +1851,11 @@ class SqliteStore:
     def recall_learning_context(
         self, repo_id: str, query: str, *, byte_limit: int = 4096
     ) -> LearningContextRecall:
+        if type(byte_limit) is not int or byte_limit < 0:
+            return LearningContextRecall(
+                "unavailable", (), (), (), ("invalid learning-context byte limit",), False
+            )
+        byte_limit = min(byte_limit, 32768)
         try:
             if not (
                 self._validate_assessment_chain()
@@ -1847,30 +1874,36 @@ class SqliteStore:
                 "FROM learning_context_fts fts JOIN learning_context lc ON lc.id = fts.rowid "
                 "WHERE learning_context_fts MATCH ? AND lc.repo_id = ? "
                 "ORDER BY bm25(learning_context_fts) ASC, lc.created_at DESC, "
-                "lc.learning_context_id DESC",
-                (match, repo_id),
+                "lc.learning_context_id DESC LIMIT ?",
+                (match, repo_id, RECALL_CANDIDATE_WINDOW + 1),
             ).fetchall()
         except (sqlite3.DatabaseError, TypeError, ValueError):
             return LearningContextRecall(
                 "unavailable", (), (), (), ("learning-context search unavailable",), False
             )
-        byte_limit = max(0, min(int(byte_limit), 32768))
+        has_more_candidates = len(rows) > RECALL_CANDIDATE_WINDOW
+        candidates = rows[:RECALL_CANDIDATE_WINDOW]
         entries: list[LearningContextEntry] = []
         used = 0
-        for row in rows:
+        inspected = 0
+        for row in candidates:
+            inspected += 1
             entry = self._learning_entry(row)
             size = len(
                 json.dumps(entry.__dict__, sort_keys=True, ensure_ascii=False).encode("utf-8")
             )
-            if len(entries) == 5 or used + size > byte_limit:
+            if used + size > byte_limit:
                 continue
             entries.append(entry)
             used += size
+            if len(entries) == 5:
+                break
         files = tuple(dict.fromkeys(path for entry in entries for path in entry.target_files))
         symbols = tuple(dict.fromkeys(symbol for entry in entries for symbol in entry.symbols))
         return LearningContextRecall(
             "available" if entries else "empty",
-            tuple(entries), files[:16], symbols[:16], (), len(entries) < len(rows),
+            tuple(entries), files[:16], symbols[:16], (),
+            has_more_candidates or inspected < len(candidates) or len(entries) < inspected,
         )
 
     def assessment_prior_facets(
@@ -2036,19 +2069,24 @@ class SqliteStore:
         )
         for row in rows:
             try:
-                entry = self._learning_entry(row[:23])
+                entry = self._learning_entry(row[:24])
             except (TypeError, ValueError):
                 return False
-            stored_prev, hash_version = row[23:]
-            if stored_prev != prev_hash or hash_version != LEARNING_CONTEXT_HASH_VERSION:
+            stored_prev, hash_version = row[24:]
+            if stored_prev != prev_hash or hash_version not in (1, LEARNING_CONTEXT_HASH_VERSION):
                 return False
             expected = hashlib.sha256(
-                (prev_hash + canonical_entry_content(entry, prev_hash)).encode("utf-8")
+                (
+                    prev_hash
+                    + canonical_entry_content(
+                        entry, prev_hash, hash_version=hash_version
+                    )
+                ).encode("utf-8")
             ).hexdigest()
             if expected != entry.row_hash:
                 return False
             try:
-                assessment_row_id = self._row_id(entry.assessment_id)
+                assessment_row_id = self._learning_assessment_row_id(entry.assessment_id)
             except KeyError:
                 return False
             source = self._con.execute(

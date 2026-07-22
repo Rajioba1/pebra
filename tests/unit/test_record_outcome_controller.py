@@ -69,6 +69,14 @@ def test_completed_requires_latest_passing_verify() -> None:
         roc.record_outcome("asm_1", "completed", outcome_port=fake)
     assert fake.calls == []
 
+
+@pytest.mark.parametrize("malformed", [[], "proceed", True, 1])
+def test_completed_refuses_malformed_latest_guardrail_cleanly(malformed) -> None:
+    fake = _FakeOutcome(malformed)
+    with pytest.raises(ValueError, match="latest passing"):
+        roc.record_outcome("asm_1", "completed", outcome_port=fake)
+    assert fake.calls == []
+
     fake = _FakeOutcome({"pre_commit_decision": "test_first"})
     with pytest.raises(ValueError, match="pre_commit_decision='proceed'"):
         roc.record_outcome("asm_1", "completed", outcome_port=fake)
