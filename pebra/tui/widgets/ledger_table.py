@@ -63,7 +63,7 @@ _OVERFLOW_LEFT = "«"    # RAU below the -1.0 window (marker clamps; the number 
 _OVERFLOW_RIGHT = "»"   # RAU above the +1.0 window
 
 # Textual 8 cannot measure native Content cells for DataTable auto-width (it reports one cell), so
-# these two semantic columns must be explicit or the lane and full verdict labels are clipped.
+# Content-backed semantic columns need explicit widths or their full values may be clipped.
 LEDGER_COLUMN_WIDTHS = {
     "target": 18,
     "task": 28,
