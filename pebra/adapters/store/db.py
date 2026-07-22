@@ -1657,20 +1657,26 @@ class SqliteStore:
                 row_id = int(assessment_id[4:])
             except ValueError:
                 continue
-            if row_id > 0:
+            if row_id > 0 and assessment_id == f"asm_{row_id}":
                 ids.append((assessment_id, row_id))
         if not ids:
             return {}
 
         placeholders = ", ".join("?" for _ in ids)
         rows = self._con.execute(
-            "SELECT a.id, ap.target_name, ap.provenance_json "
+            "SELECT a.id, a.content_json, ap.target_name, ap.provenance_json "
             "FROM assessments a LEFT JOIN assessment_predictions ap ON ap.assessment_id = a.id "
             f"WHERE a.repo_id = ? AND a.id IN ({placeholders}) ORDER BY a.id ASC, ap.id ASC",
             (repo_id, *(row_id for _, row_id in ids)),
         ).fetchall()
         manifests: dict[int, list[dict[str, Any]] | None] = {}
-        for row_id, target_name, provenance_json in rows:
+        for row_id, content_json, target_name, provenance_json in rows:
+            try:
+                content = json.loads(content_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(content, dict) or content.get("repo_id") != repo_id:
+                continue
             manifest = manifests.setdefault(int(row_id), [])
             if target_name is None:
                 continue

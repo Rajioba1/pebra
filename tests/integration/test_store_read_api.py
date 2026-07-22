@@ -900,3 +900,59 @@ def test_assessment_prior_facets_make_malformed_provenance_unavailable_not_cold(
             "applied_target_count": 0,
         }
     }
+
+
+def test_assessment_prior_facets_reject_noncanonical_assessment_ids_without_query(tmp_path) -> None:
+    store = _store(tmp_path)
+    assessment_id = _persist(store)
+    assert assessment_id == "asm_1"
+    statements: list[str] = []
+    store._con.set_trace_callback(statements.append)  # type: ignore[attr-defined]
+
+    assert store.assessment_prior_facets(
+        "r", ["asm_01", "asm_+1", "asm_0", "asm_-1", "asm_ 1", "1"]
+    ) == {}
+    assert statements == []
+
+
+def test_assessment_prior_facets_requires_hash_covered_repo_scope(tmp_path) -> None:
+    store = _store(tmp_path)
+    foreign = _persist(
+        store,
+        repo_id="other",
+        predictions=[
+            {
+                "target_type": "risk_binary", "target_name": "p_success", "predicted_value": 0.7,
+                "provenance": {"applied_snapshot": {"snapshot_id": "rs_foreign"}},
+            }
+        ],
+    )
+    # Simulate a corrupt/tampered duplicate scope column. The hash-covered content still says
+    # ``other``, so the requested repo must not learn that this assessment or provenance exists.
+    store._con.execute(  # type: ignore[attr-defined]
+        "UPDATE assessments SET repo_id = ? WHERE id = ?", ("r", 1)
+    )
+    store._con.commit()  # type: ignore[attr-defined]
+
+    assert store.assessment_prior_facets("r", [foreign]) == {}
+
+
+def test_assessment_prior_facets_malformed_hash_covered_content_does_not_leak_existence(
+    tmp_path,
+) -> None:
+    store = _store(tmp_path)
+    assessment_id = _persist(
+        store,
+        predictions=[
+            {
+                "target_type": "risk_binary", "target_name": "p_success", "predicted_value": 0.7,
+                "provenance": {"applied_snapshot": {"snapshot_id": "rs_7"}},
+            }
+        ],
+    )
+    store._con.execute(  # type: ignore[attr-defined]
+        "UPDATE assessments SET content_json = ? WHERE id = ?", ("{not-json", 1)
+    )
+    store._con.commit()  # type: ignore[attr-defined]
+
+    assert store.assessment_prior_facets("r", [assessment_id]) == {}
