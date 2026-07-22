@@ -112,6 +112,25 @@ def format_rau(rau: float | None) -> str:
     return f"{rau:+.2f}"
 
 
+def _format_points(value: float) -> str:
+    """Keep score units compact without changing their stored precision."""
+    return f"{value * 100:.12g}"
+
+
+def format_loss_points(value: object) -> str:
+    """Render finite expected loss as unbounded points; never clamp it to a percentage."""
+    number = _num(value)
+    return f"{_format_points(number)} pts" if number is not None and math.isfinite(number) else "—"
+
+
+def format_benefit_score(value: object) -> str:
+    """Render a finite normalized benefit as a score out of 100."""
+    number = _num(value)
+    if number is None or not math.isfinite(number) or not 0.0 <= number <= 1.0:
+        return "—"
+    return f"{_format_points(number)}/100"
+
+
 def format_target(paths: Sequence[str]) -> str:
     """Compact a normalized target list without inventing missing history."""
     if not paths:
@@ -135,11 +154,6 @@ def format_task(value: str | None, *, width: int = 28) -> str:
 
 def _num(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-
-def _fmt_score(value: Any) -> str:
-    number = _num(value)
-    return f"{number:.2f}" if number is not None and math.isfinite(number) else "—"
 
 
 def short_commit(commit: Any) -> str:
@@ -177,8 +191,8 @@ def ledger_row(
         "gate_lane": Content(render_rau_lane(rau, width=LEDGER_LANE_WIDTH)),
         "decision": decision_cell(str(assessment.get("decision", "")), dark=dark),
         "rau": format_rau(rau),
-        "expected_loss": _fmt_score(scores.get("expected_loss")),
-        "benefit": _fmt_score(scores.get("benefit")),
+        "expected_loss": format_loss_points(scores.get("expected_loss")),
+        "benefit": format_benefit_score(scores.get("benefit")),
         "status": Content(str(assessment.get("terminal_status") or "pending")),
         # M3/M4 reserve these slots before their read-model projections land. Content makes the
         # eventual persisted strings literal rather than Rich markup.

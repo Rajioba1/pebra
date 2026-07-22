@@ -143,17 +143,14 @@ def test_sections_split_scores_from_evidence_and_carry_guidance() -> None:
     assert sections["Guardrails"] == [{"decision": "proceed"}]
 
 
-def test_detail_scores_currently_carry_exact_decimals_without_unit_annotations() -> None:
-    """Milestone 0 characterization: detail currently exposes raw score decimals with no human-unit
-    annotation. Locks the 'before' state ahead of Milestone 2 adding 'X pts' / 'N/100'."""
+def test_detail_scores_keep_exact_decimals_with_human_unit_annotations() -> None:
     detail = _detail()
     detail["content"]["scores"] = {"rau": -0.14, "expected_loss": 0.1, "benefit": 0.82}
     scores = dict(detail_sections(detail))["Scores"]
-    assert scores["expected_loss"] == 0.1 and scores["benefit"] == 0.82  # exact decimals preserved
-    assert "pts" not in repr(scores) and "/100" not in repr(scores)  # no annotation yet
+    assert scores["expected_loss"] == "0.100 (10 pts)"
+    assert scores["benefit"] == "0.820 (82/100)"
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 2: detail unit annotations (pts, /100) not implemented yet")
 def test_detail_annotates_loss_points_and_benefit_score_beside_exact_decimals() -> None:
     """Milestone 0 forward spec for Milestone 2: detail keeps the exact decimals AND shows the human
     units — expected loss 0.100 (10 pts), benefit 0.820 (82/100). Exact decimals must remain."""
@@ -161,7 +158,26 @@ def test_detail_annotates_loss_points_and_benefit_score_beside_exact_decimals() 
     detail["content"]["scores"] = {"rau": -0.14, "expected_loss": 0.1, "benefit": 0.82}
     rendered = repr(dict(detail_sections(detail)))
     assert "10 pts" in rendered and "82/100" in rendered
-    assert "0.1" in rendered and "0.82" in rendered  # exact decimals still present
+    assert "0.100" in rendered and "0.820" in rendered  # exact decimals still present
+
+
+def test_detail_exposes_persisted_expected_utility_and_uncertainty() -> None:
+    detail = _detail()
+    detail["content"]["scores"] = {
+        "expected_utility": 0.3868,
+        "utility_sd": 0.06,
+    }
+    scores = dict(detail_sections(detail))["Scores"]
+    assert scores["expected_utility"] == "0.387"
+    assert scores["utility_sd"] == "0.060"
+
+
+def test_detail_marks_invalid_display_scores_unavailable() -> None:
+    detail = _detail()
+    detail["content"]["scores"] = {"expected_loss": None, "benefit": 1.01}
+    scores = dict(detail_sections(detail))["Scores"]
+    assert scores["expected_loss"] == "—"
+    assert scores["benefit"] == "—"
 
 
 def test_detail_lists_declared_and_bound_files_separately() -> None:

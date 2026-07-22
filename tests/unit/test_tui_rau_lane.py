@@ -142,18 +142,14 @@ def test_status_column_fits_every_terminal_status_without_clipping() -> None:
         assert cell.plain == status
 
 
-# --- Milestone 0 characterization lock: forward-looking score-unit formatters ---------------
-# `format_loss_points` / `format_benefit_score` are introduced in Milestone 2. These xfail(strict)
-# cases are the executable spec for that milestone: when M2 lands them, the tests XPASS and strict
-# xfail fails, forcing removal of the marker. Imports live inside each test so the not-yet-existing
-# symbol raises at call time (an expected failure), never a collection error for this whole file.
+# --- Milestone 2 score-unit contract ----------------------------------------------------------
+# The ledger renders expected loss as unbounded points and normalized benefit as a score out of 100.
 
 import math  # noqa: E402
 
 import pytest  # noqa: E402
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 2: format_loss_points not implemented yet")
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -169,7 +165,6 @@ def test_loss_points_render_unbounded_and_never_clamped(value: float, expected: 
     assert format_loss_points(value) == expected
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 2: format_loss_points not implemented yet")
 @pytest.mark.parametrize("value", [None, True, float("nan"), float("inf"), float("-inf")])
 def test_loss_points_reject_missing_boolean_and_nonfinite(value: object) -> None:
     from pebra.tui.widgets.ledger_table import format_loss_points
@@ -177,7 +172,6 @@ def test_loss_points_reject_missing_boolean_and_nonfinite(value: object) -> None
     assert format_loss_points(value) == "—"
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 2: format_benefit_score not implemented yet")
 @pytest.mark.parametrize(
     ("value", "expected"),
     [(0.0, "0/100"), (0.1, "10/100"), (0.82, "82/100"), (1.0, "100/100")],
@@ -188,12 +182,23 @@ def test_benefit_score_renders_as_n_over_100(value: float, expected: str) -> Non
     assert format_benefit_score(value) == expected
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 2: format_benefit_score not implemented yet")
-@pytest.mark.parametrize("value", [None, True, float("nan"), float("inf")])
+@pytest.mark.parametrize("value", [None, True, -0.01, 1.01, float("nan"), float("inf")])
 def test_benefit_score_rejects_missing_boolean_and_nonfinite(value: object) -> None:
     from pebra.tui.widgets.ledger_table import format_benefit_score
 
     assert format_benefit_score(value) == "—"
+
+
+def test_ledger_row_uses_honest_loss_and_benefit_units() -> None:
+    cells = ledger_row(
+        {
+            "assessment_id": "asm_1",
+            "scores": {"expected_loss": 1.45, "benefit": 0.82},
+        }
+    )
+    by_column = dict(zip(LEDGER_COLUMNS, cells, strict=True))
+    assert by_column["expected_loss"] == "145 pts"
+    assert by_column["benefit"] == "82/100"
 
 
 def test_expected_loss_is_genuinely_unbounded_in_scoring_math() -> None:

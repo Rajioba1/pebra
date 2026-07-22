@@ -615,6 +615,23 @@ target, decision, RAU, loss, benefit, status, prior, lesson, task, assessed comm
 assessed time. At a narrow width, use the horizontal bindings above rather than expecting columns to be
 removed.
 
+### Observatory score glossary
+
+`pebra assess` constructs the score in this order: it sums post-floor event losses, resolves normalized
+benefit, calculates expected utility and its uncertainty, then calculates RAU. The decision engine
+evaluates its gates from those returned values; the TUI never recalculates them.
+
+| Field | Calculation | Observatory display |
+| --- | --- | --- |
+| Expected loss | `Σ(probability_of_event × post-floor disutility)` | **loss points**: stored decimal × 100, e.g. `0.100` → `10 pts`, `1.450` → `145 pts`. This is not a percentage and is never clamped. |
+| Benefit | normalized modeled benefit in `[0, 1]` | **score out of 100**, e.g. `0.820` → `82/100`. Invalid values display as unavailable. |
+| Expected utility | `probability_of_success × benefit − expected_loss − review_cost` | Exact decimal in assessment detail/API. |
+| Utility uncertainty | `√(Σ variance-contribution terms)` | Exact decimal in assessment detail/API. |
+| RAU | `expected_utility − 1.28 × utility_sd` | Signed decimal and the gate lane. |
+
+The ledger is a compact display. The assessment detail and JSON/API preserve the stored score decimals;
+the detail adds the readable loss/benefit unit beside those exact values.
+
 PEBRA command-palette commands:
 
 ```text

@@ -8,6 +8,7 @@ evidence is unavailable rather than reconstructing it from scores.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from textual.app import ComposeResult
@@ -20,7 +21,11 @@ from pebra.core.assessment_history import project_assessment_identity
 from pebra.core.human_review import controlling_gate, reject_override_eligible
 from pebra.core.exploration import ExplorationResult
 from pebra.tui.exploration import RepositoryExplorationCoordinator
-from pebra.tui.widgets.ledger_table import short_commit
+from pebra.tui.widgets.ledger_table import (
+    format_benefit_score,
+    format_loss_points,
+    short_commit,
+)
 
 # Legacy rows may predate persisted gate evidence. History must say so and never re-derive gate state.
 GATES_UNAVAILABLE_NOTE = (
@@ -35,6 +40,34 @@ _PROVENANCE_LABELS = {
     "legacy_graph": "legacy graph inference",
     "unavailable": "unavailable",
 }
+
+
+def _exact_score_decimal(value: object) -> str:
+    """Render persisted finite score decimals without changing their stored/API values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    value = float(value)
+    if not math.isfinite(value):
+        return "—"
+    return f"{value:.3f}"
+
+
+def _detail_scores(scores: dict[str, Any]) -> dict[str, Any]:
+    """Add human units beside the exact persisted decimals in the detail-only projection."""
+    displayed = dict(scores)
+    if "expected_loss" in scores:
+        exact = _exact_score_decimal(scores["expected_loss"])
+        units = format_loss_points(scores["expected_loss"])
+        displayed["expected_loss"] = f"{exact} ({units})" if exact != "—" and units != "—" else "—"
+    if "benefit" in scores:
+        exact = _exact_score_decimal(scores["benefit"])
+        units = format_benefit_score(scores["benefit"])
+        displayed["benefit"] = f"{exact} ({units})" if exact != "—" and units != "—" else "—"
+    if "expected_utility" in scores:
+        displayed["expected_utility"] = _exact_score_decimal(scores["expected_utility"])
+    if "utility_sd" in scores:
+        displayed["utility_sd"] = _exact_score_decimal(scores["utility_sd"])
+    return displayed
 
 
 def header_line(detail: dict[str, Any]) -> str:
@@ -56,7 +89,7 @@ def detail_sections(
     content = detail.get("content") or {}
     scores = content.get("scores") or {}
     evidence = {key: scores[key] for key in _EVIDENCE_KEYS if key in scores}
-    plain_scores = {key: value for key, value in scores.items() if key not in evidence}
+    plain_scores = _detail_scores({key: value for key, value in scores.items() if key not in evidence})
     identity = project_assessment_identity(content)
     identity_payload = {
         "Task": identity.task or "—",
