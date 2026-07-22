@@ -134,8 +134,11 @@ def test_installed_host_protocol_stages_only_apply_result_before_verify(
         (tmp_path / _HOST_SKILLS[target]).read_text(encoding="utf-8").split()
     )
     assert "For both apply paths, stage exactly the returned `changed_files`" in normalized
-    assert "separate, safely quoted argument after the literal `--` path delimiter" in normalized
+    assert "`git --literal-pathspecs add -- <changed_file>...`" in normalized
+    assert "The `--` delimiter alone ends options" in normalized
+    assert "does not make wildcard pathspecs literal" in normalized
     assert "never concatenate or evaluate path text as shell code" in normalized
+    assert "use no other staging method" in normalized
     assert (
         "Do not run `pebra verify --scope staged` unless the staged path set exactly equals "
         "`changed_files`"

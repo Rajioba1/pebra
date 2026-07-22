@@ -113,9 +113,10 @@ Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Ver
    `pebra apply-candidate` or apply it again. After `pebra accept-risk --apply`, use its returned
    `reassessment_id` for Verify and Record; never use the original held assessment ID.
    For both apply paths, stage exactly the returned `changed_files` and no other paths before Verify.
-   Pass every path as a separate, safely quoted argument after the literal `--` path delimiter; never
-   concatenate or evaluate path text as shell code. Do not run `pebra verify --scope staged` unless the
-   staged path set exactly equals `changed_files`.
+   Use only `git --literal-pathspecs add -- <changed_file>...`, passing each returned path as a separate,
+   safely quoted argument. The `--` delimiter alone ends options but does not make wildcard pathspecs
+   literal; never concatenate or evaluate path text as shell code, and use no other staging method.
+   Do not run `pebra verify --scope staged` unless the staged path set exactly equals `changed_files`.
 11. **Verify.** Run `pebra verify --assessment-id <id> --scope staged` and resolve scope drift or failed checks.
 12. **Record.** After passing verification, run
    `pebra record-outcome --assessment-id <id> --status completed`. Only this verified-completed outcome path

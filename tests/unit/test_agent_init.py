@@ -301,7 +301,13 @@ def test_skill_distinguishes_ordinary_apply_from_human_review_apply(tmp_path):
         "for both apply paths, stage exactly the returned `changed_files` and no other paths "
         "before verify"
     ) in body
-    assert "separate, safely quoted argument after the literal `--` path delimiter" in body
+    assert "`git --literal-pathspecs add -- <changed_file>...`" in body
+    assert "separate, safely quoted argument" in body
+    assert (
+        "the `--` delimiter alone ends options but does not make wildcard pathspecs literal"
+        in body
+    )
+    assert "use no other staging method" in body
     assert (
         "do not run `pebra verify --scope staged` unless the staged path set exactly equals "
         "`changed_files`"

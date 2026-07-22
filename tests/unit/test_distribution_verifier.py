@@ -421,8 +421,10 @@ def test_distribution_oracle_requires_human_review_reassessment_id() -> None:
 def test_distribution_oracle_requires_exact_apply_result_staging() -> None:
     assert (
         "For both apply paths, stage exactly the returned `changed_files` and no other paths "
-        "before Verify. Pass every path as a separate, safely quoted argument after the literal "
-        "`--` path delimiter; never concatenate or evaluate path text as shell code. Do not run "
+        "before Verify. Use only `git --literal-pathspecs add -- <changed_file>...`, passing each "
+        "returned path as a separate, safely quoted argument. The `--` delimiter alone ends "
+        "options but does not make wildcard pathspecs literal; never concatenate or evaluate path "
+        "text as shell code, and use no other staging method. Do not run "
         "`pebra verify --scope staged` unless the staged path set exactly equals `changed_files`."
         in distribution_verifier._AGENT_SEMANTIC_OBLIGATIONS
     )
