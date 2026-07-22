@@ -130,9 +130,9 @@ def test_explore_json_is_currently_flat_without_learning_context(monkeypatch, ca
     assert "repository_context" not in payload  # not sectioned yet
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 5A: learning_context recall section not implemented yet")
+@pytest.mark.xfail(strict=True, reason="Milestone 5B: learning_context recall section not implemented yet")
 def test_explore_json_returns_learning_context_before_repository_context(monkeypatch, capsys) -> None:
-    """Milestone 0 forward spec for Milestone 5A: explore --json returns a top-level learning_context
+    """Milestone 0 forward spec for Milestone 5B: explore --json returns a top-level learning_context
     (historical recall) followed by repository_context (current structural retrieval), each with its
     own status/provenance; the structural fields move under repository_context."""
     monkeypatch.setattr(composition, "explore_repository", lambda *a, **k: _result())

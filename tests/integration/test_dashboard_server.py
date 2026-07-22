@@ -113,12 +113,12 @@ def test_learning_routes_characterize_current_items_envelope_and_auth(tmp_path) 
         resp = client.get(route, headers=_AUTH)
         assert resp.status_code == 200
         body = resp.json()
-        assert "items" in body and isinstance(body["items"], list)  # {"items": [...]} envelope
+        assert body == {"items": []}
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 5A: /learning/context route not implemented yet")
+@pytest.mark.xfail(strict=True, reason="Milestone 5C: /learning/context route not implemented yet")
 def test_learning_context_route_serves_verified_lessons(tmp_path) -> None:
-    """Milestone 0 forward spec for Milestone 5A: a repo-scoped, bearer-guarded /learning/context
+    """Milestone 0 forward spec for Milestone 5C: a repo-scoped, bearer-guarded /learning/context
     route exposes verified lessons through the same {'items': [...]} envelope."""
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/api/repos/r/learning/context", headers=_AUTH)

@@ -299,8 +299,8 @@ def test_ledger_uses_locked_breakpoint_columns(tmp_path, width: int, expected: l
 @pytest.mark.parametrize("width", [70, 80, 100, 120])
 def test_every_width_requests_the_complete_semantic_column_set(tmp_path, width: int) -> None:
     """Milestone 0 forward spec for Milestone 1: no width silently drops instrument fields; narrow
-    terminals scroll instead. Tolerant of Milestone 2's later loss/benefit header rename by matching
-    on substring anchors, so this XPASSes at M1 (columns present) regardless of M2's wording."""
+    terminals scroll instead. The full ordered instrument is locked here; only the M2 spelling
+    ``expected loss`` -> ``loss`` is normalized so this XPASSes when M1 lands, before M2 renames it."""
     from textual.widgets import DataTable
 
     db = _seed(tmp_path, rows=2)
@@ -315,13 +315,11 @@ def test_every_width_requests_the_complete_semantic_column_set(tmp_path, width: 
             captured["labels"] = [c.lower() for c in _column_labels(table)]
 
     asyncio.run(scenario())
-    labels = captured["labels"]
-    # Every instrument field must be present at every width.
-    assert any("loss" in label for label in labels), labels
-    assert any("benefit" in label for label in labels), labels
-    for required in ("id", "target", "decision", "rau", "status", "prior", "task", "gate lane", "assessed time"):
-        assert any(required in label for label in labels), (required, labels)
-    assert len(labels) >= 12, labels
+    labels = tuple({"expected loss": "loss"}.get(label, label) for label in captured["labels"])
+    assert labels == (
+        "id", "target", "decision", "rau", "loss", "benefit", "status", "prior", "lesson", "task",
+        "assessed commit", "gate lane", "assessed time",
+    )
 
 
 @pytest.mark.xfail(strict=True, reason="Milestone 1: horizontal scroll to last column not implemented yet")

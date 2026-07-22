@@ -8,7 +8,8 @@ This module locks three things before any production code changes for the Observ
    platform-specific recall path.
 2. An honest empty-learning baseline: a fresh store has no promoted local learning. Absence is a
    legitimate fixture condition (cold start), not a product failure.
-3. A reusable fixture taxonomy for the learning read model that Milestones 3-5 will consume.
+3. The cold/local/shadow/no-active direct-store states that are honest to characterize before the
+   Milestone 3 source-classified read model exists.
 
 Forward-looking assertions for not-yet-built behavior are `xfail(strict=True)` so they become the
 executable spec for their milestone: when it lands, the test XPASSes and strict xfail fails, forcing
@@ -49,10 +50,9 @@ def test_sqlite_runtime_supports_fts5_and_bm25() -> None:
 
 
 # --- 2 & 3. Fixture taxonomy for the learning read model -----------------------------------
-# States the Milestone 3-5 read model must classify. `shipped` and `mixed` priors additionally
-# depend on the packaged shipped-prior bundle (not a store row); those are constructed in the
-# Milestone 3 read-model fixtures where source classification is actually exercised. Here we lock
-# the store-side states the batch/append APIs already support.
+# Milestone 0 locks only direct-store conditions: cold, locally learned, shadow-only, and no active
+# learned fact. Shipped/mixed priors and malformed applied-prior provenance require the Milestone 3
+# source-classified projection; fixtures for those conditions belong there, not in this baseline.
 
 def _metrics(**over: Any) -> dict[str, Any]:
     base = {"promotion_reason": "observatory_learning_fixture", "hash_version": 2}

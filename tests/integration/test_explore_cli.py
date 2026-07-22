@@ -246,9 +246,9 @@ def test_explore_json_output_is_currently_flat_without_learning_context(tmp_path
     assert "learning_context" not in payload
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 5A: real explore CLI learning_context section not implemented yet")
+@pytest.mark.xfail(strict=True, reason="Milestone 5B: real explore CLI learning_context section not implemented yet")
 def test_explore_json_output_leads_with_learning_context(tmp_path) -> None:
-    """Milestone 0 forward spec for Milestone 5A: the real explore CLI JSON returns a top-level
+    """Milestone 0 forward spec for Milestone 5B: the real explore CLI JSON returns a top-level
     learning_context (recall) followed by repository_context (current retrieval)."""
     repo = tmp_path / "repo"
     repo.mkdir()
