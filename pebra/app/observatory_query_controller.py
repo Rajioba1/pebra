@@ -11,6 +11,7 @@ This layer holds no decision, sanction, or learning math — only shaping and sc
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 
 from pebra.ports.observatory_read_port import ObservatoryReadPort
@@ -90,3 +91,28 @@ def assessment_detail_for_repo(
 def store_chain_status(*, port: ObservatoryReadPort) -> dict[str, Any]:
     """Store-wide audit-chain verdict + per-table row counts (database-global, not repo-scoped)."""
     return port.chain_status()
+
+
+def learning_snapshots(
+    repo_id: str, limit: int = 50, *, port: ObservatoryReadPort
+) -> list[dict[str, Any]]:
+    """Persisted learning snapshots; the surface owns its response envelope."""
+    return port.list_risk_snapshots(repo_id, limit)
+
+
+def learning_facts(
+    repo_id: str,
+    snapshot_id: str | None = None,
+    limit: int = 200,
+    *,
+    port: ObservatoryReadPort,
+) -> list[dict[str, Any]]:
+    """Persisted learning facts; names mirror SnapshotFact without inventing a parallel schema."""
+    return port.list_learned_risk_facts(repo_id, snapshot_id, limit)
+
+
+def assessment_prior_facets(
+    repo_id: str, assessment_ids: Sequence[str], *, port: ObservatoryReadPort
+) -> dict[str, dict[str, Any]]:
+    """Persisted, repo-scoped applied-prior summaries for the currently visible ledger rows."""
+    return port.assessment_prior_facets(repo_id, assessment_ids)

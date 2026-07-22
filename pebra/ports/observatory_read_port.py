@@ -9,7 +9,7 @@ It is strictly read-only: the four methods below are the entire surface, and non
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any, Protocol
 
 
@@ -30,4 +30,20 @@ class ObservatoryReadPort(Protocol):
 
     def chain_status(self) -> dict[str, Any]:
         """Store-wide audit-chain verdict + per-table row counts (database-global, not repo-scoped)."""
+        ...
+
+    def list_risk_snapshots(self, repo_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Newest-first persisted learning snapshots for one repository."""
+        ...
+
+    def list_learned_risk_facts(
+        self, repo_id: str, snapshot_id: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """Newest-first persisted learned facts for one repository and optional snapshot."""
+        ...
+
+    def assessment_prior_facets(
+        self, repo_id: str, assessment_ids: Sequence[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Persisted applied-prior summaries for visible assessment rows in one repository."""
         ...

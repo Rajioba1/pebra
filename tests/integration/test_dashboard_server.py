@@ -596,6 +596,37 @@ def test_learning_snapshots_and_facts_routes(tmp_path) -> None:
     assert facts["items"] == []  # none seeded, but route is live + fail-soft
 
 
+def test_learning_routes_delegate_to_the_shared_observatory_controller(monkeypatch, tmp_path) -> None:
+    """M3: preserve the established envelope while taking the learning reads through one controller."""
+    db, _ = _seed_rich(tmp_path)
+    import pebra.dashboard.api as api
+
+    calls: list[tuple] = []
+
+    def snapshots(repo_id, limit, *, port):
+        calls.append(("snapshots", repo_id, limit, type(port).__name__))
+        return [{"snapshot_id": "rs_controller"}]
+
+    def facts(repo_id, snapshot_id, limit, *, port):
+        calls.append(("facts", repo_id, snapshot_id, limit, type(port).__name__))
+        return [{"fact_id": "lrf_controller"}]
+
+    monkeypatch.setattr(api.oqc, "learning_snapshots", snapshots)
+    monkeypatch.setattr(api.oqc, "learning_facts", facts)
+    client = _client(db)
+
+    assert client.get("/api/repos/r/learning/snapshots?limit=3", headers=_AUTH).json() == {
+        "items": [{"snapshot_id": "rs_controller"}]
+    }
+    assert client.get("/api/repos/r/learning/facts?snapshot_id=rs_2&limit=4", headers=_AUTH).json() == {
+        "items": [{"fact_id": "lrf_controller"}]
+    }
+    assert calls == [
+        ("snapshots", "r", 3, "SqliteStore"),
+        ("facts", "r", "rs_2", 4, "SqliteStore"),
+    ]
+
+
 class _StubReader:
     def __init__(self) -> None:
         self.calls: list = []

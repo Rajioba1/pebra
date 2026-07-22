@@ -14,9 +14,8 @@ import pytest
 from pebra.app import observatory_query_controller as oqc
 
 
-def test_observatory_read_port_currently_declares_exactly_four_methods() -> None:
-    """Milestone 0 characterization: lock the shared read-port surface before Milestone 3 extends it
-    with learning reads, so the extension is a reviewable, intentional diff."""
+def test_observatory_read_port_declares_shared_learning_read_methods() -> None:
+    """M3: every Observatory surface receives learning reads through this port."""
     import inspect
 
     from pebra.ports import observatory_read_port as orp
@@ -25,20 +24,10 @@ def test_observatory_read_port_currently_declares_exactly_four_methods() -> None
         name for name, value in vars(orp.ObservatoryReadPort).items()
         if inspect.isfunction(value) and not name.startswith("_")
     }
-    assert methods == {"assessment_facets", "list_assessments", "assessment_detail", "chain_status"}
-
-
-@pytest.mark.xfail(strict=True, reason="Milestone 3: learning read methods not on the port yet")
-def test_observatory_read_port_gains_shared_learning_read_methods() -> None:
-    """Milestone 0 forward spec for Milestone 3: the dashboard and TUI obtain snapshots, facts, and
-    per-assessment prior facets through the SAME port, not by duplicating store queries."""
-    import inspect
-
-    from pebra.ports import observatory_read_port as orp
-
-    methods = {name for name, value in vars(orp.ObservatoryReadPort).items() if inspect.isfunction(value)}
-    for method in ("list_risk_snapshots", "list_learned_risk_facts", "assessment_prior_facets"):
-        assert method in methods
+    assert methods == {
+        "assessment_facets", "list_assessments", "assessment_detail", "chain_status",
+        "list_risk_snapshots", "list_learned_risk_facts", "assessment_prior_facets",
+    }
 
 
 class _FakePort:
@@ -78,6 +67,22 @@ class _FakePort:
     def chain_status(self) -> dict[str, Any]:
         self.calls.append(("chain_status", ()))
         return self._chain
+
+    def list_risk_snapshots(self, repo_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        self.calls.append(("list_risk_snapshots", (repo_id, limit)))
+        return [{"snapshot_id": "rs_1", "status": "active", "metrics": {}}]
+
+    def list_learned_risk_facts(
+        self, repo_id: str, snapshot_id: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        self.calls.append(("list_learned_risk_facts", (repo_id, snapshot_id, limit)))
+        return [{"fact_id": "lrf_1", "snapshot_id": "rs_1", "target_name": "p_success"}]
+
+    def assessment_prior_facets(
+        self, repo_id: str, assessment_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        self.calls.append(("assessment_prior_facets", (repo_id, tuple(assessment_ids))))
+        return {assessment_id: {"source": "cold_start"} for assessment_id in assessment_ids}
 
 
 def _row(**over: Any) -> dict[str, Any]:
@@ -216,3 +221,18 @@ def test_assessment_detail_for_repo_treats_null_content_as_foreign() -> None:
 def test_store_chain_status_delegates() -> None:
     port = _FakePort(chain={"valid": False, "counts": {"assessments": 7}})
     assert oqc.store_chain_status(port=port) == {"valid": False, "counts": {"assessments": 7}}
+
+
+def test_learning_read_controller_delegates_without_reshaping() -> None:
+    port = _FakePort()
+
+    snapshots = oqc.learning_snapshots("r", 7, port=port)
+    facts = oqc.learning_facts("r", "rs_1", 9, port=port)
+    facets = oqc.assessment_prior_facets("r", ["asm_2", "asm_1"], port=port)
+
+    assert snapshots == [{"snapshot_id": "rs_1", "status": "active", "metrics": {}}]
+    assert facts == [{"fact_id": "lrf_1", "snapshot_id": "rs_1", "target_name": "p_success"}]
+    assert facets == {"asm_2": {"source": "cold_start"}, "asm_1": {"source": "cold_start"}}
+    assert ("list_risk_snapshots", ("r", 7)) in port.calls
+    assert ("list_learned_risk_facts", ("r", "rs_1", 9)) in port.calls
+    assert ("assessment_prior_facets", ("r", ("asm_2", "asm_1"))) in port.calls

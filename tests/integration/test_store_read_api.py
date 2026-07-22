@@ -19,7 +19,13 @@ def _store(tmp_path) -> SqliteStore:
     return SqliteStore(str(tmp_path / "pebra.db"))
 
 
-def _persist(store: SqliteStore, *, repo_id: str = "r", decision: Decision = Decision.PROCEED) -> str:
+def _persist(
+    store: SqliteStore,
+    *,
+    repo_id: str = "r",
+    decision: Decision = Decision.PROCEED,
+    predictions: list[dict] | None = None,
+) -> str:
     res = AssessmentResult(
         recommended_decision=decision,
         requires_confirmation=False,
@@ -30,7 +36,7 @@ def _persist(store: SqliteStore, *, repo_id: str = "r", decision: Decision = Dec
         repo_root="/x",
         model_guidance_packet={"decision": decision.value, "advisory": {"why": ["because"]}},
     )
-    return store.persist_assessment(res, {"task": "t"})
+    return store.persist_assessment(res, {"task": "t"}, predictions=predictions)
 
 
 def _persist_scoped(
@@ -824,3 +830,73 @@ def test_list_learned_risk_facts_scoped_to_repo_and_snapshot(tmp_path) -> None:
     scoped = store.list_learned_risk_facts("r1", snapshot_id=snap_id)
     assert len(scoped) == 2
     assert store.list_learned_risk_facts("r1", snapshot_id="rs_99999") == []
+
+
+def test_assessment_prior_facets_are_repo_scoped_bounded_and_one_query(tmp_path) -> None:
+    store = _store(tmp_path)
+    cold = _persist(store, repo_id="r1")
+    mixed = _persist(
+        store,
+        repo_id="r1",
+        predictions=[
+            {
+                "target_type": "risk_binary", "target_name": "p_success", "predicted_value": 0.7,
+                "provenance": {"applied_snapshot": {"snapshot_id": "rs_7"}},
+            },
+            {
+                "target_type": "cost_continuous", "target_name": "review_cost", "predicted_value": 0.2,
+                "provenance": {"warm_prior": {"calibration_tag": "population-v1"}},
+            },
+        ],
+    )
+    foreign = _persist(
+        store,
+        repo_id="other",
+        predictions=[
+            {
+                "target_type": "risk_binary", "target_name": "p_success", "predicted_value": 0.7,
+                "provenance": {"applied_snapshot": {"snapshot_id": "rs_foreign"}},
+            },
+        ],
+    )
+    statements: list[str] = []
+    store._con.set_trace_callback(statements.append)  # type: ignore[attr-defined]
+
+    assert store.assessment_prior_facets("r1", []) == {}
+    assert statements == []  # empty visible table performs no SQL work
+    facets = store.assessment_prior_facets("r1", [mixed, cold, mixed, foreign, "asm_999999"])
+
+    assert list(facets) == [mixed, cold]  # deduplicated, preserves the visible-row order
+    assert facets[mixed] == {
+        "source": "mixed", "snapshot_ids": ["rs_7"],
+        "calibration_tags": ["population-v1"], "applied_target_count": 1,
+    }
+    assert facets[cold] == {
+        "source": "cold_start", "snapshot_ids": [], "calibration_tags": [],
+        "applied_target_count": 0,
+    }
+    assert sum("assessment_predictions" in statement for statement in statements) == 1
+
+
+def test_assessment_prior_facets_make_malformed_provenance_unavailable_not_cold(tmp_path) -> None:
+    store = _store(tmp_path)
+    assessment_id = _persist(
+        store,
+        predictions=[
+            {
+                "target_type": "risk_binary", "target_name": "p_success", "predicted_value": 0.7,
+                "provenance": {"applied_snapshot": {"snapshot_id": "rs_7"}},
+            },
+        ],
+    )
+    store._con.execute(  # type: ignore[attr-defined]  # corrupt persisted payload is an honest read failure
+        "UPDATE assessment_predictions SET provenance_json = ?", ("{not-json",)
+    )
+    store._con.commit()  # type: ignore[attr-defined]
+
+    assert store.assessment_prior_facets("r", [assessment_id]) == {
+        assessment_id: {
+            "source": "unavailable", "snapshot_ids": [], "calibration_tags": [],
+            "applied_target_count": 0,
+        }
+    }

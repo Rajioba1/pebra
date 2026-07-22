@@ -175,3 +175,22 @@ def test_refresh_opens_exactly_one_readonly_session(monkeypatch, tmp_path) -> No
 
     assert opens == [True]  # exactly one open, read-only (strict no-write)
     assert len(closes) == 1  # closed once, in finally
+
+
+def test_refresh_snapshot_includes_visible_row_prior_facets_but_not_full_learning_tables(tmp_path) -> None:
+    db, _, _ = _seed(tmp_path)
+    snapshot = ObservatoryData(_ctx(db)).refresh_snapshot()
+
+    visible_ids = {row["assessment_id"] for row in snapshot.assessments}
+    assert set(snapshot.prior_facets) == visible_ids
+    assert {facet["source"] for facet in snapshot.prior_facets.values()} == {"cold_start"}
+
+
+def test_learning_snapshot_is_explicit_and_separate_from_the_refresh_poll(tmp_path) -> None:
+    db, _, _ = _seed(tmp_path)
+    data = ObservatoryData(_ctx(db))
+
+    learning = data.learning_snapshot()
+
+    assert learning.snapshots == []
+    assert learning.facts == []

@@ -112,7 +112,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
-            return {"items": store.list_risk_snapshots(repo_id, limit)}
+            return {"items": oqc.learning_snapshots(repo_id, limit, port=store)}
         finally:
             store.close()
 
@@ -126,7 +126,7 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         _require_bound_repo(request, repo_id)
         store = _open(request)
         try:
-            return {"items": store.list_learned_risk_facts(repo_id, snapshot_id, limit)}
+            return {"items": oqc.learning_facts(repo_id, snapshot_id, limit, port=store)}
         finally:
             store.close()
 

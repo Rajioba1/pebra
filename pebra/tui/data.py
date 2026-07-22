@@ -39,6 +39,15 @@ class ObservatorySnapshot:
     assessments: list[dict[str, Any]]
     scores_series: list[dict[str, Any]]
     chain: dict[str, Any]
+    prior_facets: dict[str, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ObservatoryLearningSnapshot:
+    """Explicit full learning read; intentionally outside the five-second ledger refresh."""
+
+    snapshots: list[dict[str, Any]]
+    facts: list[dict[str, Any]]
 
 
 class ObservatoryData:
@@ -71,15 +80,35 @@ class ObservatoryData:
         try:
             store = self._open()
             try:
+                assessments = oqc.list_assessments(
+                    self._repo_id, self._assessments_limit, 0, port=store
+                )
                 return ObservatorySnapshot(
                     overview=oqc.overview(self._repo_id, port=store),
-                    assessments=oqc.list_assessments(
-                        self._repo_id, self._assessments_limit, 0, port=store
-                    ),
+                    assessments=assessments,
                     scores_series=oqc.scores_series(
                         self._repo_id, self._series_limit, 0, port=store
                     ),
                     chain=oqc.store_chain_status(port=store),
+                    prior_facets=oqc.assessment_prior_facets(
+                        self._repo_id,
+                        [row["assessment_id"] for row in assessments],
+                        port=store,
+                    ),
+                )
+            finally:
+                store.close()
+        except (sqlite3.Error, json.JSONDecodeError) as exc:
+            raise ObservatoryStoreUnavailable(str(exc)) from exc
+
+    def learning_snapshot(self) -> ObservatoryLearningSnapshot:
+        """Fetch whole learning tables only on an explicit screen request, never on the ledger poll."""
+        try:
+            store = self._open()
+            try:
+                return ObservatoryLearningSnapshot(
+                    snapshots=oqc.learning_snapshots(self._repo_id, port=store),
+                    facts=oqc.learning_facts(self._repo_id, port=store),
                 )
             finally:
                 store.close()

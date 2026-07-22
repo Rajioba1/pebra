@@ -12,7 +12,7 @@ Implements ``StorePort``.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 import datetime
 import hashlib
 import json
@@ -28,6 +28,16 @@ from pebra.core.prediction_capture import summarize_prior_provenance
 from pebra.ports.learning_port import MeasurementAlreadyRecordedError
 
 GENESIS = "GENESIS"
+
+
+def _unavailable_prior_facet() -> dict[str, Any]:
+    """One honest, non-cold display value for malformed persisted prior provenance."""
+    return {
+        "source": "unavailable",
+        "snapshot_ids": [],
+        "calibration_tags": [],
+        "applied_target_count": 0,
+    }
 
 
 def _row_hash(prev_hash: str, content_json: str) -> str:
@@ -1625,6 +1635,84 @@ class SqliteStore:
             for fid, snap, fact_type, target_type, target_name, scope_kind, scope_value,
             status, fact_json, created_at in self._con.execute(sql, params)
         ]
+
+    def assessment_prior_facets(
+        self, repo_id: str, assessment_ids: Sequence[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Return persisted applied-prior display facets for visible rows in one bounded SQL read.
+
+        The assessment prediction manifest is the authority: current active snapshots are deliberately
+        irrelevant here. Invalid/malformed persisted provenance is reported as unavailable rather than
+        silently treated as a cold start.
+        """
+        ids: list[tuple[str, int]] = []
+        seen: set[str] = set()
+        for assessment_id in assessment_ids:
+            if not isinstance(assessment_id, str) or assessment_id in seen or len(ids) >= 100:
+                continue
+            seen.add(assessment_id)
+            if not assessment_id.startswith("asm_"):
+                continue
+            try:
+                row_id = int(assessment_id[4:])
+            except ValueError:
+                continue
+            if row_id > 0:
+                ids.append((assessment_id, row_id))
+        if not ids:
+            return {}
+
+        placeholders = ", ".join("?" for _ in ids)
+        rows = self._con.execute(
+            "SELECT a.id, ap.target_name, ap.provenance_json "
+            "FROM assessments a LEFT JOIN assessment_predictions ap ON ap.assessment_id = a.id "
+            f"WHERE a.repo_id = ? AND a.id IN ({placeholders}) ORDER BY a.id ASC, ap.id ASC",
+            (repo_id, *(row_id for _, row_id in ids)),
+        ).fetchall()
+        manifests: dict[int, list[dict[str, Any]] | None] = {}
+        for row_id, target_name, provenance_json in rows:
+            manifest = manifests.setdefault(int(row_id), [])
+            if target_name is None:
+                continue
+            try:
+                provenance = json.loads(provenance_json)
+            except (TypeError, json.JSONDecodeError):
+                manifests[int(row_id)] = None
+                continue
+            if not isinstance(provenance, dict) or any(
+                key in provenance and not isinstance(provenance[key], dict)
+                for key in ("applied_snapshot", "warm_prior")
+            ):
+                manifests[int(row_id)] = None
+                continue
+            if manifest is not None:
+                manifest.append({"target_name": target_name, "provenance": provenance})
+
+        facets: dict[str, dict[str, Any]] = {}
+        for assessment_id, row_id in ids:
+            manifest = manifests.get(row_id)
+            if manifest is None:
+                if row_id in manifests:
+                    facets[assessment_id] = _unavailable_prior_facet()
+                continue
+            summary = summarize_prior_provenance(manifest)
+            sources = set(summary["sources"])
+            source = (
+                "mixed" if {"local_learned", "shipped"} <= sources
+                else "local_learned" if "local_learned" in sources
+                else "shipped" if "shipped" in sources
+                else "cold_start"
+            )
+            facets[assessment_id] = {
+                "source": source,
+                "snapshot_ids": summary["snapshot_ids"],
+                "calibration_tags": summary["calibration_tags"],
+                "applied_target_count": sum(
+                    "local_learned" in target["sources"]
+                    for target in summary["targets"].values()
+                ),
+            }
+        return facets
 
     def chain_status(self) -> dict[str, Any]:
         """Audit-chain panel: integrity verdict + per-table row counts."""
