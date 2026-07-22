@@ -297,6 +297,15 @@ def test_skill_distinguishes_ordinary_apply_from_human_review_apply(tmp_path):
         "after `pebra accept-risk --apply`, use its returned `reassessment_id` for verify "
         "and record; never use the original held assessment id"
     ) in body
+    assert (
+        "for both apply paths, stage exactly the returned `changed_files` and no other paths "
+        "before verify"
+    ) in body
+    assert "separate, safely quoted argument after the literal `--` path delimiter" in body
+    assert (
+        "do not run `pebra verify --scope staged` unless the staged path set exactly equals "
+        "`changed_files`"
+    ) in body
 
 
 def test_codex_creates_agents_md(tmp_path):

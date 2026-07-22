@@ -418,6 +418,16 @@ def test_distribution_oracle_requires_human_review_reassessment_id() -> None:
     )
 
 
+def test_distribution_oracle_requires_exact_apply_result_staging() -> None:
+    assert (
+        "For both apply paths, stage exactly the returned `changed_files` and no other paths "
+        "before Verify. Pass every path as a separate, safely quoted argument after the literal "
+        "`--` path delimiter; never concatenate or evaluate path text as shell code. Do not run "
+        "`pebra verify --scope staged` unless the staged path set exactly equals `changed_files`."
+        in distribution_verifier._AGENT_SEMANTIC_OBLIGATIONS
+    )
+
+
 @pytest.mark.parametrize("target", ("claude", "codex"))
 def test_installed_artifact_verifier_rejects_skill_byte_drift(tmp_path, target) -> None:
     _write_agent_init_artifacts(tmp_path, target)

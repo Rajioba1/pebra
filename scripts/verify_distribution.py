@@ -77,10 +77,10 @@ _AGENT_CHECK_KEYS = {
     "declared_support",
     "effective_enforcement",
 }
-_EXPECTED_AGENT_SKILL_SHA256 = "44ffb770c023035872a48c0b73434437f345e3bb45f92e5f6f4d46c4533dac63"
+_EXPECTED_AGENT_SKILL_SHA256 = "a8f95a16249bb69bf5e905053ccb539526cbabe67ec3dabd929788aced06cdfb"
 _EXPECTED_CLAUDE_RULE_SHA256 = "8be4b8bccc167ea3e9f32d7a0348f47c7d1d9119f267d3ec60a16484af31c432"
 _EXPECTED_CODEX_MANAGED_BLOCK_SHA256 = (
-    "f1d847d98b47e3d707cbb579866181052b482ebc15593ea87292bd734d970c30"
+    "2f9ee1f74a0716c7c6dd91eba55ff33ab391b936499ceb2626f0be0fc09a3c7e"
 )
 _CODEX_SENTINEL = "# Pre-existing Codex distribution-verifier sentinel\nPreserve this instruction.\n"
 _MANAGED_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
@@ -125,6 +125,10 @@ _AGENT_SEMANTIC_OBLIGATIONS = (
     "`pebra apply-candidate` or apply it again.",
     "After `pebra accept-risk --apply`, use its returned `reassessment_id` for Verify "
     "and Record; never use the original held assessment ID.",
+    "For both apply paths, stage exactly the returned `changed_files` and no other paths "
+    "before Verify. Pass every path as a separate, safely quoted argument after the literal "
+    "`--` path delimiter; never concatenate or evaluate path text as shell code. Do not run "
+    "`pebra verify --scope staged` unless the staged path set exactly equals `changed_files`.",
     "pebra verify --assessment-id <id> --scope staged",
     "pebra record-outcome --assessment-id <id> --status completed",
     "Only this verified-completed outcome path",

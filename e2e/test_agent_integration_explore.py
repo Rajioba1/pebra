@@ -1,4 +1,4 @@
-"""Black-box host materialization proof for the provider-neutral Understand phase."""
+"""Black-box host materialization proof for the provider-neutral agent lifecycle."""
 
 from __future__ import annotations
 
@@ -106,3 +106,37 @@ def test_installed_claude_and_codex_skills_are_byte_identical(tmp_path: Path) ->
         assert result.returncode == 0, result.stderr
         bodies.append((tmp_path / skill_path).read_bytes())
     assert len(set(bodies)) == 1
+
+
+@pytest.mark.parametrize("target", tuple(_HOST_SKILLS))
+def test_installed_host_protocol_stages_only_apply_result_before_verify(
+    tmp_path: Path, target: str
+) -> None:
+    installed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pebra",
+            "agent-init",
+            "--target",
+            target,
+            "--repo-root",
+            str(tmp_path),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    normalized = " ".join(
+        (tmp_path / _HOST_SKILLS[target]).read_text(encoding="utf-8").split()
+    )
+    assert "For both apply paths, stage exactly the returned `changed_files`" in normalized
+    assert "separate, safely quoted argument after the literal `--` path delimiter" in normalized
+    assert "never concatenate or evaluate path text as shell code" in normalized
+    assert (
+        "Do not run `pebra verify --scope staged` unless the staged path set exactly equals "
+        "`changed_files`"
+    ) in normalized
