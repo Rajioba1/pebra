@@ -172,3 +172,32 @@ def test_verify_in_envelope_proceeds(tmp_path) -> None:
     )
     assert payload["pre_commit_decision"] == "proceed"
     assert payload["guardrails_id"]
+
+
+def test_verified_completed_mcp_materializes_learning_context(tmp_path) -> None:
+    repo = _init_repo(tmp_path)
+    asm = server._handle_assess(_assess_args(repo))["assessment_id"]
+    (repo / "src" / "auth.py").write_text(
+        "def validate_login(u, p):\n    return bool(u and p)\n", encoding="utf-8"
+    )
+    _git(repo, "add", "src/auth.py")
+    verified = server._handle_verify({
+        "assessment_id": asm,
+        "scope": "staged",
+        "completed_checks": {REQUIRED_CHECK: "passed"},
+        **_common(repo),
+    })
+    assert verified["pre_commit_decision"] == "proceed"
+    outcome = server._handle_record_outcome({
+        "assessment_id": asm,
+        "status": "completed",
+        "detail": {"lesson": "untrusted MCP prose"},
+        **_common(repo),
+    })
+    assert outcome["recorded"] is True
+    assert outcome["context_materialized"] is True
+    store = SqliteStore(_common(repo)["db"])
+    entry = store.learning_context_for_assessment(asm)
+    store.close()
+    assert entry is not None
+    assert "untrusted MCP prose" not in entry.lesson

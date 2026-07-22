@@ -197,10 +197,11 @@ def _handle_verify(arguments: dict[str, Any]) -> dict[str, Any]:
 def _handle_record_outcome(arguments: dict[str, Any]) -> dict[str, Any]:
     ctx = composition.resolve_repo_and_db(arguments.get("repo_root") or ".", arguments.get("db"))
     try:
-        record_outcome_controller.record_outcome(
+        result = record_outcome_controller.record_outcome(
             arguments["assessment_id"],
             arguments["status"],
             outcome_port=ctx.store,
+            learning_context_port=ctx.store,
             detail=arguments.get("detail"),
             label_source="agent",
         )
@@ -208,6 +209,8 @@ def _handle_record_outcome(arguments: dict[str, Any]) -> dict[str, Any]:
             "assessment_id": arguments["assessment_id"],
             "status": arguments["status"],
             "recorded": True,
+            "context_materialized": result.context_materialized,
+            "context_error": result.context_error,
         }
     finally:
         ctx.store.close()

@@ -47,10 +47,11 @@ def run(args: Any) -> int:
         return 2
     store = SqliteStore(db_path)
     try:
-        record_outcome_controller.record_outcome(
+        result = record_outcome_controller.record_outcome(
             args.assessment_id,
             args.status,
             outcome_port=store,
+            learning_context_port=store,
             detail=detail,
             label_source="host",
         )
@@ -60,5 +61,8 @@ def run(args: Any) -> int:
         return 2
     finally:
         store.close()
-    print(f"Recorded outcome '{args.status}' for {args.assessment_id}.")
+    print(
+        f"Recorded outcome '{args.status}' for {args.assessment_id}; "
+        f"learning_context_materialized={result.context_materialized}."
+    )
     return 0

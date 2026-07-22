@@ -68,6 +68,8 @@ def run(args: Any) -> int:
         "assessment_id": assessment_id,
         "status": status,
         "outcome_recorded": outcome.outcome_recorded,
+        "context_materialized": outcome.context_materialized,
+        "context_error": outcome.context_error,
         "measurement_recorded": outcome.measurement_recorded,
         "observed": outcome.observed,
         "censored": outcome.censored,
@@ -81,6 +83,7 @@ def run(args: Any) -> int:
     else:
         print(
             f"Finalized {assessment_id}: outcome_recorded={outcome.outcome_recorded}, "
+            f"context_materialized={outcome.context_materialized}, "
             f"measurement_recorded={outcome.measurement_recorded}."
         )
     return 0

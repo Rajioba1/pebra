@@ -17,6 +17,8 @@ from pebra.ports.store_port import StorePort
 class FinalizationOutcome:
     assessment_id: str
     outcome_recorded: bool
+    context_materialized: bool
+    context_error: str | None
     measurement_recorded: bool
     observed: int | None
     censored: int | None
@@ -54,14 +56,19 @@ def finalize_outcome(
 
     outcomes = store.load_outcomes(assessment_id)
     outcome_recorded = False
+    context_materialized = False
+    context_error: str | None = None
     if outcomes:
         matching_recorded_outcome()
     else:
         try:
-            record_outcome_controller.record_outcome(
-                assessment_id, status, outcome_port=store, detail=detail, label_source="host"
+            recording = record_outcome_controller.record_outcome(
+                assessment_id, status, outcome_port=store, learning_context_port=store,
+                detail=detail, label_source="host"
             )
             outcome_recorded = True
+            context_materialized = recording.context_materialized
+            context_error = recording.context_error
         except ValueError:
             # A concurrent matching retry may have closed the lifecycle after our optimistic read.
             # Re-read and accept only the exact same trusted outcome; conflicts still fail loudly.
@@ -103,6 +110,8 @@ def finalize_outcome(
     return FinalizationOutcome(
         assessment_id=assessment_id,
         outcome_recorded=outcome_recorded,
+        context_materialized=context_materialized,
+        context_error=context_error,
         measurement_recorded=measurement_recorded,
         observed=observed,
         censored=censored,

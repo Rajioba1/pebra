@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
-from pebra.adapters.store.db import SqliteStore
 from pebra.adapters.candidate_binding import CandidateBindingAdapter
 from pebra.core.models import CandidateAction
 
 
+class _SanctionPersistence(Protocol):
+    def claim_sanction_for_candidate(
+        self, repo_id: str, action_id: str, candidate_binding: dict[str, Any]
+    ) -> dict[str, Any] | None: ...
+
+    def create_sanction(self, repo_id: str, sanction: dict[str, Any]) -> str: ...
+
+
 class SanctionStore:
-    def __init__(self, store: SqliteStore, *, repo_root: str | None = None) -> None:
+    def __init__(self, store: _SanctionPersistence, *, repo_root: str | None = None) -> None:
         self._store = store
         self._repo_root = repo_root
         self._bindings = CandidateBindingAdapter()

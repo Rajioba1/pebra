@@ -26,7 +26,8 @@ def test_finalize_outcome_command_reads_trusted_sidecar(monkeypatch, tmp_path, c
     def finalize(assessment_id, status, **kwargs):
         seen.update(assessment_id=assessment_id, status=status, detail=kwargs["detail"])
         return SimpleNamespace(
-            outcome_recorded=True, measurement_recorded=True, observed=1, censored=0,
+            outcome_recorded=True, context_materialized=False, context_error=None,
+            measurement_recorded=True, observed=1, censored=0,
             promotions={
                 key: SimpleNamespace(promoted=False, snapshot_id=None)
                 for key in ("risk", "benefit", "review_cost")

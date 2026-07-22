@@ -12,6 +12,7 @@ class _Store:
     def __init__(self) -> None:
         self.outcomes = []
         self.measured = False
+        self.materialize_calls = []
 
     def load_outcomes(self, _assessment_id):
         return list(self.outcomes)
@@ -23,6 +24,10 @@ class _Store:
         self.outcomes.append({
             "assessment_id": assessment_id, "terminal_status": status, "detail": detail,
         })
+
+    def materialize_learning_context(self, assessment_id):
+        self.materialize_calls.append(assessment_id)
+        return object()
 
     def prediction_errors_exist(self, _assessment_id):
         return self.measured
@@ -166,3 +171,22 @@ def test_finalize_treats_lost_measurement_race_as_idempotent_retry(monkeypatch) 
 
     assert outcome.outcome_recorded is True
     assert outcome.measurement_recorded is False
+
+
+def test_finalize_never_backfills_context_from_preexisting_raw_completed_row(monkeypatch) -> None:
+    store = _Store()
+    store.outcomes.append({
+        "assessment_id": "asm_1", "terminal_status": "completed", "detail": {}
+    })
+    store.measured = True
+    monkeypatch.setattr(foc.promotion_controller, "run_promotion", lambda *a, **k: _result())
+    monkeypatch.setattr(foc.promotion_controller, "run_benefit_promotion", lambda *a, **k: _result())
+    monkeypatch.setattr(foc.promotion_controller, "run_review_cost_promotion", lambda *a, **k: _result())
+
+    result = foc.finalize_outcome(
+        "asm_1", "completed", detail={}, store=store, learning_port=object()
+    )
+
+    assert result.outcome_recorded is False
+    assert result.context_materialized is False
+    assert store.materialize_calls == []

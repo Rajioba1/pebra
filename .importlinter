@@ -186,6 +186,24 @@ forbidden_modules =
     pebra.core.assessment_builder
     pebra.core.decision_engine
 
+[importlinter:contract:recall-no-scoring]
+name = historical recall never enters scoring or authorization
+type = forbidden
+source_modules =
+    pebra.app.assess_controller
+    pebra.core.assessment_builder
+    pebra.core.decision_engine
+    pebra.core.apply_snapshot
+    pebra.adapters.gate_check_adapter
+    pebra.app.candidate_apply_controller
+    pebra.app.accept_risk_controller
+    pebra.app.human_approval_controller
+    pebra.adapters.sanction_store
+    pebra.app.promotion_controller
+forbidden_modules =
+    pebra.core.learning_context
+    pebra.ports.learning_context_port
+
 [importlinter:contract:layers]
 name = layered architecture (surfaces > app > ports > core)
 type = layers

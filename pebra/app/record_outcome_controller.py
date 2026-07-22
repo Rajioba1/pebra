@@ -8,8 +8,11 @@ status, else pending.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pebra.core import outcome_labels
 from pebra.core.constants import ActionStatus
+from pebra.ports.learning_context_port import LearningContextPort
 from pebra.ports.outcome_port import OutcomePort
 
 _TERMINAL_STATUSES = frozenset(
@@ -17,14 +20,22 @@ _TERMINAL_STATUSES = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class OutcomeRecordingResult:
+    outcome_recorded: bool
+    context_materialized: bool
+    context_error: str | None = None
+
+
 def record_outcome(
     assessment_id: str,
     status: str,
     *,
     outcome_port: OutcomePort,
+    learning_context_port: LearningContextPort | None = None,
     detail: dict | None = None,
     label_source: str = "host",
-) -> None:
+) -> OutcomeRecordingResult:
     if status not in _TERMINAL_STATUSES:
         raise ValueError(
             f"outcome status must be terminal {sorted(_TERMINAL_STATUSES)}, got {status!r}"
@@ -48,3 +59,10 @@ def record_outcome(
                 "completed outcome requires latest pebra verify pre_commit_decision='proceed'"
             )
     outcome_port.record_outcome(assessment_id, status, persisted_detail)
+    if status != ActionStatus.COMPLETED.value or learning_context_port is None:
+        return OutcomeRecordingResult(True, False)
+    try:
+        entry = learning_context_port.materialize_learning_context(assessment_id)
+    except Exception as exc:  # noqa: BLE001 - the immutable outcome already committed
+        return OutcomeRecordingResult(True, False, type(exc).__name__)
+    return OutcomeRecordingResult(True, entry is not None)

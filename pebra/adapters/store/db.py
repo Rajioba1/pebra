@@ -23,6 +23,14 @@ from typing import Any
 
 from pebra.core.assessment_history import project_assessment_identity
 from pebra.core.constants import MIN_CALIBRATION_SAMPLES
+from pebra.core.learning_context import (
+    HASH_VERSION as LEARNING_CONTEXT_HASH_VERSION,
+    LearningContextEntry,
+    LearningContextRecall,
+    build_learning_context_entry,
+    canonical_entry_content,
+    literal_fts_query,
+)
 from pebra.core.models import AssessmentResult
 from pebra.core.prediction_capture import summarize_prior_provenance
 from pebra.ports.learning_port import MeasurementAlreadyRecordedError
@@ -567,10 +575,51 @@ class SqliteStore:
                     repo_id, status, snapshot_id, target_type, target_name,
                     requires_human_ratification, scope_kind, scope_value, specificity_rank
                 );
+            CREATE TABLE IF NOT EXISTS learning_context (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                learning_context_id TEXT NOT NULL UNIQUE,
+                repo_id TEXT NOT NULL,
+                assessment_id TEXT NOT NULL UNIQUE,
+                task TEXT NOT NULL,
+                action_id TEXT NOT NULL,
+                target_files TEXT NOT NULL,
+                symbols TEXT NOT NULL,
+                assessed_commit TEXT,
+                candidate_fingerprint TEXT,
+                decision TEXT NOT NULL,
+                expected_loss REAL,
+                benefit REAL,
+                expected_utility REAL,
+                utility_sd REAL,
+                rau REAL,
+                terminal_status TEXT NOT NULL,
+                verification_summary TEXT NOT NULL,
+                measured_benefit REAL,
+                lesson TEXT NOT NULL,
+                source_assessment_hash TEXT NOT NULL,
+                source_outcome_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                hash_version INTEGER NOT NULL,
+                row_hash TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_learning_context_repo_created
+                ON learning_context(repo_id, created_at DESC, learning_context_id DESC);
             """
         )
+        self._create_learning_context_fts()
         self._migrate_schema()
         self._create_calibration_views()
+
+    def _create_learning_context_fts(self) -> None:
+        self._con.executescript(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS learning_context_fts USING fts5(
+                task, lesson, target_files, symbols,
+                content='learning_context', content_rowid='id'
+            );
+            """
+        )
 
     def _migrate_schema(self) -> None:
         self._ensure_column("model_guidance_packets", "guidance_packet_id", "TEXT")
@@ -691,6 +740,12 @@ class SqliteStore:
     def _last_outcome_hash(self) -> str:
         row = self._con.execute(
             "SELECT row_hash FROM outcomes ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row[0] if row else GENESIS
+
+    def _last_learning_context_hash(self) -> str:
+        row = self._con.execute(
+            "SELECT row_hash FROM learning_context ORDER BY id DESC LIMIT 1"
         ).fetchone()
         return row[0] if row else GENESIS
 
@@ -1636,6 +1691,188 @@ class SqliteStore:
             status, fact_json, created_at in self._con.execute(sql, params)
         ]
 
+    _LEARNING_ENTRY_COLUMNS = (
+        "learning_context_id, repo_id, assessment_id, task, action_id, target_files, symbols, "
+        "assessed_commit, candidate_fingerprint, decision, expected_loss, benefit, "
+        "expected_utility, utility_sd, rau, terminal_status, verification_summary, "
+        "measured_benefit, lesson, source_assessment_hash, source_outcome_hash, created_at, row_hash"
+    )
+
+    @staticmethod
+    def _learning_entry(row: Sequence[Any]) -> LearningContextEntry:
+        values = list(row)
+        target_files = json.loads(values[5])
+        symbols = json.loads(values[6])
+        if (
+            not isinstance(target_files, list)
+            or not all(isinstance(value, str) for value in target_files)
+            or not isinstance(symbols, list)
+            or not all(isinstance(value, str) for value in symbols)
+        ):
+            raise ValueError("malformed learning-context list field")
+        values[5] = tuple(target_files)
+        values[6] = tuple(symbols)
+        return LearningContextEntry(*values)
+
+    def learning_context_for_assessment(
+        self, assessment_id: str
+    ) -> LearningContextEntry | None:
+        row = self._con.execute(
+            f"SELECT {self._LEARNING_ENTRY_COLUMNS} FROM learning_context "
+            "WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        return self._learning_entry(row) if row else None
+
+    def materialize_learning_context(
+        self, assessment_id: str
+    ) -> LearningContextEntry | None:
+        """Append recall context only from this explicit, post-controller hook.
+
+        The guardrail is re-read inside the write transaction. Merely having a raw
+        ``completed`` outcome in the store never invokes this method.
+        """
+        row_id = self._row_id(assessment_id)
+        try:
+            self._con.execute("BEGIN IMMEDIATE")
+            if not (
+                self._validate_assessment_chain()
+                and self._validate_outcome_chain()
+                and self._validate_guardrail_chain()
+                and self._validate_learning_context_chain()
+            ):
+                self._con.commit()
+                return None
+            guardrails = self.latest_guardrails(assessment_id)
+            if (
+                not isinstance(guardrails, dict)
+                or guardrails.get("pre_commit_decision") != "proceed"
+            ):
+                self._con.commit()
+                return None
+            existing = self._con.execute(
+                f"SELECT {self._LEARNING_ENTRY_COLUMNS} FROM learning_context "
+                "WHERE assessment_id = ?",
+                (assessment_id,),
+            ).fetchone()
+            if existing is not None:
+                self._con.commit()
+                return self._learning_entry(existing)
+            source = self._con.execute(
+                "SELECT a.content_json, a.row_hash, o.terminal_status, o.detail_json, "
+                "o.recorded_at, o.row_hash FROM assessments a "
+                "JOIN outcomes o ON o.assessment_id = a.id WHERE a.id = ?",
+                (row_id,),
+            ).fetchone()
+            if source is None:
+                self._con.commit()
+                return None
+            content_json, assessment_hash, status, detail_json, created_at, outcome_hash = source
+            next_id = self._con.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM learning_context"
+            ).fetchone()[0]
+            previous_hash = self._last_learning_context_hash()
+            entry = build_learning_context_entry(
+                learning_context_id=f"lc_{next_id}",
+                assessment_id=assessment_id,
+                content=json.loads(content_json),
+                assessment_hash=assessment_hash,
+                outcome_hash=outcome_hash,
+                outcome={
+                    "terminal_status": status,
+                    "detail": json.loads(detail_json),
+                    "recorded_at": created_at,
+                },
+                guardrails=guardrails,
+                created_at=created_at,
+                previous_hash=previous_hash,
+            )
+            if entry is None:
+                self._con.commit()
+                return None
+            target_files = json.dumps(entry.target_files, separators=(",", ":"))
+            symbols = json.dumps(entry.symbols, separators=(",", ":"))
+            self._con.execute(
+                "INSERT INTO learning_context ("
+                "learning_context_id, repo_id, assessment_id, task, action_id, target_files, "
+                "symbols, assessed_commit, candidate_fingerprint, decision, expected_loss, benefit, "
+                "expected_utility, utility_sd, rau, terminal_status, verification_summary, "
+                "measured_benefit, lesson, source_assessment_hash, source_outcome_hash, created_at, "
+                "previous_hash, hash_version, row_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry.learning_context_id, entry.repo_id, entry.assessment_id, entry.task,
+                    entry.action_id, target_files, symbols, entry.assessed_commit,
+                    entry.candidate_fingerprint, entry.decision, entry.expected_loss, entry.benefit,
+                    entry.expected_utility, entry.utility_sd, entry.rau, entry.terminal_status,
+                    entry.verification_summary, entry.measured_benefit, entry.lesson,
+                    entry.source_assessment_hash, entry.source_outcome_hash, entry.created_at,
+                    previous_hash, LEARNING_CONTEXT_HASH_VERSION, entry.row_hash,
+                ),
+            )
+            self._con.execute(
+                "INSERT INTO learning_context_fts(rowid, task, lesson, target_files, symbols) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (next_id, entry.task, entry.lesson, target_files, symbols),
+            )
+            self._con.commit()
+            return entry
+        except Exception:
+            self._con.rollback()
+            raise
+
+    def rebuild_learning_context_fts(self) -> None:
+        self._con.execute(
+            "INSERT INTO learning_context_fts(learning_context_fts) VALUES('rebuild')"
+        )
+
+    def recall_learning_context(
+        self, repo_id: str, query: str, *, byte_limit: int = 4096
+    ) -> LearningContextRecall:
+        try:
+            if not (
+                self._validate_assessment_chain()
+                and self._validate_outcome_chain()
+                and self._validate_guardrail_chain()
+                and self._validate_learning_context_chain()
+            ):
+                return LearningContextRecall(
+                    "corrupt", (), (), (), ("learning-context chain validation failed",), False
+                )
+            match = literal_fts_query(query)
+            if not match:
+                return LearningContextRecall("empty", (), (), (), (), False)
+            rows = self._con.execute(
+                f"SELECT {', '.join('lc.' + value.strip() for value in self._LEARNING_ENTRY_COLUMNS.split(','))} "
+                "FROM learning_context_fts fts JOIN learning_context lc ON lc.id = fts.rowid "
+                "WHERE learning_context_fts MATCH ? AND lc.repo_id = ? "
+                "ORDER BY bm25(learning_context_fts) ASC, lc.created_at DESC, "
+                "lc.learning_context_id DESC",
+                (match, repo_id),
+            ).fetchall()
+        except (sqlite3.DatabaseError, TypeError, ValueError):
+            return LearningContextRecall(
+                "unavailable", (), (), (), ("learning-context search unavailable",), False
+            )
+        byte_limit = max(0, min(int(byte_limit), 32768))
+        entries: list[LearningContextEntry] = []
+        used = 0
+        for row in rows:
+            entry = self._learning_entry(row)
+            size = len(
+                json.dumps(entry.__dict__, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            )
+            if len(entries) == 5 or used + size > byte_limit:
+                continue
+            entries.append(entry)
+            used += size
+        files = tuple(dict.fromkeys(path for entry in entries for path in entry.target_files))
+        symbols = tuple(dict.fromkeys(symbol for entry in entries for symbol in entry.symbols))
+        return LearningContextRecall(
+            "available" if entries else "empty",
+            tuple(entries), files[:16], symbols[:16], (), len(entries) < len(rows),
+        )
+
     def assessment_prior_facets(
         self, repo_id: str, assessment_ids: Sequence[str]
     ) -> dict[str, dict[str, Any]]:
@@ -1722,15 +1959,26 @@ class SqliteStore:
 
     def chain_status(self) -> dict[str, Any]:
         """Audit-chain panel: integrity verdict + per-table row counts."""
+        tables = (
+            "assessments", "sanction_events", "post_assessment_guardrails", "outcomes",
+            "assessment_predictions", "prediction_errors", "risk_snapshots",
+            "learned_risk_facts", "learning_context",
+        )
         counts = {
-            table: self._con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in (
-                "assessments", "sanction_events", "post_assessment_guardrails", "outcomes",
-                "assessment_predictions", "prediction_errors", "risk_snapshots",
-                "learned_risk_facts",
+            table: (
+                self._con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                if self._table_exists(table)
+                else 0
             )
+            for table in tables
         }
         return {"valid": self.validate_chain(), "counts": counts}
+
+    def _table_exists(self, table: str) -> bool:
+        return self._con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+            (table,),
+        ).fetchone() is not None
 
     def validate_chain(self) -> bool:
         return (
@@ -1742,6 +1990,7 @@ class SqliteStore:
             and self._validate_prediction_error_chain()
             and self._validate_risk_snapshot_chain()
             and self._validate_learned_risk_fact_chain()
+            and self._validate_learning_context_chain()
         )
 
     def validate_learning_chains(self) -> bool:
@@ -1775,6 +2024,41 @@ class SqliteStore:
             if _row_hash(prev_hash, content_json) != stored_hash:
                 return False
             prev_hash = stored_hash
+        return True
+
+    def _validate_learning_context_chain(self) -> bool:
+        if not self._table_exists("learning_context"):
+            return True
+        prev_hash = GENESIS
+        rows = self._con.execute(
+            f"SELECT {self._LEARNING_ENTRY_COLUMNS}, previous_hash, hash_version "
+            "FROM learning_context ORDER BY id ASC"
+        )
+        for row in rows:
+            try:
+                entry = self._learning_entry(row[:23])
+            except (TypeError, ValueError):
+                return False
+            stored_prev, hash_version = row[23:]
+            if stored_prev != prev_hash or hash_version != LEARNING_CONTEXT_HASH_VERSION:
+                return False
+            expected = hashlib.sha256(
+                (prev_hash + canonical_entry_content(entry, prev_hash)).encode("utf-8")
+            ).hexdigest()
+            if expected != entry.row_hash:
+                return False
+            try:
+                assessment_row_id = self._row_id(entry.assessment_id)
+            except KeyError:
+                return False
+            source = self._con.execute(
+                "SELECT a.row_hash, o.row_hash FROM assessments a "
+                "JOIN outcomes o ON o.assessment_id = a.id WHERE a.id = ?",
+                (assessment_row_id,),
+            ).fetchone()
+            if source != (entry.source_assessment_hash, entry.source_outcome_hash):
+                return False
+            prev_hash = entry.row_hash
         return True
 
     def _validate_prediction_error_chain(self) -> bool:
