@@ -44,6 +44,7 @@ _NON_NEGOTIABLES = """\
 3. A PEBRA candidate hold or human review overrides an earlier advisory proceed for that exact
    candidate; it does not cancel the user's requested goal.
 4. Never create, claim, or answer your own human sanction.
+   `pebra accept-risk --apply` requires a real interactive TTY controlled by a trusted human or operator.
 5. After application, verify and record the outcome."""
 
 # Shared by the host skills and the AGENTS.md managed block. Keep provider details out of these
@@ -91,9 +92,9 @@ Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Ver
    - `revise_safer` requires a changed, lower-risk candidate; resubmit it for reassessment.
      Do not apply the original patch.
    - `ask_human` holds the exact candidate. Present its reasons, risk-benefit values, uncertainty, and controls.
-     A trusted human or host operator may run `pebra accept-risk --apply` and type approval interactively.
-     Never answer the approval prompt yourself. Do not create or claim the sanction yourself. PEBRA creates
-     the bound sanction and will reassess the exact candidate.
+     A trusted human or host operator may run `pebra accept-risk --apply`; it requires a real interactive
+     TTY controlled by a trusted human or operator. Never answer the approval prompt yourself. Do not create
+     or claim the sanction yourself. PEBRA creates the bound sanction and will reassess the exact candidate.
    - `reject` means: This exact candidate is rejected, not the maintainer's goal. Present the recorded reasons
      and risk-benefit evidence to the maintainer. If `next_action.override.available` is true, a trusted human
      may run the returned interactive command; never answer it yourself. Otherwise revise the candidate or
@@ -103,10 +104,13 @@ Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Ver
 9. **Enforce.** Before any mutation, the pre-mutation enforcement gate checks the exact bound candidate and
    current repository state. A PEBRA candidate hold or human review overrides an earlier advisory proceed
    for that exact candidate. Never bypass or self-answer it; reassess whenever the candidate or state changes.
-10. **Apply.** Only `next_action.type=apply_exact_candidate_then_verify` permits application. Run its returned
+10. **Apply.** On the ordinary proceed path, only
+   `next_action.type=apply_exact_candidate_then_verify` permits application. Run its returned
    `pebra apply-candidate --assessment-id <returned-id>` command. Do not retype, reconstruct, or expand the
-   patch. A human-reviewed candidate must first receive a fresh exact-candidate `proceed` reassessment with
-   `risk_mode=controlled_high_risk`.
+   patch. On the human-review path, `pebra accept-risk --apply` performs trusted interactive approval,
+   reassesses and applies the exact candidate itself, and returns an already-applied result. Its reassessment
+   must return `proceed` with `risk_mode=controlled_high_risk`; after success, do not run
+   `pebra apply-candidate` or apply it again.
 11. **Verify.** Run `pebra verify --assessment-id <id> --scope staged` and resolve scope drift or failed checks.
 12. **Record.** After passing verification, run
    `pebra record-outcome --assessment-id <id> --status completed`. Only this verified-completed outcome path

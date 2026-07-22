@@ -77,7 +77,11 @@ _AGENT_CHECK_KEYS = {
     "declared_support",
     "effective_enforcement",
 }
-_EXPECTED_AGENT_SKILL_SHA256 = "da68f920483e0ab54c3ec362798f2ca3887ce928695c6787a3868b7204da82dd"
+_EXPECTED_AGENT_SKILL_SHA256 = "9936c732502cf8b24bdd27109cbb2a78ec4b4408c06bf968abb886c79e6942ed"
+_EXPECTED_CLAUDE_RULE_SHA256 = "8be4b8bccc167ea3e9f32d7a0348f47c7d1d9119f267d3ec60a16484af31c432"
+_EXPECTED_CODEX_MANAGED_BLOCK_SHA256 = (
+    "34f03924f10e9696fbaa1894f0563b725f93858e14a96bfcfa964bc81e70935f"
+)
 _CODEX_SENTINEL = "# Pre-existing Codex distribution-verifier sentinel\nPreserve this instruction.\n"
 _MANAGED_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MANAGED_END = "<!-- END pebra-safe-edit -->"
@@ -112,6 +116,13 @@ _AGENT_SEMANTIC_OBLIGATIONS = (
     "Never treat a held candidate as permission to edit.",
     "apply only the exact assessed candidate.",
     "approval prompt yourself.",
+    "real interactive TTY controlled by a trusted human or operator.",
+    "On the ordinary proceed path",
+    "On the human-review path, `pebra accept-risk --apply`",
+    "reassesses and applies the exact candidate itself",
+    "returns an already-applied result.",
+    "do not run",
+    "`pebra apply-candidate` or apply it again.",
     "pebra verify --assessment-id <id> --scope staged",
     "pebra record-outcome --assessment-id <id> --status completed",
     "Only this verified-completed outcome path",
@@ -149,6 +160,7 @@ _CLAUDE_RULE_OBLIGATIONS = (
     "Never apply a mismatched or incomplete candidate",
     "candidate hold or human review overrides an earlier advisory proceed",
     "Never create, claim, or answer your own human sanction.",
+    "real interactive TTY controlled by a trusted human or operator.",
     "After application, verify and record the outcome.",
 )
 
@@ -369,10 +381,14 @@ def _verify_agent_init_artifacts(repo_root: Path, target: str) -> None:
     _verify_agent_semantics(skill_text, label=f"{target} skill")
 
     instruction_path = repo_root / str(expected["instruction_paths"][0])
-    _raw, instruction_text = _read_agent_artifact(
+    instruction_raw, instruction_text = _read_agent_artifact(
         instruction_path, label=f"{target} instructions"
     )
     if target == "claude":
+        if hashlib.sha256(instruction_raw).hexdigest() != _EXPECTED_CLAUDE_RULE_SHA256:
+            raise DistributionVerificationError(
+                "installed Claude rule bytes differ from the release oracle"
+            )
         if any(item not in instruction_text for item in _CLAUDE_RULE_OBLIGATIONS):
             raise DistributionVerificationError(
                 "installed Claude rule obligation is missing"
@@ -394,6 +410,18 @@ def _verify_agent_init_artifacts(repo_root: Path, target: str) -> None:
     if _CODEX_SENTINEL.strip() in managed:
         raise DistributionVerificationError(
             "installed Codex sentinel was not preserved outside the managed block"
+        )
+    begin_bytes = _MANAGED_BEGIN.encode("utf-8")
+    end_bytes = _MANAGED_END.encode("utf-8")
+    raw_start = instruction_raw.index(begin_bytes)
+    raw_end = instruction_raw.index(end_bytes, raw_start) + len(end_bytes)
+    managed_bytes = instruction_raw[raw_start:raw_end]
+    if (
+        hashlib.sha256(managed_bytes).hexdigest()
+        != _EXPECTED_CODEX_MANAGED_BLOCK_SHA256
+    ):
+        raise DistributionVerificationError(
+            "installed Codex managed block bytes differ from the release oracle"
         )
     _verify_agent_semantics(managed, label="Codex managed block")
 

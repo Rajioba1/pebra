@@ -456,12 +456,28 @@ def test_installed_artifact_verifier_rejects_provider_specific_agent_instruction
         distribution_verifier._verify_agent_init_artifacts(tmp_path, "claude")
 
 
-def test_installed_artifact_verifier_checks_claude_rule_obligations(tmp_path) -> None:
+def test_installed_artifact_verifier_checks_claude_rule_obligations(
+    tmp_path, monkeypatch,
+) -> None:
     _write_agent_init_artifacts(tmp_path, "claude")
     rule = tmp_path / str(_EXPECTED_AGENT_HOSTS["claude"]["instruction_paths"][0])
     rule.write_text("# PEBRA safe-edit non-negotiables\n", encoding="utf-8")
+    monkeypatch.setattr(
+        distribution_verifier,
+        "_EXPECTED_CLAUDE_RULE_SHA256",
+        distribution_verifier.hashlib.sha256(rule.read_bytes()).hexdigest(),
+    )
 
     with pytest.raises(DistributionVerificationError, match="Claude rule obligation"):
+        distribution_verifier._verify_agent_init_artifacts(tmp_path, "claude")
+
+
+def test_installed_artifact_verifier_rejects_claude_rule_byte_drift(tmp_path) -> None:
+    _write_agent_init_artifacts(tmp_path, "claude")
+    rule = tmp_path / str(_EXPECTED_AGENT_HOSTS["claude"]["instruction_paths"][0])
+    rule.write_bytes(rule.read_bytes() + b"\n")
+
+    with pytest.raises(DistributionVerificationError, match="Claude rule bytes"):
         distribution_verifier._verify_agent_init_artifacts(tmp_path, "claude")
 
 
@@ -479,6 +495,22 @@ def test_installed_artifact_verifier_requires_codex_sentinel_outside_managed_blo
     )
 
     with pytest.raises(DistributionVerificationError, match="Codex sentinel"):
+        distribution_verifier._verify_agent_init_artifacts(tmp_path, "codex")
+
+
+def test_installed_artifact_verifier_rejects_codex_managed_block_byte_drift(
+    tmp_path,
+) -> None:
+    _write_agent_init_artifacts(tmp_path, "codex")
+    agents = tmp_path / "AGENTS.md"
+    agents.write_bytes(
+        agents.read_bytes().replace(
+            distribution_verifier._MANAGED_END.encode("utf-8"),
+            b"\n" + distribution_verifier._MANAGED_END.encode("utf-8"),
+        )
+    )
+
+    with pytest.raises(DistributionVerificationError, match="Codex managed block bytes"):
         distribution_verifier._verify_agent_init_artifacts(tmp_path, "codex")
 
 

@@ -172,6 +172,8 @@ def test_claude_writes_always_loaded_non_negotiables(tmp_path):
     body = generated.decode("utf-8").lower()
     for obligation in _OBLIGATIONS:
         assert obligation in body
+    assert "real interactive tty" in body
+    assert "trusted human or operator" in body
 
 
 def test_claude_non_negotiables_match_detailed_protocol_guarantees():
@@ -268,7 +270,7 @@ def test_skill_protocol_omits_dead_candidate_verification_self_report(tmp_path):
 
 def test_skill_protocol_uses_json_driven_trusted_human_approval_cycle(tmp_path):
     _run("claude", tmp_path)
-    body = (tmp_path / _SKILL_REL).read_text(encoding="utf-8").lower()
+    body = " ".join((tmp_path / _SKILL_REL).read_text(encoding="utf-8").lower().split())
     assert "next_action" in body
     assert "trusted human or host" in body
     assert "pebra accept-risk" in body
@@ -276,7 +278,21 @@ def test_skill_protocol_uses_json_driven_trusted_human_approval_cycle(tmp_path):
     assert "pebra apply-candidate --assessment-id" in body
     assert "reassess the exact candidate" in body
     assert "do not create or claim the sanction yourself" in body
+    assert "real interactive tty" in body
+    assert "controlled by a trusted human or operator" in body
     assert "pebra verify" in body
+
+
+def test_skill_distinguishes_ordinary_apply_from_human_review_apply(tmp_path):
+    _run("claude", tmp_path)
+    body = " ".join((tmp_path / _SKILL_REL).read_text(encoding="utf-8").lower().split())
+
+    assert "ordinary proceed path" in body
+    assert "human-review path" in body
+    assert "accept-risk --apply" in body
+    assert "reassesses and applies the exact candidate itself" in body
+    assert "already-applied result" in body
+    assert "do not run `pebra apply-candidate` or apply it again" in body
 
 
 def test_codex_creates_agents_md(tmp_path):
