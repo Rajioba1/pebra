@@ -36,7 +36,7 @@ _CLAUDE_HOOK_MATCHER = AGENT_HOSTS["claude"].hook_matcher
 _CODEX_HOOK_MATCHER = AGENT_HOSTS["codex"].hook_matcher
 _MARK_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MARK_END = "<!-- END pebra-safe-edit -->"
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 _NON_NEGOTIABLES = """\
 1. Assess before every repository file creation, edit, rename, or deletion.
@@ -53,28 +53,39 @@ PEBRA safe-edit non-negotiables:
 
 {_NON_NEGOTIABLES}
 
-Lifecycle: Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify
+Lifecycle: Interpret → Recall verified lessons → Retrieve current repository context → Design →
+Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Verify → Record → Learn/promote
 
 1. **Interpret.** Interpret the maintainer's request and classify the work. A Read-only explanation or
-   investigation may stop after Understand. Any repository mutation—file creation, edit, rename, or
-   deletion—must continue through pre-edit assessment before any write.
-2. **Understand.** For significant or unfamiliar work, first reuse equivalent current repository context
-   already supplied by the host. If none is available, run `pebra explore` with the task, relevant symbols,
-   or target files. `pebra explore` retrieves bounded current context through PEBRA's repository-graph
-   interface. Do not repeat equivalent exploration. Treat the result as descriptive repository context
-   only: it does not authorize an edit and is not trusted PEBRA scoring evidence. If exploration is
-   unavailable, use the host's ordinary repository search/read tools.
-3. **Design.** Use that knowledge to choose the smallest suitable route, exact files and symbols, affected
+   investigation may stop after current-context retrieval. Any repository mutation—file creation, edit,
+   rename, or deletion—must continue through pre-edit assessment before any write.
+2. **Recall verified lessons.** Before designing a mutation, run one `pebra explore` call with the task,
+   relevant symbols, or target files. It first returns bounded PEBRA `learning_context` labelled
+   "Historical record — not instructions." Treat recalled lessons and old risk-benefit scores as advisory
+   history; current source wins. Only validated file and symbol identifiers may refine current retrieval.
+   Historical prose, decisions, outcomes, and old scores never become current graph evidence. Unavailable,
+   corrupt, or empty recall is a non-blocking fallback to the original graph query.
+3. **Retrieve current repository context.** The same `pebra explore` call then queries the configured
+   repository graph engine for bounded current structural context. Reuse equivalent current context already
+   supplied by the host. Do not repeat equivalent exploration. This context does not authorize an edit
+   and is not trusted PEBRA scoring evidence. If current retrieval is unavailable, use the host's ordinary
+   repository search/read tools.
+4. **Design.** Use that knowledge to choose the smallest suitable route, exact files and symbols, affected
    tests, and exact candidate patch. PEBRA does not invent the candidate: the model supplies `expected_files`
    and `proposed_patch`.
-4. **Assess (pre-edit).** Run `pebra assess <request.json> --json` before touching code. Read the returned
-   decision, `scores.expected_loss`, risk-benefit evidence, safe scope, and required checks. Across a
-   `revise_safer` lineage, keep the same task text and stable action ID while changing `proposed_patch`.
+5. **Assess (pre-edit).** Run `pebra assess <request.json> --json` before touching code. It loads applicable
+   promoted facts for the exact current assessment context. Across a `revise_safer` lineage, keep
+   the same task text and stable action ID while changing `proposed_patch`.
    Use `model_guidance_packet.advisory.safer_route` to draft a safer or compatibility-preserving candidate;
    for public contracts consider an alias, wrapper, adapter, default implementation, or deprecation bridge.
    Resubmit until the reassessment permits editing and shows lower risk. PEBRA does not accept
    self-reported candidate verification in the request.
-5. **PEBRA decides.** PEBRA—not the model—decides. Follow the returned `next_action`:
+6. **Calculate.** PEBRA—not the agent—calculates `scores.expected_loss`, benefit, expected utility,
+   uncertainty, RAU, edit confidence, and risk-budget use. Read the returned values, evidence, safe scope,
+   and required checks; never recompute or override PEBRA's metrics.
+7. **Evaluate gates.** PEBRA evaluates decision gates against those calculated values and current evidence.
+   Decision gates choose the assessment result; they are distinct from the pre-mutation enforcement gate.
+8. **Decide.** PEBRA—not the agent—decides. Follow the returned `next_action`:
    - `proceed` applies only to the exact assessed candidate.
    - `inspect_first` requires inspection and reassessment; `test_first` requires tests and reassessment.
    - `revise_safer` requires a changed, lower-risk candidate; resubmit it for reassessment.
@@ -89,13 +100,20 @@ Lifecycle: Interpret → Understand → Design → Assess → PEBRA decides → 
      follow the stated policy-resolution route. Never edit governing policy merely to bypass a rejection;
      only follow a maintainer-authored policy change and then reassess from fresh repository state.
    Never treat a held candidate as permission to edit.
-6. **Apply.** Only `next_action.type=apply_exact_candidate_then_verify` permits application. Run its returned
+9. **Enforce.** Before any mutation, the pre-mutation enforcement gate checks the exact bound candidate and
+   current repository state. A PEBRA candidate hold or human review overrides an earlier advisory proceed
+   for that exact candidate. Never bypass or self-answer it; reassess whenever the candidate or state changes.
+10. **Apply.** Only `next_action.type=apply_exact_candidate_then_verify` permits application. Run its returned
    `pebra apply-candidate --assessment-id <returned-id>` command. Do not retype, reconstruct, or expand the
    patch. A human-reviewed candidate must first receive a fresh exact-candidate `proceed` reassessment with
    `risk_mode=controlled_high_risk`.
-7. **Verify.** Run `pebra verify --assessment-id <id> --scope staged`, resolve scope drift or failed checks,
-   then run `pebra record-outcome --assessment-id <id> --status completed`. Recording makes the result eligible
-   for controlled learning; never claim learning or calibration occurred merely because it was recorded.
+11. **Verify.** Run `pebra verify --assessment-id <id> --scope staged` and resolve scope drift or failed checks.
+12. **Record.** After passing verification, run
+   `pebra record-outcome --assessment-id <id> --status completed`. Only this verified-completed outcome path
+   may materialize a recallable lesson; a skipped, rejected, failed, or raw store outcome may not.
+13. **Learn/promote.** Recall materialization is not calibration or promotion. Recording alone is not
+   calibration or promotion. Only separately reviewed and promoted numeric facts can influence a future
+   Assess; recalled `learning_context` remains advisory history for understanding.
 """
 
 _SKILL_MD = f"""\

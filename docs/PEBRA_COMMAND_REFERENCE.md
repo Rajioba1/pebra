@@ -558,9 +558,9 @@ pebra help [COMMAND] [--all]
 
 The agent lifecycle is:
 
-`Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify`
+`Interpret → Recall verified lessons → Retrieve current repository context → Design → Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Verify → Record → Learn/promote`
 
-Read-only work may stop after Understand. Mutation does not: run `pebra explore` to recall relevant
+Read-only work may stop after current-context retrieval. Mutation does not: run `pebra explore` to recall relevant
 verified PEBRA history first and retrieve current repository structure second, then design the exact
 `expected_files` and `proposed_patch`, and run `pebra assess` before writing. PEBRA owns the historical
 `learning_context`; CodeGraph is the current adapter behind PEBRA's provider-neutral structural port.
@@ -641,9 +641,23 @@ removed.
 
 ### Observatory score glossary
 
-`pebra assess` constructs the score in this order: it sums post-floor event losses, resolves normalized
-benefit, calculates expected utility and its uncertainty, then calculates RAU. The decision engine
-evaluates its gates from those returned values; the TUI never recalculates them.
+`pebra assess` constructs the score in this exact order. Generated agent instructions tell the model to
+consume the returned values; the model and TUI never recalculate or override them.
+
+```text
+disutility_j = max(elicited_j, criticality_value)  for consequence-bearing events; otherwise elicited_j
+expected_loss = Σ_j p_event_j · disutility_j
+benefit = the bounded result of the configured benefit model
+expected_utility = p_success · benefit − expected_loss − review_cost
+utility_sd = √(Σ variance contribution terms)
+RAU = expected_utility − 1.28 · utility_sd
+```
+
+The decision engine then evaluates its decision gates from those returned values and current evidence.
+The distinct pre-mutation enforcement gate checks the exact bound candidate and repository state before
+application. CodeGraph is the current structural adapter for repository truth; PEBRA-owned
+`learning_context` is verified historical recall. Neither replaces the other. Recall informs Understand;
+only separately promoted numeric facts can influence Assess.
 
 | Field | Calculation | Observatory display |
 | --- | --- | --- |

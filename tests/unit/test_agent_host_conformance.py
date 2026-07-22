@@ -15,11 +15,12 @@ from pebra.core.agent_hosts import AGENT_HOSTS, HostSpec
 
 
 _SEMANTIC_TOKENS = (
-    "Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify",
-    "2. **Understand.**",
+    "Interpret → Recall verified lessons → Retrieve current repository context",
+    "2. **Recall verified lessons.**",
+    "3. **Retrieve current repository context.**",
     "Do not repeat equivalent exploration",
     "not trusted PEBRA scoring evidence",
-    "ordinary repository search/read tools",
+    "repository search/read tools",
     "pebra assess",
     "revise_safer",
     "trusted human or host",
@@ -29,16 +30,19 @@ _SEMANTIC_TOKENS = (
 )
 
 
-def test_every_host_uses_the_byte_identical_protocol_v3_projection(tmp_path) -> None:
+def test_every_host_uses_the_byte_identical_protocol_v4_projection(tmp_path) -> None:
     bodies = []
     for target, spec in AGENT_HOSTS.items():
         assert _run(target, tmp_path) == 0
         bodies.append((tmp_path / spec.skill_path).read_bytes())
 
-    assert agent_init.PROTOCOL_VERSION == 3
+    assert agent_init.PROTOCOL_VERSION == 4
     assert len(set(bodies)) == 1
     lowered = bodies[0].lower()
-    for provider_detail in (b"codegraph", b"mcp", b"prompt hook", b"provider selector"):
+    for provider_detail in (
+        b"codegraph", b"agentmemory", b"mcp", b"prompt hook", b"provider selector",
+        b"localhost:", b"token savings",
+    ):
         assert provider_detail not in lowered
 
 

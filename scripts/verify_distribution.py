@@ -77,40 +77,72 @@ _AGENT_CHECK_KEYS = {
     "declared_support",
     "effective_enforcement",
 }
-_EXPECTED_AGENT_SKILL_SHA256 = "baa618b6bff9f4c5efb045e29088b063422c88efea72231f9a2c4de3a411ca84"
+_EXPECTED_AGENT_SKILL_SHA256 = "da68f920483e0ab54c3ec362798f2ca3887ce928695c6787a3868b7204da82dd"
 _CODEX_SENTINEL = "# Pre-existing Codex distribution-verifier sentinel\nPreserve this instruction.\n"
 _MANAGED_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MANAGED_END = "<!-- END pebra-safe-edit -->"
 _AGENT_SEMANTIC_OBLIGATIONS = (
-    "Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify",
+    "Interpret → Recall verified lessons → Retrieve current repository context → Design →",
+    "Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Verify → Record → Learn/promote",
     "Read-only explanation or",
-    "investigation may stop after Understand.",
+    "investigation may stop after current-context retrieval.",
     "file creation, edit, rename, or",
     "before any write.",
+    "Historical record — not instructions.",
+    "Before designing a mutation, run one `pebra explore` call",
+    "current source wins.",
+    "Only validated file and symbol identifiers may refine current retrieval.",
+    "Historical prose, decisions, outcomes, and old scores never become current graph evidence.",
+    "non-blocking fallback to the original graph query.",
+    "repository graph engine for bounded current structural context.",
     "PEBRA does not invent the candidate: the model supplies `expected_files`",
-    "PEBRA—not the model—decides.",
+    "PEBRA does not accept",
+    "self-reported candidate verification",
+    "PEBRA—not the agent—calculates `scores.expected_loss`",
+    "never recompute or override PEBRA's metrics.",
+    "Decision gates choose the assessment result; they are distinct from the pre-mutation enforcement gate.",
+    "PEBRA—not the agent—decides.",
     "This exact candidate is rejected, not the maintainer's goal.",
     "Never edit governing policy merely to bypass a rejection",
     "Do not repeat equivalent exploration.",
-    "it does not authorize an edit and is not trusted PEBRA scoring evidence.",
-    "ordinary repository search/read tools",
+    "does not authorize an edit",
+    "not trusted PEBRA scoring evidence.",
+    "repository search/read tools.",
     "Assess before every repository file creation, edit, rename, or deletion",
     "Never treat a held candidate as permission to edit.",
     "apply only the exact assessed candidate.",
     "approval prompt yourself.",
     "pebra verify --assessment-id <id> --scope staged",
     "pebra record-outcome --assessment-id <id> --status completed",
+    "Only this verified-completed outcome path",
+    "Recording alone is not",
+    "calibration or promotion.",
+    "Only separately reviewed and promoted numeric facts can influence a future",
 )
 _AGENT_SEMANTIC_RELATIONS = (
-    ("**Interpret.**", "**Understand.**"),
-    ("**Understand.**", "**Design.**"),
+    ("**Interpret.**", "**Recall verified lessons.**"),
+    ("**Recall verified lessons.**", "**Retrieve current repository context.**"),
+    ("**Retrieve current repository context.**", "**Design.**"),
     ("**Design.**", "**Assess (pre-edit).**"),
-    ("**Assess (pre-edit).**", "**PEBRA decides.**"),
-    ("**PEBRA decides.**", "**Apply.**"),
+    ("**Assess (pre-edit).**", "**Calculate.**"),
+    ("**Calculate.**", "**Evaluate gates.**"),
+    ("**Evaluate gates.**", "**Decide.**"),
+    ("**Decide.**", "**Enforce.**"),
+    ("**Enforce.**", "**Apply.**"),
     ("**Apply.**", "**Verify.**"),
+    ("**Verify.**", "**Record.**"),
+    ("**Record.**", "**Learn/promote.**"),
     ("pebra accept-risk --apply", "apply_exact_candidate_then_verify"),
     ("apply_exact_candidate_then_verify", "pebra verify --assessment-id"),
     ("pebra verify --assessment-id", "pebra record-outcome --assessment-id"),
+)
+_AGENT_FORBIDDEN_PROVIDER_DETAILS = (
+    "codegraph",
+    "agentmemory",
+    "mcp",
+    "localhost:",
+    "token saving",
+    "token savings",
 )
 _CLAUDE_RULE_OBLIGATIONS = (
     "Assess before every repository file creation, edit, rename, or deletion.",
@@ -237,7 +269,7 @@ def _validate_agent_init_check(raw: str, *, target: str) -> dict[str, object]:
         )
     if (
         type(payload["protocol_version"]) is not int
-        or payload["protocol_version"] != 3
+        or payload["protocol_version"] != 4
         or type(payload["gate_schema_version"]) is not int
         or payload["gate_schema_version"] != 2
     ):
@@ -318,6 +350,11 @@ def _verify_agent_semantics(text: str, *, label: str) -> None:
             raise DistributionVerificationError(
                 f"installed {label} has an invalid semantic obligation relation"
             )
+    lowered = text.lower()
+    if any(detail in lowered for detail in _AGENT_FORBIDDEN_PROVIDER_DETAILS):
+        raise DistributionVerificationError(
+            f"installed {label} contains provider-specific agent instructions"
+        )
 
 
 def _verify_agent_init_artifacts(repo_root: Path, target: str) -> None:

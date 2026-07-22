@@ -51,7 +51,7 @@ def test_installed_host_check_is_real_cli_non_mutating(tmp_path, target):
     payload = json.loads(checked.stdout)
     assert payload["command"] == "agent-init"
     assert payload["target"] == target
-    assert payload["protocol_version"] == 3
+    assert payload["protocol_version"] == 4
     assert payload["gate_schema_version"] == 2
     assert {item["state"] for item in payload["files"]} == {"current"}
     assert payload["hook"]["state"] == "exact"
@@ -62,6 +62,68 @@ def test_installed_host_check_is_real_cli_non_mutating(tmp_path, target):
     assert payload["effective_enforcement"]["candidate_bound"] is False
     assert "graph_unverified_read_only" in payload["effective_enforcement"]["reasons"]
     assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("target", ("claude", "codex"))
+def test_protocol_v3_material_is_reported_stale_then_only_managed_content_is_refreshed(
+    tmp_path, target,
+):
+    installed = _agent_init(tmp_path, target)
+    assert installed.returncode == 0, installed.stderr
+    unrelated = tmp_path / "KEEP.txt"
+    unrelated.write_bytes(b"preserve me\r\n")
+
+    if target == "claude":
+        managed = (
+            tmp_path / ".claude/rules/pebra-safe-edit.md",
+            tmp_path / ".claude/skills/pebra-safe-edit/SKILL.md",
+        )
+        for path in managed:
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "Interpret → Recall verified lessons", "Interpret → Understand"
+                ),
+                encoding="utf-8",
+                newline="",
+            )
+    else:
+        agents = tmp_path / "AGENTS.md"
+        agents.write_text(
+            "# User rule\r\n\r\n"
+            + agents.read_text(encoding="utf-8").replace(
+                "Interpret → Recall verified lessons", "Interpret → Understand"
+            ),
+            encoding="utf-8",
+            newline="",
+        )
+        skill = tmp_path / ".agents/skills/pebra-safe-edit/SKILL.md"
+        skill.write_text(
+            skill.read_text(encoding="utf-8").replace(
+                "Interpret → Recall verified lessons", "Interpret → Understand"
+            ),
+            encoding="utf-8",
+            newline="",
+        )
+
+    before_check = _snapshot(tmp_path)
+    checked = _agent_init(tmp_path, target, "--check", "--json")
+    assert checked.returncode == 0, checked.stderr
+    payload = json.loads(checked.stdout)
+    assert payload["protocol_version"] == 4
+    expected_states = {"current", "modified"} if target == "claude" else {"modified"}
+    assert {item["state"] for item in payload["files"]} == expected_states
+    assert _snapshot(tmp_path) == before_check
+
+    refreshed = _agent_init(tmp_path, target)
+    assert refreshed.returncode == 0, refreshed.stderr
+    assert unrelated.read_bytes() == b"preserve me\r\n"
+    if target == "codex":
+        assert (tmp_path / "AGENTS.md").read_bytes().startswith(b"# User rule\r\n\r\n")
+
+    current = _agent_init(tmp_path, target, "--check", "--json")
+    assert current.returncode == 0, current.stderr
+    current_payload = json.loads(current.stdout)
+    assert {item["state"] for item in current_payload["files"]} == {"current"}
 
 
 @pytest.mark.parametrize(

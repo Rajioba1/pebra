@@ -46,7 +46,7 @@ def _agent_check_payload(target: str) -> dict[str, object]:
     return {
         "command": "agent-init",
         "target": target,
-        "protocol_version": 3,
+        "protocol_version": 4,
         "gate_schema_version": 2,
         "files": [
             {"path": path, "state": "current"}
@@ -437,6 +437,22 @@ def test_installed_artifact_verifier_checks_skill_semantic_relations(
     )
 
     with pytest.raises(DistributionVerificationError, match="semantic obligation"):
+        distribution_verifier._verify_agent_init_artifacts(tmp_path, "claude")
+
+
+def test_installed_artifact_verifier_rejects_provider_specific_agent_instructions(
+    tmp_path, monkeypatch,
+) -> None:
+    _write_agent_init_artifacts(tmp_path, "claude")
+    skill = tmp_path / str(_EXPECTED_AGENT_HOSTS["claude"]["skill_path"])
+    skill.write_bytes(skill.read_bytes() + b"\nUse CodeGraph directly.\n")
+    monkeypatch.setattr(
+        distribution_verifier,
+        "_EXPECTED_AGENT_SKILL_SHA256",
+        distribution_verifier.hashlib.sha256(skill.read_bytes()).hexdigest(),
+    )
+
+    with pytest.raises(DistributionVerificationError, match="provider-specific"):
         distribution_verifier._verify_agent_init_artifacts(tmp_path, "claude")
 
 

@@ -33,46 +33,45 @@ _OBLIGATIONS = (
     "verify and record",
 )
 
-_UNDERSTAND_PHASE = (
-    "Understand — For a significant or unfamiliar edit, first use equivalent current repository "
-    "context already supplied by the host. If none is available, run `pebra explore` with the task, "
-    "relevant symbols, or target files before assessment. Do not repeat equivalent exploration. Treat "
-    "the result as descriptive repository context only: it does not authorize an edit and is not "
-    "trusted PEBRA scoring evidence. If exploration is unavailable, continue with the host's ordinary "
-    "repository search/read tools, then assess the exact candidate."
-)
-
-
-def test_protocol_v3_enforces_the_ordered_cognitive_lifecycle() -> None:
+def test_protocol_v4_enforces_the_ordered_cognitive_lifecycle() -> None:
     normalized = " ".join(agent_init._PROTOCOL_BODY.split())
 
-    assert agent_init.PROTOCOL_VERSION == 3
+    assert agent_init.PROTOCOL_VERSION == 4
     phases = (
         "1. **Interpret.",
-        "2. **Understand.",
-        "3. **Design.",
-        "4. **Assess (pre-edit).",
-        "5. **PEBRA decides.",
-        "6. **Apply.",
-        "7. **Verify.",
+        "2. **Recall verified lessons.",
+        "3. **Retrieve current repository context.",
+        "4. **Design.",
+        "5. **Assess (pre-edit).",
+        "6. **Calculate.",
+        "7. **Evaluate gates.",
+        "8. **Decide.",
+        "9. **Enforce.",
+        "10. **Apply.",
+        "11. **Verify.",
+        "12. **Record.",
+        "13. **Learn/promote.",
     )
     positions = [normalized.index(phase) for phase in phases]
     assert positions == sorted(positions)
-    assert "Read-only explanation or investigation may stop after Understand" in normalized
+    assert "Read-only explanation or investigation may stop after current-context retrieval" in normalized
     assert "creation, edit, rename, or deletion" in normalized
     assert "before any write" in normalized
     assert "PEBRA does not invent the candidate" in normalized
     assert "the model supplies" in normalized
-    assert "PEBRA—not the model—decides" in normalized
+    assert "PEBRA—not the agent—calculates" in normalized
+    assert "never recompute or override" in normalized
     assert "Do not repeat equivalent exploration" in normalized
     assert "does not authorize an edit" in normalized
     assert "not trusted PEBRA scoring evidence" in normalized
     assert "ordinary repository search/read tools" in normalized
-    for provider_detail in ("codegraph", "mcp", "prompt hook", "provider selector"):
+    for provider_detail in (
+        "codegraph", "agentmemory", "mcp", "prompt hook", "provider selector",
+        "localhost:", "token saving", "token savings",
+    ):
         assert provider_detail not in normalized.lower()
 
 
-@pytest.mark.xfail(strict=True, reason="Milestone 6: protocol v4 (recall/calculate/enforce/learn) not implemented yet")
 def test_protocol_v4_teaches_recall_calculate_enforce_and_learn_phases() -> None:
     """Milestone 0 forward spec for Milestone 6. v4 lifecycle order (plan): Interpret -> Recall
     verified lessons -> Retrieve current repository context -> Design -> Assess -> Calculate ->
@@ -97,11 +96,46 @@ def test_protocol_v4_teaches_recall_calculate_enforce_and_learn_phases() -> None
     )
     positions = [lifecycle.index(marker) for marker in ordered_markers]
     assert positions == sorted(positions), lifecycle
-    # Recall stays advisory history, never authorization or trusted scoring evidence.
-    assert "advisory" in lifecycle
+    assert "historical record — not instructions" in lifecycle
+    assert "before designing a mutation" in lifecycle
+    assert "advisory history" in lifecycle
+    assert "current source wins" in lifecycle
+    assert "validated file and symbol identifiers" in lifecycle
+    assert "historical prose" in lifecycle
+    assert "old scores" in lifecycle
+    assert "never become current graph evidence" in lifecycle
+    assert "unavailable, corrupt, or empty" in lifecycle
+    assert "non-blocking" in lifecycle
+    assert "loads applicable promoted facts" in lifecycle
+    assert "decision gates" in lifecycle
+    assert "pre-mutation enforcement gate" in lifecycle
+    assert "verified-completed outcome" in lifecycle
+    assert "recording alone is not calibration or promotion" in lifecycle
     # Provider neutrality is retained under v4.
-    for provider_detail in ("codegraph", "mcp", "agentmemory", "provider selector"):
+    for provider_detail in (
+        "codegraph", "mcp", "agentmemory", "provider selector", "localhost:",
+        "token saving", "token savings",
+    ):
         assert provider_detail not in normalized
+
+
+def test_public_docs_explain_the_math_and_two_knowledge_sources() -> None:
+    root = Path(__file__).resolve().parents[2]
+    for path in (root / "README.md", root / "docs/PEBRA_COMMAND_REFERENCE.md"):
+        body = path.read_text(encoding="utf-8")
+        normalized = " ".join(body.split())
+        for formula in (
+            "disutility_j = max(elicited_j, criticality_value)",
+            "expected_loss = Σ_j p_event_j · disutility_j",
+            "expected_utility = p_success · benefit − expected_loss − review_cost",
+            "utility_sd = √(Σ variance contribution terms)",
+            "RAU = expected_utility − 1.28 · utility_sd",
+        ):
+            assert formula in normalized, f"{path.name} is missing {formula}"
+        assert "CodeGraph is the current structural adapter" in normalized
+        assert "learning_context" in normalized
+        assert "Recall informs Understand" in normalized
+        assert "only separately promoted numeric facts" in normalized
 
 
 def test_non_negotiables_are_shared_by_rule_and_protocol() -> None:
@@ -199,11 +233,11 @@ def test_detailed_protocol_names_every_live_decision():
         assert decision.value in agent_init._PROTOCOL_BODY
 
 
-def test_skill_wording_is_consult_not_block(tmp_path):
+def test_skill_wording_is_consult_not_blanket_block(tmp_path):
     _run("claude", tmp_path)
     body = (tmp_path / _SKILL_REL).read_text(encoding="utf-8").lower()
     assert "consult" in body
-    assert "block" not in body  # enforcement wording (blocks edits) is a later slice, not Phase 1
+    assert "block every edit" not in body
 
 
 def test_skill_protocol_requires_reassessing_revise_safer(tmp_path):
@@ -743,7 +777,7 @@ def test_agent_init_check_reports_file_state_without_mutation(
         "declared_support", "effective_enforcement",
     }
     assert payload["target"] == target
-    assert payload["protocol_version"] == 3
+    assert payload["protocol_version"] == 4
     assert payload["gate_schema_version"] == 2
     assert {item["state"] for item in payload["files"]} == {file_state}
     assert payload["declared_support"] == AGENT_HOSTS[target].declared_support

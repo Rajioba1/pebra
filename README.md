@@ -128,9 +128,9 @@ pebra capabilities --repo-root <repo_root>
 
 The generated agent protocol follows one cognitive lifecycle:
 
-`Interpret → Understand → Design → Assess → PEBRA decides → Apply → Verify`
+`Interpret → Recall verified lessons → Retrieve current repository context → Design → Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Verify → Record → Learn/promote`
 
-Read-only work may stop after Understand. Before any create, edit, rename, or delete, the agent uses
+Read-only work may stop after current-context retrieval. Before any create, edit, rename, or delete, the agent uses
 `pebra explore` to recall relevant verified PEBRA history first and retrieve current repository context
 second, designs the exact files and patch, and submits that candidate to `pebra assess`. Historical
 records are data, not instructions. Only validated file and symbol identifiers may refine the current
@@ -138,6 +138,22 @@ graph lookup; historical prose, decisions, scores, and outcomes never enter it. 
 structural adapter, but neither recall nor graph context authorizes an edit. PEBRA's decision applies to
 the exact candidate. Displayed `learning_context` informs Understand; only separately promoted numeric
 facts can influence Assess.
+
+PEBRA calculates the assessment in this order; generated agent instructions require consuming these
+returned values rather than reproducing or overriding the math:
+
+```text
+disutility_j = max(elicited_j, criticality_value)  for consequence-bearing events; otherwise elicited_j
+expected_loss = Σ_j p_event_j · disutility_j
+benefit = the bounded result of the configured benefit model
+expected_utility = p_success · benefit − expected_loss − review_cost
+utility_sd = √(Σ variance contribution terms)
+RAU = expected_utility − 1.28 · utility_sd
+```
+
+Decision gates evaluate those calculated values and evidence. The separate pre-mutation enforcement
+gate then checks that only the exact bound candidate is applied. Recall informs Understand; only
+separately promoted numeric facts can affect a future Assess.
 `reject` means **Reject candidate**, not reject the maintainer's goal: the agent presents the recorded
 reason and risk-benefit evidence. Only a hash-covered, sanction-convertible risk rejection with valid
 replay can advertise trusted interactive review; policy and obligation failures require a compliant route.
