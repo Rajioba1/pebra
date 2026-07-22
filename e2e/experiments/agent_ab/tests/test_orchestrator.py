@@ -17,6 +17,7 @@ _ORIGINAL_ASSERT_HARNESS_CLEAN = orchestrator._assert_harness_clean
 
 _T1 = TaskSpec("T1", "d", ("a.cs",), "risky", ("a.cs",), "build_failure", True)
 _B1 = TaskSpec("B1", "d", ("a.cs",), "safe", ("a.cs",), "none", False)
+_SUBJECT_CONFIG = {"subject": {"transient_retries": 0}}
 
 
 @pytest.fixture(autouse=True)
@@ -66,6 +67,7 @@ def _run_meta(*, mode="pilot", seeds_per_arm=1, specs=None) -> dict:
         mode: {"tasks": [spec.task_id for spec in specs], "seeds_per_arm": seeds_per_arm},
         "bootstrap_seed": 0,
         "learning_context_cohort": "empty",
+        **_SUBJECT_CONFIG,
     }
     args = type("Args", (), {"mode": mode})()
     design = orchestrator._experiment_design(
@@ -338,6 +340,7 @@ def test_authorized_one_seed_shape_is_fully_pinned_before_any_paid_run(monkeypat
     assert design["run_namespace"] == "cognitive-lifecycle-v4"
     assert design["learning_context_cohort"] == "empty"
     assert design["subject_config"]["apply_verify_reserve_seconds"] == 120
+    assert design["subject_config"]["transient_retries"] == 0
 
 
 def test_token_report_is_totalled_but_never_claimed_without_predeclared_power():
@@ -870,7 +873,9 @@ def test_aligned_live_run_documentation_uses_fresh_one_seed_run_id():
     assert "schema-2" in normalized
     assert "different graph-scope digests" in normalized
     assert 'E2E_AB_SEEDS_PER_ARM="1"' in readme
-    assert 'E2E_AB_RUN_ID="js4_s2_cogv4_dspro_nt_1s_20260722_001"' in readme
+    run_id = "js4_v4pro_nt_1s_20260722_001"
+    assert f'E2E_AB_RUN_ID="{run_id}"' in readme
+    assert len(run_id) <= 32
     assert "js4_schema1_1seed_20260719_001" not in readme
     assert "js4_v4pro_sp_3seed_001" not in readme
 
@@ -1064,8 +1069,11 @@ def _wire(monkeypatch, tmp_path, corpus, run_pair_fn):
     monkeypatch.setattr(orchestrator.preflight, "run_oracle_preflight", lambda *a, **k: None)
     monkeypatch.setattr(orchestrator.preflight, "run_graph_preflight", lambda *a, **k: None)
     monkeypatch.setattr(orchestrator, "load_corpus", lambda: corpus)
-    monkeypatch.setattr(orchestrator, "_config",
-                        lambda: {"pilot": {"tasks": ["T1"], "seeds_per_arm": 1}, "bootstrap_seed": 0})
+    monkeypatch.setattr(orchestrator, "_config", lambda: {
+        "pilot": {"tasks": ["T1"], "seeds_per_arm": 1},
+        "bootstrap_seed": 0,
+        **_SUBJECT_CONFIG,
+    })
     monkeypatch.setattr(orchestrator.run_pair, "run_pair", run_pair_fn)
 
 
@@ -1097,7 +1105,11 @@ def test_main_uses_effective_seed_count_override(monkeypatch, tmp_path):
     monkeypatch.setattr(
         orchestrator,
         "_config",
-        lambda: {"pilot": {"tasks": ["T1"], "seeds_per_arm": 3}, "bootstrap_seed": 0},
+        lambda: {
+            "pilot": {"tasks": ["T1"], "seeds_per_arm": 3},
+            "bootstrap_seed": 0,
+            **_SUBJECT_CONFIG,
+        },
     )
     monkeypatch.setenv("E2E_AB_SEEDS_PER_ARM", "1")
     monkeypatch.setenv("E2E_AB_ALLOW_UNVERIFIED", "1")
@@ -1225,6 +1237,7 @@ def test_main_resumes_and_skips_completed_pair(monkeypatch, tmp_path):
             "pilot": {"tasks": ["T1"], "seeds_per_arm": 1},
             "bootstrap_seed": 0,
             "learning_context_cohort": "empty",
+            **_SUBJECT_CONFIG,
             **_rca_toolchain_config(),
         },
     )
@@ -1341,9 +1354,11 @@ def test_main_runs_revise_safer_calibration_for_assay(monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator, "_AB_OUT", tmp_path)
     monkeypatch.setattr(orchestrator.run_gate, "check_gate", lambda: None)
     monkeypatch.setattr(orchestrator, "load_corpus", lambda: [gamma])
-    monkeypatch.setattr(orchestrator, "_config",
-                        lambda: {"assay": {"tasks": ["MNGAMMA"], "seeds_per_arm": 1},
-                                 "bootstrap_seed": 0})
+    monkeypatch.setattr(orchestrator, "_config", lambda: {
+        "assay": {"tasks": ["MNGAMMA"], "seeds_per_arm": 1},
+        "bootstrap_seed": 0,
+        **_SUBJECT_CONFIG,
+    })
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
     monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
     monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight", lambda *a, **k: None)
@@ -1386,9 +1401,11 @@ def test_preflight_only_js_assay_skips_paid_run_gate_and_subject(monkeypatch, tm
     monkeypatch.setattr(orchestrator.run_gate, "check_gate",
                         lambda: (_ for _ in ()).throw(AssertionError("paid gate must be skipped")))
     monkeypatch.setattr(orchestrator, "load_corpus", lambda: [js1, js2])
-    monkeypatch.setattr(orchestrator, "_config",
-                        lambda: {"assay_js": {"tasks": ["JS1", "JS2"], "seeds_per_arm": 1},
-                                 "bootstrap_seed": 0})
+    monkeypatch.setattr(orchestrator, "_config", lambda: {
+        "assay_js": {"tasks": ["JS1", "JS2"], "seeds_per_arm": 1},
+        "bootstrap_seed": 0,
+        **_SUBJECT_CONFIG,
+    })
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
     monkeypatch.setattr(orchestrator.rs, "prepare_external_repo", lambda *a, **k: object())
     monkeypatch.setattr(orchestrator.preflight, "run_repo_identity_preflight",
@@ -1436,6 +1453,7 @@ def test_assay_js_stops_after_sham_stage_when_no_headroom(monkeypatch, tmp_path)
             "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
             "bootstrap_seed": 0,
             "learning_context_cohort": "empty",
+            **_SUBJECT_CONFIG,
             **_rca_toolchain_config(),
         },
     )
@@ -1488,6 +1506,7 @@ def test_assay_js_distinguishes_all_no_attempt_sham_from_no_headroom(monkeypatch
             "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
             "bootstrap_seed": 0,
             "learning_context_cohort": "empty",
+            **_SUBJECT_CONFIG,
         },
     )
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")
@@ -1543,6 +1562,7 @@ def test_assay_js_resume_retries_unscorable_sham(monkeypatch, tmp_path):
             "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
             "bootstrap_seed": 0,
             "learning_context_cohort": "empty",
+            **_SUBJECT_CONFIG,
             **_rca_toolchain_config(),
         },
     )
@@ -1624,6 +1644,7 @@ def test_assay_js_reuses_passing_sham_stage_without_running_sham_twice(monkeypat
             "assay_js": {"tasks": ["JS1"], "seeds_per_arm": 1},
             "bootstrap_seed": 0,
             "learning_context_cohort": "empty",
+            **_SUBJECT_CONFIG,
         },
     )
     monkeypatch.setattr(orchestrator.rs, "source_repo_path", lambda: tmp_path / "source")

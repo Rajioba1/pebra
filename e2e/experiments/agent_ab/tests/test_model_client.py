@@ -212,6 +212,37 @@ def test_anthropic_client_retries_transient_errors(monkeypatch):
     assert client._client.messages.timeouts == [10.0, 7.0]
 
 
+@pytest.mark.parametrize("status_code", (429, 500))
+def test_anthropic_client_zero_transient_retries_attempts_once(monkeypatch, status_code):
+    class _TransientError(Exception):
+        pass
+
+    class _Messages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            error = _TransientError("transient provider failure")
+            error.status_code = status_code
+            raise error
+
+    class _Anthropic:
+        def __init__(self, api_key, max_retries):
+            assert max_retries == 0
+            self.messages = _Messages()
+
+    monkeypatch.setattr(mc, "_import_anthropic", lambda: type("SDK", (), {"Anthropic": _Anthropic}))
+
+    client = mc.AnthropicClient(
+        model="deepseek-v4-pro", api_key="sk-test", transient_retries=0
+    )
+    with pytest.raises(_TransientError):
+        client.send([], [], "system", max_tokens=10)
+
+    assert client._client.messages.calls == 1
+
+
 def test_anthropic_client_does_not_retry_non_transient_errors(monkeypatch):
     class _AuthError(Exception):
         status_code = 401

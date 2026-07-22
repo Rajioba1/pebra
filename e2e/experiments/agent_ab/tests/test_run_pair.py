@@ -129,12 +129,13 @@ def test_gate_infrastructure_outage_fails_open_to_provider_setup(monkeypatch, tm
 
 
 def test_invoke_subject_agent_honors_model_env_override(monkeypatch, tmp_path):
-    created: dict[str, str] = {}
+    created: dict[str, str | int] = {}
 
     class CapturingClient:
-        def __init__(self, *, model, api_key):
+        def __init__(self, *, model, api_key, transient_retries):
             created["model"] = model
             created["api_key"] = api_key
+            created["transient_retries"] = transient_retries
 
     monkeypatch.setenv("E2E_AB_RUN", "1")
     monkeypatch.setenv("E2E_EXTERNAL", "1")
@@ -146,6 +147,7 @@ def test_invoke_subject_agent_honors_model_env_override(monkeypatch, tmp_path):
             "max_tool_calls_per_run": 5,
             "max_wall_seconds_per_run": 10,
             "max_output_tokens_per_turn": 100,
+            "transient_retries": 0,
             "tools": ["read_file"],
         }
     })
@@ -162,16 +164,41 @@ def test_invoke_subject_agent_honors_model_env_override(monkeypatch, tmp_path):
 
     run_pair._invoke_subject_agent(_dummy_setup(tmp_path), _SPEC, 0)
 
-    assert created == {"model": "override-model", "api_key": "sk-test"}
+    assert created == {
+        "model": "override-model", "api_key": "sk-test", "transient_retries": 0,
+    }
+
+
+@pytest.mark.parametrize("transient_retries", (True, -1))
+def test_invoke_subject_agent_rejects_invalid_transient_retries_before_client(
+    monkeypatch, tmp_path, transient_retries,
+):
+    monkeypatch.setenv("E2E_AB_RUN", "1")
+    monkeypatch.setenv("E2E_EXTERNAL", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(run_pair, "_load_config", lambda: {
+        "subject": {"model": "test-model", "transient_retries": transient_retries}
+    })
+    monkeypatch.setattr(
+        model_client,
+        "AnthropicClient",
+        lambda **_kwargs: pytest.fail("paid client must not be constructed"),
+    )
+
+    with pytest.raises(run_pair.RunPairError, match="transient_retries"):
+        run_pair._invoke_subject_agent(_dummy_setup(tmp_path), _SPEC, 0)
 
 
 def test_invoke_subject_agent_can_use_deepseek_provider(monkeypatch, tmp_path):
-    created: dict[str, str | None] = {}
+    created: dict[str, str | int | bool | None] = {}
 
     class CapturingClient:
-        def __init__(self, *, model, api_key, base_url=None, thinking_enabled=None):
+        def __init__(
+            self, *, model, api_key, transient_retries, base_url=None, thinking_enabled=None,
+        ):
             created["model"] = model
             created["api_key"] = api_key
+            created["transient_retries"] = transient_retries
             created["base_url"] = base_url
             created["thinking_enabled"] = thinking_enabled
 
@@ -188,6 +215,7 @@ def test_invoke_subject_agent_can_use_deepseek_provider(monkeypatch, tmp_path):
             "max_tool_calls_per_run": 5,
             "max_wall_seconds_per_run": 10,
             "max_output_tokens_per_turn": 100,
+            "transient_retries": 0,
             "tools": ["read_file"],
         }
     })
@@ -207,6 +235,7 @@ def test_invoke_subject_agent_can_use_deepseek_provider(monkeypatch, tmp_path):
     assert created == {
         "model": "deepseek-v4-flash",
         "api_key": "deepseek-key",
+        "transient_retries": 0,
         "base_url": "https://api.deepseek.com/anthropic",
         "thinking_enabled": False,
     }
@@ -1332,6 +1361,7 @@ def test_subject_result_carries_host_graph_scope_receipts(monkeypatch, tmp_path)
             "max_tool_calls_per_run": 5,
             "max_wall_seconds_per_run": 10,
             "max_output_tokens_per_turn": 100,
+            "transient_retries": 0,
             "tools": ["read_file"],
         }
     })

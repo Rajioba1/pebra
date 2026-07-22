@@ -1684,6 +1684,13 @@ def _load_config() -> dict[str, Any]:
     return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
 
 
+def _subject_transient_retries(cfg: dict[str, Any]) -> int:
+    value = cfg.get("transient_retries")
+    if type(value) is not int or value < 0:
+        raise RunPairError("subject transient_retries must be a nonnegative integer")
+    return value
+
+
 def _subject_provider() -> str:
     import os  # noqa: PLC0415
     return os.environ.get("E2E_AB_PROVIDER", "anthropic").strip().lower() or "anthropic"
@@ -1868,6 +1875,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
     run_gate.check_gate()
     _preflight_gate_contract(setup)
     cfg = _load_config()["subject"]
+    transient_retries = _subject_transient_retries(cfg)
     provider = _subject_provider()
     model = _subject_model(cfg, provider)
     run_cfg = agent_loop.RunConfig(
@@ -1878,7 +1886,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         apply_verify_reserve_seconds=cfg.get("apply_verify_reserve_seconds", 0.0),
         tools=tuple(cfg.get("tools", ())),
     )
-    client_kwargs: dict[str, Any] = {}
+    client_kwargs: dict[str, Any] = {"transient_retries": transient_retries}
     if provider == "deepseek":
         client_kwargs["base_url"] = _DEEPSEEK_BASE_URL
         client_kwargs["thinking_enabled"] = _subject_thinking_enabled(provider)

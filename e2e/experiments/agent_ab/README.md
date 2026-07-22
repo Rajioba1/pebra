@@ -493,7 +493,7 @@ $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="10"
 $env:E2E_AB_SEEDS_PER_ARM="1"
-$env:E2E_AB_RUN_ID="js4_s2_cogv4_dspro_nt_1s_20260722_001"
+$env:E2E_AB_RUN_ID="js4_v4pro_nt_1s_20260722_001"
 nox -s e2e-ab
 ```
 
@@ -522,7 +522,7 @@ $env:E2E_TEMPLATE_BLUEPRINT_REPO="C:\path\to\zod"
 $env:E2E_AB_PARALLEL_ARMS="1"
 $env:E2E_AB_MAX_WORKERS="10"
 $env:E2E_AB_SEEDS_PER_ARM="1"
-$env:E2E_AB_RUN_ID="js4_s2_cogv4_dspro_nt_1s_20260722_001"
+$env:E2E_AB_RUN_ID="js4_v4pro_nt_1s_20260722_001"
 nox -s e2e-ab
 ```
 
@@ -550,7 +550,7 @@ E2E_TEMPLATE_BLUEPRINT_REPO=/path/to/zod \
 E2E_AB_PARALLEL_ARMS=1 \
 E2E_AB_MAX_WORKERS=10 \
 E2E_AB_SEEDS_PER_ARM=1 \
-E2E_AB_RUN_ID=js4_s2_cogv4_dspro_nt_1s_20260722_001 \
+E2E_AB_RUN_ID=js4_v4pro_nt_1s_20260722_001 \
 nox -s e2e-ab
 ```
 

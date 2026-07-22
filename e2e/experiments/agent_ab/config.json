@@ -6,6 +6,7 @@
     "max_wall_seconds_per_run": 600,
     "apply_verify_reserve_seconds": 120,
     "max_output_tokens_per_turn": 4096,
+    "transient_retries": 0,
     "tools": ["read_file", "edit_file", "apply_patch", "write_file", "list_dir", "search_grep", "run_build", "run_tests", "repository_context", "advisory_check", "request_human_approval"]
   },
   "toolchain": {

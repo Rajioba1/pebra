@@ -421,6 +421,8 @@ def _experiment_design(
     mode_config["seeds_per_arm"] = _effective_seeds_per_arm(
         mode_config.get("seeds_per_arm")
     )
+    subject_config = copy.deepcopy(cfg.get("subject", {}))
+    run_pair._subject_transient_retries(subject_config)  # noqa: SLF001 - shared run policy
     protocol_hashes = {
         arm: _sha256_text(subject_protocol.protocol_for_arm(arm))
         for arm in _arms_for_mode(args.mode, "risky")
@@ -434,7 +436,7 @@ def _experiment_design(
         "run_namespace": advisory_contract.EXPERIMENT_RUN_NAMESPACE,
         "learning_context_cohort": cfg.get("learning_context_cohort"),
         "graph_scope_digest": None,
-        "subject_config": cfg.get("subject", {}),
+        "subject_config": subject_config,
         "thresholds": cfg.get("thresholds", {}),
         "bootstrap_seed": cfg.get("bootstrap_seed", 0),
         "provider": provider,
