@@ -112,6 +112,18 @@ def test_app_js_wires_graph_search_inspector_and_layouts(tmp_path) -> None:
     assert 'setAttribute("tabindex", "0")' in js   # inspector is the keyboard-reachable a11y fallback
 
 
+def test_app_js_wires_risk_overlay_honestly(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    js = _client(db).get("/static/app.js").text
+    assert "setOverlay(" in js and "applyOverlay(" in js and "loadAssessmentRisk(" in js
+    assert "DECISION_STYLE" in js and "rb-unmatched" in js
+    # Honest framing: decision drives colour; loss stays loss points; the aggregate caveat is shown.
+    assert "assessment aggregate. This is not per-symbol calibrated risk" in js
+    assert "loss pts" in js
+    # decision (categorical) is the only node-colour signal in risk view.
+    assert "RISK_DECISIONS" in js and 'node.rb-' in js
+
+
 def test_index_hides_calibration_tab_by_default(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/")

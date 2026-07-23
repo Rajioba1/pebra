@@ -30,6 +30,7 @@
   const repoChip = document.getElementById("repo-chip");
   const chainPill = document.getElementById("chain-pill");
   let graphSeq = 0;
+  let riskSeq = 0;
 
   // Human labels for the audit-chain counts (never the raw table names).
   const chainLabels = {};
@@ -390,7 +391,23 @@
     file: "#6e7681",
     default: "#566173",
   };
-  const graphState = { cy: null, mode: null, inspector: null };
+  // Risk overlay: colour + SHAPE per decision (categorical — paired shape keeps it colourblind-safe and
+  // deliberately distinct from the structural KIND_COLORS so "risk view" never reads as "kind view").
+  const RISK_DECISIONS = ["proceed", "test_first", "inspect_first", "revise_safer", "ask_human", "reject"];
+  const DECISION_STYLE = {
+    proceed: { color: "#3fb950", shape: "ellipse" },
+    test_first: { color: "#58a6ff", shape: "round-rectangle" },
+    inspect_first: { color: "#d6a419", shape: "diamond" },
+    revise_safer: { color: "#f0883e", shape: "triangle" },
+    ask_human: { color: "#a371f7", shape: "hexagon" },
+    reject: { color: "#f85149", shape: "vee" },
+    other: { color: "#8b949e", shape: "pentagon" },
+  };
+  const graphState = {
+    cy: null, mode: null, inspector: null,
+    overlay: "structure", risk: null, assessmentId: null,
+    riskLegend: null, riskCaption: null,
+  };
 
   async function renderGraph(view) {
     clear(view);
@@ -426,6 +443,11 @@
     cyEl.id = "graph-cy";
     graphCard.appendChild(cyEl);
     graphCard.appendChild(graphLegend());
+    const riskLegend = el("div", "graph-legend risk-legend");
+    riskLegend.hidden = graphState.overlay !== "risk";
+    buildRiskLegend(riskLegend);
+    graphCard.appendChild(riskLegend);
+    graphState.riskLegend = riskLegend;
     const searchResults = el("div", "search-results");
     graphCard.appendChild(searchResults);
     // Inspector: the accessibility fallback for the canvas graph (no per-node DOM). Keyboard-reachable
@@ -441,6 +463,144 @@
     graphCard.appendChild(inspector);
     view.appendChild(graphCard);
     await loadFullGraph(cyEl, graphCard);
+    await setupRiskOverlay(controls);
+  }
+
+  async function setupRiskOverlay(controls) {
+    if (!graphState.cy) return;  // no rendered graph (unavailable / stale) → no overlay controls
+    let asm;
+    try {
+      asm = await getJSON(rp("/assessments?limit=50"));
+    } catch (e) {
+      return;
+    }
+    if (!asm.items || !asm.items.length) return;
+
+    const toggle = el("div", "overlay-toggle");
+    toggle.setAttribute("role", "group");
+    toggle.setAttribute("aria-label", "Graph colouring");
+    const bStruct = el("button", "graph-btn" + (graphState.overlay === "structure" ? " active" : ""), "Structure");
+    const bRisk = el("button", "graph-btn" + (graphState.overlay === "risk" ? " active" : ""), "Risk");
+    [bStruct, bRisk].forEach(function (b) { b.setAttribute("type", "button"); });
+    bStruct.addEventListener("click", function () { setOverlay("structure", bStruct, bRisk); });
+    bRisk.addEventListener("click", function () { setOverlay("risk", bStruct, bRisk); });
+    toggle.appendChild(bStruct);
+    toggle.appendChild(bRisk);
+    controls.appendChild(toggle);
+
+    const decisionById = {};
+    asm.items.forEach(function (i) { decisionById[i.assessment_id] = i.decision; });
+    if (!graphState.assessmentId || !(graphState.assessmentId in decisionById)) {
+      graphState.assessmentId = asm.items[0].assessment_id;
+    }
+    const picker = sel(
+      "risk assessment",
+      graphState.assessmentId,
+      asm.items.map(function (i) { return [i.assessment_id, i.assessment_id + " · " + (i.decision || "?")]; }),
+      function (v) { graphState.assessmentId = v; loadAssessmentRisk(v, decisionById[v]); }
+    );
+    controls.appendChild(picker);
+
+    const cap = el("p", "chart-note risk-caption");
+    cap.hidden = true;
+    controls.appendChild(cap);
+    graphState.riskCaption = cap;
+
+    // Preload the selected assessment's binding so toggling to Risk is instant.
+    await loadAssessmentRisk(graphState.assessmentId, decisionById[graphState.assessmentId]);
+  }
+
+  function setOverlay(mode, bStruct, bRisk) {
+    graphState.overlay = mode;
+    if (bStruct) bStruct.classList.toggle("active", mode === "structure");
+    if (bRisk) bRisk.classList.toggle("active", mode === "risk");
+    if (graphState.riskLegend) graphState.riskLegend.hidden = mode !== "risk";
+    applyOverlay();
+    updateRiskCaption();
+  }
+
+  function normalizeDecision(decision) {
+    const d = String(decision || "").toLowerCase();
+    if (d === "block") return "reject";
+    return RISK_DECISIONS.indexOf(d) >= 0 ? d : "other";
+  }
+  function normPath(p) { return p == null ? null : String(p).replace(/\\/g, "/"); }
+
+  async function loadAssessmentRisk(assessmentId, decision) {
+    const seq = ++riskSeq;  // rapid picker changes must not let an older response overwrite a newer one
+    let detail;
+    try {
+      detail = await getJSON(rp("/assessments/" + encodeURIComponent(assessmentId)));
+    } catch (e) {
+      if (seq !== riskSeq) return;
+      graphState.risk = null;
+      applyOverlay();
+      updateRiskCaption();
+      return;
+    }
+    if (seq !== riskSeq) return;  // superseded by a later selection
+    const content = detail.content || {};
+    const scores = content.scores || {};
+    const sse = scores.symbol_scope_evidence || {};
+    const fanin = sse.symbol_fanin || {};
+    const qns = fanin.resolved_qualified_names || [];
+    const paths = (fanin.resolved_file_paths || []).map(normPath);
+    graphState.risk = {
+      assessmentId: assessmentId,
+      // `content` stores the decision as `content.decision`; the list-supplied value is preferred.
+      decision: normalizeDecision(decision != null ? decision : content.decision),
+      qnSet: new Set(qns),
+      pathSet: new Set(paths),
+      scores: {
+        expected_loss: scores.expected_loss,
+        benefit: scores.benefit,
+        expected_utility: scores.expected_utility,
+        rau: scores.rau,
+        edit_confidence: scores.edit_confidence,
+        // Producer shape (assessment_builder): symbol_fanin.percentile, with a top-level fallback.
+        symbol_fan_in_percentile:
+          fanin.percentile != null ? fanin.percentile : sse.symbol_fan_in_percentile,
+        matched: 0,
+      },
+    };
+    applyOverlay();
+    updateRiskCaption();
+  }
+
+  function nodeBound(risk, d) {
+    return risk.qnSet.has(d.qualified_name)
+      && (risk.pathSet.size === 0 || risk.pathSet.has(normPath(d.file_path)));
+  }
+
+  function applyOverlay() {
+    const cy = graphState.cy;
+    if (!cy) return;
+    const all = RISK_DECISIONS.concat(["other"]).map(function (d) { return "rb-" + d; }).concat(["rb-unmatched"]);
+    cy.nodes().removeClass(all.join(" "));
+    if (graphState.overlay !== "risk" || !graphState.risk) return;  // structure mode → kind colours show
+    const risk = graphState.risk;
+    const cls = "rb-" + risk.decision;
+    let matched = 0;
+    cy.nodes().forEach(function (n) {
+      if (nodeBound(risk, n.data())) { n.addClass(cls); matched += 1; } else { n.addClass("rb-unmatched"); }
+    });
+    risk.scores.matched = matched;
+  }
+
+  function updateRiskCaption() {
+    const cap = graphState.riskCaption;
+    if (!cap) return;
+    if (graphState.overlay !== "risk" || !graphState.risk || !graphState.cy) { cap.hidden = true; return; }
+    const r = graphState.risk;
+    cap.hidden = false;
+    cap.textContent = "Risk overlay: " + r.assessmentId + " · " + r.decision + " · "
+      + r.scores.matched + " of " + graphState.cy.nodes().length
+      + " nodes bound — assessment-aggregate scope, not per-symbol calibrated risk.";
+  }
+
+  function buildRiskLegend(l) {
+    RISK_DECISIONS.forEach(function (d) { l.appendChild(swatchLabel(DECISION_STYLE[d].color, d)); });
+    l.appendChild(swatchLabel("#3a4753", "not assessed"));
   }
 
   function buildGraphControls(controls, searchResults, inspector) {
@@ -520,13 +680,41 @@
       ["fan-out", d.outbound != null ? String(d.outbound) : "—"],
       ["degree", degree != null ? String(degree) : "—"],
     ];
-    rows.forEach(function (kv) {
-      const r = el("div", "insp-row");
-      r.appendChild(el("span", "insp-key", kv[0]));
-      r.appendChild(el("span", "insp-val", kv[1]));  // el() sets textContent, never raw markup
-      inspector.appendChild(r);
-    });
+    rows.forEach(function (kv) { inspector.appendChild(inspRow(kv[0], kv[1])); });
+    if (graphState.overlay === "risk" && graphState.risk) appendRiskDetail(inspector, d);
     if (focus) inspector.focus();
+  }
+
+  function inspRow(key, value) {
+    const r = el("div", "insp-row");
+    r.appendChild(el("span", "insp-key", key));
+    r.appendChild(el("span", "insp-val", value));  // el() sets textContent, never raw markup
+    return r;
+  }
+
+  function appendRiskDetail(inspector, d) {
+    const r = graphState.risk;
+    inspector.appendChild(el("div", "insp-sep"));
+    if (!nodeBound(r, d)) {
+      inspector.appendChild(inspRow("risk", "not part of assessment " + r.assessmentId));
+      return;
+    }
+    const sc = r.scores;
+    const num = (x, dp) => (x == null || Number.isNaN(Number(x)) ? "—" : Number(x).toFixed(dp));
+    const pct = (x) => (x == null || Number.isNaN(Number(x)) ? "—" : (Number(x) * 100).toFixed(0) + "%");
+    // Decision (categorical) is the visual signal. The magnitudes below are shown as NUMBERS only —
+    // never colour gradients — and expected loss stays in loss points, not a percentage.
+    [
+      ["decision", r.decision],
+      ["expected loss", sc.expected_loss == null ? "—" : num(sc.expected_loss, 2) + " loss pts"],
+      ["benefit", pct(sc.benefit)],
+      ["expected utility", num(sc.expected_utility, 3)],
+      ["RAU", num(sc.rau, 3)],
+      ["edit confidence", num(sc.edit_confidence, 2)],
+      ["fan-in percentile", pct(sc.symbol_fan_in_percentile)],
+    ].forEach(function (kv) { inspector.appendChild(inspRow(kv[0], kv[1])); });
+    inspector.appendChild(el("p", "insp-note",
+      "Risk scope: assessment aggregate. This is not per-symbol calibrated risk."));
   }
 
   async function loadFullGraph(cyEl, graphCard) {
@@ -594,6 +782,7 @@
       graphState.inspector.appendChild(el("p", "chart-note", "Select a node (or a search result) to inspect it."));
       graphState.cy.on("tap", "node", function (evt) { showInspector(graphState.inspector, evt.target.data(), false); });
     }
+    if (graphState.overlay === "risk" && graphState.risk) applyOverlay();  // survive a re-render
   }
 
   function makeCy(container, elements, layout, style) {
@@ -648,6 +837,16 @@
       if (k === "default") return;
       s.push({ selector: 'node[kind="' + k + '"]', style: { "background-color": KIND_COLORS[k] } });
     });
+    // Risk overlay (appended last so rb-* classes override the kind colours when risk view is on).
+    Object.keys(DECISION_STYLE).forEach((k) => {
+      s.push({ selector: "node.rb-" + k, style: {
+        "background-color": DECISION_STYLE[k].color, "shape": DECISION_STYLE[k].shape,
+        "border-width": 3, "border-color": "#e6edf3", "border-opacity": 0.9,
+      } });
+    });
+    s.push({ selector: "node.rb-unmatched", style: {
+      "background-color": "#3a4753", "shape": "ellipse", "opacity": 0.35, "border-width": 0,
+    } });
     return s;
   }
 

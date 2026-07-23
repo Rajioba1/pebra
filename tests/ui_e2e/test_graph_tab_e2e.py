@@ -65,7 +65,20 @@ def _seed(tmp_path) -> str:
         AssessmentResult(
             recommended_decision=Decision.PROCEED, requires_confirmation=False,
             action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL,
-            scores={"edit_confidence": 0.83}, repo_id="r", repo_root="/x",
+            scores={
+                "edit_confidence": 0.83, "benefit": 0.4, "rau": 0.2,
+                "expected_utility": 0.3, "expected_loss": 0.1,
+                # Producer shape (assessment_builder): resolved names + percentile live under
+                # symbol_fanin; "B" resolves exactly the stub graph's class node -> binds 1 of 3.
+                "symbol_scope_evidence": {
+                    "symbol_fan_in_percentile": 0.6,
+                    "symbol_fanin": {
+                        "resolved_qualified_names": ["B"],
+                        "percentile": 0.6,
+                    },
+                },
+            },
+            repo_id="r", repo_root="/x",
             model_guidance_packet={"decision": "proceed"},
         ),
         {"task": "t"},
@@ -232,5 +245,66 @@ def test_graph_search_inspector_and_layout_controls(tmp_path) -> None:
             page.wait_for_timeout(300)
             page.click("text=Grid")
             page.wait_for_timeout(300)
+            assert not page_errors, page_errors
+            browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_risk_overlay_binds_assessment_honestly(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)  # seeded assessment resolves "B" -> exactly 1 of the 3 stub nodes binds
+    with _serve(db) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.add_init_script(
+                "window.__csp=[];"
+                "document.addEventListener('securitypolicyviolation', e => window.__csp.push("
+                "{directive:e.violatedDirective, source:e.sourceFile}));"
+            )
+            page_errors: list[str] = []
+            page.on("pageerror", lambda e: page_errors.append(str(e)))
+            page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok#graph", wait_until="networkidle")
+            page.wait_for_selector("#graph-cy canvas", timeout=10000)
+
+            # In the default Structure view the risk-decision legend must be hidden (else a viewer could
+            # read decision colours over kind-coloured nodes).
+            assert page.locator(".risk-legend").is_hidden()
+
+            # Switch to the Risk view; the caption states the honest aggregate scope + bound count, and
+            # the risk-decision legend becomes visible.
+            # (Use an exact button name — "Risk" as a substring also matches the "Risk Observatory" header.)
+            page.get_by_role("button", name="Risk", exact=True).click()
+            page.wait_for_selector(".risk-caption:not([hidden])", timeout=5000)
+            assert page.locator(".risk-legend").is_visible()
+            cap = page.inner_text(".risk-caption")
+            assert "1 of 3" in cap and "assessment-aggregate" in cap and "not per-symbol calibrated" in cap
+
+            # Inspect the bound node (search 'class' -> node B): risk detail shows decision + loss points
+            # + the honesty caveat; expected loss is NOT a percentage; the fan-in percentile renders (60%).
+            page.fill(".graph-search", "class")
+            page.wait_for_selector(".search-row", timeout=5000)
+            page.click(".search-row")
+            page.wait_for_selector("#graph-inspector .insp-note", timeout=5000)
+            insp = page.inner_text("#graph-inspector")
+            assert "decision" in insp and "proceed" in insp
+            assert "loss pts" in insp
+            assert "60%" in insp   # symbol_fan_in_percentile read from the real producer path
+            assert "assessment aggregate. This is not per-symbol calibrated risk" in insp
+
+            # Back to Structure view: the risk-decision legend hides again.
+            page.get_by_role("button", name="Structure", exact=True).click()
+            assert page.locator(".risk-legend").is_hidden()
+
+            # No script/eval or style CSP violation from the risk legend/overlay (swatch colours use
+            # CSSOM .style.prop, which style-src does not govern) — only the one known cytoscape <style>.
+            violations = page.evaluate("() => window.__csp")
+            unexpected = [
+                v for v in violations
+                if "script" in v["directive"]
+                or v["directive"] != "style-src-elem" or "cytoscape" not in (v["source"] or "")
+            ]
+            assert not unexpected, unexpected
             assert not page_errors, page_errors
             browser.close()
