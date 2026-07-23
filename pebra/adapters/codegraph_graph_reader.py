@@ -26,6 +26,7 @@ from pebra.adapters.codegraph_adapter import (
     _FANIN_EDGE_KINDS,
     _MIN_SCHEMA_VERSION,
     _MODIFY_IMPACT_EDGE_KINDS,
+    _OWNER_KINDS,
     CodeGraphAdapter,
     _db_path_from_status,
     _is_fresh,
@@ -33,6 +34,24 @@ from pebra.adapters.codegraph_adapter import (
 from pebra.core.graph_version import in_accepted_range
 
 _SETUP_GRAPH_HINT = "run: pebra setup-graph --fix"
+
+# The whole-repo structural graph renders semantically meaningful owners (callables + containers),
+# not every raw AST node, connected by the same edge vocabulary the MODIFY-risk term reasons over —
+# so "full graph" and "risk overlay" never disagree about what a node or edge is.
+_STRUCTURAL_NODE_KINDS = _OWNER_KINDS
+_STRUCTURAL_EDGE_KINDS = _MODIFY_IMPACT_EDGE_KINDS
+
+
+def _short_label(qualified_name: str | None, name: str | None) -> str:
+    """A compact display label: the last identifier segment (``A::B::c`` -> ``c``), else the name."""
+    if qualified_name:
+        for sep in ("::", "."):
+            if sep in qualified_name:
+                tail = qualified_name.rsplit(sep, 1)[-1]
+                if tail:
+                    return tail
+        return qualified_name
+    return name or ""
 
 
 def _empty(available: bool, freshness: str, reason: str | None, **extra: Any) -> dict[str, Any]:
@@ -272,3 +291,183 @@ class CodeGraphReader:
             }
         finally:
             con.close()
+
+    def full_graph(
+        self,
+        repo_root: str,
+        *,
+        max_nodes: int = 8000,
+        max_edges: int = 40000,
+        collapse_after: int = 20000,
+    ) -> dict[str, Any]:
+        """Whole-repo structural graph, bounded and fail-soft.
+
+        Two deterministic modes, same envelope shape:
+          * ``"symbol"`` — one node per structural symbol, when the true owner-node count is
+            ``<= collapse_after``.
+          * ``"file"`` — one node per file with symbol edges aggregated to weighted file-to-file
+            edges, when the count exceeds ``collapse_after``.
+
+        ``total_node_count`` / ``total_edge_count`` are the true whole-repo counts (pre-cap), so a
+        capped or collapsed render can honestly say "showing X of Y". Never raises.
+        """
+        con, freshness, reason = self._open(repo_root)
+        if con is None:
+            return _empty(
+                False, freshness, reason, mode="symbol", collapsed=False, total_edge_count=0
+            )
+        try:
+            max_nodes = max(1, max_nodes)
+            max_edges = max(1, max_edges)
+            collapse_after = max(1, collapse_after)
+            node_ph = ",".join("?" * len(_STRUCTURAL_NODE_KINDS))
+            edge_ph = ",".join("?" * len(_STRUCTURAL_EDGE_KINDS))
+            total_node_count = int(
+                con.execute(
+                    f"SELECT COUNT(*) AS c FROM nodes WHERE kind IN ({node_ph})",
+                    _STRUCTURAL_NODE_KINDS,
+                ).fetchone()["c"]
+            )
+            total_edge_count = int(
+                con.execute(
+                    f"SELECT COUNT(*) AS c FROM edges e "
+                    f"JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target "
+                    f"WHERE e.kind IN ({edge_ph}) AND s.kind IN ({node_ph}) AND t.kind IN ({node_ph})",
+                    (*_STRUCTURAL_EDGE_KINDS, *_STRUCTURAL_NODE_KINDS, *_STRUCTURAL_NODE_KINDS),
+                ).fetchone()["c"]
+            )
+            if total_node_count > collapse_after:
+                return self._file_mode(
+                    con, node_ph, edge_ph, max_nodes, max_edges, total_node_count, total_edge_count
+                )
+            return self._symbol_mode(
+                con, node_ph, edge_ph, max_nodes, max_edges, total_node_count, total_edge_count
+            )
+        except (sqlite3.Error, OSError) as exc:
+            return _empty(
+                False, "unknown", f"codegraph DB query failed: {exc}",
+                mode="symbol", collapsed=False, total_edge_count=0,
+            )
+        finally:
+            con.close()
+
+    @staticmethod
+    def _symbol_mode(
+        con: sqlite3.Connection, node_ph: str, edge_ph: str,
+        max_nodes: int, max_edges: int, total_node_count: int, total_edge_count: int,
+    ) -> dict[str, Any]:
+        node_rows = con.execute(
+            f"SELECT id, kind, name, qualified_name, file_path FROM nodes "
+            f"WHERE kind IN ({node_ph}) ORDER BY id LIMIT ?",
+            (*_STRUCTURAL_NODE_KINDS, max_nodes + 1),
+        ).fetchall()
+        truncated = len(node_rows) > max_nodes
+        node_rows = node_rows[:max_nodes]
+        ids = [r["id"] for r in node_rows]
+        edges: list[dict[str, Any]] = []
+        inbound: dict[str, int] = {}
+        outbound: dict[str, int] = {}
+        if ids:
+            id_ph = ",".join("?" * len(ids))
+            edge_rows = con.execute(
+                f"SELECT source, target, kind FROM edges "
+                f"WHERE source IN ({id_ph}) AND target IN ({id_ph}) AND kind IN ({edge_ph}) "
+                f"ORDER BY source, target, kind LIMIT ?",
+                (*ids, *ids, *_STRUCTURAL_EDGE_KINDS, max_edges + 1),
+            ).fetchall()
+            if len(edge_rows) > max_edges:
+                truncated = True
+                edge_rows = edge_rows[:max_edges]
+            for r in edge_rows:
+                edges.append({"source": r["source"], "target": r["target"], "kind": r["kind"]})
+                outbound[r["source"]] = outbound.get(r["source"], 0) + 1
+                inbound[r["target"]] = inbound.get(r["target"], 0) + 1
+        nodes = [
+            {
+                "id": r["id"],
+                "kind": r["kind"],
+                "qualified_name": r["qualified_name"],
+                "file_path": (r["file_path"] or "").replace("\\", "/") or None,
+                "label": _short_label(r["qualified_name"], r["name"]),
+                "inbound_count": inbound.get(r["id"], 0),
+                "outbound_count": outbound.get(r["id"], 0),
+                "degree": inbound.get(r["id"], 0) + outbound.get(r["id"], 0),
+            }
+            for r in node_rows
+        ]
+        return {
+            "available": True,
+            "graph_freshness": "fresh",
+            "fallback_reason": None,
+            "mode": "symbol",
+            "collapsed": False,
+            "nodes": nodes,
+            "edges": edges,
+            "truncated": truncated,
+            "total_node_count": total_node_count,
+            "total_edge_count": total_edge_count,
+        }
+
+    @staticmethod
+    def _file_mode(
+        con: sqlite3.Connection, node_ph: str, edge_ph: str,
+        max_nodes: int, max_edges: int, total_node_count: int, total_edge_count: int,
+    ) -> dict[str, Any]:
+        file_rows = con.execute(
+            f"SELECT file_path AS f, COUNT(*) AS symbol_count FROM nodes "
+            f"WHERE kind IN ({node_ph}) AND file_path IS NOT NULL "
+            f"GROUP BY file_path ORDER BY file_path LIMIT ?",
+            (*_STRUCTURAL_NODE_KINDS, max_nodes + 1),
+        ).fetchall()
+        truncated = len(file_rows) > max_nodes
+        file_rows = file_rows[:max_nodes]
+        nodes = [
+            {
+                "id": (r["f"] or "").replace("\\", "/"),
+                "kind": "file",
+                "qualified_name": None,
+                "file_path": (r["f"] or "").replace("\\", "/"),
+                "label": (r["f"] or "").replace("\\", "/").rsplit("/", 1)[-1],
+                "symbol_count": int(r["symbol_count"]),
+            }
+            for r in file_rows
+        ]
+        kept = {n["id"] for n in nodes}
+        # Restrict the aggregation to the SAME capped ("kept") file set as the nodes BEFORE ORDER BY /
+        # LIMIT — via a CTE that reproduces the file-node cap and joins both edge endpoints against it.
+        # This mirrors symbol mode: the LIMIT budget is only ever spent on genuinely renderable
+        # kept->kept pairs, so a dropped over-cap file can neither starve a real edge nor make
+        # ``truncated`` dishonest, and no edge can dangle onto a file node that was capped out.
+        edge_rows = con.execute(
+            f"WITH kept AS ("
+            f"  SELECT file_path AS raw, replace(file_path, '\\', '/') AS norm FROM nodes "
+            f"  WHERE kind IN ({node_ph}) AND file_path IS NOT NULL "
+            f"  GROUP BY file_path ORDER BY file_path LIMIT ?"
+            f") "
+            f"SELECT ks.norm AS src, kt.norm AS dst, COUNT(*) AS weight FROM edges e "
+            f"JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target "
+            f"JOIN kept ks ON ks.raw = s.file_path JOIN kept kt ON kt.raw = t.file_path "
+            f"WHERE e.kind IN ({edge_ph}) AND ks.norm != kt.norm "
+            f"GROUP BY src, dst ORDER BY src, dst LIMIT ?",
+            (*_STRUCTURAL_NODE_KINDS, max_nodes, *_STRUCTURAL_EDGE_KINDS, max_edges + 1),
+        ).fetchall()
+        if len(edge_rows) > max_edges:
+            truncated = True
+            edge_rows = edge_rows[:max_edges]
+        edges = [
+            {"source": r["src"], "target": r["dst"], "kind": "file_aggregate", "weight": int(r["weight"])}
+            for r in edge_rows
+            if r["src"] in kept and r["dst"] in kept  # defensive: SQL already restricts to kept files
+        ]
+        return {
+            "available": True,
+            "graph_freshness": "fresh",
+            "fallback_reason": None,
+            "mode": "file",
+            "collapsed": True,
+            "nodes": nodes,
+            "edges": edges,
+            "truncated": truncated,
+            "total_node_count": total_node_count,
+            "total_edge_count": total_edge_count,
+        }

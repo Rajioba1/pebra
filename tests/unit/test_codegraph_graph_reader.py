@@ -226,3 +226,124 @@ def test_file_overview_respects_top_n(tmp_path) -> None:
     out = _reader().file_overview(str(tmp_path), top_n=1)
     assert len(out["files"]) == 1
     assert out["truncated"] is True
+
+
+# ---- full_graph (M2) ---------------------------------------------------------
+
+
+def test_full_graph_returns_symbol_nodes_and_edges_deterministically(tmp_path) -> None:
+    _seed(tmp_path)
+    out = _reader().full_graph(str(tmp_path))
+    assert out["available"] is True
+    assert out["mode"] == "symbol"
+    assert out["collapsed"] is False
+    ids = [n["id"] for n in out["nodes"]]
+    assert ids == sorted(ids)  # deterministic ORDER BY id
+    assert set(ids) == {"n:gamma", "n:a", "n:b", "n:c", "n:lonely"}
+    assert out["total_node_count"] == 5
+    assert out["total_edge_count"] == 3
+    assert out["truncated"] is False
+    # every structural edge is present and its endpoints are in the node set
+    node_set = set(ids)
+    for e in out["edges"]:
+        assert e["source"] in node_set and e["target"] in node_set
+        assert {"source", "target", "kind"} <= set(e)
+    # deterministic across calls
+    assert _reader().full_graph(str(tmp_path)) == out
+
+
+def test_full_graph_node_carries_label_and_degree_fields(tmp_path) -> None:
+    _seed(tmp_path)
+    out = _reader().full_graph(str(tmp_path))
+    by_id = {n["id"]: n for n in out["nodes"]}
+    for n in out["nodes"]:
+        assert {"id", "kind", "qualified_name", "file_path", "label",
+                "degree", "inbound_count", "outbound_count"} <= set(n)
+    gamma = by_id["n:gamma"]
+    assert gamma["inbound_count"] == 2 and gamma["outbound_count"] == 0
+    assert gamma["degree"] == 2
+    assert gamma["label"]  # short, non-empty
+    a = by_id["n:a"]
+    assert a["inbound_count"] == 1 and a["outbound_count"] == 1 and a["degree"] == 2
+
+
+def test_full_graph_caps_nodes_and_reports_true_total(tmp_path) -> None:
+    _seed(tmp_path)
+    out = _reader().full_graph(str(tmp_path), max_nodes=2)
+    assert out["truncated"] is True
+    assert len(out["nodes"]) == 2
+    assert out["total_node_count"] == 5  # honest pre-cap count
+    node_set = {n["id"] for n in out["nodes"]}
+    for e in out["edges"]:  # no dangling edges to dropped nodes
+        assert e["source"] in node_set and e["target"] in node_set
+
+
+def test_full_graph_caps_edges(tmp_path) -> None:
+    _seed(tmp_path)
+    out = _reader().full_graph(str(tmp_path), max_edges=1)
+    assert out["truncated"] is True
+    assert len(out["edges"]) == 1
+
+
+def test_full_graph_collapses_to_file_mode_above_threshold(tmp_path) -> None:
+    _seed(tmp_path)
+    out = _reader().full_graph(str(tmp_path), collapse_after=2)
+    assert out["available"] is True
+    assert out["mode"] == "file"
+    assert out["collapsed"] is True
+    assert out["total_node_count"] == 5  # true underlying symbol count
+    ids = [n["id"] for n in out["nodes"]]
+    assert ids == sorted(ids)
+    node_set = set(ids)
+    # one node per file; file edges aggregate symbol edges with a weight and never dangle
+    assert len(out["nodes"]) == 5  # 5 files
+    for n in out["nodes"]:
+        assert n["kind"] == "file"
+        assert n["file_path"] and "symbol_count" in n
+    for e in out["edges"]:
+        assert e["source"] in node_set and e["target"] in node_set
+        assert e["weight"] >= 1
+
+
+def test_full_graph_file_mode_edge_budget_not_starved_by_dropped_files(tmp_path) -> None:
+    # File mode (5 files > collapse_after) AND the file-node cap drops Gamma.cs / L.cs, so kept
+    # files (alphabetical) are A.cs, B.cs, C.cs. The only kept->kept file edge is C.cs -> A.cs.
+    # The edge budget must not be spent on pairs touching dropped files, or the real kept-kept edge
+    # would be starved and edges would come back empty with a dishonest truncated flag.
+    _seed(tmp_path)
+    out = _reader().full_graph(str(tmp_path), collapse_after=2, max_nodes=3, max_edges=2)
+    assert out["mode"] == "file"
+    kept = {n["id"] for n in out["nodes"]}
+    assert kept == {"src/A.cs", "src/B.cs", "src/C.cs"}
+    assert {"source": "src/C.cs", "target": "src/A.cs", "kind": "file_aggregate", "weight": 1} in out["edges"]
+    for e in out["edges"]:
+        assert e["source"] in kept and e["target"] in kept
+
+
+def test_full_graph_failsoft_when_stale(tmp_path) -> None:
+    _seed(tmp_path)
+    out = _reader(STALE).full_graph(str(tmp_path))
+    assert out["available"] is False
+    assert out["graph_freshness"] == "stale"
+    assert out["nodes"] == [] and out["edges"] == []
+    assert out["mode"] == "symbol" and out["collapsed"] is False
+    assert "pebra setup-graph --fix" in out["fallback_reason"]
+
+
+def test_full_graph_failsoft_when_absent(tmp_path) -> None:
+    out = gr.CodeGraphReader(status_fn=lambda r: None).full_graph(str(tmp_path))
+    assert out["available"] is False
+    assert out["nodes"] == [] and out["edges"] == []
+    assert "pebra setup-graph --fix" in out["fallback_reason"]
+
+
+def test_full_graph_failsoft_on_corrupt_db(tmp_path) -> None:
+    cg = tmp_path / ".codegraph"
+    cg.mkdir(parents=True)
+    con = sqlite3.connect(str(cg / "codegraph.db"))
+    con.execute("CREATE TABLE junk (x)")
+    con.commit()
+    con.close()
+    out = _reader().full_graph(str(tmp_path))
+    assert out["available"] is False
+    assert out["nodes"] == [] and out["edges"] == []
