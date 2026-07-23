@@ -37,6 +37,8 @@ _ASSETS = (
     "pebra/dashboard/static/vendor/uplot.iife.min.js",
     "pebra/dashboard/static/vendor/uplot.min.css",
     "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+    "pebra/dashboard/static/vendor/cytoscape.min.js",
+    "pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
     "pebra/tui/theme.tcss",
 )
 
@@ -72,6 +74,7 @@ def _write_wheel(
         *_ASSETS,
         "pebra-0.1.0.dist-info/licenses/LICENSE",
         "pebra-0.1.0.dist-info/licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+        "pebra-0.1.0.dist-info/licenses/pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
     ]
     with zipfile.ZipFile(path, "w") as archive:
         for member in members:
@@ -181,6 +184,38 @@ def test_archive_verifier_requires_uplot_metadata_license(tmp_path: Path) -> Non
 
     with pytest.raises(DistributionVerificationError, match="uplot.LICENSE.txt"):
         verify_archives(wheel, sdist)
+
+
+def test_archive_verifier_requires_cytoscape_asset(tmp_path: Path) -> None:
+    wheel = tmp_path / "pebra-0.1.0-py3-none-any.whl"
+    sdist = tmp_path / "pebra-0.1.0.tar.gz"
+    missing = "pebra/dashboard/static/vendor/cytoscape.min.js"
+    _write_wheel(wheel, omit=missing)
+    _write_sdist(sdist)
+
+    with pytest.raises(DistributionVerificationError, match="cytoscape.min.js"):
+        verify_archives(wheel, sdist)
+
+
+def test_archive_verifier_requires_cytoscape_metadata_license(tmp_path: Path) -> None:
+    wheel = tmp_path / "pebra-0.1.0-py3-none-any.whl"
+    sdist = tmp_path / "pebra-0.1.0.tar.gz"
+    missing = "pebra-0.1.0.dist-info/licenses/pebra/dashboard/static/vendor/cytoscape.LICENSE.txt"
+    _write_wheel(wheel, omit=missing)
+    _write_sdist(sdist)
+
+    with pytest.raises(DistributionVerificationError, match="cytoscape.LICENSE.txt"):
+        verify_archives(wheel, sdist)
+
+
+def test_verify_distribution_lists_cytoscape_as_installed_asset() -> None:
+    source = (Path(__file__).resolve().parents[2] / "scripts" / "verify_distribution.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "static/vendor/cytoscape.min.js" in source
+    assert "static/vendor/cytoscape.LICENSE.txt" in source
+    assert "licenses/pebra/dashboard/static/vendor/cytoscape.LICENSE.txt" in source
 
 
 def test_archive_verifier_rejects_backslash_tar_directory(tmp_path: Path) -> None:

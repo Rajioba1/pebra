@@ -70,6 +70,21 @@ def test_index_served_with_csp_nonce(tmp_path) -> None:
     assert nonce in resp.text  # same nonce on the inline <script> tag
 
 
+def test_index_vendors_cytoscape_without_cdn(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    resp = _client(db).get("/")
+    assert resp.status_code == 200
+    body = resp.text
+    # Cytoscape is self-hosted under /static/vendor and nonce-tagged like uPlot.
+    assert '/static/vendor/cytoscape.min.js' in body
+    csp = resp.headers["content-security-policy"]
+    nonce = csp.split("script-src 'nonce-")[1].split("'")[0]
+    assert f'<script nonce="{nonce}" src="/static/vendor/cytoscape.min.js">' in body
+    # No CDN/runtime network dependency for the graph library.
+    for host in ("unpkg.com", "jsdelivr", "cdnjs", "http://", "https://"):
+        assert host not in body
+
+
 def test_index_hides_calibration_tab_by_default(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/")

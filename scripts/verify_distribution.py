@@ -30,6 +30,8 @@ _PACKAGE_ASSETS = (
     "pebra/dashboard/static/vendor/uplot.iife.min.js",
     "pebra/dashboard/static/vendor/uplot.min.css",
     "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+    "pebra/dashboard/static/vendor/cytoscape.min.js",
+    "pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
     "pebra/tui/theme.tcss",
 )
 _SDIST_ROOT_FILES = (
@@ -200,6 +202,7 @@ def verify_archives(wheel: Path, sdist: Path) -> None:
         *_PACKAGE_ASSETS,
         f"{dist_info}/licenses/LICENSE",
         f"{dist_info}/licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+        f"{dist_info}/licenses/pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
     )
     missing_wheel = _missing_exact(wheel_members, wheel_required)
 
@@ -507,6 +510,8 @@ def verify_installed() -> None:
         "static/vendor/uplot.iife.min.js",
         "static/vendor/uplot.min.css",
         "static/vendor/uplot.LICENSE.txt",
+        "static/vendor/cytoscape.min.js",
+        "static/vendor/cytoscape.LICENSE.txt",
     ):
         if not dashboard.joinpath(relative).is_file():
             raise DistributionVerificationError(f"installed package missing {relative}")
@@ -580,7 +585,11 @@ def verify_installed() -> None:
     _verify_tui_mount(app)
 
     metadata_files = {str(path).replace("\\", "/") for path in importlib.metadata.files("pebra") or ()}
-    for suffix in ("licenses/LICENSE", "licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt"):
+    for suffix in (
+        "licenses/LICENSE",
+        "licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+        "licenses/pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
+    ):
         if not any(path.endswith(suffix) for path in metadata_files):
             raise DistributionVerificationError(f"installed metadata missing {suffix}")
 

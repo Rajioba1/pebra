@@ -1,0 +1,3 @@
+# Vendored dashboard assets are byte-stable and must never be EOL-converted on any
+# platform or fresh clone (autocrlf), so the shipped wheel/sdist bytes stay identical.
+pebra/dashboard/static/vendor/** -text

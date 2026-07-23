@@ -15,6 +15,7 @@ license = "Apache-2.0 AND MIT"
 license-files = [
     "LICENSE",
     "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+    "pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
