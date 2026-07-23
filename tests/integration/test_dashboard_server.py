@@ -969,6 +969,15 @@ class _StubReader:
     def file_overview(self, repo_root, *, top_n=200):
         return {"available": True, "files": [{"file_path": "src/Gamma.cs"}]}
 
+    def full_graph(self, repo_root, *, max_nodes=8000, max_edges=40000, collapse_after=20000):
+        self.calls.append(("full", repo_root, max_nodes, max_edges, collapse_after))
+        return {
+            "available": True, "mode": "symbol", "collapsed": False,
+            "graph_freshness": "fresh", "fallback_reason": None,
+            "nodes": [{"id": "n1", "kind": "function"}], "edges": [],
+            "truncated": False, "total_node_count": 1, "total_edge_count": 0,
+        }
+
 
 class _UnavailableReader:
     def hot_subgraph(self, symbols, repo_root, *, max_depth=2, max_nodes=300):
@@ -990,6 +999,16 @@ class _UnavailableReader:
             "files": [],
             "truncated": False,
             "total_file_count": 0,
+        }
+
+    def full_graph(self, repo_root, *, max_nodes=8000, max_edges=40000, collapse_after=20000):
+        return {
+            "available": False,
+            "graph_freshness": "unknown",
+            "fallback_reason": "codegraph DB query failed: /home/raj/secret/codegraph.db",
+            "mode": "symbol", "collapsed": False,
+            "nodes": [], "edges": [],
+            "truncated": False, "total_node_count": 0, "total_edge_count": 0,
         }
 
 
@@ -1097,6 +1116,101 @@ def test_graph_overview_sanitizes_reader_unavailable_reason(tmp_path) -> None:
     assert body["fallback_reason"] == "codegraph graph data unavailable"
     assert body["setup_command"] == "pebra setup-graph --fix --repo-root ."
     assert "home" not in str(body)
+
+
+# ---- /graph/full (M3) --------------------------------------------------------
+
+
+def test_graph_full_returns_reader_payload(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    stub = _StubReader()
+    app.state.graph_reader = stub
+    client = TestClient(app, base_url="http://127.0.0.1")
+    body = client.get("/api/repos/r/graph/full", headers=_AUTH).json()
+
+    assert body["available"] is True
+    assert body["mode"] == "symbol" and body["collapsed"] is False
+    assert body["nodes"] == [{"id": "n1", "kind": "function"}]
+    assert "setup_command" not in body
+    assert stub.calls == [("full", "/repo", 8000, 40000, 20000)]
+
+
+def test_graph_full_clamps_query_bounds(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _StubReader()
+    client = TestClient(app, base_url="http://127.0.0.1")
+    # ceilings: nodes<=20000, edges<=100000, collapse_after<=20000; floors >=1
+    assert client.get("/api/repos/r/graph/full?max_nodes=20001", headers=_AUTH).status_code == 422
+    assert client.get("/api/repos/r/graph/full?max_edges=100001", headers=_AUTH).status_code == 422
+    assert client.get("/api/repos/r/graph/full?collapse_after=0", headers=_AUTH).status_code == 422
+
+
+def test_graph_full_forwards_bounds_to_reader(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    stub = _StubReader()
+    app.state.graph_reader = stub
+    client = TestClient(app, base_url="http://127.0.0.1")
+    client.get(
+        "/api/repos/r/graph/full?max_nodes=100&max_edges=200&collapse_after=50", headers=_AUTH
+    )
+    assert stub.calls == [("full", "/repo", 100, 200, 50)]
+
+
+def test_graph_full_rejects_cross_repo(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _StubReader()
+    client = TestClient(app, base_url="http://127.0.0.1")
+    assert client.get("/api/repos/OTHER/graph/full", headers=_AUTH).status_code == 404
+
+
+def test_graph_full_requires_bearer(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    resp = _client(db).get("/api/repos/r/graph/full")  # no auth header
+    assert resp.status_code in (401, 403)
+
+
+def test_graph_full_failsoft_without_repo_root(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    resp = _client(db).get("/api/repos/r/graph/full", headers=_AUTH)
+    assert resp.status_code == 200  # never 500
+    body = resp.json()
+    assert body["available"] is False
+    assert body["mode"] == "symbol" and body["collapsed"] is False
+    assert body["nodes"] == [] and body["edges"] == []
+    assert body["setup_command"] == "pebra dashboard --repo-root <path>"
+    assert "relaunch" in body["setup_hint"].lower()
+
+
+def test_graph_full_sanitizes_reader_unavailable_reason(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _UnavailableReader()
+    client = TestClient(app, base_url="http://127.0.0.1")
+    body = client.get("/api/repos/r/graph/full", headers=_AUTH).json()
+
+    assert body["available"] is False
+    assert body["fallback_reason"] == "codegraph graph data unavailable"
+    assert body["setup_command"] == "pebra setup-graph --fix --repo-root ."
+    assert "secret" not in str(body) and "home" not in str(body)
     assert "secret" not in str(body)
 
 

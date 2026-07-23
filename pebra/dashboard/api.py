@@ -194,6 +194,25 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
             return _graph_overview_unavailable("dashboard is not bound to a repo root")
         return _with_graph_setup_hint(request.app.state.graph_reader.file_overview(repo_root, top_n=top_n))
 
+    @router.get("/repos/{repo_id}/graph/full")
+    def graph_full(
+        repo_id: str,
+        request: Request,
+        max_nodes: int = Query(8000, ge=1, le=20000),
+        max_edges: int = Query(40000, ge=1, le=100000),
+        collapse_after: int = Query(20000, ge=1, le=20000),
+    ) -> dict[str, Any]:
+        """Whole-repo structural graph (symbol or file-collapsed), read-only and fail-soft. No
+        assessment lookup, so there is no cross-repo assessment surface — the URL repo boundary and
+        bearer auth are the only access controls, same as ``graph_overview``."""
+        _require_bound_repo(request, repo_id)
+        repo_root = getattr(request.app.state, "repo_root", None)
+        if not repo_root:
+            return _graph_full_unavailable("dashboard is not bound to a repo root")
+        return _with_graph_setup_hint(request.app.state.graph_reader.full_graph(
+            repo_root, max_nodes=max_nodes, max_edges=max_edges, collapse_after=collapse_after
+        ))
+
     @router.get("/repos/{repo_id}/assessments/{assessment_id}")
     def repo_detail(repo_id: str, assessment_id: str, request: Request) -> dict[str, Any]:
         _require_bound_repo(request, repo_id)
@@ -241,6 +260,15 @@ def _graph_overview_unavailable(reason: str) -> dict[str, Any]:
         "available": False, "graph_freshness": "unknown",
         "fallback_reason": reason,
         "files": [], "truncated": False, "total_file_count": 0,
+    })
+
+
+def _graph_full_unavailable(reason: str) -> dict[str, Any]:
+    return _with_graph_setup_hint({
+        "available": False, "graph_freshness": "unknown", "fallback_reason": reason,
+        "mode": "symbol", "collapsed": False,
+        "nodes": [], "edges": [], "truncated": False,
+        "total_node_count": 0, "total_edge_count": 0,
     })
 
 
