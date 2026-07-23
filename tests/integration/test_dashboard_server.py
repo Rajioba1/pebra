@@ -124,6 +124,38 @@ def test_app_js_wires_risk_overlay_honestly(tmp_path) -> None:
     assert "RISK_DECISIONS" in js and 'node.rb-' in js
 
 
+def test_app_js_wires_verified_learning_overlay(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    js = _client(db).get("/static/app.js").text
+    # Learning badges come ONLY from the verified /learning/context route, never raw outcomes.
+    assert 'getJSON(rp("/learning/context?limit=200"))' in js
+    assert "applyLearningBadges(" in js and "has-lesson" in js
+    assert "verified lesson" in js
+    assert "Source: verified learning_context" in js
+    # Only "available" verified lessons badge anything; empty/unavailable shows nothing.
+    assert 'res.status !== "available"' in js
+
+
+def test_learning_overlay_source_ignores_unmaterialized_completed_outcome(tmp_path) -> None:
+    # A raw completed outcome that was never materialised through the gated controller must NOT appear
+    # as a lesson in the overlay source — the graph badge overlay reads only verified learning_context.
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    asm = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED, requires_confirmation=False,
+            action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL, scores={},
+            repo_id="r", repo_root="/x",
+        ),
+        {"task": "raw", "action_id": "a1"},
+    )
+    store.persist_guardrails(asm, {"pre_commit_decision": "proceed"})
+    store.record_outcome(asm, "completed", {})  # raw completed row, NOT materialised
+    store.close()
+    body = _client(db).get("/api/repos/r/learning/context", headers=_AUTH).json()
+    assert body["status"] == "empty" and body["items"] == []
+
+
 def test_index_hides_calibration_tab_by_default(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/")

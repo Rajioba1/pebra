@@ -231,6 +231,7 @@ td.mono { font-family: var(--mono); color: var(--muted); }
 /* `.graph-legend { display: flex }` (author origin) beats the UA `[hidden]{display:none}`, so the
    hidden toggle needs an explicit override — same pattern as .view[hidden] / .live-dot[hidden]. */
 .risk-legend[hidden] { display: none; }
+.learning-legend[hidden] { display: none; }
 .risk-caption { width: 100%; }
 
 .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }

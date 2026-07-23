@@ -87,14 +87,40 @@ def _seed(tmp_path) -> str:
     return db
 
 
+def _seed_with_lesson(tmp_path) -> str:
+    """Seed a VERIFIED learning_context lesson whose target file is the stub graph's b.py node."""
+    from pebra.adapters.store.db import SqliteStore
+    from pebra.core.constants import ActionStatus, Decision, RiskMode
+    from pebra.core.models import AssessmentResult
+
+    db = str(tmp_path / "pebra.db")
+    store = SqliteStore(db)
+    asm = store.persist_assessment(
+        AssessmentResult(
+            recommended_decision=Decision.PROCEED, requires_confirmation=False,
+            action_status=ActionStatus.PENDING, risk_mode=RiskMode.NORMAL,
+            scores={"expected_loss": 0.1, "benefit": 0.82, "rau": 0.31},
+            repo_id="r", repo_root="/x", assessed_commit="abc123",
+            model_guidance_packet={"decision": "proceed"},
+        ),
+        {"task": "Fix b", "action_id": "edit-b",
+         "revision_envelope": {"expected_files": ["b.py"]}},
+    )
+    store.persist_guardrails(asm, {"pre_commit_decision": "proceed"})
+    store.record_outcome(asm, "completed", {})
+    assert store.materialize_learning_context(asm) is not None  # verified lesson exists
+    store.close()
+    return db
+
+
 @contextlib.contextmanager
-def _serve(db: str):
+def _serve(db: str, reader=None):
     import uvicorn
 
     from pebra.dashboard.server import create_app
 
     app = create_app(db, "tok", repo_id="r", repo_root="/repo")
-    app.state.graph_reader = _StubReader()
+    app.state.graph_reader = reader if reader is not None else _StubReader()
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
     port = probe.getsockname()[1]
@@ -307,4 +333,88 @@ def test_graph_risk_overlay_binds_assessment_honestly(tmp_path) -> None:
             ]
             assert not unexpected, unexpected
             assert not page_errors, page_errors
+            browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_learning_overlay_badges_verified_lessons(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed_with_lesson(tmp_path)  # verified lesson on b.py -> stub nodes b/c (file_path b.py)
+    with _serve(db) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda e: page_errors.append(str(e)))
+            page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok#graph", wait_until="networkidle")
+            page.wait_for_selector("#graph-cy canvas", timeout=10000)
+
+            # The learning legend appears only because a verified lesson exists.
+            page.wait_for_selector(".learning-legend:not([hidden])", timeout=5000)
+
+            # A node WITH a matching verified lesson (file b.py) shows the lesson in the inspector,
+            # sourced from verified learning_context and labelled "verified lesson" (never "promoted").
+            page.fill(".graph-search", "class")  # node B, file b.py
+            page.wait_for_selector(".search-row", timeout=5000)
+            page.click(".search-row")
+            page.wait_for_selector("#graph-inspector .insp-note", timeout=5000)
+            insp = page.inner_text("#graph-inspector")
+            assert "verified lesson" in insp
+            assert "Source: verified learning_context" in insp
+            assert "promoted" not in insp.lower()
+
+            # A node WITHOUT a lesson (file a.py) shows no learning section.
+            page.fill(".graph-search", "function")  # node a, file a.py
+            page.wait_for_selector(".search-row", timeout=5000)
+            page.click(".search-row")
+            page.wait_for_timeout(200)
+            insp_a = page.inner_text("#graph-inspector")
+            assert "verified lesson" not in insp_a and "learning_context" not in insp_a
+            assert not page_errors, page_errors
+            browser.close()
+
+
+class _PrototypeKeyReader:
+    """A graph whose node is literally named 'toString' — an Object.prototype key. It must NOT be
+    badged with a lesson just because the lesson lookup map inherits that method."""
+
+    def full_graph(self, repo_root, *, max_nodes=8000, max_edges=40000, collapse_after=20000):
+        return {
+            "available": True, "mode": "symbol", "collapsed": False,
+            "graph_freshness": "fresh", "fallback_reason": None,
+            "nodes": [
+                {"id": "n:ts", "kind": "method", "qualified_name": "toString", "file_path": "x.py",
+                 "label": "toString", "degree": 0, "inbound_count": 0, "outbound_count": 0},
+            ],
+            "edges": [],
+            "truncated": False, "total_node_count": 1, "total_edge_count": 0,
+        }
+
+    def file_overview(self, repo_root, *, top_n=200):
+        return {"available": True, "files": [], "truncated": False, "total_file_count": 0}
+
+    def hot_subgraph(self, *a, **k):
+        return {"available": True, "nodes": [], "edges": [], "graph_freshness": "fresh"}
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_learning_overlay_does_not_prototype_pollute_badge(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed_with_lesson(tmp_path)  # a verified lesson exists (on b.py) — so graphState.learning is set
+    with _serve(db, reader=_PrototypeKeyReader()) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok#graph", wait_until="networkidle")
+            page.wait_for_selector("#graph-cy canvas", timeout=10000)
+            # The 'toString' node matches no lesson (its file x.py and symbol toString aren't lesson
+            # keys); it must NOT inherit a badge from Object.prototype.toString.
+            page.fill(".graph-search", "toString")
+            page.wait_for_selector(".search-row", timeout=5000)
+            page.click(".search-row")
+            page.wait_for_selector("#graph-inspector .insp-row", timeout=5000)
+            insp = page.inner_text("#graph-inspector")
+            assert "verified lesson" not in insp and "learning_context" not in insp
             browser.close()

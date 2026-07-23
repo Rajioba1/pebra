@@ -407,6 +407,7 @@
     cy: null, mode: null, inspector: null,
     overlay: "structure", risk: null, assessmentId: null,
     riskLegend: null, riskCaption: null,
+    learning: null, learningLegend: null,
   };
 
   async function renderGraph(view) {
@@ -448,6 +449,11 @@
     buildRiskLegend(riskLegend);
     graphCard.appendChild(riskLegend);
     graphState.riskLegend = riskLegend;
+    const learningLegend = el("div", "graph-legend learning-legend");
+    learningLegend.hidden = true;
+    learningLegend.appendChild(swatchLabel("#f778ba", "verified lesson (learning_context)"));
+    graphCard.appendChild(learningLegend);
+    graphState.learningLegend = learningLegend;
     const searchResults = el("div", "search-results");
     graphCard.appendChild(searchResults);
     // Inspector: the accessibility fallback for the canvas graph (no per-node DOM). Keyboard-reachable
@@ -464,6 +470,75 @@
     view.appendChild(graphCard);
     await loadFullGraph(cyEl, graphCard);
     await setupRiskOverlay(controls);
+    await loadLearningOverlay();
+  }
+
+  async function loadLearningOverlay() {
+    if (!graphState.cy) return;  // no rendered graph → nothing to badge
+    let res;
+    try {
+      res = await getJSON(rp("/learning/context?limit=200"));
+    } catch (e) {
+      return;
+    }
+    // Only VERIFIED learning_context lessons drive badges; anything else (empty/unavailable) shows no
+    // badge and no warning — never derived from raw completed outcome rows.
+    if (!res || res.status !== "available" || !res.items || !res.items.length) {
+      graphState.learning = null;
+      applyLearningBadges();
+      updateLearningLegend();
+      return;
+    }
+    // Prototype-free maps: node file paths / symbols are untrusted keys, so a node literally named
+    // "constructor"/"toString"/etc. must NOT match an inherited Object.prototype member and get a
+    // fabricated lesson badge.
+    const byFile = Object.create(null);
+    const bySymbol = Object.create(null);
+    res.items.forEach((it) => {
+      (it.target_files || []).forEach((f) => {
+        const k = normPath(f);
+        if (k && !(k in byFile)) byFile[k] = it;
+      });
+      (it.symbols || []).forEach((sy) => {
+        if (sy && !(sy in bySymbol)) bySymbol[sy] = it;
+      });
+    });
+    graphState.learning = { byFile: byFile, bySymbol: bySymbol };
+    applyLearningBadges();
+    updateLearningLegend();
+  }
+
+  function nodeLesson(d) {
+    // Match only on TRUSTED identity keys: file_path and qualified_name. `label` is a lossy display
+    // tail ("A::B::c" -> "c") — matching it would badge every node graph-wide that shares a common
+    // short name (run/get/__init__), misrepresenting which nodes a verified lesson actually touches.
+    const L = graphState.learning;
+    if (!L) return null;
+    const fp = normPath(d.file_path);
+    if (fp && L.byFile[fp]) return L.byFile[fp];
+    if (d.qualified_name && L.bySymbol[d.qualified_name]) return L.bySymbol[d.qualified_name];
+    return null;
+  }
+
+  function applyLearningBadges() {
+    const cy = graphState.cy;
+    if (!cy) return;
+    cy.nodes().removeClass("has-lesson");
+    if (!graphState.learning) return;
+    cy.nodes().forEach((n) => { if (nodeLesson(n.data())) n.addClass("has-lesson"); });
+  }
+
+  function updateLearningLegend() {
+    if (graphState.learningLegend) graphState.learningLegend.hidden = !graphState.learning;
+  }
+
+  function appendLearningDetail(inspector, d) {
+    const lesson = nodeLesson(d);
+    if (!lesson) return;
+    inspector.appendChild(el("div", "insp-sep"));
+    inspector.appendChild(inspRow("learning", "verified lesson"));  // verified, NOT "promoted"
+    inspector.appendChild(inspRow("lesson", lesson.lesson || "—"));
+    inspector.appendChild(el("p", "insp-note", "Source: verified learning_context"));
   }
 
   async function setupRiskOverlay(controls) {
@@ -682,6 +757,7 @@
     ];
     rows.forEach(function (kv) { inspector.appendChild(inspRow(kv[0], kv[1])); });
     if (graphState.overlay === "risk" && graphState.risk) appendRiskDetail(inspector, d);
+    if (graphState.learning) appendLearningDetail(inspector, d);
     if (focus) inspector.focus();
   }
 
@@ -783,6 +859,7 @@
       graphState.cy.on("tap", "node", function (evt) { showInspector(graphState.inspector, evt.target.data(), false); });
     }
     if (graphState.overlay === "risk" && graphState.risk) applyOverlay();  // survive a re-render
+    if (graphState.learning) applyLearningBadges();
   }
 
   function makeCy(container, elements, layout, style) {
@@ -846,6 +923,11 @@
     });
     s.push({ selector: "node.rb-unmatched", style: {
       "background-color": "#3a4753", "shape": "ellipse", "opacity": 0.35, "border-width": 0,
+    } });
+    // Verified-lesson badge (appended last so it owns the border in either overlay mode). The node's
+    // fill/shape still conveys kind or decision; this ring only marks "a verified lesson touches this".
+    s.push({ selector: "node.has-lesson", style: {
+      "border-width": 4, "border-color": "#f778ba", "border-style": "double", "border-opacity": 1,
     } });
     return s;
   }
