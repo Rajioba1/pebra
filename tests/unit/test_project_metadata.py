@@ -53,6 +53,7 @@ def test_pyproject_uses_current_spdx_license_metadata() -> None:
     assert project["license-files"] == [
         "LICENSE",
         "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
+        "pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
     ]
 
     classifiers = set(project["classifiers"])
