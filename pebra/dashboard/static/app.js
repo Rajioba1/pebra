@@ -390,7 +390,7 @@
     file: "#6e7681",
     default: "#566173",
   };
-  const graphState = { cy: null, mode: null };
+  const graphState = { cy: null, mode: null, inspector: null };
 
   async function renderGraph(view) {
     clear(view);
@@ -420,13 +420,113 @@
     }
 
     const graphCard = card("Codebase graph");
-    graphCard.appendChild(el("div", "controls"));  // search / layout controls land in M5
+    const controls = el("div", "controls");
+    graphCard.appendChild(controls);
     const cyEl = el("div", "graph-cy");
     cyEl.id = "graph-cy";
     graphCard.appendChild(cyEl);
     graphCard.appendChild(graphLegend());
+    const searchResults = el("div", "search-results");
+    graphCard.appendChild(searchResults);
+    // Inspector: the accessibility fallback for the canvas graph (no per-node DOM). Keyboard-reachable
+    // and populated on node selection — from a canvas tap OR from activating a focusable search result.
+    const inspector = el("div", "inspector");
+    inspector.id = "graph-inspector";
+    inspector.setAttribute("tabindex", "0");
+    inspector.setAttribute("role", "region");
+    inspector.setAttribute("aria-label", "Selected graph node");
+    inspector.appendChild(el("p", "chart-note", "Select a node (or a search result) to inspect it."));
+    graphState.inspector = inspector;
+    buildGraphControls(controls, searchResults, inspector);
+    graphCard.appendChild(inspector);
     view.appendChild(graphCard);
     await loadFullGraph(cyEl, graphCard);
+  }
+
+  function buildGraphControls(controls, searchResults, inspector) {
+    const search = document.createElement("input");
+    search.className = "graph-search";
+    search.type = "text";
+    search.setAttribute("aria-label", "Search graph nodes by symbol, file or kind");
+    search.placeholder = "Search symbol / file / kind…";
+    search.addEventListener("input", function () { graphSearch(search.value, searchResults, inspector); });
+    controls.appendChild(search);
+    [["Grid", "grid"], ["Circle", "circle"], ["Concentric", "concentric"], ["CoSE", "cose"], ["Fit", "fit"]]
+      .forEach(function (pair) {
+        const b = el("button", "graph-btn", pair[0]);
+        b.setAttribute("type", "button");
+        b.addEventListener("click", function () { runGraphLayout(pair[1]); });
+        controls.appendChild(b);
+      });
+  }
+
+  function graphSearch(query, searchResults, inspector) {
+    const cy = graphState.cy;
+    clear(searchResults);
+    if (!cy) return;
+    cy.nodes().removeClass("search-hit search-dim");
+    cy.edges().removeClass("search-dim");
+    const q = (query || "").trim().toLowerCase();
+    if (q.length < 2) return;
+    const hits = cy.nodes().filter(function (n) {
+      const d = n.data();
+      return [d.label, d.qualified_name, d.file_path, d.kind].some(
+        function (v) { return v && String(v).toLowerCase().indexOf(q) >= 0; });
+    });
+    if (hits.length === 0) {
+      searchResults.appendChild(el("p", "chart-note", "No matches."));
+      return;
+    }
+    cy.elements().addClass("search-dim");
+    hits.removeClass("search-dim").addClass("search-hit");
+    hits.connectedEdges().removeClass("search-dim");
+    searchResults.appendChild(el("p", "chart-note", hits.length + " match(es)" + (hits.length > 30 ? " (showing 30)" : "")));
+    hits.toArray().slice(0, 30).forEach(function (n) {
+      const d = n.data();
+      const row = el("button", "search-row", d.qualified_name || d.label || d.id);
+      row.setAttribute("type", "button");
+      row.addEventListener("click", function () {
+        cy.animate({ fit: { eles: n, padding: 120 }, duration: 300 });
+        cy.$(":selected").unselect();
+        n.select();
+        showInspector(inspector, d, true);  // keyboard path: move focus to the details region
+      });
+      searchResults.appendChild(row);
+    });
+  }
+
+  function runGraphLayout(name) {
+    const cy = graphState.cy;
+    if (!cy) return;
+    if (name === "fit") { cy.fit(undefined, 20); return; }
+    if (name === "cose" && cy.nodes().length > 300) {
+      if (!window.confirm("Force layout on " + cy.nodes().length + " nodes may be slow. Continue?")) return;
+    }
+    const opts = name === "cose"
+      ? { name: "cose", animate: false, fit: true, padding: 20, nodeRepulsion: 8000, idealEdgeLength: 60, numIter: 400 }
+      : { name: name, fit: true, padding: 20 };
+    cy.layout(opts).run();
+  }
+
+  function showInspector(inspector, d, focus) {
+    if (!inspector) return;
+    clear(inspector);
+    const degree = d.degree != null ? d.degree : (d.symbol_count != null ? d.symbol_count : null);
+    const rows = [
+      ["symbol", d.qualified_name || d.label || d.id],
+      ["kind", d.kind || "—"],
+      ["file", d.file_path || "—"],
+      ["fan-in", d.inbound != null ? String(d.inbound) : "—"],
+      ["fan-out", d.outbound != null ? String(d.outbound) : "—"],
+      ["degree", degree != null ? String(degree) : "—"],
+    ];
+    rows.forEach(function (kv) {
+      const r = el("div", "insp-row");
+      r.appendChild(el("span", "insp-key", kv[0]));
+      r.appendChild(el("span", "insp-val", kv[1]));  // el() sets textContent, never raw markup
+      inspector.appendChild(r);
+    });
+    if (focus) inspector.focus();
   }
 
   async function loadFullGraph(cyEl, graphCard) {
@@ -486,9 +586,14 @@
         kind: e.kind || "", weight: e.weight != null ? e.weight : 1,
       } });
     });
-    const showLabels = g.nodes.length <= 250;  // WebGL label atlas is bounded; hover labels come in M5
+    const showLabels = g.nodes.length <= 250;  // WebGL label atlas is bounded; details show in inspector
     graphState.cy = makeCy(container, elements, layoutFor(g.nodes.length), cyStyle(showLabels));
     graphState.mode = g.mode;
+    if (graphState.inspector) {
+      clear(graphState.inspector);
+      graphState.inspector.appendChild(el("p", "chart-note", "Select a node (or a search result) to inspect it."));
+      graphState.cy.on("tap", "node", function (evt) { showInspector(graphState.inspector, evt.target.data(), false); });
+    }
   }
 
   function makeCy(container, elements, layout, style) {
@@ -533,6 +638,11 @@
       { selector: "node:selected", style: {
         "border-width": 2, "border-color": "#ffd24d", "border-opacity": 1,
       } },
+      { selector: "node.search-dim", style: { "opacity": 0.15 } },
+      { selector: "edge.search-dim", style: { "opacity": 0.06 } },
+      { selector: "node.search-hit", style: {
+        "border-width": 3, "border-color": "#ffd24d", "border-opacity": 1, "opacity": 1,
+      } },
     ];
     Object.keys(KIND_COLORS).forEach((k) => {
       if (k === "default") return;
@@ -565,6 +675,7 @@
     l.appendChild(swatchLabel(KIND_COLORS.component, "component / route"));
     l.appendChild(swatchLabel(KIND_COLORS.namespace, "namespace / module"));
     l.appendChild(swatchLabel(KIND_COLORS.file, "file (collapsed)"));
+    l.appendChild(swatchLabel("#3a4753", "call / reference edge"));
     return l;
   }
   function swatchLabel(color, text) {

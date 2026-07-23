@@ -100,6 +100,18 @@ def test_app_js_renders_full_graph_with_cytoscape_webgl(tmp_path) -> None:
     assert "innerHTML" not in js        # user/repo-derived text rendered via textContent only
 
 
+def test_app_js_wires_graph_search_inspector_and_layouts(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    js = _client(db).get("/static/app.js").text
+    assert "graphSearch(" in js
+    assert "search-hit" in js and "search-dim" in js
+    assert "showInspector(" in js
+    assert "runGraphLayout(" in js
+    assert "concentric" in js and "circle" in js  # layout options
+    assert "graph-inspector" in js
+    assert 'setAttribute("tabindex", "0")' in js   # inspector is the keyboard-reachable a11y fallback
+
+
 def test_index_hides_calibration_tab_by_default(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/")

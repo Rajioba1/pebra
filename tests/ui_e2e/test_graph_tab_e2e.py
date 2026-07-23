@@ -196,3 +196,41 @@ def test_graph_instance_is_destroyed_when_navigating_away(tmp_path) -> None:
             page.wait_for_selector("#graph-cy canvas", timeout=10000)
             assert page.eval_on_selector_all("#graph-cy canvas", "els => els.length") >= 1
             browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_search_inspector_and_layout_controls(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda e: page_errors.append(str(e)))
+            page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok#graph", wait_until="networkidle")
+            page.wait_for_selector("#graph-cy canvas", timeout=10000)
+
+            # Search "class" matches exactly the one class node (kind=class) and lists it.
+            page.fill(".graph-search", "class")
+            page.wait_for_selector(".search-row", timeout=5000)
+            rows = page.eval_on_selector_all(".search-row", "els => els.map(e => e.textContent)")
+            assert rows and any("B" in r for r in rows), rows
+
+            # Inspector is the keyboard-reachable a11y fallback.
+            assert page.get_attribute("#graph-inspector", "tabindex") == "0"
+
+            # Activating a result populates the inspector with that node's real fields.
+            page.click(".search-row")
+            page.wait_for_selector("#graph-inspector .insp-row", timeout=5000)
+            insp = page.inner_text("#graph-inspector")
+            assert "kind" in insp and "class" in insp and "fan-in" in insp
+
+            # Layout buttons operate on the live instance without throwing.
+            page.click("text=Circle")
+            page.wait_for_timeout(300)
+            page.click("text=Grid")
+            page.wait_for_timeout(300)
+            assert not page_errors, page_errors
+            browser.close()
