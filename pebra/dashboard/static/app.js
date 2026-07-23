@@ -57,6 +57,7 @@
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
   function fmt(x, d) { return x == null || Number.isNaN(x) ? "—" : Number(x).toFixed(d == null ? 3 : d); }
   function fmtPct(x, d) { return x == null || Number.isNaN(x) ? "—" : (Number(x) * 100).toFixed(d == null ? 0 : d) + "%"; }
+  function fmtLossPoints(x) { return x == null || Number.isNaN(x) ? "—" : Number(x).toFixed(2) + " loss pts"; }
   function tailPath(path) {
     const parts = String(path || "").split(/[\\/]/).filter(Boolean);
     return parts.length ? parts[parts.length - 1] : "—";
@@ -207,7 +208,7 @@
         tr.appendChild(cell(formatTarget(it.target_files), "mono"));
         tr.appendChild(cell(formatFingerprint(it.candidate_fingerprint), "mono"));
         const dcell = el("td"); dcell.appendChild(pill(it.decision)); tr.appendChild(dcell);
-        tr.appendChild(cell(fmtPct(s.expected_loss), "num"));
+        tr.appendChild(cell(fmtLossPoints(s.expected_loss), "num"));
         tr.appendChild(cell(fmtPct(s.benefit), "num"));
         tr.appendChild(cell(fmt(s.expected_utility), "num"));
         tr.appendChild(cell(fmt(s.rau), "num"));

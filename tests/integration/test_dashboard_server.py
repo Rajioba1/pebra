@@ -105,12 +105,25 @@ def test_api_with_bearer_returns_chain_status(tmp_path) -> None:
 
 
 def test_calibration_route_accepts_review_cost_target(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from pebra.dashboard.server import create_app
+
     db, _ = _seed(tmp_path)
-    resp = _client(db).get(
+    client = TestClient(create_app(db, "tok", dev_mode=True), base_url="http://127.0.0.1")
+    resp = client.get(
         "/api/repos/r/calibration?target_type=cost_continuous&scope=all", headers=_AUTH,
     )
     assert resp.status_code == 200
     assert resp.json()["target_type"] == "cost_continuous"
+
+
+def test_calibration_route_is_dev_only(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+
+    resp = _client(db).get("/api/repos/r/calibration?target_type=risk_binary", headers=_AUTH)
+
+    assert resp.status_code == 404
 
 
 def test_dashboard_calibration_control_lists_review_cost(tmp_path) -> None:
@@ -150,12 +163,12 @@ def test_dashboard_history_labels_terminal_status_as_outcome(tmp_path) -> None:
     assert '{ label: "confidence", cls: "num" },\n        "status",' not in text
 
 
-def test_dashboard_history_renders_expected_loss_and_benefit_as_percentages(tmp_path) -> None:
+def test_dashboard_history_renders_expected_loss_as_points_and_benefit_as_percentage(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     text = _client(db).get("/static/app.js").text
 
     assert '{ label: "expected loss", cls: "num" }' in text
-    assert "cell(fmtPct(s.expected_loss), \"num\")" in text
+    assert "cell(fmtLossPoints(s.expected_loss), \"num\")" in text
     assert "cell(fmtPct(s.benefit), \"num\")" in text
     assert "cell(fmt(s.rau), \"num\")" in text
 
@@ -534,6 +547,9 @@ _REPO_COLLECTION_PATHS = (
     "/api/repos/other/learning/facts",
     "/api/repos/other/learning/context",
 )
+_USER_REPO_COLLECTION_PATHS = tuple(
+    path for path in _REPO_COLLECTION_PATHS if not path.endswith("/calibration")
+)
 
 
 @pytest.mark.parametrize("path", _REPO_COLLECTION_PATHS)
@@ -553,7 +569,7 @@ def test_bound_dashboard_rejects_foreign_repo_collection_routes(tmp_path, path: 
     assert response.json() == {"detail": "repo not found"}
 
 
-@pytest.mark.parametrize("path", _REPO_COLLECTION_PATHS)
+@pytest.mark.parametrize("path", _USER_REPO_COLLECTION_PATHS)
 def test_unbound_dashboard_preserves_multi_repo_collection_access(tmp_path, path: str) -> None:
     db, _ = _seed(tmp_path)
     store = SqliteStore(db)
@@ -565,6 +581,22 @@ def test_unbound_dashboard_preserves_multi_repo_collection_access(tmp_path, path
     assert response.status_code == 200
     if path.endswith("/assessments"):
         assert response.json()["items"][0]["assessment_id"] == foreign
+
+
+def test_unbound_dev_dashboard_preserves_calibration_multi_repo_access(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from pebra.dashboard.server import create_app
+
+    db, _ = _seed(tmp_path)
+    store = SqliteStore(db)
+    _persist_assessment(store, repo_id="other")
+    store.close()
+    client = TestClient(create_app(db, "tok", dev_mode=True), base_url="http://127.0.0.1")
+
+    response = client.get("/api/repos/other/calibration", headers=_AUTH)
+
+    assert response.status_code == 200
 
 
 # --- M1 characterization: lock the exact JSON shapes of the migrated read routes so the shared
@@ -849,16 +881,26 @@ def test_scores_series_projects_score_fields(tmp_path) -> None:
 
 
 def test_calibration_risk_binary_returns_reliability_bins(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from pebra.dashboard.server import create_app
+
     db, _ = _seed_rich(tmp_path)
-    body = _client(db).get("/api/repos/r/calibration?target_type=risk_binary", headers=_AUTH).json()
+    client = TestClient(create_app(db, "tok", dev_mode=True), base_url="http://127.0.0.1")
+    body = client.get("/api/repos/r/calibration?target_type=risk_binary", headers=_AUTH).json()
     assert body["target_type"] == "risk_binary"
     assert len(body["bins"]) == 10
     assert body["sample_count"] == 2
 
 
 def test_calibration_unknown_target_type_is_400(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from pebra.dashboard.server import create_app
+
     db, _ = _seed_rich(tmp_path)
-    resp = _client(db).get("/api/repos/r/calibration?target_type=bogus", headers=_AUTH)
+    client = TestClient(create_app(db, "tok", dev_mode=True), base_url="http://127.0.0.1")
+    resp = client.get("/api/repos/r/calibration?target_type=bogus", headers=_AUTH)
     assert resp.status_code == 400
 
 
@@ -994,7 +1036,8 @@ def test_graph_hotspot_failsoft_without_repo_root(tmp_path) -> None:
     resp = _client(db).get(f"/api/repos/r/graph/hotspot?assessment_id={asm}", headers=_AUTH)
     assert resp.status_code == 200  # never 500
     assert resp.json()["available"] is False
-    assert "pebra setup-graph --fix" in resp.json()["setup_command"]
+    assert resp.json()["setup_command"] == "pebra dashboard --repo-root <path>"
+    assert "relaunch" in resp.json()["setup_hint"].lower()
 
 
 def test_graph_hotspot_sanitizes_reader_unavailable_reason(tmp_path) -> None:
@@ -1020,7 +1063,8 @@ def test_graph_overview_failsoft_without_repo_root(tmp_path) -> None:
     resp = _client(db).get("/api/repos/r/graph/overview", headers=_AUTH)
     assert resp.status_code == 200
     assert resp.json()["available"] is False
-    assert "pebra setup-graph --fix" in resp.json()["setup_command"]
+    assert resp.json()["setup_command"] == "pebra dashboard --repo-root <path>"
+    assert "relaunch" in resp.json()["setup_hint"].lower()
 
 
 def test_graph_overview_sanitizes_reader_unavailable_reason(tmp_path) -> None:

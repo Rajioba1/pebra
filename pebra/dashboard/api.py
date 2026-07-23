@@ -78,6 +78,8 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
     ) -> dict[str, Any]:
         """Reliability diagram (binary targets) or a predicted-vs-actual scatter (continuous)."""
         _require_bound_repo(request, repo_id)
+        if not getattr(request.app.state, "dev_mode", False):
+            raise HTTPException(status_code=404, detail="not found")
         store = _open(request)
         try:
             rows = store.list_prediction_errors(repo_id, target_type=target_type, scope=scope)
@@ -244,9 +246,16 @@ def _graph_overview_unavailable(reason: str) -> dict[str, Any]:
 
 def _with_graph_setup_hint(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("available") is False:
-        payload["fallback_reason"] = _public_graph_fallback_reason(payload.get("fallback_reason"))
-        payload["setup_command"] = "pebra setup-graph --fix --repo-root ."
-        payload["setup_hint"] = "Initialize or repair the local CodeGraph index, then refresh this tab."
+        fallback_reason = _public_graph_fallback_reason(payload.get("fallback_reason"))
+        payload["fallback_reason"] = fallback_reason
+        if fallback_reason.startswith("dashboard is not bound to a repo root"):
+            payload["setup_command"] = "pebra dashboard --repo-root <path>"
+            payload["setup_hint"] = (
+                "Relaunch the dashboard with the repository root so graph reads can be scoped."
+            )
+        else:
+            payload["setup_command"] = "pebra setup-graph --fix --repo-root ."
+            payload["setup_hint"] = "Initialize or repair the local CodeGraph index, then refresh this tab."
     return payload
 
 

@@ -269,7 +269,7 @@ def test_dashboard_history_renders_revise_safer_risk_benefit_math(tmp_path):
                 row = page.locator("tr.clickable").filter(has_text=payload["assessment_id"])
                 assert _history_cell_text_by_header(row, "decision") == "revise_safer"
                 assert _history_cell_text_by_header(row, "expected loss") == (
-                    f'{scores["expected_loss"] * 100:.0f}%'
+                    f'{scores["expected_loss"]:.2f} loss pts'
                 )
                 assert _history_cell_text_by_header(row, "benefit") == (
                     f'{scores["benefit"] * 100:.0f}%'

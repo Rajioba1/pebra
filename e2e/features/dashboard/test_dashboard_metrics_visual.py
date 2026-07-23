@@ -95,7 +95,7 @@ def test_dashboard_serves_learned_run_metrics_on_local_port(seeded_learning_stat
 
 def test_dashboard_serves_new_metric_endpoints(seeded_learning_state):
     # The Phase-5d read surface, over the real CLI/HTTP boundary (no binary needed; graph is fail-soft).
-    with dh.running_dashboard(seeded_learning_state.repo_path, seeded_learning_state.db_path) as info:
+    with dh.running_dashboard(seeded_learning_state.repo_path, seeded_learning_state.db_path, dev=True) as info:
         rid = info.repo_id
 
         series = _api_get(info.port, info.token, f"/api/repos/{rid}/scores-series?limit=10")

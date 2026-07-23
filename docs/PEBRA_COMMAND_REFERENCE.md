@@ -319,6 +319,7 @@ pebra dashboard
   [--auth {auto,token,none}]
   [--token]
   [--open]
+  [--dev]
 ```
 
 ```console
@@ -327,9 +328,14 @@ pebra dashboard --host 127.0.0.1 --port 0
 pebra dashboard --auth token --open
 pebra dashboard --host 0.0.0.0 --auth token
 pebra dashboard --read-only --db path/to/pebra.db --repo-id repo_example
+pebra dashboard --dev --repo-root .
 ```
 
 `--token` is an alias for forcing `--auth token`; it does not accept a token value. Non-loopback binds require token authentication.
+
+`--dev` exposes developer diagnostics such as Calibration. Without `--dev`, the Calibration tab is
+hidden and its API endpoint returns `404`; normal users still see Overview, History, Learning, and
+Graph.
 
 ### `tui`
 
