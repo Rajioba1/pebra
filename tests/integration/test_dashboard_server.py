@@ -1197,6 +1197,66 @@ def test_graph_full_failsoft_without_repo_root(tmp_path) -> None:
     assert "relaunch" in body["setup_hint"].lower()
 
 
+class _RaisingReader:
+    """A reader whose graph methods raise a NON-(sqlite3/OSError) exception with a path in it."""
+
+    def hot_subgraph(self, symbols, repo_root, *, max_depth=2, max_nodes=300):
+        raise RuntimeError("unexpected /home/raj/secret boom")
+
+    def file_overview(self, repo_root, *, top_n=200):
+        raise RuntimeError("unexpected /home/raj/secret boom")
+
+    def full_graph(self, repo_root, *, max_nodes=8000, max_edges=40000, collapse_after=20000):
+        raise RuntimeError("unexpected /home/raj/secret boom")
+
+
+def test_graph_full_failsoft_when_reader_raises(tmp_path) -> None:
+    # Hard rule: no graph route may 500. If the reader raises something other than the sqlite/OS
+    # errors it softens internally, the route must still fail soft (200, available=False), and must
+    # not leak the exception text/path.
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _RaisingReader()
+    client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
+    resp = client.get("/api/repos/r/graph/full", headers=_AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert body["mode"] == "symbol" and body["nodes"] == [] and body["edges"] == []
+    assert "secret" not in str(body) and "home" not in str(body)
+
+
+def test_graph_overview_failsoft_when_reader_raises(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _RaisingReader()
+    client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
+    resp = client.get("/api/repos/r/graph/overview", headers=_AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["available"] is False
+    assert "secret" not in str(resp.json())
+
+
+def test_graph_hotspot_failsoft_when_reader_raises(tmp_path) -> None:
+    db, asm = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _RaisingReader()
+    client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
+    resp = client.get(f"/api/repos/r/graph/hotspot?assessment_id={asm}", headers=_AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["available"] is False
+    assert "secret" not in str(resp.json())
+
+
 def test_graph_full_sanitizes_reader_unavailable_reason(tmp_path) -> None:
     db, _ = _seed_rich(tmp_path)
     from pebra.dashboard.server import create_app

@@ -180,9 +180,13 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
             }
             for i, qn in enumerate(qnames)
         ]
-        return _with_graph_setup_hint(request.app.state.graph_reader.hot_subgraph(
-            symbols, repo_root, max_depth=max_depth, max_nodes=max_nodes
-        ))
+        try:
+            payload = request.app.state.graph_reader.hot_subgraph(
+                symbols, repo_root, max_depth=max_depth, max_nodes=max_nodes
+            )
+        except Exception:  # noqa: BLE001 — hard rule: a graph read must fail soft, never 500
+            return _graph_unavailable("codegraph graph data unavailable")
+        return _with_graph_setup_hint(payload)
 
     @router.get("/repos/{repo_id}/graph/overview")
     def graph_overview(
@@ -192,7 +196,11 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         repo_root = getattr(request.app.state, "repo_root", None)
         if not repo_root:
             return _graph_overview_unavailable("dashboard is not bound to a repo root")
-        return _with_graph_setup_hint(request.app.state.graph_reader.file_overview(repo_root, top_n=top_n))
+        try:
+            payload = request.app.state.graph_reader.file_overview(repo_root, top_n=top_n)
+        except Exception:  # noqa: BLE001 — hard rule: a graph read must fail soft, never 500
+            return _graph_overview_unavailable("codegraph graph data unavailable")
+        return _with_graph_setup_hint(payload)
 
     @router.get("/repos/{repo_id}/graph/full")
     def graph_full(
@@ -209,9 +217,13 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
         repo_root = getattr(request.app.state, "repo_root", None)
         if not repo_root:
             return _graph_full_unavailable("dashboard is not bound to a repo root")
-        return _with_graph_setup_hint(request.app.state.graph_reader.full_graph(
-            repo_root, max_nodes=max_nodes, max_edges=max_edges, collapse_after=collapse_after
-        ))
+        try:
+            payload = request.app.state.graph_reader.full_graph(
+                repo_root, max_nodes=max_nodes, max_edges=max_edges, collapse_after=collapse_after
+            )
+        except Exception:  # noqa: BLE001 — hard rule: a graph read must fail soft, never 500
+            return _graph_full_unavailable("codegraph graph data unavailable")
+        return _with_graph_setup_hint(payload)
 
     @router.get("/repos/{repo_id}/assessments/{assessment_id}")
     def repo_detail(repo_id: str, assessment_id: str, request: Request) -> dict[str, Any]:
