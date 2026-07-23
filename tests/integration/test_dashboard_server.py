@@ -85,6 +85,21 @@ def test_index_vendors_cytoscape_without_cdn(tmp_path) -> None:
         assert host not in body
 
 
+def test_app_js_renders_full_graph_with_cytoscape_webgl(tmp_path) -> None:
+    # Structural backstop for the graph rewrite (behavioural proof is the Playwright smoke in
+    # tests/ui_e2e/test_graph_tab_e2e.py). Confirms the served app.js wires the full-graph route to
+    # Cytoscape's WebGL renderer, dropped the old hand-rolled canvas, and never uses innerHTML.
+    db, _ = _seed(tmp_path)
+    js = _client(db).get("/static/app.js").text
+    assert js
+    assert "/graph/full" in js
+    assert "cytoscape(" in js
+    assert "webgl: true" in js
+    assert "drawGraph(" not in js       # old radial canvas renderer removed
+    assert "#graph-canvas" not in js
+    assert "innerHTML" not in js        # user/repo-derived text rendered via textContent only
+
+
 def test_index_hides_calibration_tab_by_default(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     resp = _client(db).get("/")

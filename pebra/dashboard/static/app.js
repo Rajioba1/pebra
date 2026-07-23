@@ -1,9 +1,9 @@
 // PEBRA Risk Observatory — instrument deck (Phase 5d).
 //
 // One classic script (no ES-module import graph) so the strict CSP stays exactly `script-src 'nonce-'`.
-// Vanilla DOM; uPlot (vendored global) draws the calibration + time-series charts; a hand-rolled canvas
-// draws the signature blast-radius graph. No inline style attributes anywhere — the CSP forbids them;
-// dynamic sizing uses the CSSOM `.style.prop` setter, which is not governed by style-src.
+// Vanilla DOM; uPlot (vendored global) draws the calibration + time-series charts; Cytoscape.js
+// (vendored global, WebGL renderer) draws the codebase graph. No inline style attributes anywhere —
+// the CSP forbids them; dynamic sizing uses the CSSOM `.style.prop` setter, not governed by style-src.
 (function () {
   "use strict";
 
@@ -29,7 +29,7 @@
   const liveDot = document.getElementById("live-dot");
   const repoChip = document.getElementById("repo-chip");
   const chainPill = document.getElementById("chain-pill");
-  let hotspotSeq = 0;
+  let graphSeq = 0;
 
   // Human labels for the audit-chain counts (never the raw table names).
   const chainLabels = {};
@@ -379,8 +379,19 @@
     view.appendChild(lcard);
   }
 
-  // ---- Graph (the signature) ----
-  const graphState = { assessment_id: null };
+  // ---- Codebase graph (Cytoscape.js, WebGL) ----
+  // Categorical kind palette: dark-legible and deliberately distinct from the green/gold/orange/red
+  // risk RAMP so "coloured by kind" can never be misread as "coloured by risk" (risk overlay is M6).
+  const KIND_COLORS = {
+    function: "#58a6ff", method: "#58a6ff",
+    class: "#a78bfa", struct: "#a78bfa", interface: "#a78bfa", trait: "#a78bfa", protocol: "#a78bfa",
+    component: "#2dd4bf", route: "#2dd4bf",
+    namespace: "#8b949e", module: "#8b949e",
+    file: "#6e7681",
+    default: "#566173",
+  };
+  const graphState = { cy: null, mode: null };
+
   async function renderGraph(view) {
     clear(view);
     const overviewCard = card("Repo hotspots (highest inbound fan-in)");
@@ -408,40 +419,132 @@
       overviewCard.appendChild(fallback("graph overview unavailable"));
     }
 
-    const hotCard = card("Blast radius");
-    const controls = el("div", "controls");
-    hotCard.appendChild(controls);
-    const wrap = el("div", "graph-wrap");
-    const canvas = document.createElement("canvas");
-    canvas.id = "graph-canvas";
-    wrap.appendChild(canvas);
-    hotCard.appendChild(wrap);
-    hotCard.appendChild(graphLegend());
-    view.appendChild(hotCard);
-
-    const asm = await getJSON(rp("/assessments?limit=50"));
-    if (!asm.items.length) { controls.appendChild(emptyMsg("No assessments to inspect.")); return; }
-    if (!graphState.assessment_id) graphState.assessment_id = asm.items[0].assessment_id;
-    controls.appendChild(sel("assessment", graphState.assessment_id,
-      asm.items.map((i) => [i.assessment_id, i.assessment_id + " · " + i.decision]),
-      (v) => { graphState.assessment_id = v; loadHotspot(canvas, hotCard); }));
-    loadHotspot(canvas, hotCard);
+    const graphCard = card("Codebase graph");
+    graphCard.appendChild(el("div", "controls"));  // search / layout controls land in M5
+    const cyEl = el("div", "graph-cy");
+    cyEl.id = "graph-cy";
+    graphCard.appendChild(cyEl);
+    graphCard.appendChild(graphLegend());
+    view.appendChild(graphCard);
+    await loadFullGraph(cyEl, graphCard);
   }
 
-  async function loadHotspot(canvas, hotCard) {
-    const seq = ++hotspotSeq;
-    hotCard.querySelectorAll(".chart-note, .empty.warn").forEach((n) => n.remove());
+  async function loadFullGraph(cyEl, graphCard) {
+    const seq = ++graphSeq;
+    graphCard.querySelectorAll(".chart-note, .empty.warn").forEach((n) => n.remove());
+    let g;
     try {
-      const g = await getJSON(rp("/graph/hotspot?assessment_id=" + encodeURIComponent(graphState.assessment_id)));
-      if (seq !== hotspotSeq) return;
-      if (!g.available) { hotCard.appendChild(fallback(g)); clearCanvas(canvas); return; }
-      if (!g.nodes.length) { hotCard.appendChild(el("p", "chart-note", g.fallback_reason || "No graph-resolved symbols for this assessment.")); clearCanvas(canvas); return; }
-      drawGraph(canvas, g.nodes, g.edges);
-      const msg = g.nodes.length + " node(s), " + g.edges.length + " edge(s)" + (g.truncated ? " (truncated)" : "");
-      hotCard.appendChild(el("p", "chart-note", msg));
+      g = await getJSON(rp("/graph/full"));
     } catch (e) {
-      if (seq !== hotspotSeq) return;
-      hotCard.appendChild(fallback("hotspot unavailable"));
+      // Destroy the prior instance too: a failed refresh (e.g. LIVE polling) must not leak the last
+      // Cytoscape/WebGL context on a now-detached container until the next successful render.
+      if (seq === graphSeq) { graphCard.appendChild(fallback("codebase graph unavailable")); destroyCy(); }
+      return;
+    }
+    if (seq !== graphSeq) return;
+    if (!g.available) { graphCard.appendChild(fallback(g)); destroyCy(); return; }
+    if (!g.nodes.length) {
+      graphCard.appendChild(el("p", "chart-note", g.fallback_reason || "No structural nodes in the current graph."));
+      destroyCy();
+      return;
+    }
+    renderCy(cyEl, g);
+    const bits = [g.nodes.length + " node(s)", g.edges.length + " edge(s)"];
+    if (g.mode === "file") bits.push("collapsed to files");
+    if (g.truncated) bits.push("showing " + g.nodes.length + " of " + g.total_node_count);
+    graphCard.appendChild(el("p", "chart-note", bits.join(" · ")));
+  }
+
+  function degreeOf(n) {
+    if (n.degree != null) return n.degree;
+    if (n.symbol_count != null) return n.symbol_count;
+    return 0;
+  }
+
+  function renderCy(container, g) {
+    destroyCy();
+    const maxDeg = g.nodes.reduce((m, n) => Math.max(m, degreeOf(n)), 1);
+    const elements = [];
+    g.nodes.forEach((n) => {
+      elements.push({ group: "nodes", data: {
+        id: n.id,
+        label: n.label != null ? n.label : n.id,
+        kind: n.kind || "unknown",
+        qualified_name: n.qualified_name || null,
+        file_path: n.file_path || null,
+        degree: n.degree != null ? n.degree : null,
+        inbound: n.inbound_count != null ? n.inbound_count : null,
+        outbound: n.outbound_count != null ? n.outbound_count : null,
+        symbol_count: n.symbol_count != null ? n.symbol_count : null,
+        size: 12 + 24 * Math.sqrt(degreeOf(n) / maxDeg),
+      } });
+    });
+    g.edges.forEach((e, i) => {
+      elements.push({ group: "edges", data: {
+        id: "e" + i,  // guaranteed-unique id; the graph may hold parallel source->target edges
+        source: e.source, target: e.target,
+        kind: e.kind || "", weight: e.weight != null ? e.weight : 1,
+      } });
+    });
+    const showLabels = g.nodes.length <= 250;  // WebGL label atlas is bounded; hover labels come in M5
+    graphState.cy = makeCy(container, elements, layoutFor(g.nodes.length), cyStyle(showLabels));
+    graphState.mode = g.mode;
+  }
+
+  function makeCy(container, elements, layout, style) {
+    const base = {
+      container: container, elements: elements, layout: layout, style: style,
+      wheelSensitivity: 0.2, textureOnViewport: true, pixelRatio: 1,
+      // Single-click selection is the intended UX and avoids the drag-time box-select overlay. (The one
+      // residual CSP note is Cytoscape's injected container-position <style>, neutralised in style.css.)
+      boxSelectionEnabled: false, selectionType: "single",
+    };
+    try {
+      return cytoscape(Object.assign({ renderer: { name: "canvas", webgl: true } }, base));
+    } catch (e) {
+      return cytoscape(base);  // fall back to the plain canvas renderer if WebGL init fails
+    }
+  }
+
+  function layoutFor(nodeCount) {
+    if (nodeCount <= 300) {
+      // small graph: one-shot force layout (no ongoing physics)
+      return { name: "cose", animate: false, fit: true, padding: 20,
+               nodeRepulsion: 8000, idealEdgeLength: 60, numIter: 400 };
+    }
+    // large graph: deterministic O(n) grid; never auto-run force physics at scale (M5 adds on-demand)
+    return { name: "grid", fit: true, padding: 20 };
+  }
+
+  function cyStyle(showLabels) {
+    const s = [
+      { selector: "node", style: {
+        "background-color": KIND_COLORS.default,
+        "width": "data(size)", "height": "data(size)",
+        "label": showLabels ? "data(label)" : "",
+        "font-size": 9, "color": "#c9d1d9",
+        "text-valign": "center", "text-halign": "right", "text-margin-x": 4,
+        "min-zoomed-font-size": 9,
+      } },
+      { selector: "edge", style: {
+        "width": 1, "line-color": "#3a4753", "opacity": 0.5,
+        "curve-style": "straight", "target-arrow-shape": "none",  // WebGL supports straight, not bezier
+      } },
+      { selector: "node:selected", style: {
+        "border-width": 2, "border-color": "#ffd24d", "border-opacity": 1,
+      } },
+    ];
+    Object.keys(KIND_COLORS).forEach((k) => {
+      if (k === "default") return;
+      s.push({ selector: 'node[kind="' + k + '"]', style: { "background-color": KIND_COLORS[k] } });
+    });
+    return s;
+  }
+
+  function destroyCy() {
+    if (graphState.cy) {
+      try { graphState.cy.destroy(); } catch (e) { /* already torn down */ }
+      graphState.cy = null;
     }
   }
 
@@ -457,73 +560,17 @@
   }
   function graphLegend() {
     const l = el("div", "graph-legend");
-    l.appendChild(swatchLabel(ACCENT, "changed symbol"));
-    l.appendChild(swatchLabel(RISK, "direct dependents"));
-    l.appendChild(swatchLabel("#5c6773", "transitive"));
+    l.appendChild(swatchLabel(KIND_COLORS.function, "function / method"));
+    l.appendChild(swatchLabel(KIND_COLORS.class, "class / type"));
+    l.appendChild(swatchLabel(KIND_COLORS.component, "component / route"));
+    l.appendChild(swatchLabel(KIND_COLORS.namespace, "namespace / module"));
+    l.appendChild(swatchLabel(KIND_COLORS.file, "file (collapsed)"));
     return l;
   }
   function swatchLabel(color, text) {
     const s = el("span", null, text);
     const sw = el("span", "swatch"); sw.style.background = color; s.prepend(sw);
     return s;
-  }
-
-  // ---- canvas graph: radial blast-radius layout ----
-  function clearCanvas(canvas) {
-    const ctx = canvas.getContext("2d");
-    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
-  function depthColor(depth, maxDepth) {
-    if (depth === 0) return ACCENT;
-    if (depth === 1) return RISK;
-    return "#5c6773";
-  }
-  function drawGraph(canvas, nodes, edges) {
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth || 800;
-    const h = canvas.clientHeight || 460;
-    canvas.width = w * dpr; canvas.height = h * dpr;
-    const ctx = canvas.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-    const cx = w / 2, cy = h / 2;
-    const maxDepth = nodes.reduce((m, n) => Math.max(m, n.depth), 0);
-    const ringGap = Math.min(cx, cy) * 0.82 / Math.max(1, maxDepth);
-
-    // position: group by depth, spread around each ring.
-    const byDepth = {};
-    nodes.forEach((n) => { (byDepth[n.depth] = byDepth[n.depth] || []).push(n); });
-    const pos = {};
-    Object.keys(byDepth).forEach((d) => {
-      const ring = byDepth[d]; const depth = Number(d);
-      ring.forEach((n, i) => {
-        if (depth === 0 && ring.length === 1) { pos[n.id] = { x: cx, y: cy }; return; }
-        const ang = (2 * Math.PI * i) / ring.length - Math.PI / 2 + depth * 0.4;
-        pos[n.id] = { x: cx + Math.cos(ang) * ringGap * depth || cx, y: cy + Math.sin(ang) * ringGap * depth || cy };
-        if (depth === 0) { pos[n.id] = { x: cx + Math.cos(ang) * ringGap * 0.35, y: cy + Math.sin(ang) * ringGap * 0.35 }; }
-      });
-    });
-
-    // edges
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = "rgba(135,149,161,0.25)";
-    edges.forEach((e) => {
-      const a = pos[e.source], b = pos[e.target];
-      if (!a || !b) return;
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-    });
-    // nodes
-    nodes.forEach((n) => {
-      const p = pos[n.id]; if (!p) return;
-      const r = n.depth === 0 ? 9 : 5;
-      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 2 * Math.PI);
-      ctx.fillStyle = depthColor(n.depth, maxDepth); ctx.fill();
-      if (n.depth === 0) {
-        ctx.fillStyle = "#e6edf3"; ctx.font = "11px ui-monospace, monospace";
-        const label = (n.qualified_name || n.id).split("::").pop();
-        ctx.fillText(label, p.x + 12, p.y + 4);
-      }
-    });
   }
 
   // ---- uPlot helpers ----
@@ -625,6 +672,10 @@
       t.classList.toggle("active", t.getAttribute("data-tab") === tab);
     });
     TABS.forEach((t) => { document.getElementById("view-" + t).hidden = t !== tab; });
+    // Release the WebGL graph instance whenever the Graph tab is not the active one. The graphSeq
+    // guard can't catch a switch-away-during-fetch (route() serialises renders, so no competing
+    // loadFullGraph bumps the seq), and nothing else tears the instance down off-tab; this does.
+    if (tab !== "graph") destroyCy();
     const view = document.getElementById("view-" + tab);
     view.removeAttribute("data-loaded");
     try {

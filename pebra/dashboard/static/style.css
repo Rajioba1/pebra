@@ -193,13 +193,18 @@ td.mono { font-family: var(--mono); color: var(--muted); }
 .u-legend { font-family: var(--mono); font-size: 11px; }
 .chart-note { color: var(--dim); font-size: 12px; margin-top: 8px; font-family: var(--mono); }
 
-/* ---- graph canvas (the signature) ---- */
-.graph-wrap { position: relative; }
-#graph-canvas {
+/* ---- codebase graph (Cytoscape, WebGL) ---- */
+.graph-cy {
+  /* Cytoscape injects a `<style>.__________cytoscape_container { position: relative }` element that
+     our strict `style-src 'self'` (no unsafe-inline) correctly blocks. Provide that rule here — from
+     a `'self'` stylesheet — so the container is positioned for the absolutely-stacked canvas layers
+     and the blocked injection is a harmless no-op. CSP stays strict; no unsafe-inline. */
+  position: relative;
   width: 100%;
-  height: 460px;
+  height: 520px;
   display: block;
   border-radius: var(--radius);
+  border: 1px solid var(--border);
   background: radial-gradient(circle at 50% 45%, #12191f, #0c1015);
 }
 .graph-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 10px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
