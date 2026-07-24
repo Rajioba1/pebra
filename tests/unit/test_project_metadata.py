@@ -58,7 +58,6 @@ def test_pyproject_uses_current_spdx_license_metadata() -> None:
 
     classifiers = set(project["classifiers"])
     assert {
-        "Development Status :: 3 - Alpha",
         "Environment :: Console",
         "Intended Audience :: Developers",
         "Operating System :: OS Independent",
@@ -68,6 +67,7 @@ def test_pyproject_uses_current_spdx_license_metadata() -> None:
         "Programming Language :: Python :: 3.13",
         "Topic :: Software Development :: Quality Assurance",
     } <= classifiers
+    assert not any(value.startswith("Development Status :: 3 - Alpha") for value in classifiers)
     assert not any(value.startswith("License ::") for value in classifiers)
 
 

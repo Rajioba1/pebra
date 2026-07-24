@@ -1,6 +1,6 @@
 # PEBRA
 
-**A deterministic gate that decides whether a coding agent's edit should proceed — before it's applied.**
+**Pre-edit benefit-risk analysis for coding agents.**
 
 PEBRA sits between a coding agent's proposed patch and your working tree. It computes an auditable
 `expected_loss` / `expected_utility` / risk-adjusted `RAU` decision from CodeGraph-backed structural
@@ -14,12 +14,8 @@ advisory controller.
 [![Secret scan](https://github.com/Rajioba1/pebra/actions/workflows/security.yml/badge.svg)](https://github.com/Rajioba1/pebra/actions/workflows/security.yml)
 ![License: Apache-2.0 AND MIT](https://img.shields.io/badge/license-Apache--2.0%20AND%20MIT-blue)
 ![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
-![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
+![Status: active](https://img.shields.io/badge/status-active-brightgreen)
 ![Architecture: hexagonal (import-linter enforced)](https://img.shields.io/badge/architecture-hexagonal%20(enforced)-informational)
-
-> **Status:** Alpha. The mechanism — deterministic scoring, pre-edit gating, post-edit verification,
-> calibrated promotion — is implemented and tested; PEBRA does **not** yet make a powered efficacy
-> claim. The value proposition is *rigor and honest uncertainty*, not speed or accuracy numbers.
 
 ---
 
@@ -59,6 +55,18 @@ The same ledger is available as a terminal Observatory (`pebra tui`):
 - **Fails safe, not silent.** External engines (CodeGraph, `rust-code-analysis`) are explicit and
   optional; when missing or mismatched they degrade to reduced-confidence evidence rather than blocking
   an assessment or auto-installing anything.
+
+## Where PEBRA fits
+
+PEBRA is not another graph viewer or memory store. It is the decision layer that turns repository
+knowledge, historical lessons, and candidate bytes into an auditable pre-edit verdict.
+
+| Tool | Primary job | Where PEBRA is stronger |
+|---|---|---|
+| **PEBRA** | Pre-edit benefit-risk analysis, candidate-bound enforcement, verification, and calibrated learning. | Owns the full edit lifecycle: understand → assess → decide → enforce → verify → learn. |
+| **CodeGraph** | Current repository structure: symbols, calls, dependents, fan-in, and affected-test context. | PEBRA uses CodeGraph as evidence, then adds decision math, gates, candidate binding, and outcomes. |
+| **Graphify** | Interactive knowledge-graph visualization patterns. | PEBRA keeps graph rendering tied to CodeGraph freshness and overlays assessment risk + verified lessons. |
+| **AgentMemory** | General agent memory capture and recall. | PEBRA recalls only audited `learning_context` records and lets promoted facts influence assessment through gates, not raw memory. |
 
 ## Quickstart
 
@@ -238,6 +246,18 @@ pebra setup-graph --fix   # explicit CodeGraph engine setup (never done by asses
 pebra doctor              # graph diagnostics
 ```
 
+Current command surface:
+
+| Stage | Commands |
+|---|---|
+| Understand + graph evidence | `setup-graph`, `doctor`, `graph-stats`, `dependents`, `explore` |
+| Candidate construction + assessment | `candidate-patch`, `assess` |
+| Enforcement + application | `gate-check`, `gate-hook`, `apply-candidate`, `accept-risk` |
+| Verification + learning | `verify`, `record-outcome`, `finalize-outcome`, `learn`, `promote`, `scorecard` |
+| Observability + host setup | `dashboard`, `tui`, `agent-init`, `capabilities`, `help`, `--help`, `help --all`, `--version` |
+
+The exhaustive, parser-checked syntax is in the [command reference](docs/PEBRA_COMMAND_REFERENCE.md).
+
 Launch the terminal Observatory from an installed or editable checkout:
 
 ```console
@@ -262,7 +282,7 @@ non-loopback bind requires a bearer token (`--auth token`).
 CI runs the test matrix (Ubuntu / Windows / macOS), lint, import-linter architecture contracts, an
 installed-wheel verification, and a Playwright dashboard lane. See [CONTRIBUTING](CONTRIBUTING.md) for
 the full session inventory and the [benchmarks](benchmarks/README.md) for math-oracle and learning-loop
-wiring proofs (diagnostic evidence, not efficacy claims).
+wiring proofs.
 
 ## Docs
 

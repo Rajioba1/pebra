@@ -1,5 +1,9 @@
 # PEBRA Command Reference
 
+PEBRA is pre-edit benefit-risk analysis for coding agents. It helps an agent understand the current
+repository, assess an exact candidate edit, enforce that only the assessed candidate is applied, verify
+the real post-edit diff, and feed trusted outcomes into the learning loop.
+
 This is the exhaustive operator and contributor command reference for the current source tree. The authoritative product parser is `pebra/cli/main.py`; verify the installed version at any time with:
 
 ```console

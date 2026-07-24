@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pebra"
 version = "0.2.0"
-description = "Pre-Edit Benefit-Risk Assessment for coding agents — a deterministic, hexagonal decision controller."
+description = "Pre-edit benefit-risk analysis for coding agents — a deterministic, hexagonal decision controller."
 requires-python = ">=3.11"
 readme = "README.md"
 authors = [
@@ -18,7 +18,6 @@ license-files = [
     "pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",

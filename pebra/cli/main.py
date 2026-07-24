@@ -85,7 +85,7 @@ class _LazyVersionAction(argparse.Action):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pebra", description="PEBRA - pre-edit benefit-risk assessment."
+        prog="pebra", description="PEBRA - pre-edit benefit-risk analysis."
     )
     parser.add_argument(
         "--version",
