@@ -1,200 +1,149 @@
 # PEBRA
 
-PEBRA is a **Pre-Edit Benefit-Risk Assessment** controller for coding agents.
+**A deterministic gate that decides whether a coding agent's edit should proceed — before it's applied.**
 
-It evaluates a proposed code edit before the agent applies it, returns a deterministic decision and
-math packet, verifies the actual post-edit diff against the approved envelope, records outcomes, and
-uses measured calibration data to promote learned facts for future assessments.
+PEBRA sits between a coding agent's proposed patch and your working tree. It computes an auditable
+`expected_loss` / `expected_utility` / risk-adjusted `RAU` decision from CodeGraph-backed structural
+evidence, blocks or reroutes risky edits *before* they are written, verifies the **actual** post-edit
+diff against the exact candidate it approved, records the outcome, and promotes only calibrated,
+measured facts back into future assessments.
 
-See the [PEBRA Command Reference](docs/PEBRA_COMMAND_REFERENCE.md) for the exhaustive, parser-checked
-CLI, TUI, MCP, development, validation, and release command inventory.
+[![CI](https://github.com/Rajioba1/pebra/actions/workflows/ci.yml/badge.svg)](https://github.com/Rajioba1/pebra/actions/workflows/ci.yml)
+[![Secret scan](https://github.com/Rajioba1/pebra/actions/workflows/security.yml/badge.svg)](https://github.com/Rajioba1/pebra/actions/workflows/security.yml)
+![License: Apache-2.0 AND MIT](https://img.shields.io/badge/license-Apache--2.0%20AND%20MIT-blue)
+![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
+![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
+![Architecture: hexagonal (import-linter enforced)](https://img.shields.io/badge/architecture-hexagonal%20(enforced)-informational)
 
-## Current Capabilities
+> **Status:** Alpha. The mechanism — deterministic scoring, pre-edit gating, post-edit verification,
+> calibrated promotion — is implemented and tested; PEBRA does **not** yet make a powered efficacy
+> claim. The value proposition is *rigor and honest uncertainty*, not speed or accuracy numbers.
 
-- Pre-edit `assess` with expected loss, expected utility, RAU, edit confidence, and ordered gates.
-- Post-edit `verify` against the approved safe scope and required checks.
-- Candidate-bound pre-edit enforcement: an impactful host edit must produce the same normalized file
-  contents as the patch that was assessed; same repository/HEAD/path alone is not sufficient.
-- Outcome recording, shadow learning, promotion, scorecards, and learned-fact reapplication.
-- Read-only local Risk Observatory dashboard for assessment, calibration, learning, and graph state.
-- Read-only Textual Observatory with assessment identity, repeat grouping, and explicit detail-only
-  impact exploration.
-- Provider-neutral `pebra explore` that recalls bounded PEBRA history before retrieving current
-  repository context from an existing graph index.
-- Explicit graph-engine setup and diagnostics through `pebra setup-graph` and `pebra doctor`.
-- CodeGraph-backed evidence:
-  - per-symbol fan-in;
-  - DELETE file fan-in roll-up;
-  - MODIFY graph-wide blast over callers/references/implementers/subclasses;
-  - contract-surface metadata for interface/base-class edits;
-  - containing class/namespace/module hierarchy roll-up;
-  - file metadata / parse-error confidence penalties;
-  - bounded revised-candidate refinement: cheap deterministic ranking first, then one materialized
-    before/after graph by default. Structural continuity adjusts only the exact owner-scoped risk
-    event; RAU remains authoritative. Set `PEBRA_GRAPH_REFINEMENT=0` to disable this path.
-- Benchmark harnesses for math-oracle validation and deterministic learning-loop wiring proof.
-- True CLI-boundary e2e lanes, including a gated external C# repo lane.
+---
 
-## Install For Development
+## The codebase graph
+
+The read-only dashboard renders your repository as a **god-node map**: hot files become rectangle
+hubs, their most-depended-on symbols become circles sized by inbound fan-in, `file → symbol` spokes
+are dashed, and real `symbol → symbol` CodeGraph links are solid. Selecting an assessment overlays its
+risk decision onto the exact symbols it touched (hubs stay neutral).
+
+![PEBRA dashboard — god-node codebase graph with risk overlay](assets/dashboard-godmap.png)
+
+The same ledger is available as a terminal Observatory (`pebra tui`):
+
+![PEBRA terminal Observatory (TUI)](assets/tui-observatory.svg)
+
+---
+
+## Why PEBRA
+
+- **Pre-edit, not post-hoc.** It assesses the proposed patch *before* it is applied — not a diff after
+  the damage is done.
+- **Deterministic math, not a vibe check.** Every decision is a reproducible function of `expected_loss`,
+  `expected_utility`, and a risk-adjusted `RAU` bound — the same inputs always yield the same number.
+- **Structural evidence, not guesswork.** Fan-in, blast radius across callers/implementers, and
+  contract-surface changes come from a real CodeGraph index, not text diffing.
+- **Verifies what actually happened.** `verify` checks the real post-edit diff against the *exact*
+  approved candidate — same repo / HEAD / path is not enough; the normalized file contents must match.
+- **Learns conservatively.** Outcomes are recorded, but a learned fact only influences a future
+  assessment after measured calibration and gated promotion — no silent self-reinforcement.
+- **Read-only observability.** A local browser dashboard and terminal TUI expose the same ledger —
+  assessment history, calibration, learned facts, and the codebase graph — without ever writing to your
+  repository.
+- **Fails safe, not silent.** External engines (CodeGraph, `rust-code-analysis`) are explicit and
+  optional; when missing or mismatched they degrade to reduced-confidence evidence rather than blocking
+  an assessment or auto-installing anything.
+
+## Quickstart
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e .
+
+# assess a real example candidate edit and print the decision + math packet
+.\.venv\Scripts\python.exe -m pebra assess examples/login_patch.json --json
 ```
 
-The graph engine is explicit, not a pip dependency:
+That last command returns a decision — one of `proceed`, `test_first`, `inspect_first`, `revise_safer`,
+`ask_human`, or `reject` — together with the full math packet (`expected_loss`, `expected_utility`,
+`RAU`, `edit_confidence`, and the gates that fired) for a candidate edit, *before* anything is written
+to disk.
+
+To wire PEBRA into a coding agent (Claude Code or Codex) and open the dashboard:
 
 ```console
-pebra setup-graph --fix
-pebra doctor
+pebra agent-init --target claude --repo-root . --with-hook
+pebra dashboard --repo-root . --open
 ```
 
-`assess` never silently installs external binaries.
+> The graph tab needs a fresh CodeGraph index. It is an explicit, optional engine — never installed by
+> `assess`. Set it up once with `pebra setup-graph --fix --repo-root .` and check it with `pebra doctor`.
 
-## Terminal Dashboard and Help
-
-Launch the terminal dashboard from an installed or editable checkout:
-
-```console
-pebra tui --repo-root .
-python -m pebra tui --repo-root .
-```
-
-From this repository's Windows virtual environment, the PATH-independent equivalent is:
-
-```powershell
-.\.venv\Scripts\python.exe -m pebra tui --repo-root .
-```
-
-Discover the installed version, root help, command help, and complete help:
-
-```console
-pebra --version
-pebra --help
-pebra help tui
-pebra help explore
-pebra help --all
-```
-
-`pebra --version` distinguishes a released wheel (`installed`) from an editable checkout and includes
-the source revision for an editable checkout. The command reference documents packaged-development
-and isolated demo workflows; the browser dashboard and terminal TUI are two read-only views over the
-same ledger, not different PEBRA engines.
-
-The **benefit signal** (multi-language complexity + maintainability index) is likewise an explicit
-external binary — [`rust-code-analysis`](https://github.com/mozilla/rust-code-analysis) (MPL-2.0),
-invoked as a subprocess. Build it from git (crates.io's release does not compile against current
-tree-sitter):
-
-```powershell
-cargo install --git https://github.com/mozilla/rust-code-analysis `
-  --rev 37e5d83c056c8cbf827223d5814a93c5218df1a9 rust-code-analysis-cli
-```
-
-Point PEBRA at it via `PEBRA_RCA_BIN` or ensure it is on `PATH`. PEBRA accepts runtime version
-`0.0.25` when Cargo install metadata identifies the pinned source revision. For a copied or packaged
-binary without Cargo metadata, set `PEBRA_RCA_SHA256` to its expected lowercase SHA-256. Live experiment
-metadata records the executable SHA-256 and refuses to resume a run with a different fingerprint.
-Cargo metadata is install provenance, not tamper-proof byte attestation. For copied binaries, shared
-machines, or any environment where local binary replacement is in scope, set `PEBRA_RCA_SHA256`; an
-explicit hash is authoritative and a mismatch disables RCA benefit evidence even when Cargo metadata
-matches.
-When absent or version-mismatched, benefit evidence fails
-safe to *projected* (no maintainability credit) — it never blocks an assessment and never affects risk.
-Supported languages: Python, JavaScript/JSX, TypeScript/TSX, Java, Rust, C/C++.
-
-## Basic Workflow
+## How it works
 
 ```text
-assess proposed edit -> agent decides -> apply edit -> verify actual diff ->
-finalize trusted outcome -> future assess uses promoted learned snapshot
+assess proposed edit → agent decides → apply edit → verify actual diff →
+record outcome → learn (shadow) → promote calibrated facts → future assess uses them
 ```
 
-Example command surface:
+`assess` computes, in order — and generated agent instructions require *consuming* these values, never
+re-deriving or overriding them:
+
+```text
+disutility_j     = max(elicited_j, criticality_value)   # for consequence-bearing events
+expected_loss    = Σ_j  p_event_j · disutility_j
+expected_utility = p_success · benefit − expected_loss − review_cost
+utility_sd       = √(Σ variance-contribution terms)
+RAU              = expected_utility − 1.28 · utility_sd
+```
+
+Ordered **decision gates** evaluate those values plus evidence (CodeGraph fan-in / blast radius,
+contract-surface changes, confidence) to produce the decision. A separate **enforcement gate** then
+checks that only the exact bound candidate is applied. `reject` means *reject this candidate*, not the
+maintainer's goal — the agent surfaces the recorded reason and risk/benefit evidence. Recall informs
+*understanding*; only separately promoted numeric facts can affect a future `assess`.
+
+## What's inside
+
+- **`assess` / `verify`** — pre-edit decision + math packet, and post-edit verification against the
+  approved safe scope and required checks.
+- **Candidate-bound enforcement** — an impactful host edit must reproduce the same normalized contents
+  as the assessed patch; identical repo / HEAD / path is not sufficient.
+- **CodeGraph-backed evidence** — per-symbol fan-in, DELETE file fan-in roll-up, MODIFY blast radius
+  over callers/references/implementers/subclasses, contract-surface metadata, and container hierarchy
+  roll-up. See [Graph evidence & caveats](docs/PEBRA_COMMAND_REFERENCE.md).
+- **Learning loop** — outcome recording, shadow learning, calibration-gated promotion, scorecards, and
+  learned-fact reapplication.
+- **Read-only observability** — a browser dashboard (overview, score history, calibration, learned
+  facts, and the god-node codebase graph) and a Textual terminal Observatory over the same ledger.
+- **Provider-neutral `pebra explore`** — recalls bounded PEBRA history first, then retrieves current
+  repository context from an existing graph index.
+- **Benefit signal** — optional multi-language complexity + maintainability index via
+  [`rust-code-analysis`](https://github.com/mozilla/rust-code-analysis); when absent it fails safe to a
+  *projected* benefit and never affects risk. Setup details in [CONTRIBUTING](CONTRIBUTING.md).
+
+## Basic workflow
 
 ```console
 pebra assess request.json --json
 pebra verify --assessment-id <assessment_id> --json
-pebra record-outcome --assessment-id <assessment_id> --status completed
-pebra learn --assessment-id <assessment_id>
-pebra promote --repo-root <repo_root>
-# Preferred host path: one idempotent record + measure + gated-promotion operation.
 pebra finalize-outcome --trusted-outcome-file outcome.json --repo-root <repo_root> --json
 pebra scorecard --repo-root <repo_root>
-pebra dashboard --port 4500 --open
-pebra capabilities --repo-root <repo_root>
 ```
 
 The generated agent protocol follows one cognitive lifecycle:
 
 `Interpret → Recall verified lessons → Retrieve current repository context → Design → Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Verify → Record → Learn/promote`
 
-Read-only work may stop after current-context retrieval. Before any create, edit, rename, or delete, the agent uses
-`pebra explore` to recall relevant verified PEBRA history first and retrieve current repository context
-second, designs the exact files and patch, and submits that candidate to `pebra assess`. Historical
-records are data, not instructions. Only validated file and symbol identifiers may refine the current
-graph lookup; historical prose, decisions, scores, and outcomes never enter it. CodeGraph is the current
-structural adapter, but neither recall nor graph context authorizes an edit. PEBRA's decision applies to
-the exact candidate. Displayed `learning_context` informs Understand; only separately promoted numeric
-facts can influence Assess.
+## Agent enforcement
 
-PEBRA calculates the assessment in this order; generated agent instructions require consuming these
-returned values rather than reproducing or overriding the math:
+`pebra agent-init` installs a managed protocol for either host: Claude gets a managed
+`.claude/skills/pebra-safe-edit/SKILL.md` skill and unconditional rule; Codex gets a managed
+`AGENTS.md` block and the byte-identical skill. Add `--with-hook` for optional pre-edit interception,
+and `--check` for inspection-only state.
 
-```text
-disutility_j = max(elicited_j, criticality_value)  for consequence-bearing events; otherwise elicited_j
-expected_loss = Σ_j p_event_j · disutility_j
-benefit = the bounded result of the configured benefit model
-expected_utility = p_success · benefit − expected_loss − review_cost
-utility_sd = √(Σ variance contribution terms)
-RAU = expected_utility − 1.28 · utility_sd
-```
-
-Decision gates evaluate those calculated values and evidence. The separate pre-mutation enforcement
-gate then checks that only the exact bound candidate is applied. Recall informs Understand; only
-separately promoted numeric facts can affect a future Assess.
-`reject` means **Reject candidate**, not reject the maintainer's goal: the agent presents the recorded
-reason and risk-benefit evidence. Only a hash-covered, sanction-convertible risk rejection with valid
-replay can advertise trusted interactive review; policy and obligation failures require a compliant route.
-
-`outcome.json` contains `assessment_id`, terminal `status`, and an optional `detail` object. The
-`finalize-outcome` command is host-only: MCP outcome reports are retained for lifecycle telemetry but
-their self-reported learning labels are censored. The legacy three-command sequence remains available
-for diagnosis and manual operation.
-
-## Agent Enforcement
-
-Install the repository protocol for either host. Claude receives the detailed
-`.claude/skills/pebra-safe-edit/SKILL.md` protocol and an unconditional, fully managed
-`.claude/rules/pebra-safe-edit.md` rule. Codex receives a managed `AGENTS.md` block and the same
-detailed protocol at `.agents/skills/pebra-safe-edit/SKILL.md`. Add `--with-hook` when you also want
-pre-edit interception:
-
-```console
-pebra agent-init --target claude --repo-root . --with-hook
-pebra agent-init --target codex --repo-root . --with-hook
-pebra agent-init --target claude --repo-root . --check
-pebra agent-init --target codex --repo-root . --check --json
-pebra capabilities --repo-root .
-```
-
-`agent-init --check` is inspection-only: it reports generated-file state, hook state, declared
-support, and effective enforcement without creating or repairing anything. It intentionally does
-not invoke CodeGraph because even a pinned status command may migrate or write index state; configured
-hooks therefore report the graph as `graph_unverified_read_only`. Use `pebra capabilities` separately
-when measured graph capability is needed; that command may repair a stale index and is not an
-inspection-only surface. Add `--json` for the machine-readable schema. Normal `agent-init` refreshes
-the fully managed instruction content and,
-with `--with-hook`, installs the current hook when it is missing. If the existing hook document is
-malformed or conflicts with PEBRA's exact hook, initialization exits before writing any instruction or
-hook file and directs you to `--check --json`; resolving a conflict or legacy hook requires explicit
-user action or a separately tested migration. Managed symlink, junction, reparse-point, and hardlinked
-file destinations observed during preflight validation are rejected before writes and are not followed.
-These checks are not an OS-level transaction: a concurrent process running as the same OS identity can
-swap a path after validation, which is outside this threat boundary.
-
-The guarantees are deliberately different:
+Guarantees are deliberately different by host surface:
 
 | Host surface | Reported mode | Guarantee |
 |---|---|---|
@@ -206,65 +155,39 @@ The guarantees are deliberately different:
 | Codex repo-local hook (optional) | `best_effort` | Candidate-bound gate logic is installed, but repo-local hook loading remains host-dependent. |
 | MCP tools | `advisory_only` | Assess/verify tools are available, but MCP alone does not intercept another host's writes. |
 
-If graph or Git HEAD evidence is unavailable, an installed gate remains fail-open by policy and
-`capabilities` reports `degraded_fail_open`. The Claude hook also emits the degradation warning as a
-non-blocking system message. Repository-local and user-level `disableAllHooks` settings also degrade
-the reported posture. This is observable configuration, not proof that a host or managed policy invoked
-every event.
+If graph or Git HEAD evidence is unavailable, an installed gate remains **fail-open by policy**
+(`degraded_fail_open`). These are observable configuration states, not proof that a host invoked every
+event, and `trusted_actor_required` is a protocol boundary, not OS-level identity authentication — a
+process with shell access under the same OS account can still invoke local trusted-host surfaces. Use a
+separately privileged host or operator account when resistance to an adversarial agent is required. Full
+threat boundaries and multi-file candidate rules are in the
+[command reference](docs/PEBRA_COMMAND_REFERENCE.md).
 
-`trusted_actor_required` is a protocol boundary, not OS-level identity authentication. PEBRA does
-not expose risk acceptance through MCP, and interactive acceptance requires a terminal. A process
-with arbitrary shell access under the same OS account can still invoke local trusted-host surfaces
-or simulate a terminal. Use a separately privileged host or operator account when resistance to an
-adversarial agent is required.
-
-For a candidate that changes multiple files, enforcement requires one complete `apply_patch` event containing
-the complete assessed candidate. Structured single-file edits must be assessed as separate single-file
-candidates; one file cannot reuse approval for part of a multi-file candidate.
-
-The dashboard is read-only. On a loopback bind (`localhost`, `127.0.0.1`, `::1`) the default is
-token-free for local convenience; `--auth token` forces a bearer token when you want the old locked
-path. Any non-loopback bind requires a token.
+## Install & engines
 
 ```console
-# normal local browser UX
-pebra dashboard --port 4500 --open
-
-# venv-safe form if the `pebra` console script is not on PATH yet
-python -m pebra dashboard --port 4500 --open
-
-# force bearer auth even on loopback
-pebra dashboard --port 4500 --auth token
-
-# expose beyond loopback only with a token
-pebra dashboard --host 0.0.0.0 --port 4500 --auth token
-
-# launch with graph tab support for the current repository
-pebra dashboard --repo-root .
+pebra --version           # 'installed' wheel vs editable checkout + source revision
+pebra --help              # root help
+pebra help tui            # command help
+pebra help --all          # complete, parser-checked command inventory
+pebra setup-graph --fix   # explicit CodeGraph engine setup (never done by assess)
+pebra doctor              # graph diagnostics
 ```
 
-It exposes five browser views: overview, score history, calibration, learned facts, and a CodeGraph
-graph tab. Launch with `--repo-root .` to bind graph reads to the current repository. The graph tab
-requires a fresh CodeGraph index; if it is unavailable or stale, repair it with:
+Launch the terminal Observatory from an installed or editable checkout:
 
 ```console
-pebra setup-graph --fix --repo-root .
+pebra tui --repo-root .
 ```
 
-The graph tab shows a full structural graph for ordinary repositories and honestly collapses very
-large graphs to file-level nodes when browser payload/layout guardrails require it. The Risk overlay is
-assessment-bound: it highlights nodes matched to the selected assessment and is not a calibrated
-per-symbol risk model. The Learning overlay shows only verified PEBRA `learning_context` records as
-graph lessons. Graph routes are fail-soft when no trusted graph index is bound to the launched repo,
-and are repo-scoped to avoid replaying one repo's graph under another repo id.
+From this repository's Windows virtual environment, the PATH-independent equivalent is:
 
-Explicit graph-backed commands may reconcile an already-initialized, same-worktree `.codegraph/`
-cache. They never install or initialize CodeGraph and never create or edit `codegraph.json`.
-With pinned CodeGraph 1.1.1, `extensions` and `includeIgnored` affect analysis scope; `exclude` is
-reported but ignored by pinned CodeGraph 1.1.1. These settings are operator-owned scope controls,
-not freshness controls. PEBRA binds accepted graph evidence to the repository HEAD, configuration
-digest, provider/extraction version, and graph-scope digest. Dashboard/TUI timers never prepare or
-sync the graph; TUI exploration occurs only when the user presses `x` in assessment detail.
+```powershell
+.\.venv\Scripts\python.exe -m pebra tui --repo-root .
+```
+
+The dashboard is read-only. On a loopback bind it defaults to token-free for local convenience; any
+non-loopback bind requires a bearer token (`--auth token`).
 
 ## Validation
 
@@ -272,34 +195,20 @@ sync the graph; TUI exploration occurs only when the user presses `x` in assessm
 .\.venv\Scripts\nox.exe -s tests lint e2e-fast
 ```
 
-Dashboard/e2e lanes:
+CI runs the test matrix (Ubuntu / Windows / macOS), lint, import-linter architecture contracts, an
+installed-wheel verification, and a Playwright dashboard lane. See [CONTRIBUTING](CONTRIBUTING.md) for
+the full session inventory and the [benchmarks](benchmarks/README.md) for math-oracle and learning-loop
+wiring proofs (diagnostic evidence, not efficacy claims).
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests/integration/test_dashboard_server.py tests/integration/test_dashboard_cli.py -q
-.\.venv\Scripts\python.exe -m pytest e2e/features/dashboard/test_dashboard_metrics_visual.py -q
-.\.venv\Scripts\nox.exe -s e2e-learning
-.\.venv\Scripts\nox.exe -s e2e-ui
-```
-
-External real-repo graph lane:
-
-```powershell
-$env:E2E_EXTERNAL='1'
-$env:E2E_TEMPLATE_BLUEPRINT_REPO='C:\Users\RajLord_new\Desktop\avalonia_template'
-.\.venv\Scripts\nox.exe -s e2e-external
-```
-
-Benchmark lanes:
-
-```powershell
-.\.venv\Scripts\nox.exe -s bench-math
-.\.venv\Scripts\nox.exe -s bench-flow
-```
-
-## More Docs
+## Docs
 
 - [Exhaustive command reference](docs/PEBRA_COMMAND_REFERENCE.md)
-- [Contributing and development setup](CONTRIBUTING.md)
+- [Contributing & development setup](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 - [True e2e suite](e2e/README.md)
 - [Benchmarks](benchmarks/README.md)
-- [Learning-loop wiring benchmark](benchmarks/flow/wiring/README.md)
+
+## License
+
+Apache-2.0 for PEBRA's own code, with MIT-licensed vendored dashboard assets (uPlot, Cytoscape.js).
+See [LICENSE](LICENSE).
