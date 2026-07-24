@@ -86,7 +86,7 @@ pebra dashboard --repo-root . --open
 > `assess`. Set it up once with `pebra setup-graph --fix --repo-root .` and check it with `pebra doctor`.
 > `codegraph.json` is operator-owned analysis scope: `extensions` and `includeIgnored` affect analysis scope; `exclude` is reported but ignored by pinned CodeGraph 1.1.1.
 
-## Product Model
+## Locked Product Model
 
 PEBRA follows a "think before acting" lifecycle. Repository knowledge comes before candidate design;
 the risk/benefit math and gates come after the candidate is exact.
@@ -95,39 +95,34 @@ provide audited recall.
 
 ```mermaid
 flowchart TB
-    A([Interpret the maintainer's request])
-    B[Understand the current repository]
-    X0[[pebra explore]]
-    X1[(Recall PEBRA learning_context<br/>past verified lessons + historical risk/benefit metrics)]
-    X2[/Retrieve current structural context<br/>source / call / dependent / test context through CodeGraph/]
-    X3[/Return an Understand receipt<br/>both sections + provenance/]
-    C[Design the exact candidate<br/>files + operations + exact patch + verification obligations]
-    D[Assess the exact candidate]
-    S1[Collect trusted structural evidence]
-    S2[Load applicable promoted PEBRA facts]
-    S3[Calculate expected loss, benefit,<br/>expected utility, uncertainty, and RAU]
-    S4[Evaluate PEBRA's ordered decision gates]
-    E{Decide<br/>proceed / inspect_first / test_first / revise_safer / ask_human / reject}
-    F[Enforce immediately before mutation<br/>exact repository + HEAD + files + candidate bytes + assessment/sanction state]
-    G[Apply the exact candidate]
+    A([Interpret<br/>maintainer request])
+    B[Understand<br/>current repository]
+    X[[pebra explore]]
+    R[/Recall learning_context<br/>verified lessons + risk/benefit history/]
+    Cg[/Retrieve CodeGraph context<br/>source + calls + dependents + tests/]
+    U[/Understand receipt<br/>sections + provenance/]
+    D[Design exact candidate<br/>files + ops + patch + verification]
+    As[Assess exact candidate]
+    S1[Trusted structural evidence]
+    S2[Promoted PEBRA facts]
+    S3[Math<br/>loss + benefit + utility + uncertainty + RAU]
+    S4[Ordered decision gates]
+    E{Decide}
+    O[/proceed | inspect_first | test_first<br/>revise_safer | ask_human | reject/]
+    F[Enforce before mutation<br/>repo + HEAD + files<br/>candidate bytes + assessment/sanction]
+    G[Apply exact candidate]
     H[Verify and record outcome]
     I([Learn])
 
-    A --> B --> X0 --> X1 --> X2 --> X3 --> C --> D
-    D --> S1 --> S2 --> S3 --> S4 --> E
-    E --> F --> G --> H --> I
-
-    classDef terminator fill:#edf7ed,stroke:#7aa95c,stroke-width:2px,color:#172017
-    classDef process fill:#eef5ff,stroke:#3b73b9,stroke-width:2px,color:#102033
-    classDef data fill:#fff7e6,stroke:#d7922f,stroke-width:2px,color:#2a1900
-    classDef decision fill:#fff1f0,stroke:#c7514a,stroke-width:2px,color:#301010
-    classDef command fill:#f2edff,stroke:#7d5ab5,stroke-width:2px,color:#201030
-
-    class A,I terminator
-    class B,C,D,F,G,H,S1,S2,S3,S4 process
-    class X1,X2,X3 data
-    class E decision
-    class X0 command
+    A --> B --> X
+    X --> R --> U
+    X --> Cg --> U
+    U --> D --> As
+    As --> S1 --> E
+    As --> S2 --> E
+    As --> S3 --> E
+    As --> S4 --> E
+    E --> O --> F --> G --> H --> I
 ```
 
 In short:
