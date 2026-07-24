@@ -91,6 +91,7 @@ def test_source_distribution_manifest_includes_release_documents() -> None:
 
     assert manifest == [
         "include LICENSE",
+        "include THIRD_PARTY_LICENSES.txt",
         "include SECURITY.md",
         "include CONTRIBUTING.md",
         "include RELEASING.md",
