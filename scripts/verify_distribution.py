@@ -36,6 +36,7 @@ _PACKAGE_ASSETS = (
 )
 _SDIST_ROOT_FILES = (
     "LICENSE",
+    "THIRD_PARTY_LICENSES.txt",
     "SECURITY.md",
     "CONTRIBUTING.md",
     "RELEASING.md",
@@ -79,10 +80,10 @@ _AGENT_CHECK_KEYS = {
     "declared_support",
     "effective_enforcement",
 }
-_EXPECTED_AGENT_SKILL_SHA256 = "364ece90e74585b0fdaff7a8c7b1a55baeb6444efaefa7ccf22d6615944adbe7"
+_EXPECTED_AGENT_SKILL_SHA256 = "e3b2b970e3e09ab90312b1c379d2de5cd979f5018c5c943e27ea984d1ca4f338"
 _EXPECTED_CLAUDE_RULE_SHA256 = "8be4b8bccc167ea3e9f32d7a0348f47c7d1d9119f267d3ec60a16484af31c432"
 _EXPECTED_CODEX_MANAGED_BLOCK_SHA256 = (
-    "2e8c7e3d298301969ad90c7e71a9515b11fc070ed5f2a38be015ef2e7ebb3383"
+    "1b30073a8fe84d116e9e70d8aa87c7a595d8cc62a57e731a6d7f6cae79b0962b"
 )
 _CODEX_SENTINEL = "# Pre-existing Codex distribution-verifier sentinel\nPreserve this instruction.\n"
 _MANAGED_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
@@ -138,7 +139,8 @@ _AGENT_SEMANTIC_OBLIGATIONS = (
     "Only this verified-completed outcome path",
     "Recording alone is not",
     "calibration or promotion.",
-    "Only separately reviewed and promoted numeric facts can influence a future",
+    "Only separately reviewed and promoted numeric facts, plus reviewed shipped priors, "
+    "can influence a future",
 )
 _AGENT_SEMANTIC_RELATIONS = (
     ("**Interpret.**", "**Recall verified lessons.**"),
@@ -201,6 +203,7 @@ def verify_archives(wheel: Path, sdist: Path) -> None:
     wheel_required = (
         *_PACKAGE_ASSETS,
         f"{dist_info}/licenses/LICENSE",
+        f"{dist_info}/licenses/THIRD_PARTY_LICENSES.txt",
         f"{dist_info}/licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt",
         f"{dist_info}/licenses/pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
     )

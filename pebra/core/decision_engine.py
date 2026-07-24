@@ -392,20 +392,23 @@ def _graph_evidence(blast: Any) -> dict[str, Any]:
 
 
 def _fanin_validity(inp: Any) -> dict[str, Any]:
-    """Codegraph evidence-validity advisory (Gate 13). Empty unless the graph engine is REQUIRED
-    (threshold ``require_graph``) AND the per-symbol fan-in evidence is untrusted — absent, stale,
-    worktree-mismatched, ambiguous, or unresolved. A 0.0 percentile from such a state is the ABSENCE of
-    evidence, not 'low fan-in = safe', so it must downgrade a would-be proceed to inspect_first with an
-    actionable remediation (carried in ``reason``)."""
-    if not inp.thresholds.get("require_graph", False):
-        return {}
+    """CodeGraph evidence-validity signal (Gate 13).
+
+    Required graph evidence downgrades a would-be proceed to ``inspect_first``. Optional graph evidence
+    stays non-blocking, but unresolved/stale evidence is still recorded as advisory so absence is visible
+    in the decision packet instead of looking like measured low fan-in.
+    """
+    required = bool(inp.thresholds.get("require_graph", False))
     ev = inp.fanin_evidence
     if ev is None:
+        if not required:
+            return {}
         # Required, but no provider produced fan-in evidence at all (e.g. fanin_provider not wired).
         # That is the ABSENCE of required evidence -> fail CLEAR (Gate 13), never silently fail open.
         return {
             "resolution_method": "unresolved",
             "graph_freshness": "unknown",
+            "required": True,
             "reason": "graph engine required but no fan-in evidence was produced; run: pebra setup-graph",
         }
     if is_trusted_fanin(ev):
@@ -413,6 +416,7 @@ def _fanin_validity(inp: Any) -> dict[str, Any]:
     return {
         "resolution_method": ev.resolution_method,
         "graph_freshness": ev.graph_freshness,
+        "required": required,
         "reason": ev.fallback_reason or "graph evidence unavailable",
     }
 
@@ -635,7 +639,7 @@ def decide(
     # --- Gate 13: codegraph evidence-validity (required graph engine, untrusted fan-in) ---
     # Same family as Gate 12: only downgrades a would-be proceed to inspect_first; never preempts a
     # more severe gate above. Carries the actionable remediation so the user knows WHAT to run.
-    elif cg:
+    elif cg and cg.get("required", True):
         provisional, fired_gate = Decision.INSPECT_FIRST, 13
         gates_fired.append({"gate": 13, "name": "fanin_evidence_invalid", **cg})
     # --- Gate 14: large repo-relative CodeGraph blast guardrail ---

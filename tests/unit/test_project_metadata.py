@@ -49,9 +49,10 @@ def test_pyproject_uses_current_spdx_license_metadata() -> None:
 
     assert build_system["requires"] == ["setuptools==83.0.0", "wheel==0.47.0"]
     assert project["authors"] == [{"name": "PEBRA contributors"}]
-    assert project["license"] == "Apache-2.0 AND MIT"
+    assert project["license"] == "Apache-2.0"
     assert project["license-files"] == [
         "LICENSE",
+        "THIRD_PARTY_LICENSES.txt",
         "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
         "pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
     ]
@@ -69,6 +70,16 @@ def test_pyproject_uses_current_spdx_license_metadata() -> None:
     } <= classifiers
     assert not any(value.startswith("Development Status :: 3 - Alpha") for value in classifiers)
     assert not any(value.startswith("License ::") for value in classifiers)
+
+
+def test_third_party_notices_cover_bundled_dashboard_assets() -> None:
+    body = (ROOT / "THIRD_PARTY_LICENSES.txt").read_text(encoding="utf-8")
+
+    assert "uPlot" in body
+    assert "Cytoscape.js" in body
+    assert "MIT License" in body
+    assert "pebra/dashboard/static/vendor/uplot.LICENSE.txt" in body
+    assert "pebra/dashboard/static/vendor/cytoscape.LICENSE.txt" in body
 
 
 def test_pyproject_points_to_the_public_github_surfaces() -> None:

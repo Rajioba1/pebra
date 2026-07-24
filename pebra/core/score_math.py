@@ -4,8 +4,8 @@ Every function here is a deterministic function of its inputs: no randomness, no
 calls. This is what makes every PEBRA number reconstructable from ``core/`` alone.
 
 Formulas (Architecture §5):
-    disutility_j     = max(elicited_j, STAGE_MAP[stage])  iff event ∈ CONSEQUENCE_BEARING_EVENTS
-                     = elicited_j                          otherwise              (event-class floor, AD-1)
+    disutility_j     = max(input_or_prior_j, STAGE_MAP[stage])  iff event ∈ CONSEQUENCE_BEARING_EVENTS
+                    = input_or_prior_j                          otherwise        (event-class floor, AD-1)
     expected_loss    = Σ_j p_event_j · disutility_j
     expected_utility = p_success · benefit − expected_loss − review_cost
     utility_sd       = sqrt(Σ variance contribution terms)                        (first-order, §7.2)

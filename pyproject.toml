@@ -11,9 +11,10 @@ readme = "README.md"
 authors = [
     { name = "PEBRA contributors" },
 ]
-license = "Apache-2.0 AND MIT"
+license = "Apache-2.0"
 license-files = [
     "LICENSE",
+    "THIRD_PARTY_LICENSES.txt",
     "pebra/dashboard/static/vendor/uplot.LICENSE.txt",
     "pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
 ]

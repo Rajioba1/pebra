@@ -1,0 +1,99 @@
+===============================================================================
+THIRD-PARTY SOFTWARE NOTICES
+===============================================================================
+
+PEBRA's own source code is licensed under the Apache License, Version 2.0. See
+LICENSE.
+
+This distribution also bundles third-party dashboard assets under their own
+licenses. The notices below are provided for attribution and redistribution
+compliance; they do not change the Apache-2.0 license for PEBRA's own code.
+
+===============================================================================
+TABLE OF CONTENTS
+===============================================================================
+
+1. uPlot - MIT License
+2. Cytoscape.js - MIT License
+
+===============================================================================
+1. uPlot
+===============================================================================
+
+Bundled files:
+- pebra/dashboard/static/vendor/uplot.iife.min.js
+- pebra/dashboard/static/vendor/uplot.min.css
+- pebra/dashboard/static/vendor/uplot.LICENSE.txt
+
+License: MIT
+Copyright: Copyright (c) 2019 Leon Sorokin
+Project URL: https://github.com/leeoniya/uPlot
+
+The full license text is also shipped at:
+pebra/dashboard/static/vendor/uplot.LICENSE.txt
+
+-------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2019 Leon Sorokin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===============================================================================
+2. Cytoscape.js
+===============================================================================
+
+Bundled file:
+- pebra/dashboard/static/vendor/cytoscape.min.js
+- pebra/dashboard/static/vendor/cytoscape.LICENSE.txt
+
+Upstream package: cytoscape
+Pinned version: 3.31.2
+License: MIT
+Copyright: Copyright (c) 2016-2025, The Cytoscape Consortium.
+Project URL: https://github.com/cytoscape/cytoscape.js
+Source URL: https://cdn.jsdelivr.net/npm/cytoscape@3.31.2/dist/cytoscape.min.js
+
+The full license text is also shipped at:
+pebra/dashboard/static/vendor/cytoscape.LICENSE.txt
+
+-------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2016-2025, The Cytoscape Consortium.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

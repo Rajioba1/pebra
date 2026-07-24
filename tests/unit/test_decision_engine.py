@@ -1211,11 +1211,13 @@ def test_gate13_fails_clear_when_required_but_no_evidence_produced() -> None:
 
 
 def test_gate13_does_not_fire_when_codegraph_optional() -> None:
-    # require_graph not set (default): an untrusted graph is silently optional -> proceed
+    # require_graph not set (default): an untrusted graph is optional, but visible as advisory.
     a = _assess(fanin_evidence=_cg(resolution_method="unresolved", graph_freshness="stale"))
     result = de.decide(a)
     assert result.recommended_decision is Decision.PROCEED
-    assert not any(g.get("gate") == 13 for g in result.gates_fired)
+    g13 = next(g for g in result.gates_fired if g.get("gate") == 13)
+    assert g13["advisory"] is True
+    assert g13["required"] is False
 
 
 def test_gate13_does_not_fire_when_trusted() -> None:

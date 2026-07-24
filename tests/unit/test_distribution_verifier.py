@@ -73,6 +73,7 @@ def _write_wheel(
     members = [
         *_ASSETS,
         "pebra-0.1.0.dist-info/licenses/LICENSE",
+        "pebra-0.1.0.dist-info/licenses/THIRD_PARTY_LICENSES.txt",
         "pebra-0.1.0.dist-info/licenses/pebra/dashboard/static/vendor/uplot.LICENSE.txt",
         "pebra-0.1.0.dist-info/licenses/pebra/dashboard/static/vendor/cytoscape.LICENSE.txt",
     ]
@@ -90,6 +91,7 @@ def _write_sdist(
 ) -> None:
     members = [
         "LICENSE",
+        "THIRD_PARTY_LICENSES.txt",
         "SECURITY.md",
         "CONTRIBUTING.md",
         "RELEASING.md",
@@ -128,6 +130,17 @@ def test_archive_verifier_names_a_missing_runtime_asset(tmp_path: Path) -> None:
     _write_sdist(sdist)
 
     with pytest.raises(DistributionVerificationError, match="uplot.LICENSE.txt"):
+        verify_archives(wheel, sdist)
+
+
+def test_archive_verifier_requires_third_party_notices(tmp_path: Path) -> None:
+    wheel = tmp_path / "pebra-0.1.0-py3-none-any.whl"
+    sdist = tmp_path / "pebra-0.1.0.tar.gz"
+    missing = "pebra-0.1.0.dist-info/licenses/THIRD_PARTY_LICENSES.txt"
+    _write_wheel(wheel, omit=missing)
+    _write_sdist(sdist)
+
+    with pytest.raises(DistributionVerificationError, match="THIRD_PARTY_LICENSES.txt"):
         verify_archives(wheel, sdist)
 
 

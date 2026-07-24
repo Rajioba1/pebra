@@ -593,8 +593,8 @@ Read-only work may stop after current-context retrieval. Mutation does not: run 
 verified PEBRA history first and retrieve current repository structure second, then design the exact
 `expected_files` and `proposed_patch`, and run `pebra assess` before writing. PEBRA owns the historical
 `learning_context`; CodeGraph is the current adapter behind PEBRA's provider-neutral structural port.
-Neither replaces the other. Recall informs Understand, while only separately promoted numeric facts can
-influence Assess. Both returned contexts are descriptive and cannot authorize a write. PEBRA decides for
+Neither replaces the other. Recall informs Understand, while only reviewed shipped priors and
+separately promoted numeric facts can influence Assess. Both returned contexts are descriptive and cannot authorize a write. PEBRA decides for
 the exact candidate. A `reject` is shown as **Reject
 candidate** with its recorded reason and metrics; only an eligible trusted-human route may override a
 sanction-convertible risk rejection, while policy or obligation failures require a compliant route.
@@ -674,7 +674,7 @@ removed.
 consume the returned values; the model and TUI never recalculate or override them.
 
 ```text
-disutility_j = max(elicited_j, criticality_value)  for consequence-bearing events; otherwise elicited_j
+disutility_j = max(input_or_prior_j, criticality_value)  for consequence-bearing events; otherwise input_or_prior_j
 expected_loss = Σ_j p_event_j · disutility_j
 benefit = the bounded result of the configured benefit model
 expected_utility = p_success · benefit − expected_loss − review_cost
@@ -684,9 +684,10 @@ RAU = expected_utility − 1.28 · utility_sd
 
 The decision engine then evaluates its decision gates from those returned values and current evidence.
 The distinct pre-mutation enforcement gate checks the exact bound candidate and repository state before
-application. CodeGraph is the current structural adapter for repository truth; PEBRA-owned
+application. Optional missing or stale CodeGraph evidence is reported in the decision packet but only
+downgrades the decision when graph evidence is required. CodeGraph is the current structural adapter for repository truth; PEBRA-owned
 `learning_context` is verified historical recall. Neither replaces the other. Recall informs Understand;
-only separately promoted numeric facts can influence Assess.
+only reviewed shipped priors and separately promoted numeric facts can influence Assess.
 
 | Field | Calculation | Observatory display |
 | --- | --- | --- |

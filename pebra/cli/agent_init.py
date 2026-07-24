@@ -88,7 +88,7 @@ Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Ver
    Decision gates choose the assessment result; they are distinct from the pre-mutation enforcement gate.
 8. **Decide.** PEBRA—not the agent—decides. Follow the returned `next_action`:
    - `proceed` applies only to the exact assessed candidate.
-   - `inspect_first` requires inspection and reassessment; `test_first` requires tests and reassessment.
+   - `inspect_first` requires inspection and reassessment.
    - `revise_safer` requires a changed, lower-risk candidate; resubmit it for reassessment.
      Do not apply the original patch.
    - `ask_human` holds the exact candidate. Present its reasons, risk-benefit values, uncertainty, and controls.
@@ -118,12 +118,15 @@ Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Ver
    literal; never concatenate or evaluate path text as shell code, and use no other staging method.
    Do not run `pebra verify --scope staged` unless the staged path set exactly equals `changed_files`.
 11. **Verify.** Run `pebra verify --assessment-id <id> --scope staged` and resolve scope drift or failed checks.
+    If Verify returns `test_first`, run the missing required checks, keep the staged path set exact, and
+    verify again.
 12. **Record.** After passing verification, run
    `pebra record-outcome --assessment-id <id> --status completed`. Only this verified-completed outcome path
    may materialize a recallable lesson; a skipped, rejected, failed, or raw store outcome may not.
 13. **Learn/promote.** Recall materialization is not calibration or promotion. Recording alone is not
-   calibration or promotion. Only separately reviewed and promoted numeric facts can influence a future
-   Assess; recalled `learning_context` remains advisory history for understanding.
+   calibration or promotion. Only separately reviewed and promoted numeric facts, plus reviewed shipped
+   priors, can influence a future Assess; recalled `learning_context` remains advisory history for
+   understanding.
 """
 
 _SKILL_MD = f"""\

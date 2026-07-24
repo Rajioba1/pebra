@@ -125,7 +125,7 @@ def test_public_docs_explain_the_math_and_two_knowledge_sources() -> None:
         body = path.read_text(encoding="utf-8")
         normalized = " ".join(body.split())
         for formula in (
-            "disutility_j = max(elicited_j, criticality_value)",
+            "disutility_j = max(input_or_prior_j, criticality_value)",
             "expected_loss = Σ_j p_event_j · disutility_j",
             "expected_utility = p_success · benefit − expected_loss − review_cost",
             "utility_sd = √(Σ variance contribution terms)",
@@ -135,7 +135,7 @@ def test_public_docs_explain_the_math_and_two_knowledge_sources() -> None:
         assert "CodeGraph is the current structural adapter" in normalized
         assert "learning_context" in normalized
         assert "Recall informs Understand" in normalized
-        assert "only separately promoted numeric facts" in normalized
+        assert "reviewed shipped priors and separately promoted numeric facts" in normalized
 
 
 def test_non_negotiables_are_shared_by_rule_and_protocol() -> None:
