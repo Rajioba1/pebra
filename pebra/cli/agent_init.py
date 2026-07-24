@@ -36,7 +36,12 @@ _CLAUDE_HOOK_MATCHER = AGENT_HOSTS["claude"].hook_matcher
 _CODEX_HOOK_MATCHER = AGENT_HOSTS["codex"].hook_matcher
 _MARK_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
 _MARK_END = "<!-- END pebra-safe-edit -->"
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
+_AUTO_TARGET = "auto"
+_HOST_DETECTION_MARKERS: dict[str, tuple[str, ...]] = {
+    "claude": (".claude",),
+    "codex": (".codex", ".agents", "AGENTS.md"),
+}
 
 _NON_NEGOTIABLES = """\
 1. Assess before every repository file creation, edit, rename, or deletion.
@@ -87,8 +92,11 @@ Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Ver
 7. **Evaluate gates.** PEBRA evaluates decision gates against those calculated values and current evidence.
    Decision gates choose the assessment result; they are distinct from the pre-mutation enforcement gate.
 8. **Decide.** PEBRA—not the agent—decides. Follow the returned `next_action`:
-   - `proceed` applies only to the exact assessed candidate.
+   - `proceed` applies only to the exact assessed candidate. When `requires_confirmation=false`, use
+     the returned ordinary apply command. When `requires_confirmation=true`, the candidate remains held:
+     a trusted human or host operator must use `pebra accept-risk --apply`.
    - `inspect_first` requires inspection and reassessment.
+   - `test_first` requires the missing checks and reassessment; it is not permission to edit.
    - `revise_safer` requires a changed, lower-risk candidate; resubmit it for reassessment.
      Do not apply the original patch.
    - `ask_human` holds the exact candidate. Present its reasons, risk-benefit values, uncertainty, and controls.
@@ -126,7 +134,10 @@ Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Ver
 13. **Learn/promote.** Recall materialization is not calibration or promotion. Recording alone is not
    calibration or promotion. Only separately reviewed and promoted numeric facts, plus reviewed shipped
    priors, can influence a future Assess; recalled `learning_context` remains advisory history for
-   understanding.
+   understanding. Agent-provided outcome labels remain agent-sourced and cannot become trusted
+   calibration evidence.
+   `pebra finalize-outcome` is a trusted host-only path for measurement and gated promotion; agents must
+   not invoke or fabricate its sidecar.
 """
 
 _SKILL_MD = f"""\
@@ -165,8 +176,8 @@ def register(subparsers: Any) -> None:
         help="Scaffold the pebra-safe-edit skill/rules and optionally a host pre-edit gate hook.",
     )
     p.add_argument(
-        "--target", choices=tuple(AGENT_HOSTS), required=True,
-        help="Agent host whose PEBRA protocol files should be installed.",
+        "--target", choices=(*AGENT_HOSTS, _AUTO_TARGET), required=True,
+        help="Agent host whose PEBRA protocol files should be installed, or auto to detect hosts.",
     )
     p.add_argument(
         "--repo-root", default=".",
@@ -200,9 +211,22 @@ def run_agent_init(args: Any) -> int:
         return 2
     if check:
         return _run_check(repo_root, args.target, as_json=as_json)
+    targets = _selected_targets(repo_root, args.target)
+    if not targets:
+        print(
+            "agent-init: no supported agent host markers detected; "
+            "use --target claude or --target codex explicitly",
+            file=sys.stderr,
+        )
+        return 2
     try:
-        _reject_unsafe_managed_paths(repo_root, args.target, with_hook)
-        planned = _plan_agent_init(repo_root, args.target, with_hook)
+        for target in targets:
+            _reject_unsafe_managed_paths(repo_root, target, with_hook)
+        planned = [
+            write
+            for target in targets
+            for write in _plan_agent_init(repo_root, target, with_hook)
+        ]
     except AgentInitConfigError as exc:
         print(f"agent-init: {exc}", file=sys.stderr)
         return 2
@@ -211,16 +235,26 @@ def run_agent_init(args: Any) -> int:
         with write.path.open("w", encoding="utf-8", newline=write.newline) as destination:
             destination.write(write.content)
         print(f"wrote {write.path}")
-    if args.target == "codex":
+    if "codex" in targets:
         print("note: AGENTS.md is the reliable Codex surface; .agents/skills is best-effort per Codex docs.")
     if with_hook:
-        if args.target == "codex":
-            print("installed best-effort Codex hook config; verify your Codex host loads .codex/hooks.json.")
-        else:
+        if "claude" in targets:
             print("installed the enforcing PreToolUse gate hook (pebra gate-hook) for claude.")
+        if "codex" in targets:
+            print("installed best-effort Codex hook config; verify your Codex host loads .codex/hooks.json.")
     else:
         print("instruction-only: no enforcement hook installed (pass --with-hook to enable).")
     return 0
+
+
+def _selected_targets(repo_root: Path, selector: str) -> tuple[str, ...]:
+    if selector != _AUTO_TARGET:
+        return (selector,)
+    return tuple(
+        target
+        for target in AGENT_HOSTS
+        if any((repo_root / marker).exists() for marker in _HOST_DETECTION_MARKERS[target])
+    )
 
 
 def _instruction_paths(repo_root: Path, target: str) -> tuple[Path, ...]:
@@ -380,6 +414,28 @@ def _check_payload(repo_root: Path, target: str) -> dict[str, Any]:
 
 
 def _run_check(repo_root: Path, target: str, *, as_json: bool) -> int:
+    if target == _AUTO_TARGET:
+        targets = _selected_targets(repo_root, target)
+        payload = {
+            "command": "agent-init",
+            "target": _AUTO_TARGET,
+            "protocol_version": PROTOCOL_VERSION,
+            "gate_schema_version": GATE_SCHEMA_VERSION,
+            "detected_targets": list(targets),
+            "targets": [_check_payload(repo_root, item) for item in targets],
+        }
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        print("agent-init check - target: auto")
+        if not targets:
+            print("  no supported agent host markers detected")
+        for item in payload["targets"]:
+            print(
+                f"  {item['target']}: declared={item['declared_support']}, "
+                f"effective={item['effective_enforcement']['mode']}"
+            )
+        return 0
     payload = _check_payload(repo_root, target)
     if as_json:
         print(json.dumps(payload, indent=2, sort_keys=True))

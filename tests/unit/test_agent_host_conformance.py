@@ -12,6 +12,7 @@ from pebra.cli import agent_init
 from pebra.cli.main import build_parser
 from pebra.core.agent_hook_contract import HOOK_COMMAND
 from pebra.core.agent_hosts import AGENT_HOSTS, HostSpec
+from pebra.core.constants import Decision
 
 
 _SEMANTIC_TOKENS = (
@@ -30,13 +31,13 @@ _SEMANTIC_TOKENS = (
 )
 
 
-def test_every_host_uses_the_byte_identical_protocol_v4_projection(tmp_path) -> None:
+def test_every_host_uses_the_byte_identical_protocol_v5_projection(tmp_path) -> None:
     bodies = []
     for target, spec in AGENT_HOSTS.items():
         assert _run(target, tmp_path) == 0
         bodies.append((tmp_path / spec.skill_path).read_bytes())
 
-    assert agent_init.PROTOCOL_VERSION == 4
+    assert agent_init.PROTOCOL_VERSION == 5
     assert len(set(bodies)) == 1
     lowered = bodies[0].lower()
     for provider_detail in (
@@ -84,7 +85,27 @@ def test_parser_choices_match_registry() -> None:
         for action in parser._subparsers._group_actions[0].choices["agent-init"]._actions
         if action.dest == "target"
     )
-    assert tuple(action.choices) == tuple(AGENT_HOSTS)
+    assert tuple(action.choices) == (*AGENT_HOSTS, "auto")
+
+
+def test_auto_target_detects_only_hosts_with_repository_markers(tmp_path) -> None:
+    (tmp_path / ".claude").mkdir()
+
+    assert _run("auto", tmp_path) == 0
+
+    assert (tmp_path / AGENT_HOSTS["claude"].skill_path).is_file()
+    assert not (tmp_path / AGENT_HOSTS["codex"].skill_path).exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+def test_auto_target_is_failure_atomic_across_detected_hosts(tmp_path) -> None:
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / "AGENTS.md").write_bytes(b"\xff")
+
+    assert _run("auto", tmp_path) == 2
+
+    assert not (tmp_path / AGENT_HOSTS["claude"].skill_path).exists()
+    assert (tmp_path / "AGENTS.md").read_bytes() == b"\xff"
 
 
 @pytest.mark.parametrize("target", tuple(AGENT_HOSTS))
@@ -163,3 +184,40 @@ def test_readme_support_rows_match_registry() -> None:
         row = next(line for line in body[body.index(marker) + len(marker):].splitlines() if line)
         assert row.startswith("|")
         assert f"| `{spec.declared_support}` |" in row
+
+
+def test_readme_and_managed_protocol_cover_every_decision_branch() -> None:
+    readme = (Path(__file__).parents[2] / "README.md").read_text(encoding="utf-8")
+    for decision in Decision:
+        assert decision.value in readme
+        assert decision.value in agent_init._PROTOCOL_BODY
+
+    for required in (
+        "inspect → reassess",
+        "test → reassess",
+        "revise → reassess",
+        "accept-risk --apply",
+        "new route or eligible override",
+        "requires_confirmation=false",
+    ):
+        assert required in readme
+
+
+def test_managed_protocol_cannot_turn_confirmation_into_bare_apply() -> None:
+    normalized = " ".join(agent_init._PROTOCOL_BODY.split())
+    assert "requires_confirmation=true" in normalized
+    assert "pebra accept-risk --apply" in normalized
+    assert "requires_confirmation=false" in normalized
+    assert "pebra apply-candidate --assessment-id <returned-id>" in normalized
+
+
+def test_managed_protocol_uses_reassessment_id_and_never_double_applies() -> None:
+    normalized = " ".join(agent_init._PROTOCOL_BODY.split())
+    assert "use its returned `reassessment_id` for Verify and Record" in normalized
+    assert "do not run `pebra apply-candidate` or apply it again" in normalized
+
+
+def test_managed_protocol_distinguishes_agent_labels_from_trusted_outcomes() -> None:
+    normalized = " ".join(agent_init._PROTOCOL_BODY.split())
+    assert "Agent-provided outcome labels remain agent-sourced" in normalized
+    assert "`pebra finalize-outcome` is a trusted host-only path" in normalized

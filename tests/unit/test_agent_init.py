@@ -36,7 +36,7 @@ _OBLIGATIONS = (
 def test_protocol_v4_enforces_the_ordered_cognitive_lifecycle() -> None:
     normalized = " ".join(agent_init._PROTOCOL_BODY.split())
 
-    assert agent_init.PROTOCOL_VERSION == 4
+    assert agent_init.PROTOCOL_VERSION == 5
     phases = (
         "1. **Interpret.",
         "2. **Recall verified lessons.",
@@ -82,7 +82,7 @@ def test_protocol_v4_teaches_recall_calculate_enforce_and_learn_phases() -> None
     "Assess"/"apply"/"verify" as its first line, so a whole-body substring search could never satisfy
     the order (a won't-flip xfail). Splitting on the constant excludes the preamble regardless of M6's
     exact wording, so this XPASSes only when M6 genuinely lands the ordered v4 phases."""
-    assert agent_init.PROTOCOL_VERSION == 4
+    assert agent_init.PROTOCOL_VERSION == 5
 
     normalized = " ".join(agent_init._PROTOCOL_BODY.split()).lower()
     non_negs = " ".join(agent_init._NON_NEGOTIABLES.split()).lower()
@@ -812,7 +812,7 @@ def test_agent_init_check_reports_file_state_without_mutation(
         "declared_support", "effective_enforcement",
     }
     assert payload["target"] == target
-    assert payload["protocol_version"] == 4
+    assert payload["protocol_version"] == 5
     assert payload["gate_schema_version"] == 2
     assert {item["state"] for item in payload["files"]} == {file_state}
     assert payload["declared_support"] == AGENT_HOSTS[target].declared_support

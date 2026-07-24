@@ -51,7 +51,7 @@ def test_installed_host_check_is_real_cli_non_mutating(tmp_path, target):
     payload = json.loads(checked.stdout)
     assert payload["command"] == "agent-init"
     assert payload["target"] == target
-    assert payload["protocol_version"] == 4
+    assert payload["protocol_version"] == 5
     assert payload["gate_schema_version"] == 2
     assert {item["state"] for item in payload["files"]} == {"current"}
     assert payload["hook"]["state"] == "exact"
@@ -109,7 +109,7 @@ def test_protocol_v3_material_is_reported_stale_then_only_managed_content_is_ref
     checked = _agent_init(tmp_path, target, "--check", "--json")
     assert checked.returncode == 0, checked.stderr
     payload = json.loads(checked.stdout)
-    assert payload["protocol_version"] == 4
+    assert payload["protocol_version"] == 5
     expected_states = {"current", "modified"} if target == "claude" else {"modified"}
     assert {item["state"] for item in payload["files"]} == expected_states
     assert _snapshot(tmp_path) == before_check

@@ -17,6 +17,7 @@ from scripts.verify_distribution import (
     DistributionVerificationError,
     _EXPECTED_AGENT_HOSTS,
     _validate_agent_host_registry,
+    _validate_agent_init_auto_check,
     _validate_agent_init_check,
     _verify_installed_cli,
     _verify_tui_mount,
@@ -48,7 +49,7 @@ def _agent_check_payload(target: str) -> dict[str, object]:
     return {
         "command": "agent-init",
         "target": target,
-        "protocol_version": 4,
+        "protocol_version": 5,
         "gate_schema_version": 2,
         "files": [
             {"path": path, "state": "current"}
@@ -62,6 +63,35 @@ def _agent_check_payload(target: str) -> dict[str, object]:
             "reasons": ["graph_unverified_read_only"],
         },
     }
+
+
+def test_auto_agent_check_validator_accepts_complete_registry_projection() -> None:
+    payload = {
+        "command": "agent-init",
+        "target": "auto",
+        "protocol_version": 5,
+        "gate_schema_version": 2,
+        "detected_targets": list(_EXPECTED_AGENT_HOSTS),
+        "targets": [_agent_check_payload(target) for target in _EXPECTED_AGENT_HOSTS],
+    }
+
+    validated = _validate_agent_init_auto_check(json.dumps(payload))
+
+    assert validated["detected_targets"] == ["claude", "codex"]
+
+
+def test_auto_agent_check_validator_rejects_missing_host_projection() -> None:
+    payload = {
+        "command": "agent-init",
+        "target": "auto",
+        "protocol_version": 5,
+        "gate_schema_version": 2,
+        "detected_targets": ["claude"],
+        "targets": [_agent_check_payload("claude")],
+    }
+
+    with pytest.raises(DistributionVerificationError, match="detected targets"):
+        _validate_agent_init_auto_check(json.dumps(payload))
 
 
 def _write_wheel(

@@ -12,9 +12,18 @@ import pytest
 
 _SEMANTIC_TOKENS = (
     "pebra assess",
+    "inspect_first",
+    "test_first",
     "revise_safer",
+    "ask_human",
+    "reject",
+    "requires_confirmation=true",
+    "requires_confirmation=false",
     "trusted human or host",
+    "accept-risk --apply",
     "apply-candidate --assessment-id",
+    "reassessment_id",
+    "do not run `pebra apply-candidate` or apply it again",
     "pebra verify",
     "record-outcome",
 )
@@ -75,8 +84,9 @@ def test_registry_host_installs_and_inspects_over_process_boundary(
     installed = _agent_init(tmp_path, target, "--with-hook")
     assert installed.returncode == 0, installed.stderr
     skill = (tmp_path / skill_path).read_text(encoding="utf-8")
+    normalized_skill = " ".join(skill.lower().split())
     for token in _SEMANTIC_TOKENS:
-        assert token in skill
+        assert token in normalized_skill
     if target == "claude":
         assert (tmp_path / instruction_path).is_file()
     else:
@@ -92,4 +102,51 @@ def test_registry_host_installs_and_inspects_over_process_boundary(
     assert {item["state"] for item in payload["files"]} == {"current"}
     assert payload["hook"]["state"] == "exact"
     assert payload["declared_support"] == expected_support
+    assert _snapshot(tmp_path) == before
+
+
+def test_auto_target_installs_detected_hosts_and_reports_each_mode(tmp_path) -> None:
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".codex").mkdir()
+    codex_sentinel = "# preserve user Codex instruction\n"
+    (tmp_path / "AGENTS.md").write_text(codex_sentinel, encoding="utf-8")
+    settings = tmp_path / ".claude/settings.json"
+    settings.write_text(
+        json.dumps({
+            "permissions": {"allow": ["Read"]},
+            "hooks": {"PreToolUse": [
+                {"matcher": "Read", "hooks": [{"type": "command", "command": "echo keep"}]}
+            ]},
+        }),
+        encoding="utf-8",
+    )
+
+    installed = _agent_init(tmp_path, "auto", "--with-hook")
+    assert installed.returncode == 0, installed.stderr
+    assert (tmp_path / ".claude/skills/pebra-safe-edit/SKILL.md").is_file()
+    assert (tmp_path / ".agents/skills/pebra-safe-edit/SKILL.md").is_file()
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8").startswith(codex_sentinel)
+    assert json.loads(settings.read_text(encoding="utf-8"))["permissions"] == {"allow": ["Read"]}
+
+    before = _snapshot(tmp_path)
+    checked = _agent_init(tmp_path, "auto", "--check", "--json")
+    assert checked.returncode == 0, checked.stderr
+    payload = json.loads(checked.stdout)
+    assert payload["target"] == "auto"
+    assert payload["detected_targets"] == ["claude", "codex"]
+    assert [item["target"] for item in payload["targets"]] == ["claude", "codex"]
+    assert [item["declared_support"] for item in payload["targets"]] == [
+        "configured_enforcing",
+        "best_effort",
+    ]
+    assert _snapshot(tmp_path) == before
+
+
+def test_auto_target_without_host_markers_is_a_non_mutating_error(tmp_path) -> None:
+    before = _snapshot(tmp_path)
+
+    installed = _agent_init(tmp_path, "auto")
+
+    assert installed.returncode == 2
+    assert "no supported agent host markers detected" in installed.stderr
     assert _snapshot(tmp_path) == before

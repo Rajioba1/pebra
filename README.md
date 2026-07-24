@@ -198,32 +198,52 @@ pebra explore "change login validation" --repo-root .
 # 2. Design the exact candidate outside PEBRA, then submit that exact request.
 #    request.json includes the task, files, operations, patch, expected_files, and verification plan.
 pebra assess request.json --json
+```
 
-# 3. Decide from the returned decision packet:
-#    assess: proceed / inspect_first / test_first / revise_safer / ask_human / reject.
-#    verify may also return test_first when required checks are missing.
-#
-# 4. Enforce immediately before mutation and apply only the assessed candidate.
+Follow the returned decision rather than treating assessment as automatic permission:
+
+```text
+inspect_first ──→ inspect → reassess
+test_first ─────→ test → reassess
+revise_safer ───→ revise → reassess
+ask_human ──────→ trusted operator runs pebra accept-risk --apply
+reject ─────────→ new route or eligible override → reassess
+proceed
+  ├─ requires_confirmation=true  → trusted operator runs pebra accept-risk --apply
+  │                                (it reassesses and applies; do not apply again)
+  └─ requires_confirmation=false → pebra apply-candidate --assessment-id <assessment_id>
+```
+
+On the ordinary proceed path:
+
+```console
 pebra apply-candidate --assessment-id <assessment_id>
-
-#    If PEBRA returns ask_human, or proceed with requires_confirmation=true, use:
-#    pebra accept-risk --apply --assessment-id <assessment_id>
-#    Then verify/record using the reassessment ID returned by accept-risk.
-
-# 5. Verify the actual post-edit diff against the approved envelope.
 pebra verify --assessment-id <assessment_id> --json
+```
 
-# 6. Record the trusted outcome and feed the learning loop.
+After successful `pebra accept-risk --apply`, Verify and Record with its returned
+`reassessment_id`, never the original held ID. The approval command already applies the candidate,
+so never follow it with `pebra apply-candidate`.
+
+Record the lifecycle outcome:
+
+```console
+pebra record-outcome --assessment-id <assessment_id> --status completed
+```
+
+`record-outcome` closes the verified action lifecycle and may create bounded recall context; it does
+not itself measure or promote calibration facts. MCP-submitted labels remain agent-sourced. A trusted
+host can separately measure and run gated promotion from host-produced evidence:
+
+```console
 pebra finalize-outcome --trusted-outcome-file outcome.json --repo-root <repo_root> --json
 pebra scorecard --repo-root <repo_root>
 ```
 
-For a simple terminal ledger update without trusted outcome evidence, use
-`pebra record-outcome --assessment-id <assessment_id> --status completed --detail '{"actual_success":true}'`.
-
 ## Agent enforcement
 
-`pebra agent-init` installs a managed protocol for either host: Claude gets a managed
+`pebra agent-init --target auto` detects supported host markers and installs only those projections.
+Explicit `--target claude` and `--target codex` remain available. Claude gets a managed
 `.claude/skills/pebra-safe-edit/SKILL.md` skill and unconditional rule; Codex gets a managed
 `AGENTS.md` block and the byte-identical skill. Add `--with-hook` for optional pre-edit interception,
 and `--check` for inspection-only state.

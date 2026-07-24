@@ -81,7 +81,7 @@ def test_installed_host_protocol_teaches_one_advisory_exploration_before_assess(
         check=False,
     )
     assert inspected.returncode == 0, inspected.stderr
-    assert json.loads(inspected.stdout)["protocol_version"] == 4
+    assert json.loads(inspected.stdout)["protocol_version"] == 5
 
 
 def test_installed_claude_and_codex_skills_are_byte_identical(tmp_path: Path) -> None:

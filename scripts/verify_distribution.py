@@ -80,10 +80,18 @@ _AGENT_CHECK_KEYS = {
     "declared_support",
     "effective_enforcement",
 }
-_EXPECTED_AGENT_SKILL_SHA256 = "e3b2b970e3e09ab90312b1c379d2de5cd979f5018c5c943e27ea984d1ca4f338"
+_AUTO_AGENT_CHECK_KEYS = {
+    "command",
+    "target",
+    "protocol_version",
+    "gate_schema_version",
+    "detected_targets",
+    "targets",
+}
+_EXPECTED_AGENT_SKILL_SHA256 = "44f18af68cc7980d21f877469b4b93cce655b927dcb1e5ca4a8137a38b77c879"
 _EXPECTED_CLAUDE_RULE_SHA256 = "8be4b8bccc167ea3e9f32d7a0348f47c7d1d9119f267d3ec60a16484af31c432"
 _EXPECTED_CODEX_MANAGED_BLOCK_SHA256 = (
-    "1b30073a8fe84d116e9e70d8aa87c7a595d8cc62a57e731a6d7f6cae79b0962b"
+    "3c2ef6592f0a4cc08a55ce892a5f732c0031012f354f4b0949061f41a22ccc07"
 )
 _CODEX_SENTINEL = "# Pre-existing Codex distribution-verifier sentinel\nPreserve this instruction.\n"
 _MANAGED_BEGIN = "<!-- BEGIN pebra-safe-edit (managed by `pebra agent-init`) -->"
@@ -295,7 +303,7 @@ def _validate_agent_init_check(raw: str, *, target: str) -> dict[str, object]:
         )
     if (
         type(payload["protocol_version"]) is not int
-        or payload["protocol_version"] != 4
+        or payload["protocol_version"] != 5
         or type(payload["gate_schema_version"]) is not int
         or payload["gate_schema_version"] != 2
     ):
@@ -353,6 +361,44 @@ def _validate_agent_init_check(raw: str, *, target: str) -> dict[str, object]:
         raise DistributionVerificationError(
             f"installed agent-init check enforcement mismatch for {target}"
         )
+    return payload
+
+
+def _validate_agent_init_auto_check(raw: str) -> dict[str, object]:
+    """Validate the installed auto-detection report against the independent host oracle."""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise DistributionVerificationError(
+            "installed agent-init auto check returned malformed JSON"
+        ) from exc
+    if not isinstance(payload, dict) or set(payload) != _AUTO_AGENT_CHECK_KEYS:
+        raise DistributionVerificationError(
+            "installed agent-init auto check schema mismatch"
+        )
+    if (
+        payload["command"] != "agent-init"
+        or payload["target"] != "auto"
+        or type(payload["protocol_version"]) is not int
+        or payload["protocol_version"] != 5
+        or type(payload["gate_schema_version"]) is not int
+        or payload["gate_schema_version"] != 2
+    ):
+        raise DistributionVerificationError(
+            "installed agent-init auto check protocol mismatch"
+        )
+    expected_targets = list(_EXPECTED_AGENT_HOSTS)
+    if payload["detected_targets"] != expected_targets:
+        raise DistributionVerificationError(
+            "installed agent-init auto check detected targets mismatch"
+        )
+    targets = payload["targets"]
+    if not isinstance(targets, list) or len(targets) != len(expected_targets):
+        raise DistributionVerificationError(
+            "installed agent-init auto check target projections mismatch"
+        )
+    for target, item in zip(expected_targets, targets, strict=True):
+        _validate_agent_init_check(json.dumps(item), target=target)
     return payload
 
 
@@ -639,6 +685,46 @@ def verify_installed() -> None:
                 raise DistributionVerificationError(
                     "installed agent-init check mutated repository state"
                 )
+
+        auto_root = cwd / "agent-auto"
+        (auto_root / ".claude").mkdir(parents=True)
+        (auto_root / ".codex").mkdir()
+        (auto_root / "AGENTS.md").write_text(
+            _CODEX_SENTINEL, encoding="utf-8", newline=""
+        )
+        installed = _run_cli(
+            "agent-init", "--target", "auto", "--repo-root", str(auto_root), "--with-hook",
+            cwd=cwd,
+        )
+        if installed.returncode != 0:
+            raise DistributionVerificationError(
+                f"installed agent-init auto detection failed: {installed.stderr.strip()}"
+            )
+        for target in _EXPECTED_AGENT_HOSTS:
+            _verify_agent_init_artifacts(auto_root, target)
+        before = {
+            path.relative_to(auto_root).as_posix(): path.read_bytes()
+            for path in auto_root.rglob("*")
+            if path.is_file()
+        }
+        checked = _run_cli(
+            "agent-init", "--target", "auto", "--repo-root", str(auto_root),
+            "--check", "--json", cwd=cwd,
+        )
+        if checked.returncode != 0:
+            raise DistributionVerificationError(
+                f"installed agent-init auto check failed: {checked.stderr.strip()}"
+            )
+        _validate_agent_init_auto_check(checked.stdout)
+        after = {
+            path.relative_to(auto_root).as_posix(): path.read_bytes()
+            for path in auto_root.rglob("*")
+            if path.is_file()
+        }
+        if after != before:
+            raise DistributionVerificationError(
+                "installed agent-init auto check mutated repository state"
+            )
 
     old_path = os.environ.get("PATH")
     old_override = os.environ.get("PEBRA_RCA_BIN")

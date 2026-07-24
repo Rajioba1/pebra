@@ -198,7 +198,7 @@ pebra apply-candidate --assessment-id asm_12 --repo-root .
 Install or inspect PEBRA instructions and optional host hooks.
 
 ```text
-pebra agent-init --target {claude,codex}
+pebra agent-init --target {claude,codex,auto}
   [--repo-root PATH]
   [--with-hook]
   [--check]
@@ -210,6 +210,8 @@ pebra agent-init --target claude --repo-root .
 pebra agent-init --target claude --repo-root . --with-hook
 pebra agent-init --target codex --repo-root . --check
 pebra agent-init --target codex --repo-root . --check --json
+pebra agent-init --target auto --repo-root .
+pebra agent-init --target auto --repo-root . --check --json
 ```
 
 `--json` requires `--check`. Inspection mode is non-mutating and intentionally does not invoke CodeGraph.
@@ -626,6 +628,8 @@ pebra agent-init --target claude --repo-root . --with-hook
 pebra agent-init --target codex --repo-root . --with-hook
 pebra agent-init --target claude --repo-root . --check --json
 pebra agent-init --target codex --repo-root . --check --json
+pebra agent-init --target auto --repo-root . --with-hook
+pebra agent-init --target auto --repo-root . --check --json
 pebra capabilities --repo-root . --json
 ```
 
