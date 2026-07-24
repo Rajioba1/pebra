@@ -52,10 +52,6 @@ The same ledger is available as a terminal Observatory (`pebra tui`):
 - **Read-only observability.** A local browser dashboard and terminal TUI expose the same ledger —
   assessment history, calibration, learned facts, and the codebase graph — without ever writing to your
   repository.
-- **Fails safe, not silent.** External engines (CodeGraph, `rust-code-analysis`) are explicit and
-  optional; when missing or mismatched they degrade to reduced-confidence evidence rather than blocking
-  an assessment or auto-installing anything.
-
 ## How is this different?
 
 PEBRA is not another graph viewer, memory store, or domain engine. It is the decision layer that turns
@@ -67,7 +63,6 @@ repository knowledge, historical lessons, and exact candidate bytes into an audi
 | **CodeGraph** | Yes: symbols, calls, dependents, fan-in, affected tests | No PEBRA outcome loop | No | No | Supplying current structural repository truth. |
 | **Graphify** | Visual knowledge-graph patterns | Optional overlay patterns | No | No | Exploring and presenting graph structure. |
 | **AgentMemory** | No source graph by default | General agent memory | No | No | Remembering agent observations across sessions. |
-| **Formualizer** | Spreadsheet dependency graph | Workbook changelog / undo-redo | Domain-specific formula evaluation, not edit risk | No | Parsing, evaluating, and mutating spreadsheets from Rust, Python, or WASM. |
 
 - CodeGraph gives PEBRA current repository structure; PEBRA decides what that structure means for a
   specific proposed patch.
@@ -75,8 +70,6 @@ repository knowledge, historical lessons, and exact candidate bytes into an audi
   verified lessons.
 - AgentMemory is broad recall; PEBRA recall is narrower and auditable, and only promoted facts can
   influence future assessment.
-- Formualizer is a strong example of positioning a technical engine clearly. PEBRA's engine is not
-  spreadsheet evaluation; it is pre-edit benefit-risk analysis for coding agents.
 
 ## Quickstart
 
