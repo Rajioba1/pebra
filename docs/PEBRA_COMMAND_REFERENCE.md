@@ -328,6 +328,7 @@ pebra dashboard --host 127.0.0.1 --port 0
 pebra dashboard --auth token --open
 pebra dashboard --host 0.0.0.0 --auth token
 pebra dashboard --read-only --db path/to/pebra.db --repo-id repo_example
+pebra dashboard --repo-root .
 pebra dashboard --dev --repo-root .
 ```
 
@@ -336,6 +337,24 @@ pebra dashboard --dev --repo-root .
 `--dev` exposes developer diagnostics such as Calibration. Without `--dev`, the Calibration tab is
 hidden and its API endpoint returns `404`; normal users still see Overview, History, Learning, and
 Graph.
+
+Launch with `--repo-root .` when you want the Graph tab to read the current repository's CodeGraph
+index. The graph tab never initializes or syncs CodeGraph from a browser request. If the graph is
+unavailable or stale, run:
+
+```console
+pebra setup-graph --fix --repo-root .
+```
+
+The Graph tab has three honest display modes:
+
+- Full structural graph: CodeGraph-backed symbols and edges rendered in Cytoscape.
+- Assessment risk overlay: assessment-bound node highlighting only. Risk overlay is
+  assessment-bound. It is not a calibrated per-symbol risk model.
+- Verified learning overlay: only verified PEBRA `learning_context` records appear as graph lessons.
+
+Large repositories may collapse to a file-level graph with count metadata such as "Showing X of Y
+nodes"; collapsed mode disables risk overlay until PEBRA has real file-level risk data.
 
 ### `tui`
 

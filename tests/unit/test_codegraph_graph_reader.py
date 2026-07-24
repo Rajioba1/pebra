@@ -228,6 +228,124 @@ def test_file_overview_respects_top_n(tmp_path) -> None:
     assert out["truncated"] is True
 
 
+# ---- god_node_map (M10b) -----------------------------------------------------
+
+
+def test_top_symbols_in_file_ranks_by_structural_fanin_with_normalized_path(tmp_path) -> None:
+    _seed(tmp_path)
+    rows = _reader().top_symbols_in_file(str(tmp_path), "src\\Gamma.cs", limit=3)
+
+    assert rows["available"] is True
+    assert rows["file_path"] == "src/Gamma.cs"
+    assert rows["symbols"][0]["id"] == "n:gamma"
+    assert rows["symbols"][0]["qualified_name"] == "Gamma::Gamma"
+    assert rows["symbols"][0]["inbound_count"] == 2
+    assert rows["symbols"][0]["label"] == "Gamma"
+
+
+def test_top_symbols_in_file_fanin_excludes_inheritance_edges(tmp_path) -> None:
+    _seed(tmp_path)
+    con = sqlite3.connect(str(tmp_path / ".codegraph" / "codegraph.db"))
+    _node(con, "n:child", "class", "Child", "Child", "src/Child.cs")
+    _edge(con, "n:child", "n:gamma", "extends")
+    con.commit()
+    con.close()
+
+    rows = _reader().top_symbols_in_file(str(tmp_path), "src/Gamma.cs", limit=1)
+
+    assert rows["symbols"][0]["id"] == "n:gamma"
+    assert rows["symbols"][0]["inbound_count"] == 2  # calls/references only, not extends
+
+
+def test_god_node_map_uses_file_hubs_symbol_circles_spokes_and_cross_links(tmp_path) -> None:
+    _seed(tmp_path)
+    out = _reader().god_node_map(str(tmp_path), max_files=2, max_symbols_per_file=1, max_edges=10)
+
+    assert out["available"] is True
+    assert out["mode"] == "godmap"
+    assert out["collapsed"] is False
+    assert out["total_file_count"] == 2  # fan-in-bearing files only, matching file_overview
+    assert out["total_symbol_count"] == 5
+    hubs = [n for n in out["nodes"] if n["graph_role"] == "hub"]
+    symbols = [n for n in out["nodes"] if n["graph_role"] == "symbol"]
+    assert [h["id"] for h in hubs] == ["file:src/Gamma.cs", "file:src/A.cs"]
+    assert all(h["kind"] == "file_hub" and h["shape"] == "rectangle" for h in hubs)
+    assert [s["id"] for s in symbols] == ["n:gamma", "n:a"]
+    assert all(s["shape"] == "ellipse" and s["qualified_name"] for s in symbols)
+    assert any(
+        {"source": "file:src/Gamma.cs", "target": "n:gamma", "kind": "contains",
+         "edge_type": "spoke", "line_style": "dashed"}.items() <= e.items()
+        for e in out["edges"]
+    )
+    assert any(
+        {"source": "n:a", "target": "n:gamma", "kind": "calls",
+         "edge_type": "cross_symbol", "line_style": "solid"}.items() <= e.items()
+        for e in out["edges"]
+    )
+    assert out["truncated"] is False
+
+
+def test_god_node_map_hub_symbol_count_includes_zero_fanin_symbols(tmp_path) -> None:
+    _seed(tmp_path)
+    con = sqlite3.connect(str(tmp_path / ".codegraph" / "codegraph.db"))
+    _node(con, "n:helper", "function", "Helper", "Helper", "src/Gamma.cs")
+    con.commit()
+    con.close()
+
+    out = _reader().god_node_map(str(tmp_path), max_files=1, max_symbols_per_file=5)
+    hub = next(n for n in out["nodes"] if n["graph_role"] == "hub")
+
+    assert hub["id"] == "file:src/Gamma.cs"
+    assert hub["symbol_count"] == 2
+
+
+def test_god_node_map_reports_true_fanin_file_total_when_capped(tmp_path) -> None:
+    _seed(tmp_path)
+    con = sqlite3.connect(str(tmp_path / ".codegraph" / "codegraph.db"))
+    for i in range(4):
+        _node(con, f"n:extra_src:{i}", "function", f"Src{i}", f"Src{i}", f"src/S{i}.cs")
+        _node(con, f"n:extra_tgt:{i}", "function", f"Tgt{i}", f"Tgt{i}", f"src/T{i}.cs")
+        _edge(con, f"n:extra_src:{i}", f"n:extra_tgt:{i}", "calls")
+    con.commit()
+    con.close()
+
+    out = _reader().god_node_map(str(tmp_path), max_files=2, max_symbols_per_file=1)
+
+    assert out["total_file_count"] == 6  # 2 original fan-in files + 4 extras, not max_files + 1
+    assert out["total_node_count"] == 12  # all fan-in file hubs + all their structural symbols
+    assert out["total_edge_count"] == 7  # all spokes plus complete selected-symbol cross-links
+    assert out["truncated"] is True
+
+
+def test_god_node_map_failsoft_and_caps_nodes(tmp_path) -> None:
+    _seed(tmp_path)
+    stale = _reader(STALE).god_node_map(str(tmp_path))
+    assert stale["available"] is False
+    assert stale["nodes"] == [] and stale["edges"] == []
+
+    capped = _reader().god_node_map(str(tmp_path), max_files=2, max_symbols_per_file=3, max_nodes=1)
+    assert capped["available"] is True
+    assert [n["graph_role"] for n in capped["nodes"]] == ["hub"]
+    assert capped["edges"] == []
+    assert capped["truncated"] is True
+
+
+def test_top_symbols_in_file_matches_backslash_paths_stored_in_db(tmp_path) -> None:
+    _seed(tmp_path)
+    con = sqlite3.connect(str(tmp_path / ".codegraph" / "codegraph.db"))
+    _node(con, "n:win_src", "function", "WinSrc", "WinSrc", "src\\Caller.cs")
+    _node(con, "n:win_tgt", "function", "WinTgt", "WinTgt", "src\\Win.cs")
+    _edge(con, "n:win_src", "n:win_tgt", "calls")
+    con.commit()
+    con.close()
+
+    out = _reader().top_symbols_in_file(str(tmp_path), "src/Win.cs")
+
+    assert out["available"] is True
+    assert out["symbols"][0]["id"] == "n:win_tgt"
+    assert out["symbols"][0]["file_path"] == "src/Win.cs"
+
+
 # ---- full_graph (M2) ---------------------------------------------------------
 
 
@@ -292,30 +410,33 @@ def test_full_graph_collapses_to_file_mode_above_threshold(tmp_path) -> None:
     assert out["mode"] == "file"
     assert out["collapsed"] is True
     assert out["total_node_count"] == 5  # true underlying symbol count
+    assert out["total_file_count"] == 5
     ids = [n["id"] for n in out["nodes"]]
-    assert ids == sorted(ids)
+    assert ids == ["src/Gamma.cs", "src/A.cs", "src/B.cs", "src/C.cs", "src/L.cs"]
     node_set = set(ids)
     # one node per file; file edges aggregate symbol edges with a weight and never dangle
     assert len(out["nodes"]) == 5  # 5 files
     for n in out["nodes"]:
         assert n["kind"] == "file"
-        assert n["file_path"] and "symbol_count" in n
+        assert n["file_path"] and "symbol_count" in n and "inbound_count" in n
     for e in out["edges"]:
         assert e["source"] in node_set and e["target"] in node_set
         assert e["weight"] >= 1
 
 
 def test_full_graph_file_mode_edge_budget_not_starved_by_dropped_files(tmp_path) -> None:
-    # File mode (5 files > collapse_after) AND the file-node cap drops Gamma.cs / L.cs, so kept
-    # files (alphabetical) are A.cs, B.cs, C.cs. The only kept->kept file edge is C.cs -> A.cs.
+    # File mode (5 files > collapse_after) AND the file-node cap keeps the hottest inbound files
+    # first: Gamma.cs (2 callers), A.cs (1 caller), then B.cs (stable tie). The only kept->kept file
+    # edge is A.cs -> Gamma.cs.
     # The edge budget must not be spent on pairs touching dropped files, or the real kept-kept edge
     # would be starved and edges would come back empty with a dishonest truncated flag.
     _seed(tmp_path)
     out = _reader().full_graph(str(tmp_path), collapse_after=2, max_nodes=3, max_edges=2)
     assert out["mode"] == "file"
     kept = {n["id"] for n in out["nodes"]}
-    assert kept == {"src/A.cs", "src/B.cs", "src/C.cs"}
-    assert {"source": "src/C.cs", "target": "src/A.cs", "kind": "file_aggregate", "weight": 1} in out["edges"]
+    assert [n["id"] for n in out["nodes"]] == ["src/Gamma.cs", "src/A.cs", "src/B.cs"]
+    assert kept == {"src/Gamma.cs", "src/A.cs", "src/B.cs"}
+    assert {"source": "src/A.cs", "target": "src/Gamma.cs", "kind": "file_aggregate", "weight": 1} in out["edges"]
     for e in out["edges"]:
         assert e["source"] in kept and e["target"] in kept
 

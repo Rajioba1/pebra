@@ -38,7 +38,7 @@ def tests(session: nox.Session) -> None:
 @nox.session
 def lint(session: nox.Session) -> None:
     session.install("-e", ".", "--no-deps")
-    session.install("ruff", "import-linter")
+    session.install("ruff>=0.15,<0.16", "import-linter")
     session.run("ruff", "check", "pebra", "benchmarks", "e2e")
     session.run("lint-imports")
 

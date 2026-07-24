@@ -202,13 +202,40 @@ def build_router(require_bearer: Callable[..., Any]) -> APIRouter:
             return _graph_overview_unavailable("codegraph graph data unavailable")
         return _with_graph_setup_hint(payload)
 
+    @router.get("/repos/{repo_id}/graph/godmap")
+    def graph_godmap(
+        repo_id: str,
+        request: Request,
+        max_files: int = Query(20, ge=1, le=100),
+        max_symbols_per_file: int = Query(10, ge=1, le=50),
+        max_nodes: int = Query(250, ge=1, le=2000),
+        max_edges: int = Query(800, ge=1, le=10000),
+    ) -> dict[str, Any]:
+        """Readable whole-repo graph: hot file hubs plus top symbols. No assessment lookup, so the URL
+        repo boundary and bearer auth are the only access controls, same as ``graph_full``."""
+        _require_bound_repo(request, repo_id)
+        repo_root = getattr(request.app.state, "repo_root", None)
+        if not repo_root:
+            return _graph_godmap_unavailable("dashboard is not bound to a repo root")
+        try:
+            payload = request.app.state.graph_reader.god_node_map(
+                repo_root,
+                max_files=max_files,
+                max_symbols_per_file=max_symbols_per_file,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
+            )
+        except Exception:  # noqa: BLE001 — hard rule: a graph read must fail soft, never 500
+            return _graph_godmap_unavailable("codegraph graph data unavailable")
+        return _with_graph_setup_hint(payload)
+
     @router.get("/repos/{repo_id}/graph/full")
     def graph_full(
         repo_id: str,
         request: Request,
-        max_nodes: int = Query(8000, ge=1, le=20000),
+        max_nodes: int = Query(250, ge=1, le=20000),
         max_edges: int = Query(40000, ge=1, le=100000),
-        collapse_after: int = Query(20000, ge=1, le=20000),
+        collapse_after: int = Query(300, ge=1, le=20000),
     ) -> dict[str, Any]:
         """Whole-repo structural graph (symbol or file-collapsed), read-only and fail-soft. No
         assessment lookup, so there is no cross-repo assessment surface — the URL repo boundary and
@@ -280,6 +307,16 @@ def _graph_full_unavailable(reason: str) -> dict[str, Any]:
         "available": False, "graph_freshness": "unknown", "fallback_reason": reason,
         "mode": "symbol", "collapsed": False,
         "nodes": [], "edges": [], "truncated": False,
+        "total_node_count": 0, "total_edge_count": 0,
+    })
+
+
+def _graph_godmap_unavailable(reason: str) -> dict[str, Any]:
+    return _with_graph_setup_hint({
+        "available": False, "graph_freshness": "unknown", "fallback_reason": reason,
+        "mode": "godmap", "collapsed": False,
+        "nodes": [], "edges": [], "truncated": False,
+        "total_file_count": 0, "total_symbol_count": 0,
         "total_node_count": 0, "total_edge_count": 0,
     })
 

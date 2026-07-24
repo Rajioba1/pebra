@@ -238,11 +238,25 @@ pebra dashboard --port 4500 --auth token
 
 # expose beyond loopback only with a token
 pebra dashboard --host 0.0.0.0 --port 4500 --auth token
+
+# launch with graph tab support for the current repository
+pebra dashboard --repo-root .
 ```
 
-It exposes five browser views: overview, score history, calibration, learned facts, and CodeGraph
-hotspots. Graph views are fail-soft when no trusted graph index is bound to the launched repo, and
-graph routes are repo-scoped to avoid replaying one repo's graph under another repo id.
+It exposes five browser views: overview, score history, calibration, learned facts, and a CodeGraph
+graph tab. Launch with `--repo-root .` to bind graph reads to the current repository. The graph tab
+requires a fresh CodeGraph index; if it is unavailable or stale, repair it with:
+
+```console
+pebra setup-graph --fix --repo-root .
+```
+
+The graph tab shows a full structural graph for ordinary repositories and honestly collapses very
+large graphs to file-level nodes when browser payload/layout guardrails require it. The Risk overlay is
+assessment-bound: it highlights nodes matched to the selected assessment and is not a calibrated
+per-symbol risk model. The Learning overlay shows only verified PEBRA `learning_context` records as
+graph lessons. Graph routes are fail-soft when no trusted graph index is bound to the launched repo,
+and are repo-scoped to avoid replaying one repo's graph under another repo id.
 
 Explicit graph-backed commands may reconcile an already-initialized, same-worktree `.codegraph/`
 cache. They never install or initialize CodeGraph and never create or edit `codegraph.json`.

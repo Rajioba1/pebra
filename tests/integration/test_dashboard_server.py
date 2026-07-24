@@ -92,6 +92,7 @@ def test_app_js_renders_full_graph_with_cytoscape_webgl(tmp_path) -> None:
     db, _ = _seed(tmp_path)
     js = _client(db).get("/static/app.js").text
     assert js
+    assert "/graph/godmap" in js
     assert "/graph/full" in js
     assert "cytoscape(" in js
     assert "webgl: true" in js
@@ -122,6 +123,51 @@ def test_app_js_wires_risk_overlay_honestly(tmp_path) -> None:
     assert "loss pts" in js
     # decision (categorical) is the only node-colour signal in risk view.
     assert "RISK_DECISIONS" in js and 'node.rb-' in js
+
+
+def test_app_js_wires_collapse_ux_and_disables_collapsed_risk(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    js = _client(db).get("/static/app.js").text
+    assert "Symbol graph" in js
+    assert "Collapsed file graph" in js
+    assert "Showing " in js and " of " in js
+    assert 'g.mode === "godmap" || g.mode === "file" || g.nodes.length <= 250' in js
+    assert "Risk overlay unavailable in collapsed mode" in js
+    assert "!riskEligibleMode(graphState.mode)" in js
+
+
+def test_app_js_wires_godmap_as_default_with_coloured_hubs_and_spokes(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    js = _client(db).get("/static/app.js").text
+    assert 'getJSON(rp("/graph/godmap"))' in js
+    assert "God-node map" in js
+    assert 'node[graph_role="hub"]' in js
+    assert 'edge[edge_type="spoke"]' in js
+    assert "HUB_COLORS" in js
+    assert "spoke" in js and "line-style" in js
+    assert "riskEligibleMode(" in js
+    assert 'return mode === "symbol" || mode === "godmap";' in js
+
+
+def test_app_js_destroys_cytoscape_before_clearing_graph_view(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    js = _client(db).get("/static/app.js").text
+    render_start = js.index("async function renderGraph(view)")
+    destroy_at = js.index("destroyCy();", render_start)
+    clear_at = js.index("clear(view);", render_start)
+
+    assert destroy_at < clear_at
+
+
+def test_app_js_disabled_risk_overlay_strips_existing_risk_classes(tmp_path) -> None:
+    db, _ = _seed(tmp_path)
+    js = _client(db).get("/static/app.js").text
+    disable_start = js.index("function disableRiskOverlay()")
+    disable_end = js.index("async function renderGraph(view)", disable_start)
+
+    assert "graphState.overlay = \"structure\"" in js[disable_start:disable_end]
+    assert "graphState.risk = null" in js[disable_start:disable_end]
+    assert "applyOverlay();" in js[disable_start:disable_end]
 
 
 def test_app_js_wires_verified_learning_overlay(tmp_path) -> None:
@@ -1040,13 +1086,35 @@ class _StubReader:
     def file_overview(self, repo_root, *, top_n=200):
         return {"available": True, "files": [{"file_path": "src/Gamma.cs"}]}
 
-    def full_graph(self, repo_root, *, max_nodes=8000, max_edges=40000, collapse_after=20000):
+    def full_graph(self, repo_root, *, max_nodes=8000, max_edges=40000, collapse_after=300):
         self.calls.append(("full", repo_root, max_nodes, max_edges, collapse_after))
         return {
             "available": True, "mode": "symbol", "collapsed": False,
             "graph_freshness": "fresh", "fallback_reason": None,
             "nodes": [{"id": "n1", "kind": "function"}], "edges": [],
             "truncated": False, "total_node_count": 1, "total_edge_count": 0,
+        }
+
+    def god_node_map(
+        self, repo_root, *, max_files=20, max_symbols_per_file=10, max_nodes=250, max_edges=800
+    ):
+        self.calls.append(("godmap", repo_root, max_files, max_symbols_per_file, max_nodes, max_edges))
+        return {
+            "available": True, "mode": "godmap", "collapsed": False,
+            "graph_freshness": "fresh", "fallback_reason": None,
+            "nodes": [
+                {"id": "file:src/Gamma.cs", "kind": "file_hub", "graph_role": "hub",
+                 "shape": "rectangle", "label": "Gamma.cs", "file_path": "src/Gamma.cs"},
+                {"id": "n1", "kind": "function", "graph_role": "symbol",
+                 "shape": "ellipse", "qualified_name": "Gamma::Gamma", "file_path": "src/Gamma.cs",
+                 "label": "Gamma"},
+            ],
+            "edges": [
+                {"source": "file:src/Gamma.cs", "target": "n1", "kind": "contains",
+                 "edge_type": "spoke", "line_style": "dashed"}
+            ],
+            "truncated": False, "total_file_count": 1, "total_symbol_count": 1,
+            "total_node_count": 2, "total_edge_count": 1,
         }
 
 
@@ -1072,7 +1140,7 @@ class _UnavailableReader:
             "total_file_count": 0,
         }
 
-    def full_graph(self, repo_root, *, max_nodes=8000, max_edges=40000, collapse_after=20000):
+    def full_graph(self, repo_root, *, max_nodes=8000, max_edges=40000, collapse_after=300):
         return {
             "available": False,
             "graph_freshness": "unknown",
@@ -1080,6 +1148,19 @@ class _UnavailableReader:
             "mode": "symbol", "collapsed": False,
             "nodes": [], "edges": [],
             "truncated": False, "total_node_count": 0, "total_edge_count": 0,
+        }
+
+    def god_node_map(
+        self, repo_root, *, max_files=20, max_symbols_per_file=10, max_nodes=250, max_edges=800
+    ):
+        return {
+            "available": False,
+            "graph_freshness": "unknown",
+            "fallback_reason": "codegraph DB query failed: /home/raj/secret/codegraph.db",
+            "mode": "godmap", "collapsed": False,
+            "nodes": [], "edges": [], "truncated": False,
+            "total_file_count": 0, "total_symbol_count": 0,
+            "total_node_count": 0, "total_edge_count": 0,
         }
 
 
@@ -1207,7 +1288,56 @@ def test_graph_full_returns_reader_payload(tmp_path) -> None:
     assert body["mode"] == "symbol" and body["collapsed"] is False
     assert body["nodes"] == [{"id": "n1", "kind": "function"}]
     assert "setup_command" not in body
-    assert stub.calls == [("full", "/repo", 8000, 40000, 20000)]
+    assert stub.calls == [("full", "/repo", 250, 40000, 300)]
+
+
+# ---- /graph/godmap (M10b) ----------------------------------------------------
+
+
+def test_graph_godmap_returns_reader_payload(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    stub = _StubReader()
+    app.state.graph_reader = stub
+    client = TestClient(app, base_url="http://127.0.0.1")
+    body = client.get("/api/repos/r/graph/godmap", headers=_AUTH).json()
+
+    assert body["available"] is True
+    assert body["mode"] == "godmap"
+    assert body["nodes"][0]["graph_role"] == "hub"
+    assert body["edges"][0]["edge_type"] == "spoke"
+    assert "setup_command" not in body
+    assert stub.calls == [("godmap", "/repo", 20, 10, 250, 800)]
+
+
+def test_graph_godmap_forwards_bounds_to_reader(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    stub = _StubReader()
+    app.state.graph_reader = stub
+    client = TestClient(app, base_url="http://127.0.0.1")
+    client.get(
+        "/api/repos/r/graph/godmap?max_files=5&max_symbols_per_file=3&max_nodes=100&max_edges=200",
+        headers=_AUTH,
+    )
+    assert stub.calls == [("godmap", "/repo", 5, 3, 100, 200)]
+
+
+def test_graph_godmap_failsoft_without_repo_root(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    resp = _client(db).get("/api/repos/r/graph/godmap", headers=_AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert body["mode"] == "godmap"
+    assert body["nodes"] == [] and body["edges"] == []
+    assert body["setup_command"] == "pebra dashboard --repo-root <path>"
 
 
 def test_graph_full_clamps_query_bounds(tmp_path) -> None:
@@ -1280,6 +1410,11 @@ class _RaisingReader:
     def full_graph(self, repo_root, *, max_nodes=8000, max_edges=40000, collapse_after=20000):
         raise RuntimeError("unexpected /home/raj/secret boom")
 
+    def god_node_map(
+        self, repo_root, *, max_files=20, max_symbols_per_file=10, max_nodes=250, max_edges=800
+    ):
+        raise RuntimeError("unexpected /home/raj/secret boom")
+
 
 def test_graph_full_failsoft_when_reader_raises(tmp_path) -> None:
     # Hard rule: no graph route may 500. If the reader raises something other than the sqlite/OS
@@ -1297,6 +1432,22 @@ def test_graph_full_failsoft_when_reader_raises(tmp_path) -> None:
     body = resp.json()
     assert body["available"] is False
     assert body["mode"] == "symbol" and body["nodes"] == [] and body["edges"] == []
+    assert "secret" not in str(body) and "home" not in str(body)
+
+
+def test_graph_godmap_failsoft_when_reader_raises(tmp_path) -> None:
+    db, _ = _seed_rich(tmp_path)
+    from pebra.dashboard.server import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(db, "tok", repo_id="r", repo_root="/repo")
+    app.state.graph_reader = _RaisingReader()
+    client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
+    resp = client.get("/api/repos/r/graph/godmap", headers=_AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert body["mode"] == "godmap" and body["nodes"] == [] and body["edges"] == []
     assert "secret" not in str(body) and "home" not in str(body)
 
 

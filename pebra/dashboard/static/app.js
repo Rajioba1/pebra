@@ -25,6 +25,7 @@
   const AXIS = "#8795a1";
 
   const app = document.getElementById("app");
+  const DEV_MODE = app && app.dataset.devMode === "1";
   const boot = document.getElementById("boot");
   const liveDot = document.getElementById("live-dot");
   const repoChip = document.getElementById("repo-chip");
@@ -389,8 +390,11 @@
     component: "#2dd4bf", route: "#2dd4bf",
     namespace: "#8b949e", module: "#8b949e",
     file: "#6e7681",
+    file_hub: "#6e7681",
     default: "#566173",
   };
+  const HUB_COLORS = ["#2dd4bf", "#58a6ff", "#a78bfa", "#f0883e", "#f778ba", "#d6a419"];
+  const SPOKE_COLORS = ["#2dd4bf", "#58a6ff", "#a78bfa", "#f0883e", "#f778ba", "#d6a419"];
   // Risk overlay: colour + SHAPE per decision (categorical — paired shape keeps it colourblind-safe and
   // deliberately distinct from the structural KIND_COLORS so "risk view" never reads as "kind view").
   const RISK_DECISIONS = ["proceed", "test_first", "inspect_first", "revise_safer", "ask_human", "reject"];
@@ -410,7 +414,16 @@
     learning: null, learningLegend: null,
   };
 
+  function disableRiskOverlay() {
+    graphState.overlay = "structure";
+    graphState.risk = null;
+    applyOverlay();  // strip stale rb-* classes from the current graph before hiding the controls
+    if (graphState.riskLegend) graphState.riskLegend.hidden = true;
+    if (graphState.riskCaption) graphState.riskCaption.hidden = true;
+  }
+
   async function renderGraph(view) {
+    destroyCy();  // tear down the old WebGL/Cytoscape instance before removing its container
     clear(view);
     const overviewCard = card("Repo hotspots (highest inbound fan-in)");
     view.appendChild(overviewCard);
@@ -445,7 +458,7 @@
     graphCard.appendChild(cyEl);
     graphCard.appendChild(graphLegend());
     const riskLegend = el("div", "graph-legend risk-legend");
-    riskLegend.hidden = graphState.overlay !== "risk";
+    riskLegend.hidden = true;  // enabled only after a fresh symbol graph has assessment risk loaded
     buildRiskLegend(riskLegend);
     graphCard.appendChild(riskLegend);
     graphState.riskLegend = riskLegend;
@@ -468,7 +481,24 @@
     buildGraphControls(controls, searchResults, inspector);
     graphCard.appendChild(inspector);
     view.appendChild(graphCard);
-    await loadFullGraph(cyEl, graphCard);
+    if (DEV_MODE) {
+      const god = el("button", "graph-btn", "God map");
+      const full = el("button", "graph-btn", "Full graph (debug)");
+      [god, full].forEach(function (b) { b.setAttribute("type", "button"); });
+      god.addEventListener("click", async function () {
+        await loadGodNodeMap(cyEl, graphCard);
+        await setupRiskOverlay(controls);
+        await loadLearningOverlay();
+      });
+      full.addEventListener("click", async function () {
+        await loadFullGraph(cyEl, graphCard);
+        await setupRiskOverlay(controls);
+        await loadLearningOverlay();
+      });
+      controls.appendChild(god);
+      controls.appendChild(full);
+    }
+    await loadGodNodeMap(cyEl, graphCard);
     await setupRiskOverlay(controls);
     await loadLearningOverlay();
   }
@@ -542,7 +572,19 @@
   }
 
   async function setupRiskOverlay(controls) {
-    if (!graphState.cy) return;  // no rendered graph (unavailable / stale) → no overlay controls
+    controls.querySelectorAll(".overlay-toggle, .risk-caption, .chart-note").forEach((n) => n.remove());
+    graphState.riskCaption = null;
+    if (!graphState.cy) {
+      disableRiskOverlay();
+      return;  // no rendered graph (unavailable / stale) → no overlay controls
+    }
+    if (!riskEligibleMode(graphState.mode)) {
+      disableRiskOverlay();
+      const note = el("p", "chart-note");
+      note.textContent = "Risk overlay unavailable in collapsed mode — this graph tier is not symbol-level.";
+      controls.appendChild(note);
+      return;
+    }
     let asm;
     try {
       asm = await getJSON(rp("/assessments?limit=50"));
@@ -583,6 +625,11 @@
 
     // Preload the selected assessment's binding so toggling to Risk is instant.
     await loadAssessmentRisk(graphState.assessmentId, decisionById[graphState.assessmentId]);
+    if (graphState.riskLegend) graphState.riskLegend.hidden = graphState.overlay !== "risk";
+  }
+
+  function riskEligibleMode(mode) {
+    return mode === "symbol" || mode === "godmap";
   }
 
   function setOverlay(mode, bStruct, bRisk) {
@@ -813,14 +860,53 @@
       return;
     }
     renderCy(cyEl, g);
-    const bits = [g.nodes.length + " node(s)", g.edges.length + " edge(s)"];
-    if (g.mode === "file") bits.push("collapsed to files");
-    if (g.truncated) bits.push("showing " + g.nodes.length + " of " + g.total_node_count);
+    const bits = [
+      g.mode === "file" ? "Collapsed file graph" : "Symbol graph",
+      g.nodes.length + " node(s)",
+      g.edges.length + " edge(s)",
+    ];
+    if (g.mode === "file") {
+      const totalFiles = g.total_file_count != null ? g.total_file_count : g.total_node_count;
+      if (g.truncated || g.collapsed || totalFiles !== g.nodes.length) {
+        bits.push("Showing " + g.nodes.length + " of " + totalFiles + " files");
+      }
+    } else if (g.truncated || g.collapsed || g.total_node_count !== g.nodes.length) {
+      bits.push("Showing " + g.nodes.length + " of " + g.total_node_count + " nodes");
+    }
+    graphCard.appendChild(el("p", "chart-note", bits.join(" · ")));
+  }
+
+  async function loadGodNodeMap(cyEl, graphCard) {
+    const seq = ++graphSeq;
+    graphCard.querySelectorAll(".chart-note, .empty.warn").forEach((n) => n.remove());
+    let g;
+    try {
+      g = await getJSON(rp("/graph/godmap"));
+    } catch (e) {
+      if (seq === graphSeq) { graphCard.appendChild(fallback("god-node map unavailable")); destroyCy(); }
+      return;
+    }
+    if (seq !== graphSeq) return;
+    if (!g.available) { graphCard.appendChild(fallback(g)); destroyCy(); return; }
+    if (!g.nodes.length) {
+      graphCard.appendChild(el("p", "chart-note", g.fallback_reason || "No hot files in the current graph."));
+      destroyCy();
+      return;
+    }
+    renderCy(cyEl, g);
+    const hubs = g.nodes.filter((n) => n.graph_role === "hub").length;
+    const symbols = g.nodes.filter((n) => n.graph_role === "symbol").length;
+    const bits = ["God-node map", hubs + " file hub(s)", symbols + " symbol(s)", g.edges.length + " link(s)"];
+    if (g.truncated || g.total_file_count !== hubs) {
+      bits.push("Showing top " + hubs + " of " + g.total_file_count + " fan-in files");
+    }
     graphCard.appendChild(el("p", "chart-note", bits.join(" · ")));
   }
 
   function degreeOf(n) {
+    if (n.graph_role === "symbol" && n.inbound_count != null) return n.inbound_count;
     if (n.degree != null) return n.degree;
+    if (n.inbound_count != null) return n.inbound_count;
     if (n.symbol_count != null) return n.symbol_count;
     return 0;
   }
@@ -836,6 +922,10 @@
         kind: n.kind || "unknown",
         qualified_name: n.qualified_name || null,
         file_path: n.file_path || null,
+        graph_role: n.graph_role || null,
+        shape: n.shape || "ellipse",
+        hub_rank: n.hub_rank != null ? n.hub_rank : null,
+        hub_color: n.hub_rank != null ? HUB_COLORS[n.hub_rank % HUB_COLORS.length] : null,
         degree: n.degree != null ? n.degree : null,
         inbound: n.inbound_count != null ? n.inbound_count : null,
         outbound: n.outbound_count != null ? n.outbound_count : null,
@@ -848,11 +938,15 @@
         id: "e" + i,  // guaranteed-unique id; the graph may hold parallel source->target edges
         source: e.source, target: e.target,
         kind: e.kind || "", weight: e.weight != null ? e.weight : 1,
+        edge_type: e.edge_type || "cross_symbol",
+        line_style: e.line_style || "solid",
+        spoke_color: e.hub_rank != null ? SPOKE_COLORS[e.hub_rank % SPOKE_COLORS.length] : null,
       } });
     });
-    const showLabels = g.nodes.length <= 250;  // WebGL label atlas is bounded; details show in inspector
+    const showLabels = g.mode === "godmap" || g.mode === "file" || g.nodes.length <= 250;
     graphState.cy = makeCy(container, elements, layoutFor(g.nodes.length), cyStyle(showLabels));
     graphState.mode = g.mode;
+    exposeGraphForDev();
     if (graphState.inspector) {
       clear(graphState.inspector);
       graphState.inspector.appendChild(el("p", "chart-note", "Select a node (or a search result) to inspect it."));
@@ -892,6 +986,7 @@
       { selector: "node", style: {
         "background-color": KIND_COLORS.default,
         "width": "data(size)", "height": "data(size)",
+        "shape": "data(shape)",
         "label": showLabels ? "data(label)" : "",
         "font-size": 9, "color": "#c9d1d9",
         "text-valign": "center", "text-halign": "right", "text-margin-x": 4,
@@ -899,7 +994,30 @@
       } },
       { selector: "edge", style: {
         "width": 1, "line-color": "#3a4753", "opacity": 0.5,
+        "line-style": "data(line_style)",
         "curve-style": "straight", "target-arrow-shape": "none",  // WebGL supports straight, not bezier
+      } },
+      { selector: 'node[graph_role="hub"]', style: {
+        "shape": "round-rectangle",
+        "background-color": "data(hub_color)",
+        "border-width": 2, "border-color": "#e6edf3", "border-opacity": 0.55,
+        "font-size": 10, "font-weight": "700", "text-valign": "center", "text-halign": "center",
+        "text-max-width": 72, "text-wrap": "wrap",
+      } },
+      { selector: 'node[graph_role="symbol"]', style: {
+        "border-width": 1, "border-color": "#0d1117", "border-opacity": 0.9,
+      } },
+      { selector: 'edge[edge_type="spoke"]', style: {
+        "line-color": "data(spoke_color)",
+        "width": 1.5,
+        "opacity": 0.42,
+        "line-style": "dashed",
+      } },
+      { selector: 'edge[edge_type="cross_symbol"]', style: {
+        "line-color": "#8b949e",
+        "width": 1.2,
+        "opacity": 0.72,
+        "line-style": "solid",
       } },
       { selector: "node:selected", style: {
         "border-width": 2, "border-color": "#ffd24d", "border-opacity": 1,
@@ -924,12 +1042,47 @@
     s.push({ selector: "node.rb-unmatched", style: {
       "background-color": "#3a4753", "shape": "ellipse", "opacity": 0.35, "border-width": 0,
     } });
+    s.push({ selector: 'node.rb-unmatched[graph_role="hub"]', style: {
+      "shape": "round-rectangle",
+      "border-width": 2, "border-color": "#e6edf3", "border-opacity": 0.35,
+    } });
     // Verified-lesson badge (appended last so it owns the border in either overlay mode). The node's
     // fill/shape still conveys kind or decision; this ring only marks "a verified lesson touches this".
     s.push({ selector: "node.has-lesson", style: {
       "border-width": 4, "border-color": "#f778ba", "border-style": "double", "border-opacity": 1,
     } });
     return s;
+  }
+
+  function exposeGraphForDev() {
+    if (!DEV_MODE) return;
+    window.__pebraGraph = {
+      snapshot: function () {
+        const cy = graphState.cy;
+        if (!cy) return { mode: graphState.mode, nodes: [], edges: [] };
+        return {
+          mode: graphState.mode,
+          nodes: cy.nodes().map(function (n) {
+            return {
+              id: n.id(),
+              graph_role: n.data("graph_role"),
+              classes: n.classes(),
+              shape: n.renderedStyle("shape"),
+              width: Math.round(n.width() * 1000) / 1000,
+              height: Math.round(n.height() * 1000) / 1000,
+            };
+          }),
+          edges: cy.edges().map(function (e) {
+            return {
+              source: e.data("source"),
+              target: e.data("target"),
+              edge_type: e.data("edge_type"),
+              line_style: e.renderedStyle("line-style"),
+            };
+          }),
+        };
+      },
+    };
   }
 
   function destroyCy() {
@@ -955,8 +1108,9 @@
     l.appendChild(swatchLabel(KIND_COLORS.class, "class / type"));
     l.appendChild(swatchLabel(KIND_COLORS.component, "component / route"));
     l.appendChild(swatchLabel(KIND_COLORS.namespace, "namespace / module"));
-    l.appendChild(swatchLabel(KIND_COLORS.file, "file (collapsed)"));
-    l.appendChild(swatchLabel("#3a4753", "call / reference edge"));
+    l.appendChild(swatchLabel(HUB_COLORS[0], "god-node file hub"));
+    l.appendChild(swatchLabel(SPOKE_COLORS[0], "file → symbol spoke"));
+    l.appendChild(swatchLabel("#8b949e", "symbol cross-link"));
     return l;
   }
   function swatchLabel(color, text) {
