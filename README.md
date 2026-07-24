@@ -4,9 +4,11 @@
 
 PEBRA sits between a coding agent's proposed patch and your working tree. It computes an auditable
 `expected_loss` / `expected_utility` / risk-adjusted `RAU` decision from CodeGraph-backed structural
-evidence, blocks or reroutes risky edits *before* they are written, verifies the **actual** post-edit
-diff against the exact candidate it approved, records the outcome, and promotes only calibrated,
-measured facts back into future assessments.
+evidence, returns a candidate-bound decision *before* the edit is written, verifies the **actual**
+post-edit diff against the exact candidate it approved, records the outcome, and promotes only
+calibrated, measured facts back into future assessments. With an installed host hook, that decision can
+intercept unsupported or risky edits before the host writes them; without a hook, `assess` is an
+advisory controller.
 
 [![CI](https://github.com/Rajioba1/pebra/actions/workflows/ci.yml/badge.svg)](https://github.com/Rajioba1/pebra/actions/workflows/ci.yml)
 [![Secret scan](https://github.com/Rajioba1/pebra/actions/workflows/security.yml/badge.svg)](https://github.com/Rajioba1/pebra/actions/workflows/security.yml)
@@ -38,6 +40,9 @@ The same ledger is available as a terminal Observatory (`pebra tui`):
 
 ## Why PEBRA
 
+- **Built for coding agents.** The intended operator is a trusted coding agent (Claude Code, Codex, or
+  another host) that can inspect a repository, propose an exact patch, and consume a deterministic
+  risk/benefit packet before editing.
 - **Pre-edit, not post-hoc.** It assesses the proposed patch *before* it is applied — not a diff after
   the damage is done.
 - **Deterministic math, not a vibe check.** Every decision is a reproducible function of `expected_loss`,
@@ -79,12 +84,55 @@ pebra dashboard --repo-root . --open
 
 > The graph tab needs a fresh CodeGraph index. It is an explicit, optional engine — never installed by
 > `assess`. Set it up once with `pebra setup-graph --fix --repo-root .` and check it with `pebra doctor`.
+> `codegraph.json` is operator-owned analysis scope: `extensions` and `includeIgnored` affect analysis scope; `exclude` is reported but ignored by pinned CodeGraph 1.1.1.
 
-## How it works
+## Product Model
+
+PEBRA follows a "think before acting" lifecycle. Repository knowledge comes before candidate design;
+the risk/benefit math and gates come after the candidate is exact.
+
+```mermaid
+flowchart TB
+    A([Interpret the maintainer's request])
+    B[Understand the current repository]
+    X0[[pebra explore]]
+    X1[(Recall PEBRA learning_context<br/>past verified lessons + historical risk/benefit metrics)]
+    X2[/Retrieve current structural context<br/>source / call / dependent / test context through CodeGraph/]
+    X3[/Return an Understand receipt<br/>both sections + provenance/]
+    C[Design the exact candidate<br/>files + operations + exact patch + verification obligations]
+    D[Assess the exact candidate]
+    S1[Collect trusted structural evidence]
+    S2[Load applicable promoted PEBRA facts]
+    S3[Calculate expected loss, benefit,<br/>expected utility, uncertainty, and RAU]
+    S4[Evaluate PEBRA's ordered decision gates]
+    E{Decide<br/>proceed / inspect_first / test_first / revise_safer / ask_human / reject}
+    F[Enforce immediately before mutation<br/>exact repository + HEAD + files + candidate bytes + assessment/sanction state]
+    G[Apply the exact candidate]
+    H[Verify and record outcome]
+    I([Learn])
+
+    A --> B --> X0 --> X1 --> X2 --> X3 --> C --> D
+    D --> S1 --> S2 --> S3 --> S4 --> E
+    E --> F --> G --> H --> I
+
+    classDef terminator fill:#edf7ed,stroke:#7aa95c,stroke-width:2px,color:#172017
+    classDef process fill:#eef5ff,stroke:#3b73b9,stroke-width:2px,color:#102033
+    classDef data fill:#fff7e6,stroke:#d7922f,stroke-width:2px,color:#2a1900
+    classDef decision fill:#fff1f0,stroke:#c7514a,stroke-width:2px,color:#301010
+    classDef command fill:#f2edff,stroke:#7d5ab5,stroke-width:2px,color:#201030
+
+    class A,I terminator
+    class B,C,D,F,G,H,S1,S2,S3,S4 process
+    class X1,X2,X3 data
+    class E decision
+    class X0 command
+```
+
+In short:
 
 ```text
-assess proposed edit → agent decides → apply edit → verify actual diff →
-record outcome → learn (shadow) → promote calibrated facts → future assess uses them
+Interpret → Understand current repository → Design exact candidate → Assess exact candidate →
+Decide → Enforce before mutation → Apply exact candidate → Verify and record outcome → Learn
 ```
 
 `assess` computes, in order — and generated agent instructions require *consuming* these values, never
@@ -99,10 +147,11 @@ RAU              = expected_utility − 1.28 · utility_sd
 ```
 
 Ordered **decision gates** evaluate those values plus evidence (CodeGraph fan-in / blast radius,
-contract-surface changes, confidence) to produce the decision. A separate **enforcement gate** then
-checks that only the exact bound candidate is applied. `reject` means *reject this candidate*, not the
-maintainer's goal — the agent surfaces the recorded reason and risk/benefit evidence. Recall informs
-*understanding*; only separately promoted numeric facts can affect a future `assess`.
+contract-surface changes, confidence, graph freshness, and policy obligations) to produce the decision.
+A separate **enforcement gate** then checks that only the exact bound candidate is applied. `reject`
+means *reject this candidate*, not the maintainer's goal — the agent surfaces the recorded reason and
+risk/benefit evidence. Recall informs *understanding*; only separately promoted numeric facts can affect
+a future `assess`.
 
 ## What's inside
 
@@ -126,15 +175,33 @@ maintainer's goal — the agent surfaces the recorded reason and risk/benefit ev
 ## Basic workflow
 
 ```console
+# 1. Understand the current repository: recall verified PEBRA lessons, then query CodeGraph.
+pebra explore "change login validation" --repo-root .
+
+# 2. Design the exact candidate outside PEBRA, then submit that exact request.
+#    request.json includes the task, files, operations, patch, expected_files, and verification plan.
 pebra assess request.json --json
+
+# 3. Decide from the returned decision packet:
+#    proceed / inspect_first / test_first / revise_safer / ask_human / reject.
+#
+# 4. Enforce immediately before mutation and apply only the assessed candidate.
+pebra apply-candidate --assessment-id <assessment_id>
+
+#    If PEBRA returns ask_human and the candidate is eligible for trusted review, use:
+#    pebra accept-risk --apply --assessment-id <assessment_id>
+#    Then verify/record using the reassessment ID returned by accept-risk.
+
+# 5. Verify the actual post-edit diff against the approved candidate.
 pebra verify --assessment-id <assessment_id> --json
+
+# 6. Record the trusted outcome and feed the learning loop.
 pebra finalize-outcome --trusted-outcome-file outcome.json --repo-root <repo_root> --json
 pebra scorecard --repo-root <repo_root>
 ```
 
-The generated agent protocol follows one cognitive lifecycle:
-
-`Interpret → Recall verified lessons → Retrieve current repository context → Design → Assess → Calculate → Evaluate gates → Decide → Enforce → Apply → Verify → Record → Learn/promote`
+For a simple terminal ledger update without trusted outcome evidence, use
+`pebra record-outcome --assessment-id <assessment_id> --status completed --detail '{"actual_success":true}'`.
 
 ## Agent enforcement
 
