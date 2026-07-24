@@ -119,12 +119,12 @@ def resolve_benefit(
     """
     bounded_immediate = _unit_benefit(immediate_benefit)
     gain = maintainability_gain(deltas, future_change_exposure)
-    if source_type == "projected":
-        credited = 0.0
-        variance = PROJECTED_BENEFIT_VARIANCE
-    else:
-        credited = gain
-        variance = MEASURED_BENEFIT_VARIANCE
+    credited = 0.0 if source_type == "projected" else gain
+    variance = (
+        MEASURED_BENEFIT_VARIANCE
+        if source_type == "measured"
+        else PROJECTED_BENEFIT_VARIANCE
+    )
     if variance_override is not None:
         if (
             isinstance(variance_override, bool)

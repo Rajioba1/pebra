@@ -1,7 +1,6 @@
 """Destructive-op slice, Phase 3 — pure event-injection model.
 
-Only DELETE injects (call-graph question: who called the removed symbols). RENAME/MOVE are detected
-upstream but inject NOTHING here (path-migration question, modeled later via blast). CREATE is a no-op.
+DELETE injects symbol-loss risk. RENAME/MOVE inject path-migration risk. CREATE is a no-op.
 p_event = baseline(arch/migration/schema) + fan_in_bonus(resolved rollup), capped. The no-graph
 baseline (domain_entrypoint/migration/schema/anchor) is the outage blind-spot catch.
 """
@@ -39,13 +38,23 @@ def test_create_injects_nothing():
     assert _events("CREATE") == []
 
 
-def test_rename_injects_nothing_even_with_strong_signals():
-    assert _events("RENAME", rollup=_rollup(0.99, resolved=True),
-                   arch=_arch(domain_entrypoint=True)) == []
+def test_rename_injects_path_migration_break_scaled_by_fanin():
+    event = _by(
+        _events(
+            "RENAME",
+            rollup=_rollup(0.99, resolved=True),
+            arch=_arch(domain_entrypoint=True),
+        ),
+        "path_migration_break",
+    )
+    assert event is not None
+    assert event["p_event"] > dom._BASELINE_ENTRYPOINT
 
 
-def test_move_injects_nothing():
-    assert _events("MOVE", arch=_arch(domain_entrypoint=True)) == []
+def test_move_injects_path_migration_break_without_graph():
+    event = _by(_events("MOVE", arch=_arch(domain_entrypoint=True)), "path_migration_break")
+    assert event is not None
+    assert event["p_event"] == pytest.approx(dom._BASELINE_ENTRYPOINT)
 
 
 def test_delete_no_signals_injects_dependency_break_at_absolute_floor():

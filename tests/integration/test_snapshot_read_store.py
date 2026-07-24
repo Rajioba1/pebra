@@ -12,6 +12,8 @@ from pebra.adapters.store.db import (
     _risk_snapshot_canonical,
     _row_hash,
 )
+from pebra.core.constants import ActionStatus, Decision, RiskMode
+from pebra.core.models import AssessmentResult
 
 
 def _store(tmp_path) -> SqliteStore:
@@ -149,6 +151,57 @@ def test_active_fact_hydrates_pooling_fields(tmp_path) -> None:
     assert f.scope_change_count == 7
     assert f.variance == 0.0015
     assert f.aleatoric_variance == 0.003
+
+
+def test_active_fact_derives_scope_churn_from_later_verified_completed_changes(
+    tmp_path,
+) -> None:
+    store = _store(tmp_path)
+    rs = _seed_snapshot(store)
+    _seed_fact(
+        store,
+        snapshot_id=str(rs),
+        scope_kind="public_api",
+        created_at="2026-01-01T00:00:00+00:00",
+        fact={
+            "value": 0.8,
+            "sample_size": 100,
+            "calibration_method": "brier_bucket",
+            "scope_change_count": 0,
+        },
+    )
+
+    result = AssessmentResult(
+        recommended_decision=Decision.PROCEED,
+        requires_confirmation=False,
+        action_status=ActionStatus.PENDING,
+        risk_mode=RiskMode.NORMAL,
+        scores={"benefit": 0.5},
+        repo_id="r1",
+        repo_root="/repo",
+    )
+    prediction = {
+        "target_type": "risk_binary",
+        "target_name": "p_success",
+        "predicted_value": 0.7,
+        "action_id": "a1",
+        "prediction_scope": "production",
+        "provenance": {},
+        "features": {"symbol": {"is_public_api": True}},
+    }
+    verified = store.persist_assessment(result, {"task": "verified"}, predictions=[prediction])
+    store.persist_guardrails(verified, {"pre_commit_decision": "proceed"})
+    store.record_outcome(verified, "completed", {"_pebra_label_source": "host"})
+
+    unverified = store.persist_assessment(result, {"task": "unverified"}, predictions=[prediction])
+    store.record_outcome(unverified, "completed", {"_pebra_label_source": "host"})
+
+    bundle = SnapshotReadStore(store).load_active_snapshot("r1")
+    store.close()
+
+    assert bundle is not None
+    (fact,) = bundle.facts
+    assert fact.scope_change_count == 1
 
 
 def test_negative_fact_variance_is_excluded(tmp_path) -> None:

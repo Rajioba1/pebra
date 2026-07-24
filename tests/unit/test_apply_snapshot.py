@@ -461,6 +461,7 @@ def test_benefit_continuous_delta_fact_updates_delta_evidence() -> None:
     assert out.benefit_delta_evidence.deltas["complexity_delta"] == pytest.approx(-3.0)
     assert out.benefit_delta_evidence.source_type == "learned_override"
     assert out.benefit_delta_evidence.file_deltas == {}
+    assert out.benefit_variance_override == pytest.approx(COLD_START_VARIANCES["benefit"])
 
 
 def test_benefit_delta_fact_carries_learned_variance_to_assessment_input() -> None:

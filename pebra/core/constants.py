@@ -100,6 +100,7 @@ CONSEQUENCE_BEARING_EVENTS: frozenset[str] = frozenset(
         "tool_schema_break",
         "response_shape_mismatch",
         "consumer_shape_mismatch",
+        "path_migration_break",
     }
 )
 

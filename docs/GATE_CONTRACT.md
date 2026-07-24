@@ -17,8 +17,8 @@ emitted by PEBRA, precedence is `RETURN_CANDIDATE > REQUEST_HUMAN > CONTINUE`.
 | --- | --- | --- |
 | `allow` | `pass` | No consultation is required. |
 | `allow` | `fail_open` | Infrastructure evidence was unavailable; preserve fail-open behavior. |
-| `allow` | `consulted` | The exact candidate has a persisted `proceed` assessment. |
-| `ask` | `consulted_review` | The exact candidate requires trusted human review. |
+| `allow` | `consulted` | The exact candidate has a persisted `proceed` assessment that does not still require confirmation. |
+| `ask` | `consulted_review` | The exact candidate requires trusted human review or confirmation. |
 | `ask` | `consulted_reject_review` | A sanction-convertible rejected candidate is available for trusted, bound human review. |
 | `deny` | `must_consult` | Assess the attempted candidate before editing. |
 | `deny` | `candidate_unverifiable` | The host event cannot be materialized as a complete candidate. |
@@ -54,17 +54,17 @@ and the reason states `risk summary unavailable`.
 | `allow` / `consulted` | `proceed` |
 | `deny` / `consulted_revise` | `revise_safer` |
 | `deny` / `consulted_prerequisite` | `inspect_first`, `test_first` |
-| `ask` / `consulted_review` | `ask_human` |
+| `ask` / `consulted_review` | `ask_human`, confirmation-required `proceed` |
 | `ask` / `consulted_reject_review` | `reject` |
 | `deny` / `consulted_review` | `reject` |
-| `deny` / `consulted_review_unavailable` | `ask_human` |
+| `deny` / `consulted_review_unavailable` | `ask_human` or confirmation-required `proceed` (without an available bound workflow) |
 
-Only an explicitly parsed persisted `proceed` decision can produce `allow/consulted`. A null, unknown, or
-corrupt persisted decision produces `allow/fail_open` with a visible data-integrity warning, no risk
-summary, and no assessment attribution. This preserves the infrastructure fail-open policy while ensuring
-the bound application controller refuses the result because it is not `consulted`.
+Only an explicitly parsed persisted `proceed` decision with `requires_confirmation=false` can produce
+`allow/consulted`. A null, unknown, or corrupt persisted decision holds the exact candidate as
+`deny/must_consult` with a visible data-integrity reason and assessment attribution. Infrastructure
+failures before a trustworthy exact match retain the separately documented fail-open policy.
 
-An interactive `ask_human` result names `pebra accept-risk --apply` only when persisted replay metadata is
+An interactive `ask_human` or confirmation-required `proceed` names `pebra accept-risk --apply` only when persisted replay metadata is
 structurally valid: `status` is `available`, `algorithm` is exactly `sha256-candidate-replay-v1`, and
 `digest` is 64 lowercase hexadecimal characters. The gate validates metadata only; it does not read the
 cached payload. Missing or malformed metadata produces `deny/consulted_review_unavailable` without

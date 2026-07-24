@@ -20,6 +20,7 @@ def test_high_band_when_at_or_above_high_threshold() -> None:
 def test_medium_band_between_thresholds() -> None:
     result = cg.evaluate(0.60, THRESHOLDS)
     assert result.band == "medium"
+    assert result.requires_evidence is True
 
 
 def test_low_band_below_low_threshold_requires_evidence() -> None:

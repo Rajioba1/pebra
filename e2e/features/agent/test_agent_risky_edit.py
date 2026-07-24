@@ -10,10 +10,14 @@ from __future__ import annotations
 import json
 import subprocess
 
+import pytest
+
 from e2e.utils import agent_harness as ah
 from e2e.utils import cli_harness as ch
 
-_DECISIONS = {"proceed", "inspect_first", "test_first", "ask_human", "reject"}
+_DECISIONS = {
+    "proceed", "inspect_first", "test_first", "revise_safer", "ask_human", "reject",
+}
 
 
 def test_agent_completes_full_cycle_over_cli_boundary(risky_repo, e2e_db, request_json_path):
@@ -21,7 +25,7 @@ def test_agent_completes_full_cycle_over_cli_boundary(risky_repo, e2e_db, reques
 
     payload = transcript.payload
     assert payload["recommended_decision"] in _DECISIONS
-    assert payload["recommended_decision"] == "proceed"  # cold-start baseline for this fixture
+    assert payload["recommended_decision"] == "proceed", json.dumps(payload, sort_keys=True)
     assert transcript.verify_passed is True  # verify PROCEEDed within the approved envelope
     # PEBRA returned real math + guidance to the agent:
     assert 0.0 <= payload["scores"]["rau"] <= 1.0
@@ -30,6 +34,31 @@ def test_agent_completes_full_cycle_over_cli_boundary(risky_repo, e2e_db, reques
     )
     # learning measured the prediction (observed or censored):
     assert transcript.learn_result["observed"] + transcript.learn_result["censored"] >= 1
+
+
+def test_medium_confidence_candidate_requires_inspection_over_cli_boundary(
+    risky_repo, e2e_db, request_json_path, tmp_path
+):
+    request = json.loads(request_json_path.read_text(encoding="utf-8"))
+    request["evidence"]["p_success"] = 0.70
+    request["evidence"]["edit_confidence_factors"] = {
+        "p_success": 0.70,
+        "evidence_quality": 0.72,
+        "testability": 0.70,
+        "reversibility": 0.80,
+        "source_reliability": 0.78,
+        "scope_control": 0.80,
+    }
+    path = tmp_path / "medium-confidence-request.json"
+    path.write_text(json.dumps(request), encoding="utf-8")
+
+    assessed = ch.assess(path, repo_root=risky_repo, db=e2e_db)
+
+    assert assessed["recommended_decision"] == "inspect_first"
+    assert any(
+        gate["name"] == "medium_edit_confidence"
+        for gate in assessed["gates_fired"]
+    )
 
 
 def _request_with_patch(request_json_path, tmp_path, patch, expected_file):
@@ -65,7 +94,7 @@ def test_protocol_v4_runtime_applies_stages_verifies_and_records_exact_candidate
         request_json_path, tmp_path, candidate["proposed_patch"], "auth_service.py"
     )
     assessed = ch.assess(request, repo_root=risky_repo, db=db)
-    assert assessed["recommended_decision"] == "proceed"
+    assert assessed["recommended_decision"] == "proceed", json.dumps(assessed, sort_keys=True)
     applied = ch.apply_candidate(assessed["assessment_id"], repo_root=risky_repo, db=db)
     ah.stage_exact_changed_files(risky_repo, applied["changed_files"])
     assert ah.staged_files(risky_repo) == tuple(applied["changed_files"])
@@ -85,6 +114,35 @@ def test_protocol_v4_runtime_applies_stages_verifies_and_records_exact_candidate
     )
     assert recalled["learning_context"]["status"] == "available"
     assert recalled["learning_context"]["entries"][0]["assessment_id"] == assessed["assessment_id"]
+
+
+def test_sensitive_proceed_requires_human_confirmation_before_exact_apply(
+    risky_repo, request_json_path, tmp_path
+):
+    db = risky_repo / ".pebra" / "pebra.db"
+    candidate = ch.candidate_patch(
+        [{
+            "path": "auth_service.py",
+            "old_string": "return token == secret  # a constant-time compare would be safer",
+            "new_string": "return token == secret  # candidate still needs human confirmation",
+        }],
+        repo_root=risky_repo,
+    )
+    request = json.loads(request_json_path.read_text(encoding="utf-8"))
+    request["evidence"]["criticality_stage"] = "C3"
+    request["evidence"]["criticality_value"] = 0.80
+    action = request["candidate_actions"][0]
+    action["proposed_patch"] = candidate["proposed_patch"]
+    action["expected_files"] = ["auth_service.py"]
+    path = tmp_path / "confirmation-required-request.json"
+    path.write_text(json.dumps(request), encoding="utf-8")
+
+    assessed = ch.assess(path, repo_root=risky_repo, db=db)
+
+    assert assessed["recommended_decision"] == "proceed"
+    assert assessed["requires_confirmation"] is True
+    with pytest.raises(ch.CLIError, match="did not authorize candidate application"):
+        ch.apply_candidate(assessed["assessment_id"], repo_root=risky_repo, db=db)
 
 
 def test_literal_pathspec_stages_returned_bracket_filename_only(
@@ -110,7 +168,7 @@ def test_literal_pathspec_stages_returned_bracket_filename_only(
         request_json_path, tmp_path, candidate["proposed_patch"], literal
     )
     assessed = ch.assess(request, repo_root=risky_repo, db=db)
-    assert assessed["recommended_decision"] == "proceed"
+    assert assessed["recommended_decision"] == "proceed", json.dumps(assessed, sort_keys=True)
     applied = ch.apply_candidate(assessed["assessment_id"], repo_root=risky_repo, db=db)
     assert applied["changed_files"] == [literal]
     (risky_repo / wildcard_match).write_text("value = 99\n", encoding="utf-8")

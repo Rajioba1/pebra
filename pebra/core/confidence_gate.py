@@ -24,6 +24,6 @@ def evaluate(edit_confidence: float, thresholds: dict[str, float]) -> Confidence
         return ConfidenceResult(band="high", requires_evidence=False, edit_confidence=edit_confidence)
     if edit_confidence >= low:
         return ConfidenceResult(
-            band="medium", requires_evidence=False, edit_confidence=edit_confidence
+            band="medium", requires_evidence=True, edit_confidence=edit_confidence
         )
     return ConfidenceResult(band="low", requires_evidence=True, edit_confidence=edit_confidence)

@@ -128,6 +128,17 @@ def test_projected_mode_widens_variance_vs_measured() -> None:
     assert projected.benefit_variance > measured.benefit_variance
 
 
+def test_derived_benefit_without_observed_variance_stays_at_projected_uncertainty() -> None:
+    derived = bm.resolve_benefit(
+        immediate_benefit=0.5,
+        deltas={"complexity_delta": -1.0},
+        source_type="derived",
+        future_change_exposure=0.8,
+    )
+
+    assert derived.benefit_variance == pytest.approx(bm.PROJECTED_BENEFIT_VARIANCE)
+
+
 def test_projected_mode_uses_spec_variance_floor() -> None:
     projected = bm.resolve_benefit(
         immediate_benefit=0.82,

@@ -4,9 +4,9 @@ Given a file operation kind + the file's fan-in roll-up + architecture evidence,
 consequence events to inject into AssessmentInput.events so the existing event-class floor in
 assessment_builder (AD-1) applies automatically. Pure stdlib + core models. No I/O.
 
-ONLY DELETE injects. RENAME/MOVE are a different failure mode (import-path migration, not symbol
-loss) — they are detected upstream but scored later via the import/blast graph, NOT via call fan-in
-(using fan-in for a move gives false confidence). CREATE has no callers to break.
+DELETE models symbol loss. RENAME/MOVE model import-path migration: the old path's trusted file fan-in
+raises the probability that an import/reference is missed, while an unresolved graph contributes no
+bonus. CREATE has no existing callers to break.
 
 SCALING:  p_event = baseline(arch/migration/schema) + fan_in_bonus(resolved rollup), capped.
   elicited_disutility is a conservative mid-range prior; assessment_builder floors it to the
@@ -41,6 +41,7 @@ _FANIN_BONUS_MAX = 0.25
 _FANIN_ANCHOR_PCTL = 0.90         # percentile at which the fan-in bonus saturates
 _BASE_DISUTILITY_DEPENDENCY_BREAK = 0.60
 _BASE_DISUTILITY_PUBLIC_API_BREAK = 0.70
+_BASE_DISUTILITY_PATH_MIGRATION_BREAK = 0.55
 
 
 def _baseline_p_event(
@@ -75,13 +76,17 @@ def _event(name: str, p_event: float, disutility: float) -> dict[str, Any]:
     }
 
 
-def _dominant_event(*, p_event: float, is_public_api: bool) -> dict[str, Any]:
+def _dominant_event(*, op_kind: str, p_event: float, is_public_api: bool) -> dict[str, Any]:
     """Return one event for one destructive-file fault.
 
     A public file deletion is both a dependency break and a public API break, but those are correlated
     labels for the same deletion. Expected-loss summation should see one consequence event, not two
     independent events with the same probability.
     """
+    if op_kind in {"RENAME", "MOVE"}:
+        return _event(
+            "path_migration_break", p_event, _BASE_DISUTILITY_PATH_MIGRATION_BREAK
+        )
     if is_public_api:
         return _event("public_api_break", p_event, _BASE_DISUTILITY_PUBLIC_API_BREAK)
     return _event("dependency_break", p_event, _BASE_DISUTILITY_DEPENDENCY_BREAK)
@@ -96,8 +101,8 @@ def events_for_destructive_op(
     is_migration: bool = False,
     is_schema_change: bool = False,
 ) -> list[dict[str, Any]]:
-    """Events to inject for a destructive op. Only DELETE injects; CREATE/RENAME/MOVE return []."""
-    if op_kind != "DELETE":
+    """Inject symbol-loss risk for DELETE and path-migration risk for RENAME/MOVE."""
+    if op_kind not in {"DELETE", "RENAME", "MOVE"}:
         return []
     p_event = min(
         _P_EVENT_CAP,
@@ -105,4 +110,6 @@ def events_for_destructive_op(
         + _fan_in_bonus(rollup)
         + rollup.cumulative_breadth_bonus,
     )
-    return [_dominant_event(p_event=p_event, is_public_api=is_public_api)]
+    return [
+        _dominant_event(op_kind=op_kind, p_event=p_event, is_public_api=is_public_api)
+    ]

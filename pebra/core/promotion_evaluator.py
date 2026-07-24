@@ -19,7 +19,6 @@ the false-proceed / C4 vetoes are skipped (applying them would invert the safety
 
 from __future__ import annotations
 
-import fnmatch
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,6 +26,7 @@ from typing import Any
 from pebra.core.constants import MIN_CALIBRATION_SAMPLES
 from pebra.core.learning_eval import DecisionOutcome, false_proceed_rate
 from pebra.core.prediction_error import mean_brier, mean_log_loss, mse
+from pebra.core.scope_matching import scope_matches_features
 
 _LOW = "p_event."  # event-risk target prefix; false-proceed/C4 vetoes apply only to these
 
@@ -203,47 +203,6 @@ def _cross_fitted_continuous_coverage(
     return fold_rate, point_covered, points_evaluated
 
 
-def scope_matches_features(
-    scope_kind: str, scope_value: str, scope_json: dict[str, Any], features: dict[str, Any]
-) -> bool:
-    """Pure features-dict scope matching — mirrors apply_snapshot._matches but over the stored
-    ``features`` payload (not AssessmentInput). path_glob matches the captured file_path only."""
-    if scope_kind == "global":
-        return True
-    sym = features.get("symbol") or {}
-    st = features.get("structural") or {}
-    domains = (features.get("domain") or {}).get("matched_domains") or []
-    if scope_kind == "action_type":
-        return sym.get("action_type") == scope_value
-    if scope_kind == "path_glob":
-        fp = sym.get("file_path")
-        return bool(fp) and fnmatch.fnmatch(fp, scope_value)
-    if scope_kind == "symbol":
-        return sym.get("symbol_id") == scope_value
-    if scope_kind == "public_api":
-        return bool(sym.get("is_public_api"))
-    if scope_kind == "public_api_domain":
-        return bool(sym.get("is_public_api")) and scope_json.get("domain") in domains
-    if scope_kind == "domain":
-        return scope_value in domains
-    if scope_kind == "domain_change_kind":
-        return scope_json.get("domain") in domains and scope_json.get("change_kind") == sym.get("change_kind")
-    if scope_kind == "high_symbol_fan_in":
-        threshold = _float(scope_json.get("min_percentile", 0.90), 0.90)
-        return bool(st.get("is_high_symbol_fan_in")) or _float(st.get("symbol_fan_in_percentile", 0.0)) >= threshold
-    if scope_kind == "domain_high_symbol_fan_in":
-        threshold = _float(scope_json.get("min_percentile", 0.90), 0.90)
-        return scope_json.get("domain") in domains and _float(st.get("symbol_fan_in_percentile", 0.0)) >= threshold
-    return False
-
-
-def _float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 @dataclass(frozen=True)
 class PromotionConfig:
     min_delta_brier: float = 0.0
@@ -388,8 +347,20 @@ def evaluate_promotion_gate(
     veto = None
     if delta_brier < config.min_delta_brier:
         veto = "DELTA_BRIER_NEGATIVE"
+    elif delta_brier == config.min_delta_brier:
+        veto = (
+            "DELTA_BRIER_NOT_POSITIVE"
+            if config.min_delta_brier == 0.0
+            else "DELTA_BRIER_BELOW_MINIMUM"
+        )
     elif delta_log_loss < config.min_delta_log_loss:
         veto = "DELTA_LOG_LOSS_NEGATIVE"
+    elif delta_log_loss == config.min_delta_log_loss:
+        veto = (
+            "DELTA_LOG_LOSS_NOT_POSITIVE"
+            if config.min_delta_log_loss == 0.0
+            else "DELTA_LOG_LOSS_BELOW_MINIMUM"
+        )
     elif is_event and _false_proceed_increased(fpr_without, fpr_with):
         veto = "FALSE_PROCEED_RATE_INCREASE"
     elif is_event and c4_weak:
@@ -461,7 +432,16 @@ def evaluate_benefit_continuous_gate(
         matched_rows, folds=config.coverage_folds
     )
     interval_coverage_lcb = wilson_lower_bound(covered_points, evaluated_points)
-    veto = "DELTA_MSE_NEGATIVE" if delta_mse < config.min_delta_mse else None
+    if delta_mse < config.min_delta_mse:
+        veto = "DELTA_MSE_NEGATIVE"
+    elif delta_mse == config.min_delta_mse:
+        veto = (
+            "DELTA_MSE_NOT_POSITIVE"
+            if config.min_delta_mse == 0.0
+            else "DELTA_MSE_BELOW_MINIMUM"
+        )
+    else:
+        veto = None
     if (
         veto is None
         and n_group >= config.min_interval_coverage_samples

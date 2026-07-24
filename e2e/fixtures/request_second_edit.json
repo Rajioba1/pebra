@@ -16,18 +16,18 @@
       {"event": "security_sensitive_change", "p_event": 0.10, "elicited_disutility": 0.90},
       {"event": "test_regression", "p_event": 0.15, "elicited_disutility": 0.40}
     ],
-    "p_success": 0.70,
+    "p_success": 0.80,
     "immediate_benefit": 0.55,
     "review_cost": 0.12,
-    "criticality_stage": "C3",
-    "criticality_value": 0.80,
+    "criticality_stage": "C2",
+    "criticality_value": 0.50,
     "edit_confidence_factors": {
-      "p_success": 0.70,
-      "evidence_quality": 0.72,
-      "testability": 0.70,
-      "reversibility": 0.80,
-      "source_reliability": 0.78,
-      "scope_control": 0.80
+      "p_success": 0.80,
+      "evidence_quality": 0.84,
+      "testability": 0.82,
+      "reversibility": 0.90,
+      "source_reliability": 0.88,
+      "scope_control": 0.90
     },
     "variance_breakdown": {
       "p_success": 0.0016,
@@ -53,6 +53,7 @@
     "max_p_negative_utility": 0.10,
     "max_utility_sd_without_human": 0.20,
     "decision_instability_threshold": 0.10,
+    "require_graph": false,
     "high_edit_confidence": 0.75,
     "low_edit_confidence": 0.50,
     "rau_bands": {"reject_below": 0.0, "borderline_below": 0.15, "strong_at": 0.40}

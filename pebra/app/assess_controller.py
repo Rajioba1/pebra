@@ -29,6 +29,7 @@ from pebra.core import (
     model_guidance,
     prediction_capture,
     request_validator,
+    score_math,
 )
 from pebra.core.apply_snapshot import apply_snapshot
 from pebra.core.calibrated_priors import CALIBRATED_PRIORS
@@ -325,8 +326,8 @@ def _build_input(
     edit_confidence_factors = dict(evidence.edit_confidence_factors)
     if blast.graph_uncertainty_score > 0.0:
         supplied_eq = edit_confidence_factors.get("evidence_quality", 1.0)
-        edit_confidence_factors["evidence_quality"] = max(
-            0.0, supplied_eq - blast.graph_uncertainty_score
+        edit_confidence_factors["evidence_quality"] = score_math.penalized_confidence_factor(
+            supplied_eq, blast.graph_uncertainty_score
         )
 
     # M5c.5 — language-agnostic per-symbol fan-in. A TRUSTED result (location/name_fallback over a
@@ -435,10 +436,9 @@ def _build_input(
         # Keep the resolved owners' evidence, but reflect the unresolved part of a mixed candidate in
         # confidence instead of erasing all graph evidence.
         missing_fraction = 1.0 - candidate_aggregate.resolution_coverage
-        edit_confidence_factors["evidence_quality"] = max(
-            0.0,
-            edit_confidence_factors.get("evidence_quality", 1.0)
-            - min(0.20, 0.20 * missing_fraction),
+        edit_confidence_factors["evidence_quality"] = score_math.penalized_confidence_factor(
+            edit_confidence_factors.get("evidence_quality", 1.0),
+            min(0.20, 0.20 * missing_fraction),
         )
 
     # Tier-3 benefit-exposure derivation: when RCA measured a real maintainability delta but nobody set
@@ -465,13 +465,11 @@ def _build_input(
     # Multi-language: attach the MEASURED capability for the resolved edit's language. Only probed
     # when fan-in resolved a language (avoids a needless DB open for unresolved edits). Advisory only
     # in this phase — nothing in the engine scores off it; it rides the input for honest surfacing.
-    # Destructive-op event injection (assess-path risk model). Only DELETE injects (symbol loss →
-    # call-graph roll-up + no-graph baseline floor). RENAME/MOVE are recorded on the symbol_diff axis
-    # but NOT scored here (path migration is an import-graph question, modeled in a later slice); CREATE
-    # is inert. events stays the SAME object for non-DELETE so ordinary patches are byte-identical.
+    # File-operation event injection. DELETE models symbol loss; RENAME/MOVE model import-path
+    # migration using the old path's file fan-in. CREATE remains inert.
     events_list = evidence.events
     file_fanin_rollup: FileFanInRollup | None = None
-    if symbol_diff.file_operation_kind == "DELETE":
+    if symbol_diff.file_operation_kind in {"DELETE", "RENAME", "MOVE"}:
         rollups = (
             [file_fanin_provider.file_fanin_rollup(fp, repo_root)
              for fp in symbol_diff.file_operation_paths]
@@ -483,7 +481,9 @@ def _build_input(
         # would inject a spurious public_api_break (and inflate expected_loss) for internal deletions.
         is_pub = symbol_diff.visibility in {"public_api", "exported"}
         injected = destructive_op_model.events_for_destructive_op(
-            op_kind="DELETE", rollup=file_fanin_rollup, arch=evidence.architecture_evidence,
+            op_kind=symbol_diff.file_operation_kind,
+            rollup=file_fanin_rollup,
+            arch=evidence.architecture_evidence,
             is_public_api=is_pub, is_migration=action.is_migration,
             is_schema_change=action.is_schema_change,
         )

@@ -151,6 +151,10 @@ pebra assess request.json --repo-root . --json
 ```
 
 The trusted files and host-metadata option are host integration inputs, not model-controlled request evidence.
+Assess can return all six decisions: `proceed`, `inspect_first`, `test_first`, `revise_safer`,
+`ask_human`, and `reject`. Fresh graph evidence is required automatically for structurally risky,
+destructive/path-migration, schema, and migration candidates. An operator can explicitly opt out in
+the request thresholds with `"require_graph": false`; omission is not treated as that opt-out.
 
 ### `accept-risk`
 
@@ -169,11 +173,15 @@ pebra accept-risk sanction.json --repo-root .
 pebra accept-risk --apply --assessment-id asm_12 --repo-root .
 ```
 
-The interactive `--apply` route requires a real TTY and human approval.
+The interactive `--apply` route requires a real TTY and human approval. It handles both
+`ask_human`/eligible risk-review candidates and a `proceed` assessment whose
+`requires_confirmation` flag is still true. Approval is bound to the exact candidate, followed by
+reassessment and application; it does not create a reusable blanket permission.
 
 ### `apply-candidate`
 
-Apply the exact cached candidate for an authorized assessment.
+Apply the exact cached candidate for an authorized assessment. A confirmation-required `proceed`
+is not yet authorized; use the interactive `accept-risk --apply` path first.
 
 ```text
 pebra apply-candidate --assessment-id ID

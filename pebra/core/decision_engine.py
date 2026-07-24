@@ -40,6 +40,22 @@ def candidate_patch_hash(patch: str) -> str:
     when populating ``CandidateVerificationEvidence.verified_patch_hash``."""
     return hashlib.sha256(patch.encode("utf-8")).hexdigest()
 
+
+def _candidate_verification_is_bound_and_passed(assessment: Assessment) -> bool:
+    verification = assessment.input.candidate_verification
+    patch = assessment.input.action.proposed_patch
+    required = tuple(verification.required_checks)
+    return (
+        verification.status == "passed"
+        and patch is not None
+        and bool(required)
+        and all(
+            str(verification.checks.get(check, "")).lower() == "passed"
+            for check in required
+        )
+        and verification.verified_patch_hash == candidate_patch_hash(patch)
+    )
+
 _SENSITIVE_STAGES = {"C3", "C4"}
 _HARD_TERMINAL_EVENTS = frozenset(
     {"security_sensitive_change", "external_state_damage", "migration_failure"}
@@ -391,6 +407,18 @@ def _graph_evidence(blast: Any) -> dict[str, Any]:
     }
 
 
+def _graph_required_by_candidate(inp: Any) -> bool:
+    """Require structural evidence by default for changes whose safety depends on repository reach."""
+    symbol_diff = inp.symbol_diff_evidence
+    return (
+        symbol_diff.file_operation_kind in {"DELETE", "RENAME", "MOVE"}
+        or symbol_diff.max_change_kind in {"CONTRACT", "SIDE_EFFECT", "UNKNOWN"}
+        or symbol_diff.consequential_symbol_changed
+        or inp.action.is_migration
+        or inp.action.is_schema_change
+    )
+
+
 def _fanin_validity(inp: Any) -> dict[str, Any]:
     """CodeGraph evidence-validity signal (Gate 13).
 
@@ -398,7 +426,11 @@ def _fanin_validity(inp: Any) -> dict[str, Any]:
     stays non-blocking, but unresolved/stale evidence is still recorded as advisory so absence is visible
     in the decision packet instead of looking like measured low fan-in.
     """
-    required = bool(inp.thresholds.get("require_graph", False))
+    required = (
+        bool(inp.thresholds["require_graph"])
+        if "require_graph" in inp.thresholds
+        else _graph_required_by_candidate(inp)
+    )
     ev = inp.fanin_evidence
     if ev is None:
         if not required:
@@ -621,10 +653,17 @@ def decide(
     ):
         provisional, requires_confirmation, fired_gate = Decision.ASK_HUMAN, True, 5
         gates_fired.append({"gate": 5, "name": "utility_sd_over_limit", "utility_sd": s["utility_sd"]})
-    # --- Gate 8: low edit confidence ---
-    elif assessment.confidence_band == "low":
+    # --- Gate 16: an affected import cycle needs patch-bound verification ---
+    elif (
+        assessment.input.blast_evidence.import_cycle_detected
+        and not _candidate_verification_is_bound_and_passed(assessment)
+    ):
+        provisional, fired_gate = Decision.TEST_FIRST, 16
+        gates_fired.append({"gate": 16, "name": "import_cycle_requires_tests"})
+    # --- Gate 8: low/medium edit confidence requires more evidence ---
+    elif assessment.confidence_band in {"low", "medium"}:
         provisional, fired_gate = Decision.INSPECT_FIRST, 8
-        gates_fired.append({"gate": 8, "name": "low_edit_confidence",
+        gates_fired.append({"gate": 8, "name": f"{assessment.confidence_band}_edit_confidence",
                             "edit_confidence": s["edit_confidence"]})
     # --- Evidence-validity gate (AD-22): unresolved-stale architecture map ---
     # Placed last before proceed so it only downgrades a would-be proceed — it never preempts a more
@@ -687,6 +726,29 @@ def decide(
     elevated = provisional in {Decision.INSPECT_FIRST, Decision.TEST_FIRST, Decision.REVISE_SAFER} and stage in _SENSITIVE_STAGES
     if (
         sanction
+        and provisional is Decision.PROCEED
+        and requires_confirmation
+        and fired_gate == 11
+        and sanction.get("valid")
+        and sanction.get("pre_edit_authorization_controls_satisfied")
+        and 11 in set(sanction.get("converts_gates", []))
+    ):
+        gates_fired.append({
+            "gate": 10,
+            "name": "sanction_resolution",
+            "converted_from": "confirmation_required",
+            "sanction_assessment_id": sanction.get("assessment_id"),
+        })
+        return _result(
+            Decision.PROCEED,
+            requires_confirmation=False,
+            risk_mode=RiskMode.CONTROLLED_HIGH_RISK,
+            gates_fired=gates_fired,
+            high_risk_triggers=list(sanction.get("high_risk_triggers", [])),
+            decision_reason="Candidate-bound human confirmation authorized the sensitive proceed.",
+        )
+    if (
+        sanction
         and provisional in {Decision.ASK_HUMAN, Decision.REJECT}
         and fired_gate in SANCTION_CONVERTIBLE_GATES
         and sanction.get("valid")
@@ -715,7 +777,9 @@ def decide(
             )
         return _result(
             Decision.PROCEED,
-            requires_confirmation=True,
+            # The sanction is the candidate-bound human confirmation. Requiring another confirmation
+            # would make approve-and-apply loop back into the same gate and become unfinishable.
+            requires_confirmation=False,
             risk_mode=_risk_mode(Decision.PROCEED, stage, controlled=True, elevated=False),
             gates_fired=gates_fired,
             high_risk_triggers=list(sanction.get("high_risk_triggers", [])),

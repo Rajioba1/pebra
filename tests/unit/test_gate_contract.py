@@ -174,7 +174,7 @@ def test_restrictive_decisions_require_nonblank_actionable_reason(permission, re
         GateDecision(permission, tier, reason=reason)
 
 
-def test_consulted_review_distinguishes_reject_from_ask_human():
+def test_consulted_review_covers_human_decisions_without_authorizing_them():
     denied = GateDecision(
         GatePermission.RETURN_CANDIDATE,
         GateTier.CONSULTED_REVIEW,
@@ -189,8 +189,16 @@ def test_consulted_review_distinguishes_reject_from_ask_human():
         risk_summary=_summary(Decision.ASK_HUMAN),
         matched_assessment_id="asm_1",
     )
+    confirmation = GateDecision(
+        GatePermission.REQUEST_HUMAN,
+        GateTier.CONSULTED_REVIEW,
+        reason="Run the bound confirmation workflow.",
+        risk_summary=_summary(Decision.PROCEED),
+        matched_assessment_id="asm_2",
+    )
     assert denied.risk_summary.decision is Decision.REJECT
     assert asked.risk_summary.decision is Decision.ASK_HUMAN
+    assert confirmation.risk_summary.decision is Decision.PROCEED
 
 
 def test_override_eligible_reject_has_its_own_request_human_tier():

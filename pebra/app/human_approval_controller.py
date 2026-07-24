@@ -63,6 +63,8 @@ def _review_eligible(assessment: dict[str, Any]) -> bool:
     decision = assessment.get("decision")
     if decision == Decision.ASK_HUMAN.value:
         return True
+    if decision == Decision.PROCEED.value:
+        return assessment.get("requires_confirmation") is True
     return reject_override_eligible(decision, assessment.get("gates_fired") or ())
 
 
@@ -99,7 +101,7 @@ def select_pending_approval(
         if not _review_eligible(replay.assessment):
             if assessment_id is not None:
                 raise HumanApprovalError(
-                    "the requested rejected candidate is not eligible for risk acceptance"
+                    "the requested candidate is not eligible for human confirmation"
                 )
             continue
         packet = replay.assessment.get("model_guidance_packet") or {}
@@ -171,7 +173,7 @@ def approve_and_apply(
     except (KeyError, TypeError, ValueError) as exc:
         raise HumanApprovalError("pending assessment could not be revalidated") from exc
     if current.get("repo_id") != repo_id or not _review_eligible(current):
-        raise HumanApprovalError("pending candidate is no longer eligible for human risk acceptance")
+        raise HumanApprovalError("pending candidate is no longer eligible for human confirmation")
     if current.get("decision") != pending.replay.assessment.get("decision"):
         raise HumanApprovalError("pending candidate review disposition changed")
     reviewed_commit = current.get("assessed_commit")

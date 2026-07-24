@@ -1,6 +1,6 @@
 """Destructive-op slice, Phase 5 — controller event injection (over fake ports).
 
-Only DELETE injects; CREATE/RENAME/MOVE don't (RENAME/MOVE are recorded on the symbol_diff axis).
+DELETE injects symbol-loss risk; RENAME/MOVE inject path-migration risk; CREATE remains inert.
 Covers the golden-safe no-op, the outage blind spot (deleted entrypoint with no graph), fan-in scaling,
 and duplicate-event avoidance.
 """
@@ -130,12 +130,14 @@ def test_create_does_not_inject():
     assert inp.file_fanin_rollup is None
 
 
-def test_rename_recorded_but_not_injected():
+def test_rename_injects_path_migration_risk_and_keeps_rollup():
     inp = _bi(_SD(kind="RENAME", paths=("src/foo.py",)),
-              _Ev(_BASE_EVENTS, arch=m.ArchitectureEvidence(domain_entrypoint=True)))
-    assert _ev_named(inp.events, "dependency_break") is None       # not scored
-    assert inp.file_fanin_rollup is None
-    assert inp.symbol_diff_evidence.file_operation_kind == "RENAME"  # but recorded
+              _Ev(_BASE_EVENTS, arch=m.ArchitectureEvidence(domain_entrypoint=True)),
+              ffi=_FFI(m.FileFanInRollup(file_symbol_fanin_rollup_percentile=0.95,
+                                         resolution_method="file_location")))
+    assert _ev_named(inp.events, "path_migration_break") is not None
+    assert inp.file_fanin_rollup is not None
+    assert inp.symbol_diff_evidence.file_operation_kind == "RENAME"
 
 
 def test_high_fanin_delete_has_higher_p_event_than_blind():

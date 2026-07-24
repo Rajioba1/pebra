@@ -66,6 +66,14 @@ def test_high_fanin_internal_contract_modify_injects_dependency_break():
     assert dep["probability_source_type"] == "prior_uncalibrated"
 
 
+def test_criticality_stage_never_changes_modify_event_probability():
+    c2 = _by(_events(criticality_stage="C2"), "dependency_break")
+    c4 = _by(_events(criticality_stage="C4"), "dependency_break")
+
+    assert c2 is not None and c4 is not None
+    assert c4["p_event"] == pytest.approx(c2["p_event"])
+
+
 def test_coarse_structural_tier_counts_as_unknown_change_for_large_owner():
     # Monotonic-safety: a coarse codegraph_structural classification of a BEHAVIORAL internal owner in
     # a LARGE span must still inject dependency_break (it counts as unknown_change), so reclassifying
@@ -194,7 +202,6 @@ def test_large_owner_contract_modify_injects_dependency_break_even_when_direct_f
         mrm._BASELINE_CONTRACT
         + mrm._LARGE_OWNER_BONUS
         + mrm._OUTGOING_EDGE_BONUS_MAX
-        + mrm._C3_C4_BONUS["C3"]
         + 0.25 * (mrm._FANIN_BONUS_MAX / mrm._HIGH_FANIN_THRESHOLD)
     )
     assert dep["p_event"] == pytest.approx(expected)
@@ -219,7 +226,6 @@ def test_implements_extends_impact_escalates_contract_modify_when_direct_fanin_i
     dep = _by(events, "dependency_break")
     expected = (
         mrm._BASELINE_CONTRACT
-        + mrm._C3_C4_BONUS["C3"]
         + mrm._FANIN_BONUS_MAX
     )
     assert dep is not None
@@ -249,7 +255,7 @@ def test_transitive_modify_impact_escalates_contract_modify_when_direct_impact_i
     assert len(events) == 1
     assert dep is not None
     assert dep["p_event"] == pytest.approx(
-        mrm._BASELINE_CONTRACT + mrm._C3_C4_BONUS["C3"] + mrm._FANIN_BONUS_MAX
+        mrm._BASELINE_CONTRACT + mrm._FANIN_BONUS_MAX
     )
 
 
@@ -292,7 +298,7 @@ def test_pure_implementer_impact_escalates_contract_modify_with_zero_direct_call
     dep = _by(events, "dependency_break")
     assert dep is not None
     assert dep["p_event"] == pytest.approx(
-        mrm._BASELINE_CONTRACT + mrm._C3_C4_BONUS["C3"] + mrm._FANIN_BONUS_MAX
+        mrm._BASELINE_CONTRACT + mrm._FANIN_BONUS_MAX
     )
 
 
@@ -317,7 +323,6 @@ def test_zero_direct_callers_ignore_symbol_percentile_when_structural_impact_is_
     expected = (
         mrm._BASELINE_CONTRACT
         + mrm._LARGE_OWNER_BONUS
-        + mrm._C3_C4_BONUS["C3"]
         + 0.30 * (mrm._FANIN_BONUS_MAX / mrm._HIGH_FANIN_THRESHOLD)
     )
     assert dep["p_event"] == pytest.approx(expected)

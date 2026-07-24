@@ -116,10 +116,9 @@ def test_requires_human_ratification_stored_as_int_and_candidate(tmp_path):
     store.close()
 
 
-def test_benefit_snapshot_is_read_alongside_active_risk_facts(tmp_path):
-    # Critical regression: risk + benefit promotion each write their own ACTIVE snapshot. The assess
-    # read path must return the newest active snapshot CONTAINING RISK facts — a later benefit-only
-    # snapshot must not shadow the risk overrides (apply_snapshot only applies risk_binary facts).
+def test_risk_benefit_and_cost_snapshots_are_read_together(tmp_path):
+    # Risk, benefit, and review-cost promotion each write their own ACTIVE snapshot. The assess read
+    # path must select the newest usable facts from all three families.
     store = SqliteStore(str(tmp_path / "p.db"))
     store.insert_learned_fact_batch_with_snapshot(
         "r", {"promotion_reason": "M5d_auto_promotion", "hash_version": 2},
@@ -129,6 +128,10 @@ def test_benefit_snapshot_is_read_alongside_active_risk_facts(tmp_path):
         "r", {"promotion_reason": "M5d_benefit_promotion", "hash_version": 2},
         [_fact(target_type="benefit_binary", target_name="immediate_benefit_realized")],
     )  # rs_2: benefit (newer)
+    store.insert_learned_fact_batch_with_snapshot(
+        "r", {"promotion_reason": "M5d_review_cost_promotion", "hash_version": 2},
+        [_fact(target_type="cost_continuous", target_name="review_cost")],
+    )  # rs_3: cost (newest)
 
     bundle = store.read_active_snapshot_rows("r")
     store.close()
@@ -136,6 +139,7 @@ def test_benefit_snapshot_is_read_alongside_active_risk_facts(tmp_path):
     assert any(f["target_type"] == "benefit_binary" for f in bundle["facts"])
     assert any(f["target_name"] == "p_success" for f in bundle["facts"])
     assert any(f["target_name"] == "immediate_benefit_realized" for f in bundle["facts"])
+    assert any(f["target_name"] == "review_cost" for f in bundle["facts"])
 
 
 def test_unusable_newer_risk_snapshot_does_not_mask_active_risk_facts(tmp_path):

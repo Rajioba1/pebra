@@ -380,6 +380,12 @@ def _combine_benefit_variance(current: float | None, learned: float | None) -> f
     return min(COLD_START_VARIANCES["benefit"], current + learned)
 
 
+def _learned_benefit_variance(prov: dict[str, Any] | None) -> float:
+    """A learned benefit value without predictive variance retains cold-start uncertainty."""
+    bounded = _bounded_learned_variance(prov, "benefit")
+    return COLD_START_VARIANCES["benefit"] if bounded is None else bounded
+
+
 def apply_snapshot(
     inp: AssessmentInput,
     snapshot: SnapshotBundle | None = None,
@@ -455,7 +461,7 @@ def apply_snapshot(
         new_immediate_benefit = val
         new_benefit_variance_override = _combine_benefit_variance(
             new_benefit_variance_override,
-            _bounded_learned_variance(prov, "benefit"),
+            _learned_benefit_variance(prov),
         )
         applied.append(prov)  # type: ignore[arg-type]
 
@@ -486,7 +492,7 @@ def apply_snapshot(
         )
         new_benefit_variance_override = _combine_benefit_variance(
             new_benefit_variance_override,
-            _bounded_learned_variance(prov, "benefit"),
+            _learned_benefit_variance(prov),
         )
         applied.append(prov)  # type: ignore[arg-type]
 
@@ -499,7 +505,7 @@ def apply_snapshot(
         new_benefit_override = val
         new_benefit_variance_override = _combine_benefit_variance(
             new_benefit_variance_override,
-            _bounded_learned_variance(prov, "benefit"),
+            _learned_benefit_variance(prov),
         )
         applied.append(prov)  # type: ignore[arg-type]
 

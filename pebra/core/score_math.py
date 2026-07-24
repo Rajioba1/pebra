@@ -29,6 +29,8 @@ from pebra.core.constants import (
     Z_ALPHA_90,
 )
 
+MIN_CONFIDENCE_FACTOR = 1e-6
+
 
 def apply_criticality_floor(
     event: str, elicited_disutility: float, criticality_value: float
@@ -118,6 +120,11 @@ def edit_confidence(factors: Mapping[str, float]) -> float:
             raise ValueError(f"edit_confidence factor {f}={x} out of (0, 1]")
         log_sum += EDIT_CONFIDENCE_WEIGHT * math.log(x)
     return math.exp(log_sum)
+
+
+def penalized_confidence_factor(current: float, penalty: float) -> float:
+    """Subtract an evidence penalty without leaving the geometric mean's logarithm domain."""
+    return max(MIN_CONFIDENCE_FACTOR, current - penalty)
 
 
 def risk_budget_used(expected_loss: float, effective_threshold: float) -> float:

@@ -638,19 +638,24 @@ def test_oversized_integer_scores_keep_cli_and_hook_clean_and_restrictive(gate_c
 
 
 @pytest.mark.parametrize("persisted_decision", (None, "unknown_decision"))
-def test_corrupt_persisted_decision_fails_open_with_visible_warning(
+def test_corrupt_persisted_decision_holds_candidate_for_integrity_review(
     gate_case, persisted_decision,
 ):
     case = gate_case(decision=persisted_decision)
 
     payload = cli_harness.gate_check_v2(case.claude_event, db=case.db)
-    hook_payload = _gate_hook(case.claude_event, db=case.db)
+    hook_payload = _gate_hook(case.claude_event, db=case.db)["hookSpecificOutput"]
 
-    assert payload["permission"] == "allow"
-    assert payload["tier"] == "fail_open"
+    assert set(payload) == _ENVELOPE_KEYS
+    assert payload["schema_version"] == 2
+    assert payload["permission"] == "deny"
+    assert payload["warn"] is None
+    reason = payload["reason"]
+    assert isinstance(reason, str)
+    assert payload["tier"] == "must_consult"
     assert payload["risk_summary"] is None
-    assert payload["matched_assessment_id"] is None
-    assert "persisted decision" in payload["warn"].lower()
-    assert "integrity" in payload["warn"].lower()
-    assert "hookSpecificOutput" not in hook_payload
-    assert "persisted decision" in hook_payload["systemMessage"].lower()
+    assert payload["matched_assessment_id"] == "asm_1"
+    assert "persisted decision" in reason.lower()
+    assert "integrity" in reason.lower()
+    assert hook_payload["permissionDecision"] == "deny"
+    assert "persisted decision" in hook_payload["permissionDecisionReason"].lower()

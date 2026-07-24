@@ -12,7 +12,7 @@ Contract:
   - config can only RAISE criticality (never lower what the request claims);
   - request thresholds override config thresholds;
   - bandit events are appended, de-duplicated by event type against the request's events;
-  - an evidence-quality penalty (bandit could not run) lowers evidence_quality, bounded at 0;
+  - an evidence-quality penalty (bandit could not run) lowers evidence_quality, bounded above 0;
   - with no repo evidence (provider projected/empty, no bandit events, no penalty, default config,
     default architecture) the merged bundle EQUALS the request-only bundle — so wiring the composite
     never changes the worked example.
@@ -24,6 +24,7 @@ from fnmatch import fnmatch
 
 from pebra.core.constants import STAGE_MAP
 from pebra.core.models import ArchitectureEvidence, BenefitDeltaEvidence, EvidenceBundle
+from pebra.core.score_math import penalized_confidence_factor
 from pebra.ports.config_port import PebraConfig
 
 
@@ -101,8 +102,8 @@ def merge_evidence(
 
     factors = dict(base.edit_confidence_factors)
     if evidence_quality_penalty > 0.0:
-        factors["evidence_quality"] = max(
-            0.0, factors.get("evidence_quality", 1.0) - evidence_quality_penalty
+        factors["evidence_quality"] = penalized_confidence_factor(
+            factors.get("evidence_quality", 1.0), evidence_quality_penalty
         )
     return EvidenceBundle(
         events=events,

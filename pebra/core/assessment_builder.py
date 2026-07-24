@@ -30,9 +30,6 @@ from pebra.core.constants import (
 )
 from pebra.core.models import AssessmentInput
 
-_MIN_CONFIDENCE_FACTOR = 1e-6
-
-
 @dataclass
 class Assessment:
     """In-flight scored bag (§7). Consumed by decision_engine, explanation, guidance."""
@@ -79,7 +76,7 @@ def _architecture_scope_penalty(inp: AssessmentInput) -> float:
 
 
 def _penalized_confidence_factor(current: float, penalty: float) -> float:
-    return max(_MIN_CONFIDENCE_FACTOR, current - penalty)
+    return score_math.penalized_confidence_factor(current, penalty)
 
 
 def _scoped_graph_risk_update(inp: AssessmentInput) -> tuple[list[dict[str, Any]], list[str]]:
@@ -131,19 +128,17 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         expected_loss=expected_loss,
         review_cost=inp.review_cost,
     )
-    event_variance = None
-    if inp.event_probability_variances:
-        event_variance = 0.0
-        for event in floored_events:
-            probability = float(event["p_event"])
-            disutility = float(event["disutility"])
-            probability_variance = inp.event_probability_variances.get(
-                str(event["event"]), COLD_START_VARIANCES["p_event"]
-            )
-            event_variance += (
-                (disutility**2) * probability_variance
-                + (probability**2) * COLD_START_VARIANCES["disutility"]
-            )
+    event_variance = 0.0
+    for event in floored_events:
+        probability = float(event["p_event"])
+        disutility = float(event["disutility"])
+        probability_variance = inp.event_probability_variances.get(
+            str(event["event"]), COLD_START_VARIANCES["p_event"]
+        )
+        event_variance += (
+            (disutility**2) * probability_variance
+            + (probability**2) * COLD_START_VARIANCES["disutility"]
+        )
     # AD-5 precedence: explicit breakdown (1) -> first-order propagation (2) -> cold-start (3).
     # Wire all component variances so precedence 2 is actually reachable through the pipeline:
     # benefit_variance comes from the benefit model; p_success/review_cost variances from evidence.

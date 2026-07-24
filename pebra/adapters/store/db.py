@@ -36,6 +36,7 @@ from pebra.core.learning_context import (
 )
 from pebra.core.models import AssessmentResult
 from pebra.core.prediction_capture import summarize_prior_provenance
+from pebra.core.scope_matching import scope_matches_features
 from pebra.ports.learning_port import MeasurementAlreadyRecordedError
 
 GENESIS = "GENESIS"
@@ -1046,8 +1047,8 @@ class SqliteStore:
 
         Target-aware on purpose: risk and benefit promotion each write their own active snapshot, so the
         plain "newest active snapshot" can mask one family with the other. We pick the newest usable
-        risk facts and newest usable benefit facts independently, then return their union. snapshot_id is
-        the selected ``rs_*`` id or a ``+``-joined display id when multiple snapshots contribute."""
+        risk, benefit, and review-cost facts independently, then return their union. snapshot_id is the
+        selected ``rs_*`` id or a ``+``-joined display id when multiple snapshots contribute."""
         snaps = self._con.execute(
             "SELECT rs.id FROM risk_snapshots rs "
             "WHERE rs.repo_id = ? AND rs.status = 'active' "
@@ -1061,8 +1062,9 @@ class SqliteStore:
         selected_rows: list[Any] = []
         have_risk = False
         have_benefit = False
+        have_cost = False
         for (candidate_id,) in snaps:
-            if have_risk and have_benefit:
+            if have_risk and have_benefit and have_cost:
                 break
             candidate_rows = self._con.execute(
                 "SELECT id, target_type, target_name, scope_kind, scope_value, specificity_rank, "
@@ -1083,6 +1085,10 @@ class SqliteStore:
                 if row[1] in {"benefit_binary", "benefit_continuous"}
                 and _learned_fact_read_usable(row[7])
             ]
+            usable_cost = [
+                row for row in candidate_rows
+                if row[1] == "cost_continuous" and _learned_fact_read_usable(row[7])
+            ]
             if usable_risk and not have_risk:
                 selected_ids.append(candidate_id)
                 selected_rows.extend(usable_risk)
@@ -1091,6 +1097,10 @@ class SqliteStore:
                 selected_ids.append(candidate_id)
                 selected_rows.extend(usable_benefit)
                 have_benefit = True
+            if usable_cost and not have_cost:
+                selected_ids.append(candidate_id)
+                selected_rows.extend(usable_cost)
+                have_cost = True
         snapshot_id = "+".join(f"rs_{sid}" for sid in dict.fromkeys(selected_ids))
         if not snapshot_id:
             snapshot_id = f"rs_{fallback_rs_id}"
@@ -1108,10 +1118,67 @@ class SqliteStore:
                     "scope_json": scope_json,
                     "fact_json": fact_json,
                     "created_at": created_at,
+                    "scope_change_count": self._verified_scope_change_count(
+                        repo_id,
+                        created_at,
+                        sk,
+                        sv,
+                        scope_json,
+                    ),
                 }
                 for (fid, tt, tn, sk, sv, rank, scope_json, fact_json, created_at) in rows
             ],
         }
+
+    def _verified_scope_change_count(
+        self,
+        repo_id: str,
+        learned_at: str,
+        scope_kind: str,
+        scope_value: str,
+        scope_json: str,
+    ) -> int:
+        """Count later completed, verify-approved changes whose captured features match a fact.
+
+        The learned fact remains immutable. Churn is a read-time projection over trusted verify
+        receipts plus terminal outcomes, so raw/direct outcome rows cannot decay a fact.
+        """
+        try:
+            scope = json.loads(scope_json or "{}")
+        except (TypeError, ValueError):
+            return 0
+        if not isinstance(scope, dict):
+            return 0
+        rows = self._con.execute(
+            "SELECT o.assessment_id, ap.features_json, ("
+            "  SELECT pag.guardrails_json FROM post_assessment_guardrails pag "
+            "  WHERE pag.assessment_id = o.assessment_id ORDER BY pag.id DESC LIMIT 1"
+            ") "
+            "FROM outcomes o "
+            "JOIN assessments a ON a.id = o.assessment_id "
+            "JOIN assessment_predictions ap ON ap.assessment_id = o.assessment_id "
+            "WHERE a.repo_id = ? AND o.terminal_status = 'completed' AND o.recorded_at > ? "
+            "ORDER BY o.assessment_id ASC, ap.id ASC",
+            (repo_id, learned_at),
+        )
+        matched: set[int] = set()
+        for assessment_id, features_json, guardrails_json in rows:
+            if assessment_id in matched or not guardrails_json:
+                continue
+            try:
+                guardrails = json.loads(guardrails_json)
+                features = json.loads(features_json or "{}")
+            except (TypeError, ValueError):
+                continue
+            if (
+                not isinstance(guardrails, dict)
+                or guardrails.get("pre_commit_decision") != "proceed"
+                or not isinstance(features, dict)
+            ):
+                continue
+            if scope_matches_features(scope_kind, scope_value, scope, features):
+                matched.add(int(assessment_id))
+        return len(matched)
 
     # --- Milestone 4d: computed prediction errors + shadow snapshots (the learning store writes here)
 
@@ -2504,20 +2571,24 @@ class SqliteStore:
         rows: list[dict[str, Any]] = []
         for row_id, content_json in self._con.execute(
             "SELECT id, content_json FROM assessments "
-            "WHERE repo_id = ? AND decision IN ('ask_human', 'reject') "
-            "ORDER BY id DESC LIMIT 200",
+            "WHERE repo_id = ? AND decision IN ('ask_human', 'reject', 'proceed') "
+            "ORDER BY id DESC",
             (repo_id,),
         ):
             content = json.loads(content_json)
             if content.get("assessed_commit") != assessed_commit:
                 continue
             decision = content.get("decision")
+            if decision == "proceed" and content.get("requires_confirmation") is not True:
+                continue
             if decision == "reject" and not reject_override_eligible(
                 decision, content.get("gates_fired") or ()
             ):
                 continue
             content["assessment_id"] = f"asm_{row_id}"
             rows.append(content)
+            if len(rows) >= 200:
+                break
         return rows
 
     def latest_guardrails(self, assessment_id: str) -> dict[str, Any] | None:

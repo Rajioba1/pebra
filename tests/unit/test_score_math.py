@@ -108,6 +108,10 @@ def test_edit_confidence_equals_geometric_mean() -> None:
     assert sm.edit_confidence(factors) == pytest.approx(0.5)
 
 
+def test_penalized_confidence_factor_never_reaches_log_domain_zero() -> None:
+    assert sm.penalized_confidence_factor(0.10, 0.20) == pytest.approx(1e-6)
+
+
 # --- risk_budget_used = expected_loss / effective_threshold ---
 
 

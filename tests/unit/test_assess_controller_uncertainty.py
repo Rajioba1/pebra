@@ -79,6 +79,35 @@ class BorderlineEvidence:
         )
 
 
+class HighBoundaryEvidence:
+    """Benign evidence just above the high-confidence boundary.
+
+    Graph uncertainty lowers only evidence quality, moving the geometric
+    confidence score from high to medium without relying on the retired
+    medium-confidence auto-proceed behavior.
+    """
+
+    def gather_evidence(self, request, action, repo_root):
+        return m.EvidenceBundle(
+            events=[{"event": "test_regression", "p_event": 0.02, "elicited_disutility": 0.10}],
+            p_success=0.78,
+            immediate_benefit=0.70,
+            review_cost=0.10,
+            criticality_stage="C0",
+            criticality_value=0.10,
+            edit_confidence_factors={
+                "p_success": 0.78, "evidence_quality": 0.78, "testability": 0.78,
+                "reversibility": 0.78, "source_reliability": 0.78, "scope_control": 0.78,
+            },
+            thresholds=_THRESHOLDS,
+            variance_breakdown={
+                "p_success": 0.0004, "benefit": 0.0002, "event_losses": 0.0001,
+                "review_cost": 0.0002, "scenario_variance": 0.0001,
+            },
+            benefit_delta_evidence=m.BenefitDeltaEvidence(source_type="projected"),
+        )
+
+
 class FakeSymbolDiff:
     def symbol_diff(self, action, repo_root):
         return m.SymbolDiffEvidence(
@@ -196,11 +225,11 @@ def test_clean_graph_preserves_worked_example_decision() -> None:
     assert round(r.scores["edit_confidence"], 2) == 0.83
 
 
-def test_high_uncertainty_tips_borderline_case_to_inspect_first() -> None:
-    clean = _run(FakeBlast(0.0), evidence=BorderlineEvidence())
-    penalized = _run(FakeBlast(0.25), evidence=BorderlineEvidence())
-    assert clean.scores["edit_confidence"] >= 0.50
-    assert penalized.scores["edit_confidence"] < 0.50
+def test_high_uncertainty_tips_high_confidence_case_to_inspect_first() -> None:
+    clean = _run(FakeBlast(0.0), evidence=HighBoundaryEvidence())
+    penalized = _run(FakeBlast(0.25), evidence=HighBoundaryEvidence())
+    assert clean.scores["edit_confidence"] >= 0.75
+    assert penalized.scores["edit_confidence"] < 0.75
     assert clean.recommended_decision is not Decision.INSPECT_FIRST
     assert penalized.recommended_decision is Decision.INSPECT_FIRST
 

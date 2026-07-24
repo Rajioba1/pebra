@@ -16,7 +16,9 @@ _BINDING = {
 }
 
 
-def _assessment(assessment_id, *, decision="ask_human", gate=2):
+def _assessment(
+    assessment_id, *, decision="ask_human", gate=2, requires_confirmation=True
+):
     replay_metadata = {
         **_META,
         "digest": ("a" if assessment_id == "asm_1" else "c") * 64,
@@ -25,6 +27,7 @@ def _assessment(assessment_id, *, decision="ask_human", gate=2):
         "assessment_id": assessment_id,
         "repo_id": "repo-1",
         "decision": decision,
+        "requires_confirmation": requires_confirmation,
         "assessed_commit": "head-1",
         "scores": {"expected_loss": 0.4, "benefit": 0.3, "rau": -0.1},
         "gates_fired": [{
@@ -126,8 +129,35 @@ def test_pending_approval_accepts_sanction_convertible_reject() -> None:
     assert pending.summary["controlling_gate"] == 3
 
 
+def test_pending_approval_accepts_confirmation_required_proceed() -> None:
+    pending = controller.select_pending_approval(
+        repo_id="repo-1",
+        assessed_commit="head-1",
+        assessment_id="asm_1",
+        store=FakeStore(decision="proceed", gate=11),
+        replay_cache=FakeReplay(),
+    )
+
+    assert pending.summary["decision"] == "proceed"
+    assert pending.summary["controlling_gate"] == 11
+
+
+def test_pending_approval_refuses_proceed_without_confirmation() -> None:
+    store = FakeStore(decision="proceed", gate=11)
+    store.rows[0]["requires_confirmation"] = False
+
+    with pytest.raises(controller.HumanApprovalError, match="not eligible"):
+        controller.select_pending_approval(
+            repo_id="repo-1",
+            assessed_commit="head-1",
+            assessment_id="asm_1",
+            store=store,
+            replay_cache=FakeReplay(),
+        )
+
+
 def test_pending_approval_refuses_nonconvertible_policy_reject() -> None:
-    with pytest.raises(controller.HumanApprovalError, match="not eligible for risk acceptance"):
+    with pytest.raises(controller.HumanApprovalError, match="not eligible"):
         controller.select_pending_approval(
             repo_id="repo-1",
             assessed_commit="head-1",

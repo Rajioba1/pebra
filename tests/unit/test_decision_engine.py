@@ -445,7 +445,12 @@ def test_gate3_verified_safer_candidate_can_proceed_pre_edit() -> None:
         action=action,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
-        thresholds={**inp.thresholds, "revise_safer_attempt": 1, "max_revise_safer_attempts": 2},
+        thresholds={
+            **inp.thresholds,
+            "require_graph": False,
+            "revise_safer_attempt": 1,
+            "max_revise_safer_attempts": 2,
+        },
         revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
@@ -700,6 +705,7 @@ def test_gate3_passed_verification_without_a_candidate_patch_cannot_proceed() ->
         inp,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
+        thresholds={**inp.thresholds, "require_graph": False},
         revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
@@ -797,6 +803,7 @@ def test_sensitive_verified_candidate_still_requires_confirmation() -> None:
         action=action,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
+        thresholds={**inp.thresholds, "require_graph": False},
         revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
@@ -821,6 +828,52 @@ def test_sensitive_verified_candidate_still_requires_confirmation() -> None:
     assert result.risk_mode is RiskMode.SENSITIVE_CONTEXT
 
 
+def test_candidate_bound_sanction_confirms_sensitive_gate11_proceed() -> None:
+    from pebra.core import models as m
+
+    inp = _worked_example_input()
+    action = replace(inp.action, expected_files=["src/api.py"], proposed_patch=_CANDIDATE_PATCH)
+    inp = replace(
+        inp,
+        action=action,
+        events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
+        immediate_benefit=2.0,
+        thresholds={**inp.thresholds, "require_graph": False},
+        revision_completeness_evidence=_origin_revision(),
+        symbol_diff_evidence=m.SymbolDiffEvidence(
+            parsed_patch_available=True,
+            changed_symbols=["src/api.py::public_fn", "src/api.py::helper"],
+            max_change_kind="CONTRACT",
+            visibility="public_api",
+            consequential_symbol_changed=True,
+        ),
+        candidate_verification=m.CandidateVerificationEvidence(
+            status="passed",
+            checks={"targeted_tests": "passed"},
+            required_checks=["targeted_tests"],
+            domain="covering_tests",
+            verified_patch_hash=de.candidate_patch_hash(_CANDIDATE_PATCH),
+        ),
+        sanction={
+            "valid": True,
+            "assessment_id": "asm_origin",
+            "pre_edit_authorization_controls_satisfied": True,
+            "converts_gates": [11],
+        },
+    )
+
+    result = de.decide(ab.build_assessment(inp))
+
+    assert result.recommended_decision is Decision.PROCEED
+    assert result.requires_confirmation is False
+    assert result.risk_mode is RiskMode.CONTROLLED_HIGH_RISK
+    assert any(
+        gate.get("name") == "sanction_resolution"
+        and gate.get("converted_from") == "confirmation_required"
+        for gate in result.gates_fired
+    )
+
+
 _CANDIDATE_PATCH = (
     "diff --git a/src/api.py b/src/api.py\n"
     "--- a/src/api.py\n"
@@ -843,6 +896,7 @@ def _verified_candidate_input(*, verified_patch_hash):
         action=action,
         events=[{"event": "dependency_break", "p_event": 0.60, "elicited_disutility": 0.40}],
         immediate_benefit=2.0,
+        thresholds={**inp.thresholds, "require_graph": False},
         revision_completeness_evidence=_origin_revision(),
         symbol_diff_evidence=m.SymbolDiffEvidence(
             parsed_patch_available=True,
@@ -1170,6 +1224,60 @@ def test_stale_arch_map_is_recorded_even_when_a_higher_gate_decides() -> None:
     assert any(g["name"] == "stale_architecture_map" for g in result.gates_fired)
 
 
+def test_medium_edit_confidence_requires_inspection_before_proceed() -> None:
+    result = de.decide(
+        _assess(
+            edit_confidence_factors={
+                "p_success": 0.6,
+                "evidence_quality": 0.6,
+                "testability": 0.6,
+                "reversibility": 0.6,
+                "source_reliability": 0.6,
+                "scope_control": 0.6,
+            }
+        )
+    )
+
+    assert result.recommended_decision is Decision.INSPECT_FIRST
+    assert any(g["name"] == "medium_edit_confidence" for g in result.gates_fired)
+
+
+def test_import_cycle_requires_candidate_bound_tests_before_proceed() -> None:
+    from pebra.core.models import BlastEvidence
+
+    result = de.decide(
+        _assess(blast_evidence=BlastEvidence(import_cycle_detected=True))
+    )
+
+    assert result.recommended_decision is Decision.TEST_FIRST
+    assert any(g["name"] == "import_cycle_requires_tests" for g in result.gates_fired)
+
+
+def test_import_cycle_accepts_exact_patch_bound_passing_tests() -> None:
+    from pebra.core import models as m
+
+    base = _worked_example_input()
+    action = replace(base.action, proposed_patch=_CANDIDATE_PATCH)
+    result = de.decide(
+        ab.build_assessment(
+            replace(
+                base,
+                action=action,
+                blast_evidence=m.BlastEvidence(import_cycle_detected=True),
+                candidate_verification=m.CandidateVerificationEvidence(
+                    status="passed",
+                    checks={"targeted_tests": "passed"},
+                    required_checks=["targeted_tests"],
+                    verified_patch_hash=de.candidate_patch_hash(_CANDIDATE_PATCH),
+                ),
+            )
+        )
+    )
+
+    assert result.recommended_decision is Decision.PROCEED
+    assert not any(g["name"] == "import_cycle_requires_tests" for g in result.gates_fired)
+
+
 # --- Gate 13: codegraph evidence-validity (mirrors Gate 12 stale-arch-map) ---
 
 
@@ -1218,6 +1326,41 @@ def test_gate13_does_not_fire_when_codegraph_optional() -> None:
     g13 = next(g for g in result.gates_fired if g.get("gate") == 13)
     assert g13["advisory"] is True
     assert g13["required"] is False
+
+
+def test_gate13_requires_graph_by_default_for_path_migration() -> None:
+    inp = _worked_example_input()
+    migrated = replace(
+        inp.symbol_diff_evidence,
+        file_operation_kind="RENAME",
+        file_operation_paths=("src/auth.py",),
+    )
+
+    result = de.decide(_assess(symbol_diff_evidence=migrated, fanin_evidence=None))
+
+    assert result.recommended_decision is Decision.INSPECT_FIRST
+    gate = next(g for g in result.gates_fired if g.get("gate") == 13)
+    assert gate["required"] is True
+
+
+def test_gate13_explicit_graph_opt_out_preserves_optional_behavior() -> None:
+    inp = _worked_example_input()
+    migrated = replace(
+        inp.symbol_diff_evidence,
+        file_operation_kind="RENAME",
+        file_operation_paths=("src/auth.py",),
+    )
+
+    result = de.decide(
+        _assess(
+            symbol_diff_evidence=migrated,
+            fanin_evidence=None,
+            thresholds={**inp.thresholds, "require_graph": False},
+        )
+    )
+
+    assert result.recommended_decision is Decision.PROCEED
+    assert not any(g.get("gate") == 13 for g in result.gates_fired)
 
 
 def test_gate13_does_not_fire_when_trusted() -> None:
@@ -1365,7 +1508,7 @@ def test_valid_sanction_converts_gate3_to_controlled_high_risk_proceed() -> None
     result = de.decide(ab.build_assessment(inp))
     assert result.recommended_decision is Decision.PROCEED
     assert result.risk_mode is RiskMode.CONTROLLED_HIGH_RISK
-    assert result.requires_confirmation is True
+    assert result.requires_confirmation is False
     assert result.high_risk_triggers
     gate = next(g for g in result.gates_fired if g["name"] == "sanction_resolution")
     assert gate["sanction_assessment_id"] == "asm_origin"

@@ -172,6 +172,20 @@ def test_genuinely_predictive_fact_is_promoted():
     assert r.interval_coverage_lcb is not None
 
 
+def test_binary_tie_does_not_promote_under_zero_delta_defaults() -> None:
+    rows = [_crow(1.0, 1) for _ in range(5)]
+
+    result = pe.evaluate_promotion_gate(
+        _cand(target_name="p_success"),
+        rows,
+        pe.PromotionConfig(min_calibration_samples=5),
+    )
+
+    assert result.delta_brier == pytest.approx(0.0)
+    assert result.promoted is False
+    assert result.veto_reason == "DELTA_BRIER_NOT_POSITIVE"
+
+
 def test_interval_coverage_vetoes_a_regime_split() -> None:
     rows = [_crow(0.9, 0) for _ in range(50)] + [_crow(0.1, 1) for _ in range(50)]
     cfg = pe.PromotionConfig(
@@ -258,6 +272,20 @@ def _cand_cont(target_name="maintainability_delta.mi", scope_kind="global"):
 def test_empirical_continuous_value_is_mean_actual():
     rows = [{"actual_value": 1.0}, {"actual_value": 0.0}, {"actual_value": 0.5}]
     assert pe.compute_empirical_continuous_value(rows) == pytest.approx(0.5)
+
+
+def test_continuous_tie_does_not_promote_under_zero_delta_default() -> None:
+    rows = [_crow_cont(0.5, 0.5) for _ in range(5)]
+
+    result = pe.evaluate_benefit_continuous_gate(
+        _cand_cont(),
+        rows,
+        pe.PromotionConfig(min_calibration_samples=5),
+    )
+
+    assert result.delta_mse == pytest.approx(0.0)
+    assert result.promoted is False
+    assert result.veto_reason == "DELTA_MSE_NOT_POSITIVE"
 
 
 def test_benefit_continuous_gate_promotes_when_loo_mse_improves():

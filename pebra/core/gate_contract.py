@@ -103,6 +103,7 @@ ALLOWED_RISK_DECISIONS: Final[
     }),
     (GatePermission.REQUEST_HUMAN, GateTier.CONSULTED_REVIEW): frozenset({
         Decision.ASK_HUMAN,
+        Decision.PROCEED,
     }),
     (GatePermission.REQUEST_HUMAN, GateTier.CONSULTED_REJECT_REVIEW): frozenset({
         Decision.REJECT,
@@ -112,5 +113,6 @@ ALLOWED_RISK_DECISIONS: Final[
     }),
     (GatePermission.RETURN_CANDIDATE, GateTier.CONSULTED_REVIEW_UNAVAILABLE): frozenset({
         Decision.ASK_HUMAN,
+        Decision.PROCEED,
     }),
 })

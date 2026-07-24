@@ -319,9 +319,11 @@ def decide(
         assessment_decision = Decision(matched.get("decision"))
     except (TypeError, ValueError):
         return GateDecision(
-            GatePermission.CONTINUE,
-            GateTier.FAIL_OPEN,
-            warn="gate: persisted decision failed data-integrity validation",
+            GatePermission.RETURN_CANDIDATE,
+            GateTier.MUST_CONSULT,
+            reason="The exact candidate matched an assessment whose persisted decision failed "
+            "data-integrity validation. Reassess the candidate before editing.",
+            matched_assessment_id=matched_id,
         )
     risk_summary = _risk_summary(matched)
     if assessment_decision in _REVISE_DECISIONS:
@@ -409,6 +411,33 @@ def decide(
             matched_assessment_id=matched_id,
         )
     if assessment_decision is Decision.PROCEED:
+        if _requires_confirmation(matched):
+            replay_available = _candidate_replay_available(matched)
+            if consult_only or not replay_available:
+                return GateDecision(
+                    GatePermission.RETURN_CANDIDATE,
+                    GateTier.CONSULTED_REVIEW_UNAVAILABLE,
+                    reason=_exact_restrictive_reason(
+                        assessment_decision.value,
+                        risk_summary,
+                        consult_only=consult_only,
+                        replay_available=replay_available,
+                    ),
+                    risk_summary=risk_summary,
+                    matched_assessment_id=matched_id,
+                )
+            return GateDecision(
+                GatePermission.REQUEST_HUMAN,
+                GateTier.CONSULTED_REVIEW,
+                reason=_exact_restrictive_reason(
+                    assessment_decision.value,
+                    risk_summary,
+                    replay_available=True,
+                    assessment_id=matched_id,
+                ),
+                risk_summary=risk_summary,
+                matched_assessment_id=matched_id,
+            )
         return GateDecision(
             GatePermission.CONTINUE,
             GateTier.CONSULTED,
@@ -536,6 +565,18 @@ def _exact_restrictive_reason(
         action = "Next action: inspect the affected behavior, then reassess this candidate."
     elif decision == "test_first":
         action = "Next action: test the affected behavior, then reassess this candidate."
+    elif decision == "proceed" and consult_only:
+        action = (
+            "No trusted human approver is available; this candidate still requires confirmation."
+        )
+    elif decision == "proceed" and replay_available:
+        suffix = f" --assessment-id {assessment_id}" if assessment_id else ""
+        action = (
+            "Next action: a trusted human may run the bound interactive workflow: "
+            f"pebra accept-risk --apply{suffix}."
+        )
+    elif decision == "proceed":
+        action = "Bound application is unavailable; reassess this candidate before confirmation."
     elif decision == "reject" and summary is None:
         action = (
             "Risk evidence is unavailable; reassess this candidate or choose a different candidate "
@@ -674,22 +715,29 @@ def _query_pending_restriction(db_path: str, repo_id: str, head_sha: str) -> int
     except (sqlite3.Error, OSError, ValueError):
         return None
     try:
-        decisions = tuple(sorted(
+        restrictive_decisions = tuple(sorted(
             decision.value
             for decision in _REVISE_DECISIONS | _REVIEW_DECISIONS | _PREREQUISITE_DECISIONS
         ))
+        decisions = (*restrictive_decisions, Decision.PROCEED.value)
         placeholders = ",".join("?" for _ in decisions)
         cur = con.execute(
-            f"SELECT id, content_json FROM assessments WHERE repo_id = ? "
+            f"SELECT id, decision, content_json FROM assessments WHERE repo_id = ? "
             f"AND decision IN ({placeholders}) ORDER BY id DESC",
             (repo_id, *decisions),
         )
         for row in cur.fetchall():
             try:
-                content = json.loads(row[1] or "{}")
+                content = json.loads(row[2] or "{}")
             except (TypeError, ValueError):
                 continue
-            if content.get("assessed_commit") == head_sha:
+            if (
+                content.get("assessed_commit") == head_sha
+                and (
+                    row[1] in restrictive_decisions
+                    or content.get("requires_confirmation") is True
+                )
+            ):
                 return int(row[0])
         return 0
     except sqlite3.Error:
@@ -752,6 +800,14 @@ def _candidate_binding(row: dict[str, Any]) -> dict[str, Any] | None:
         return {"algorithm": algorithm, "files": dict(files)}
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
+
+
+def _requires_confirmation(row: dict[str, Any]) -> bool:
+    try:
+        content = json.loads(row["content_json"] or "{}")
+    except (KeyError, TypeError, ValueError):
+        return False
+    return isinstance(content, dict) and content.get("requires_confirmation") is True
 
 
 def _fanin_probe(target: str, repo_root: str) -> tuple[float | None, str | None]:

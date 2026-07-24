@@ -152,6 +152,7 @@ def _seed(
     scores: object = None,
     candidate_replay: object = None,
     gates_fired: object = None,
+    requires_confirmation: object = None,
 ):
     con = sqlite3.connect(db_path)
     con.execute("CREATE TABLE assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -170,6 +171,8 @@ def _seed(
         content["request"] = {"candidate_replay": candidate_replay}
     if gates_fired is not None:
         content["gates_fired"] = gates_fired
+    if requires_confirmation is not None:
+        content["requires_confirmation"] = requires_confirmation
     con.execute("INSERT INTO assessments (repo_id, decision, content_json) VALUES (?,?,?)",
                 (repo_id, decision, json.dumps(content)))
     con.commit()
@@ -435,6 +438,7 @@ def test_decide_deny_for_codex_apply_patch_event(tmp_path, monkeypatch):
 def _consulted(
     tmp_path, monkeypatch, decision: str, *,
     scores: object = None, candidate_replay: object = None, gates_fired: object = None,
+    requires_confirmation: object = None,
 ):
     monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: True)
     monkeypatch.setattr(gca, "_head_sha", lambda root: "HEAD1")
@@ -455,6 +459,7 @@ def _consulted(
         scores=scores,
         candidate_replay=candidate_replay,
         gates_fired=gates_fired,
+        requires_confirmation=requires_confirmation,
     )
 
 
@@ -704,6 +709,78 @@ def test_decide_ask_when_matched_assessment_is_ask_human(tmp_path, monkeypatch):
     assert d.permission == "ask" and d.tier == "consulted_review"
     assert d.risk_summary.decision is Decision.ASK_HUMAN
     assert "pebra accept-risk --apply" in d.reason
+
+
+def test_exact_proceed_requiring_confirmation_requests_bound_human_review(
+    tmp_path, monkeypatch,
+):
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "proceed",
+        scores={"expected_loss": 0.21, "benefit": 0.72, "rau": 0.18},
+        candidate_replay=_VALID_REPLAY,
+        requires_confirmation=True,
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.REQUEST_HUMAN
+    assert result.tier is GateTier.CONSULTED_REVIEW
+    assert result.risk_summary.decision is Decision.PROCEED
+    assert "pebra accept-risk --apply" in result.reason
+
+
+def test_exact_proceed_without_confirmation_remains_authorized(tmp_path, monkeypatch):
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "proceed",
+        requires_confirmation=False,
+    )
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.CONTINUE
+    assert result.tier is GateTier.CONSULTED
+
+
+def test_consult_only_holds_confirmation_required_proceed_with_exact_summary(
+    tmp_path, monkeypatch,
+):
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "proceed",
+        scores={"expected_loss": 0.21, "benefit": 0.72, "rau": 0.18},
+        candidate_replay=_VALID_REPLAY,
+        requires_confirmation=True,
+    )
+
+    result = gca.decide(_edit_event(tmp_path), consult_only=True)
+
+    assert result.permission is GatePermission.RETURN_CANDIDATE
+    assert result.tier is GateTier.CONSULTED_REVIEW_UNAVAILABLE
+    assert result.risk_summary.decision is Decision.PROCEED
+
+
+def test_confirmation_required_proceed_cannot_bypass_on_low_impact_prefilter(
+    tmp_path, monkeypatch,
+):
+    _consulted(
+        tmp_path,
+        monkeypatch,
+        "proceed",
+        scores={"expected_loss": 0.21, "benefit": 0.72, "rau": 0.18},
+        candidate_replay=_VALID_REPLAY,
+        requires_confirmation=True,
+    )
+    monkeypatch.setattr(gca, "_any_impactful", lambda targets, root: False)
+
+    result = gca.decide(_edit_event(tmp_path))
+
+    assert result.permission is GatePermission.REQUEST_HUMAN
+    assert result.tier is GateTier.CONSULTED_REVIEW
 
 
 def test_deny_reason_is_blinding_neutral():
@@ -974,20 +1051,20 @@ def test_persisted_decision_mapping_survives_unavailable_risk_summary(
 
 
 @pytest.mark.parametrize("persisted_decision", (None, "unknown_decision"))
-def test_corrupt_persisted_decision_fails_open_with_integrity_warning(
+def test_corrupt_persisted_decision_holds_exact_candidate_for_integrity_review(
     tmp_path, monkeypatch, persisted_decision,
 ):
     _consulted(tmp_path, monkeypatch, persisted_decision)
 
     result = gca.decide(_edit_event(tmp_path))
 
-    assert result.permission is GatePermission.CONTINUE
-    assert result.tier is GateTier.FAIL_OPEN
-    assert result.warn
-    assert "persisted decision" in result.warn.lower()
-    assert "integrity" in result.warn.lower()
+    assert result.permission is GatePermission.RETURN_CANDIDATE
+    assert result.tier is GateTier.MUST_CONSULT
+    assert result.reason
+    assert "persisted decision" in result.reason.lower()
+    assert "integrity" in result.reason.lower()
     assert result.risk_summary is None
-    assert result.matched_assessment_id is None
+    assert result.matched_assessment_id == "asm_1"
 
 
 def test_gate_check_envelope_is_versioned_and_nullable(monkeypatch, capsys):

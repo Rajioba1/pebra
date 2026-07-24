@@ -36,7 +36,7 @@ def _result(
     )
 
 
-def test_pending_review_assessments_are_scoped_to_repo_and_head(tmp_path) -> None:
+def test_pending_review_assessments_are_scoped_to_repo_head_and_confirmation(tmp_path) -> None:
     store = SqliteStore(str(tmp_path / "pebra.db"))
     expected = store.persist_assessment(
         _result(0.1, decision=Decision.ASK_HUMAN, assessed_commit="head-1"),
@@ -46,15 +46,21 @@ def test_pending_review_assessments_are_scoped_to_repo_and_head(tmp_path) -> Non
         _result(0.1, decision=Decision.ASK_HUMAN, assessed_commit="old-head"),
         {"task": "old", "candidate_replay": {"status": "available"}},
     )
-    store.persist_assessment(
+    confirmation = store.persist_assessment(
         _result(0.1, decision=Decision.PROCEED, assessed_commit="head-1"),
+        {"task": "confirm", "candidate_replay": {"status": "available"}},
+    )
+    no_confirmation = _result(0.1, decision=Decision.PROCEED, assessed_commit="head-1")
+    no_confirmation.requires_confirmation = False
+    store.persist_assessment(
+        no_confirmation,
         {"task": "allowed", "candidate_replay": {"status": "available"}},
     )
 
     rows = store.pending_review_assessments("repo_local_example", "head-1")
 
-    assert [row["assessment_id"] for row in rows] == [expected]
-    assert rows[0]["request"]["task"] == "current"
+    assert [row["assessment_id"] for row in rows] == [confirmation, expected]
+    assert [row["request"]["task"] for row in rows] == ["confirm", "current"]
 
 
 def test_pending_review_includes_only_override_eligible_rejects(tmp_path) -> None:

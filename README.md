@@ -84,10 +84,11 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pebra assess examples/login_patch.json --json
 ```
 
-That last command returns an assessment decision — one of `proceed`, `inspect_first`, `revise_safer`,
-`ask_human`, or `reject` — together with the full math packet (`expected_loss`, `expected_utility`,
+That last command returns one of `proceed`, `inspect_first`, `test_first`, `revise_safer`,
+`ask_human`, or `reject`, together with the full math packet (`expected_loss`, `expected_utility`,
 `RAU`, `edit_confidence`, and the gates that fired) for a candidate edit, *before* anything is written
-to disk. The post-edit `verify` stage can return `test_first` when required checks are missing.
+to disk. `test_first` is used pre-edit for an affected import cycle lacking exact patch-bound passing
+checks and post-edit when required checks are missing.
 
 To wire PEBRA into a coding agent (Claude Code or Codex) and open the dashboard:
 
@@ -96,8 +97,10 @@ pebra agent-init --target claude --repo-root . --with-hook
 pebra dashboard --repo-root . --open
 ```
 
-> The graph tab needs a fresh CodeGraph index. It is an explicit, optional engine — never installed by
-> `assess`. Set it up once with `pebra setup-graph --fix --repo-root .` and check it with `pebra doctor`.
+> The graph tab needs a fresh CodeGraph index. PEBRA never installs the engine from `assess`; set it
+> up once with `pebra setup-graph --fix --repo-root .` and check it with `pebra doctor`. Fresh graph
+> evidence is required by default for structurally risky, destructive, schema, and migration
+> candidates; operators may explicitly opt out with request threshold `require_graph: false`.
 > `codegraph.json` is operator-owned analysis scope: `extensions` and `includeIgnored` affect analysis scope; `exclude` is reported but ignored by pinned CodeGraph 1.1.1.
 
 ## Product Model
@@ -122,7 +125,7 @@ flowchart TB
     S3[Math<br/>loss + benefit + utility + uncertainty + RAU]
     S4[Ordered decision gates]
     E{Decide}
-    O[/proceed | inspect_first<br/>revise_safer | ask_human | reject/]
+    O[/proceed | inspect_first | test_first<br/>revise_safer | ask_human | reject/]
     F[Enforce before mutation<br/>repo + HEAD + files<br/>candidate bytes + assessment/sanction]
     G[Apply exact candidate]
     H[Verify and record outcome]
@@ -197,13 +200,13 @@ pebra explore "change login validation" --repo-root .
 pebra assess request.json --json
 
 # 3. Decide from the returned decision packet:
-#    assess: proceed / inspect_first / revise_safer / ask_human / reject.
-#    verify may return test_first when required checks are missing.
+#    assess: proceed / inspect_first / test_first / revise_safer / ask_human / reject.
+#    verify may also return test_first when required checks are missing.
 #
 # 4. Enforce immediately before mutation and apply only the assessed candidate.
 pebra apply-candidate --assessment-id <assessment_id>
 
-#    If PEBRA returns ask_human and the candidate is eligible for trusted review, use:
+#    If PEBRA returns ask_human, or proceed with requires_confirmation=true, use:
 #    pebra accept-risk --apply --assessment-id <assessment_id>
 #    Then verify/record using the reassessment ID returned by accept-risk.
 

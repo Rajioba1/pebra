@@ -29,6 +29,7 @@ def test_consequence_bearing_events_are_the_ten_named_events() -> None:
         "tool_schema_break",
         "response_shape_mismatch",
         "consumer_shape_mismatch",
+        "path_migration_break",
     }
 
 

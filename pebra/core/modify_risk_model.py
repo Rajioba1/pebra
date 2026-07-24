@@ -33,7 +33,6 @@ _FANIN_BONUS_MAX = 0.28
 _BASELINE_CONTRACT = 0.08
 _BASELINE_PUBLIC_API = 0.12
 _BASELINE_SCHEMA_OR_MIGRATION = 0.18
-_C3_C4_BONUS = {"C3": 0.05, "C4": 0.08}
 _ARCH_ENTRYPOINT_BONUS = 0.04
 _LARGE_OWNER_SPAN_LINES = 60
 _VERY_LARGE_OWNER_SPAN_LINES = 120
@@ -104,7 +103,6 @@ def _p_event(
     sde: SymbolDiffEvidence,
     fanin: FanInEvidence,
     arch: ArchitectureEvidence,
-    criticality_stage: str,
     is_schema_change: bool,
     is_migration: bool,
     candidate_aggregate: CandidateAggregateEvidence,
@@ -127,7 +125,6 @@ def _p_event(
     outgoing_total = sum(fanin.outgoing_edge_counts.values())
     if outgoing_total:
         base += min(_OUTGOING_EDGE_BONUS_MAX, 0.01 * outgoing_total)
-    base += _C3_C4_BONUS.get(criticality_stage, 0.0)
     impact_percentile = _effective_impact_percentile(fanin)
     fanin_bonus = min(_FANIN_BONUS_MAX, max(0.0, impact_percentile) *
                       (_FANIN_BONUS_MAX / _HIGH_FANIN_THRESHOLD))
@@ -153,6 +150,7 @@ def events_for_modify_risk(
 
     Low-fan-in ordinary body edits remain unchanged; unresolved graph evidence never contributes.
     """
+    del criticality_stage  # retained in the public call contract; criticality never enters p_event
     if symbol_diff.file_operation_kind != "NONE" or not is_trusted_fanin(fanin):
         return []
     assert fanin is not None  # narrowed by _trusted
@@ -191,7 +189,6 @@ def events_for_modify_risk(
         sde=symbol_diff,
         fanin=fanin,
         arch=arch,
-        criticality_stage=criticality_stage,
         is_schema_change=is_schema_change,
         is_migration=is_migration,
         candidate_aggregate=candidate_aggregate,
