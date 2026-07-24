@@ -56,17 +56,27 @@ The same ledger is available as a terminal Observatory (`pebra tui`):
   optional; when missing or mismatched they degrade to reduced-confidence evidence rather than blocking
   an assessment or auto-installing anything.
 
-## Where PEBRA fits
+## How is this different?
 
-PEBRA is not another graph viewer or memory store. It is the decision layer that turns repository
-knowledge, historical lessons, and candidate bytes into an auditable pre-edit verdict.
+PEBRA is not another graph viewer, memory store, or domain engine. It is the decision layer that turns
+repository knowledge, historical lessons, and exact candidate bytes into an auditable pre-edit verdict.
 
-| Tool | Primary job | Where PEBRA is stronger |
-|---|---|---|
-| **PEBRA** | Pre-edit benefit-risk analysis, candidate-bound enforcement, verification, and calibrated learning. | Owns the full edit lifecycle: understand → assess → decide → enforce → verify → learn. |
-| **CodeGraph** | Current repository structure: symbols, calls, dependents, fan-in, and affected-test context. | PEBRA uses CodeGraph as evidence, then adds decision math, gates, candidate binding, and outcomes. |
-| **Graphify** | Interactive knowledge-graph visualization patterns. | PEBRA keeps graph rendering tied to CodeGraph freshness and overlays assessment risk + verified lessons. |
-| **AgentMemory** | General agent memory capture and recall. | PEBRA recalls only audited `learning_context` records and lets promoted facts influence assessment through gates, not raw memory. |
+| System | Repo graph | Memory / learning | Pre-edit risk/benefit math | Candidate-bound enforcement | Best fit |
+|---|---:|---:|---:|---:|---|
+| **PEBRA** | Uses CodeGraph evidence | Audited `learning_context` + promoted facts | Yes: `expected_loss`, benefit, utility, uncertainty, RAU | Yes: repo + HEAD + files + candidate bytes + sanction state | Deciding whether a coding-agent edit should proceed before it mutates the repo. |
+| **CodeGraph** | Yes: symbols, calls, dependents, fan-in, affected tests | No PEBRA outcome loop | No | No | Supplying current structural repository truth. |
+| **Graphify** | Visual knowledge-graph patterns | Optional overlay patterns | No | No | Exploring and presenting graph structure. |
+| **AgentMemory** | No source graph by default | General agent memory | No | No | Remembering agent observations across sessions. |
+| **Formualizer** | Spreadsheet dependency graph | Workbook changelog / undo-redo | Domain-specific formula evaluation, not edit risk | No | Parsing, evaluating, and mutating spreadsheets from Rust, Python, or WASM. |
+
+- CodeGraph gives PEBRA current repository structure; PEBRA decides what that structure means for a
+  specific proposed patch.
+- Graphify informs PEBRA's dashboard style; PEBRA keeps risk overlays tied to fresh graph evidence and
+  verified lessons.
+- AgentMemory is broad recall; PEBRA recall is narrower and auditable, and only promoted facts can
+  influence future assessment.
+- Formualizer is a strong example of positioning a technical engine clearly. PEBRA's engine is not
+  spreadsheet evaluation; it is pre-edit benefit-risk analysis for coding agents.
 
 ## Quickstart
 
