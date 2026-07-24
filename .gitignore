@@ -14,6 +14,7 @@ __pycache__/
 .ruff_cache/
 .hypothesis/
 .import_linter_cache/
+.codegraph/
 .coverage
 htmlcov/
 dist/
@@ -27,3 +28,4 @@ benchmarks/flow/corpus/private/
 benchmarks/flow/corpus/jit_szz/raw/
 z*.png
 .grok/settings.json
+z*.svg
