@@ -90,6 +90,8 @@ pebra dashboard --repo-root . --open
 
 PEBRA follows a "think before acting" lifecycle. Repository knowledge comes before candidate design;
 the risk/benefit math and gates come after the candidate is exact.
+CodeGraph is the current structural adapter for repository truth; PEBRA-owned learning_context records
+provide audited recall.
 
 ```mermaid
 flowchart TB
@@ -142,7 +144,7 @@ re-deriving or overriding them:
 disutility_j     = max(elicited_j, criticality_value)   # for consequence-bearing events
 expected_loss    = Σ_j  p_event_j · disutility_j
 expected_utility = p_success · benefit − expected_loss − review_cost
-utility_sd       = √(Σ variance-contribution terms)
+utility_sd       = √(Σ variance contribution terms)
 RAU              = expected_utility − 1.28 · utility_sd
 ```
 
@@ -150,8 +152,8 @@ Ordered **decision gates** evaluate those values plus evidence (CodeGraph fan-in
 contract-surface changes, confidence, graph freshness, and policy obligations) to produce the decision.
 A separate **enforcement gate** then checks that only the exact bound candidate is applied. `reject`
 means *reject this candidate*, not the maintainer's goal — the agent surfaces the recorded reason and
-risk/benefit evidence. Recall informs *understanding*; only separately promoted numeric facts can affect
-a future `assess`.
+risk/benefit evidence. Recall informs Understand; only separately promoted numeric facts can affect a
+future `assess`.
 
 ## What's inside
 
