@@ -433,6 +433,7 @@ def _experiment_design(
         "mode_config": mode_config,
         "gate_reason_treatment_version": GATE_REASON_TREATMENT_VERSION,
         "protocol_version": advisory_contract.EXPERIMENT_PROTOCOL_VERSION,
+        "advisory_treatment_version": advisory_contract.ADVISORY_TREATMENT_VERSION,
         "run_namespace": advisory_contract.EXPERIMENT_RUN_NAMESPACE,
         "learning_context_cohort": cfg.get("learning_context_cohort"),
         "graph_scope_digest": None,
@@ -614,6 +615,8 @@ def _authenticated_design_identity(metadata: dict[str, Any]) -> tuple[str]:
         raise ValueError("stale gate reason treatment")
     if design.get("protocol_version") != advisory_contract.EXPERIMENT_PROTOCOL_VERSION:
         raise ValueError("stale subject protocol")
+    if design.get("advisory_treatment_version") != advisory_contract.ADVISORY_TREATMENT_VERSION:
+        raise ValueError("stale advisory treatment")
     if design.get("run_namespace") != advisory_contract.EXPERIMENT_RUN_NAMESPACE:
         raise ValueError("stale experiment run namespace")
     if design.get("learning_context_cohort") != "empty":

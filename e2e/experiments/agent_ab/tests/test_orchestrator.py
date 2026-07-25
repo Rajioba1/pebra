@@ -1855,3 +1855,35 @@ def test_failed_preflight_is_persisted_as_failed_not_passed(monkeypatch, tmp_pat
         "graph": "failed",
         "revise_safer": "skipped",
     }
+
+def test_advisory_treatment_version_in_design_and_hash():
+    cfg = orchestrator._config()
+    args = type("Args", (), {"mode": "assay_js"})()
+    js4 = next(spec for spec in orchestrator.load_corpus() if spec.task_id == "JS4")
+    design = orchestrator._experiment_design(
+        args, cfg, [js4], provider="deepseek", model="deepseek-v4-flash"
+    )
+    assert design["advisory_treatment_version"] == "impact-witness-v1"
+    assert design["protocol_version"] == "cognitive-lifecycle-v4"
+    # Lifecycle and advisory treatment are independent keys.
+    assert design["protocol_version"] != design["advisory_treatment_version"]
+
+    import copy
+    from e2e.experiments.agent_ab.tools import advisory_contract
+
+    base_hash = orchestrator._design_sha256(design)
+    mutated = copy.deepcopy(design)
+    mutated["advisory_treatment_version"] = "impact-witness-v0"
+    assert orchestrator._design_sha256(mutated) != base_hash
+
+    # Authenticated identity rejects stale advisory treatment.
+    meta = orchestrator._run_metadata(args, cfg, [js4])
+    meta["experiment_design"]["advisory_treatment_version"] = "stale"
+    meta["experiment_design_sha256"] = orchestrator._design_sha256(meta["experiment_design"])
+    with pytest.raises(ValueError, match="stale advisory treatment"):
+        orchestrator._authenticated_design_identity(meta)
+
+    # Gate-reason version remains independent and unchanged by this work.
+    assert design["gate_reason_treatment_version"] == orchestrator.GATE_REASON_TREATMENT_VERSION
+    assert advisory_contract.ADVISORY_TREATMENT_VERSION == "impact-witness-v1"
+    assert advisory_contract.EXPERIMENT_PROTOCOL_VERSION == "cognitive-lifecycle-v4"

@@ -23,6 +23,8 @@ from typing import Any
 TOOL_NAME = "advisory_check"
 EXPERIMENT_PROTOCOL_VERSION = "cognitive-lifecycle-v4"
 EXPERIMENT_RUN_NAMESPACE = "cognitive-lifecycle-v4"
+# Advisory *content* treatment identity (independent of subject lifecycle protocol version).
+ADVISORY_TREATMENT_VERSION = "impact-witness-v1"
 
 TOOL_DESCRIPTION = (
     "Get a pre-edit advisory before every repository file creation, edit, rename, or deletion. "

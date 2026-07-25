@@ -119,6 +119,27 @@ the exact candidate rather than the requested goal. The consult-only gate never 
 approval command to the subject. These instructions never name the product, graph provider, oracle, or
 experiment to the subject.
 
+### Advisory treatment version (impact witnesses)
+
+Independent of the subject lifecycle version, real PEBRA advisory arms now deliver the
+`impact-witness-v1` treatment: up to five repository-native impact witnesses (dependent path, symbol,
+line/column when known, edge kind, and depth) projected into the arm-neutral `advisory` string.
+
+- In production, witnesses are explanation-only. They do not change scores, gates, recommended
+  decisions, or confirmation state.
+- The assay therefore tests the complete shipped PEBRA governance intervention (verdict + grounded
+  impact evidence), not a pure verdict-only factor.
+- Existing `blast_radius` remains a historical C# comparator, not a witness-ablation arm.
+- Host-only process telemetry records witness delivery and count per assessment
+  (`impact_witness_receipts`). That is not an efficacy endpoint and is never shown to the subject.
+- Lifecycle version (`cognitive-lifecycle-v4`) identifies subject instructions; advisory treatment
+  version (`impact-witness-v1`) identifies advisory content. Equality or coordinated bumps are not
+  implied. Both participate in the design hash under distinct keys.
+- Old and new advisory treatment versions cannot be resumed or pooled under one run ID.
+- This work enriches the current multi-arm assay. It is not the separately proposed two-arm v5
+  redesign. A dedicated witness-ablation arm is deferred until there is a specific causal-mechanism
+  question and enough independent tasks.
+
 The deterministic graph preflight requires one canonical graph-scope digest across the planned task
 cohort. Every non-oracle arm must retain an available host-only Understand receipt. Graph-backed
 Understand receipts bind repository HEAD and graph scope to the preflight cohort; every real advisory
