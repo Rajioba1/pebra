@@ -718,7 +718,228 @@ def test_modify_transitive_impact_walks_reverse_codegraph_and_reports_repo_fract
     )
 
 
+def test_impact_witness_edge_site_for_direct_dependent(tmp_path) -> None:
+    """Plan M1 case 1: direct dependent with a positive edge line → edge_site."""
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "pkg.changed", "src/a.py", 10, 20)
+    _node(con, "caller:1", "function", "c1", "pkg.caller_one", "src/caller.py", 1, 8, col=1)
+    _edge(con, "caller:1", "func:A", "calls", line=42, col=7)
+    con.commit()
+    con.close()
+    patch = "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+    owner = next(item for item in ev.owner_risk if item.node_id == "func:A")
+
+    assert owner.impacted_node_ids == ("caller:1",)
+    assert owner.impact_witnesses == (
+        m.ImpactWitness(
+            impacted_node_id="caller:1",
+            qualified_name="pkg.caller_one",
+            file_path="src/caller.py",
+            line=42,
+            column=7,
+            edge_kind="calls",
+            depth=1,
+            location_source="edge_site",
+        ),
+    )
+
+
+def test_impact_witness_node_definition_when_edge_line_missing(tmp_path) -> None:
+    """Plan M1 case 2: direct dependent with no edge line → node_definition."""
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "pkg.changed", "src/a.py", 10, 20)
+    _node(con, "caller:1", "function", "c1", "pkg.caller_one", "src/caller.py", 18, 30, col=2)
+    _edge(con, "caller:1", "func:A", "calls")
+    con.commit()
+    con.close()
+    patch = "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+    owner = next(item for item in ev.owner_risk if item.node_id == "func:A")
+
+    assert owner.impact_witnesses == (
+        m.ImpactWitness(
+            impacted_node_id="caller:1",
+            qualified_name="pkg.caller_one",
+            file_path="src/caller.py",
+            line=18,
+            column=2,
+            edge_kind="calls",
+            depth=1,
+            location_source="node_definition",
+        ),
+    )
+
+
+def test_impact_witness_depth_two_uses_definition_location(tmp_path) -> None:
+    """Plan M1 case 3: depth-2 dependent uses definition location, no complete path claim."""
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "pkg.changed", "src/a.py", 10, 20)
+    _node(con, "mid:1", "function", "mid", "pkg.mid", "src/mid.py", 5, 10)
+    _node(con, "indirect:1", "function", "ind", "pkg.indirect", "src/indirect.py", 18, 25, col=3)
+    _edge(con, "mid:1", "func:A", "calls", line=6, col=1)
+    _edge(con, "indirect:1", "mid:1", "calls", line=99, col=9)
+    con.commit()
+    con.close()
+    patch = "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+    owner = next(item for item in ev.owner_risk if item.node_id == "func:A")
+    by_id = {w.impacted_node_id: w for w in owner.impact_witnesses}
+
+    assert set(owner.impacted_node_ids) == {"mid:1", "indirect:1"}
+    assert by_id["indirect:1"].depth == 2
+    assert by_id["indirect:1"].location_source == "node_definition"
+    assert by_id["indirect:1"].line == 18
+    assert by_id["indirect:1"].column == 3
+    assert by_id["indirect:1"].edge_kind == ""
+
+
+def test_impact_witness_cap_preserves_full_impacted_ids(tmp_path) -> None:
+    """Plan M1 case 4: >3 reached nodes keep every impacted_node_id but only 3 witnesses."""
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "pkg.changed", "src/a.py", 10, 20)
+    for i in range(1, 5):
+        _node(
+            con,
+            f"caller:{i}",
+            "function",
+            f"c{i}",
+            f"pkg.caller_{i}",
+            f"src/c{i}.py",
+            i,
+            i + 2,
+            col=i,
+        )
+        _edge(con, f"caller:{i}", "func:A", "calls", line=10 + i, col=i)
+    con.commit()
+    con.close()
+    patch = "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+    owner = next(item for item in ev.owner_risk if item.node_id == "func:A")
+
+    assert owner.impacted_node_ids == ("caller:1", "caller:2", "caller:3", "caller:4")
+    assert len(owner.impact_witnesses) == 3
+    assert tuple(w.impacted_node_id for w in owner.impact_witnesses) == (
+        "caller:1",
+        "caller:2",
+        "caller:3",
+    )
+    assert owner.impact_witnesses[0] == m.ImpactWitness(
+        impacted_node_id="caller:1",
+        qualified_name="pkg.caller_1",
+        file_path="src/c1.py",
+        line=11,
+        column=1,
+        edge_kind="calls",
+        depth=1,
+        location_source="edge_site",
+    )
+
+
+def test_impact_witness_order_is_stable_under_reversed_insertion(tmp_path) -> None:
+    """Plan M1 case 5: reversing insertion order yields identical witness tuples."""
+
+    def _build(order: list[str]) -> m.FanInEvidence:
+        root = tmp_path / f"repo-{'-'.join(order)}"
+        root.mkdir()
+        cg_dir = root / ".codegraph"
+        cg_dir.mkdir()
+        _make_db(cg_dir / "codegraph.db")
+        con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+        _node(con, "func:A", "function", "A", "pkg.changed", "src/a.py", 10, 20)
+        for i in order:
+            n = int(i)
+            _node(
+                con,
+                f"caller:{i}",
+                "function",
+                f"c{i}",
+                f"pkg.caller_{i}",
+                f"src/c{i}.py",
+                n,
+                n + 2,
+            )
+            _edge(con, f"caller:{i}", "func:A", "calls", line=20 + n, col=1)
+        con.commit()
+        con.close()
+        patch = "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+        return _adapter().fanin(
+            CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+            str(root),
+        )
+
+    forward = _build(["3", "1", "2", "4"])
+    reverse = _build(["4", "2", "1", "3"])
+    owner_f = next(item for item in forward.owner_risk if item.node_id == "func:A")
+    owner_r = next(item for item in reverse.owner_risk if item.node_id == "func:A")
+    assert owner_f.impact_witnesses == owner_r.impact_witnesses
+    assert tuple(w.impacted_node_id for w in owner_f.impact_witnesses) == (
+        "caller:1",
+        "caller:2",
+        "caller:3",
+    )
+
+
+def test_impact_witnesses_exclude_other_changed_owners(tmp_path) -> None:
+    """Plan M1 case 6: changed owners are excluded from each other's witness sets."""
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "pkg.A", "src/a.py", 10, 15)
+    _node(con, "func:B", "function", "B", "pkg.B", "src/b.py", 20, 25)
+    _node(con, "external:X", "function", "X", "pkg.X", "src/x.py", 1, 5)
+    _edge(con, "external:X", "func:A", "calls", line=3, col=1)
+    _edge(con, "func:A", "func:B", "calls", line=12, col=1)
+    con.commit()
+    con.close()
+    patch = (
+        "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+        "--- a/src/b.py\n+++ b/src/b.py\n@@ -22 +22 @@\n-p\n+q\n"
+    )
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+    by_id = {owner.node_id: owner for owner in ev.owner_risk}
+
+    assert by_id["func:A"].impacted_node_ids == ("external:X",)
+    assert [w.impacted_node_id for w in by_id["func:A"].impact_witnesses] == ["external:X"]
+    assert by_id["func:B"].impacted_node_ids == ()
+    assert by_id["func:B"].impact_witnesses == ()
+
+
 def test_impact_witness_edge_site_joins_against_container_impact_target(tmp_path) -> None:
+    """Plan M1 case 7: depth-1 edge lookup joins modify-impact targets, not raw owner ids."""
     cg_dir = tmp_path / ".codegraph"
     cg_dir.mkdir()
     _make_db(cg_dir / "codegraph.db")
