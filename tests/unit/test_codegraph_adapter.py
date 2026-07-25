@@ -71,10 +71,19 @@ def _node(con, nid, kind, name, qual, file_path, lo, hi, col=0):
     )
 
 
-def _edge(con, src, tgt, kind="calls", provenance="tree-sitter"):
+def _edge(
+    con,
+    src,
+    tgt,
+    kind="calls",
+    provenance="tree-sitter",
+    *,
+    line=None,
+    col=None,
+):
     con.execute(
-        "INSERT INTO edges (source, target, kind, provenance) VALUES (?,?,?,?)",
-        (src, tgt, kind, provenance),
+        "INSERT INTO edges (source, target, kind, line, col, provenance) VALUES (?,?,?,?,?,?)",
+        (src, tgt, kind, line, col, provenance),
     )
 
 
@@ -651,7 +660,7 @@ def test_modify_transitive_impact_walks_reverse_codegraph_and_reports_repo_fract
     _node(con, "func:t3", "function", "T3", "T3", "src/T3.cs", 1, 5)
     _node(con, "func:unrelated", "function", "Other", "Other", "src/Other.cs", 1, 5)
     _edge(con, "class:impl", "method:target", "implements")
-    _edge(con, "func:caller", "method:target", "calls")
+    _edge(con, "func:caller", "method:target", "calls", line=44, col=3)
     _edge(con, "func:t1", "func:caller", "calls")
     _edge(con, "func:t2", "class:impl", "references")
     _edge(con, "func:t2", "func:caller", "calls")  # duplicate path, counted once
@@ -671,6 +680,78 @@ def test_modify_transitive_impact_walks_reverse_codegraph_and_reports_repo_fract
     assert ev.modify_repo_blast_fraction == pytest.approx(5 / 7)
     assert ev.modify_repo_graph_node_count == 7
     assert ev.modify_transitive_impact_percentile == pytest.approx(1.0)
+    owner = ev.owner_risk[0]
+    assert owner.impacted_node_ids == (
+        "class:impl", "func:caller", "func:t1", "func:t2", "func:t3",
+    )
+    assert len(owner.impact_witnesses) == 3
+    assert owner.impact_witnesses == (
+        m.ImpactWitness(
+            impacted_node_id="func:caller",
+            qualified_name="Caller",
+            file_path="src/Caller.cs",
+            line=44,
+            column=3,
+            edge_kind="calls",
+            depth=1,
+            location_source="edge_site",
+        ),
+        m.ImpactWitness(
+            impacted_node_id="class:impl",
+            qualified_name="Impl",
+            file_path="src/Impl.cs",
+            line=1,
+            column=0,
+            edge_kind="implements",
+            depth=1,
+            location_source="node_definition",
+        ),
+        m.ImpactWitness(
+            impacted_node_id="func:t1",
+            qualified_name="T1",
+            file_path="src/T1.cs",
+            line=1,
+            column=0,
+            depth=2,
+            location_source="node_definition",
+        ),
+    )
+
+
+def test_impact_witness_edge_site_joins_against_container_impact_target(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "interface:I", "interface", "I", "I", "src/I.cs", 1, 20)
+    _node(con, "method:m", "method", "M", "I::M", "src/I.cs", 5, 8)
+    _node(con, "class:impl", "class", "Impl", "Impl", "src/Impl.cs", 1, 40)
+    _edge(con, "interface:I", "method:m", "contains")
+    _edge(con, "class:impl", "interface:I", "implements", line=17, col=5)
+    con.commit()
+    con.close()
+    patch = "--- a/src/I.cs\n+++ b/src/I.cs\n@@ -6 +6 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a1", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+
+    owner = ev.owner_risk[0]
+    assert owner.node_id == "method:m"
+    assert owner.impacted_node_ids == ("class:impl",)
+    assert owner.impact_witnesses == (
+        m.ImpactWitness(
+            impacted_node_id="class:impl",
+            qualified_name="Impl",
+            file_path="src/Impl.cs",
+            line=17,
+            column=5,
+            edge_kind="implements",
+            depth=1,
+            location_source="edge_site",
+        ),
+    )
 
 
 def test_modify_transitive_impact_percentile_uses_same_depth_and_edge_set_as_count(
@@ -1063,6 +1144,7 @@ def test_changed_owners_do_not_count_each_other_as_external_impact(tmp_path) -> 
     )
 
     assert all(not owner.impacted_node_ids for owner in ev.owner_risk)
+    assert all(not owner.impact_witnesses for owner in ev.owner_risk)
     assert ev.symbol_caller_count == 0
     assert ev.modify_impact_count == 0
 
@@ -1091,7 +1173,20 @@ def test_transitive_reach_does_not_traverse_through_another_changed_owner(tmp_pa
     by_id = {owner.node_id: owner for owner in ev.owner_risk}
 
     assert by_id["func:A"].impacted_node_ids == ("external:X",)
+    assert by_id["func:A"].impact_witnesses == (
+        m.ImpactWitness(
+            impacted_node_id="external:X",
+            qualified_name="X",
+            file_path="src/x.py",
+            line=1,
+            column=0,
+            edge_kind="calls",
+            depth=1,
+            location_source="node_definition",
+        ),
+    )
     assert by_id["func:B"].impacted_node_ids == ()
+    assert by_id["func:B"].impact_witnesses == ()
 
 
 def test_per_owner_contract_inherits_public_interface_container(tmp_path) -> None:

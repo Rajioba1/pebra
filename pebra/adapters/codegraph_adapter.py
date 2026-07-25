@@ -38,7 +38,13 @@ from pebra.core.engine_paths import find_engine
 from pebra.core.graph_snapshot import GraphSnapshot
 from pebra.core.graph_version import CODEGRAPH_ACCEPTED_RANGE, in_accepted_range, is_release_version
 from pebra.core.language_capability import EXPORT_AS_VISIBILITY_LANGUAGES, LanguageCapability
-from pebra.core.models import CandidateAction, FanInEvidence, FileFanInRollup, OwnerRiskEvidence
+from pebra.core.models import (
+    CandidateAction,
+    FanInEvidence,
+    FileFanInRollup,
+    ImpactWitness,
+    OwnerRiskEvidence,
+)
 from pebra.core.score_math import fractional_rank
 
 # Edge kinds that constitute per-symbol fan-in. 'imports' is deliberately excluded (file/module-level).
@@ -53,6 +59,7 @@ _OWNER_KINDS = _CALLABLE_KINDS + ("component", "route", "namespace", "module")
 _CONTRACT_CONTAINER_KINDS = ("class", "struct", "interface", "trait", "protocol")
 _CONTAINER_HIERARCHY_KINDS = _CONTRACT_CONTAINER_KINDS + ("namespace", "module", "file", "component", "route")
 _TRANSITIVE_REACH_MAX_DEPTH = 3
+_MAX_IMPACT_WITNESSES_PER_OWNER = 3
 _MIN_SCHEMA_VERSION = 5
 _STATUS_OUTPUT_BYTES = 256_000
 _PROVIDER_DIAGNOSTIC_BYTES = 16_384
@@ -1401,12 +1408,90 @@ class CodeGraphAdapter:
                     if transitive_count else 0.0
                 ),
                 impacted_node_ids=tuple(sorted(node for node, _ in reached)),
+                impact_witnesses=self._impact_witnesses(con, targets, reached),
                 is_public_contract=(
                     contract["is_exported_contract"]
                     or contract["is_abstract_or_interface_contract"]
                 ),
             ))
         return tuple(out)
+
+    def _impact_witnesses(
+        self,
+        con: sqlite3.Connection,
+        targets: list[str],
+        reached: list[tuple[str, int]],
+    ) -> tuple[ImpactWitness, ...]:
+        """Bounded explanatory dependents for one owner; never shrinks ``impacted_node_ids``."""
+        if not reached:
+            return ()
+        depth_by_id = {node_id: depth for node_id, depth in reached}
+        placeholders = ",".join("?" * len(depth_by_id))
+        node_rows = con.execute(
+            f"SELECT id, qualified_name, file_path, start_line, start_column "
+            f"FROM nodes WHERE id IN ({placeholders})",
+            tuple(depth_by_id),
+        ).fetchall()
+        candidates: list[tuple[int, str, str, str, int | None, int | None]] = []
+        for row in node_rows:
+            node_id = str(row["id"])
+            candidates.append((
+                depth_by_id[node_id],
+                str(row["file_path"] or "").replace("\\", "/"),
+                str(row["qualified_name"] or ""),
+                node_id,
+                int(row["start_line"]) if row["start_line"] is not None else None,
+                int(row["start_column"]) if row["start_column"] is not None else None,
+            ))
+        candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        selected = candidates[:_MAX_IMPACT_WITNESSES_PER_OWNER]
+        if not selected:
+            return ()
+
+        depth1_ids = [node_id for depth, _, _, node_id, _, _ in selected if depth == 1]
+        edge_by_source: dict[str, tuple[str, int | None, int | None]] = {}
+        if depth1_ids and targets:
+            src_ph = ",".join("?" * len(depth1_ids))
+            tgt_ph = ",".join("?" * len(targets))
+            kind_ph = ",".join("?" * len(_MODIFY_IMPACT_EDGE_KINDS))
+            edge_rows = con.execute(
+                f"SELECT source, target, kind, line, col FROM edges "
+                f"WHERE source IN ({src_ph}) AND target IN ({tgt_ph}) "
+                f"AND kind IN ({kind_ph}) "
+                f"ORDER BY source, (line IS NULL), line, col, kind, target",
+                (*depth1_ids, *targets, *_MODIFY_IMPACT_EDGE_KINDS),
+            ).fetchall()
+            for edge in edge_rows:
+                source = str(edge["source"])
+                if source in edge_by_source:
+                    continue
+                line = int(edge["line"]) if edge["line"] is not None else None
+                col = int(edge["col"]) if edge["col"] is not None else None
+                edge_by_source[source] = (str(edge["kind"] or ""), line, col)
+
+        witnesses: list[ImpactWitness] = []
+        for depth, file_path, qualified_name, node_id, start_line, start_column in selected:
+            edge_kind = ""
+            line = start_line
+            column = start_column
+            location_source = "node_definition"
+            if depth == 1 and node_id in edge_by_source:
+                edge_kind, edge_line, edge_col = edge_by_source[node_id]
+                if edge_line is not None and edge_line > 0:
+                    line = edge_line
+                    column = edge_col
+                    location_source = "edge_site"
+            witnesses.append(ImpactWitness(
+                impacted_node_id=node_id,
+                qualified_name=qualified_name,
+                file_path=file_path,
+                line=line,
+                column=column,
+                edge_kind=edge_kind,
+                depth=depth,
+                location_source=location_source,
+            ))
+        return tuple(witnesses)
 
     @staticmethod
     def _changed_owner_edge_count(con: sqlite3.Connection, node_ids: list[str]) -> int:

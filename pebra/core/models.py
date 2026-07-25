@@ -91,6 +91,24 @@ class SymbolDiffEvidence:
 
 
 @dataclass(frozen=True)
+class ImpactWitness:
+    """Bounded explanatory citation of one dependent reached from a changed owner.
+
+    This is an explanation projection only. Decision/scoring code continues to use complete
+    ``impacted_node_ids`` counts, not this capped list.
+    """
+
+    impacted_node_id: str
+    qualified_name: str = ""
+    file_path: str = ""
+    line: int | None = None
+    column: int | None = None
+    edge_kind: str = ""
+    depth: int = 1
+    location_source: str = "node_definition"
+
+
+@dataclass(frozen=True)
 class OwnerRiskEvidence:
     """Graph evidence retained for one changed owner inside a candidate envelope."""
 
@@ -102,6 +120,7 @@ class OwnerRiskEvidence:
     impact_percentile: float = 0.0
     transitive_impact_percentile: float = 0.0
     impacted_node_ids: tuple[str, ...] = ()
+    impact_witnesses: tuple[ImpactWitness, ...] = ()
     is_public_contract: bool = False
 
 
