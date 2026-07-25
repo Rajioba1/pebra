@@ -15,7 +15,8 @@ from textual.app import App, SystemCommand
 from textual.screen import Screen
 
 from pebra.observatory_context import ObservatoryContext, observatory_display_label
-from pebra.provenance import provenance_line
+from pebra import update_cache
+from pebra.provenance import is_editable, provenance_line, version
 from pebra.ports.repository_explorer_port import RepositoryExplorerFactory
 from pebra.tui.data import ObservatoryData
 from pebra.tui.exploration import RepositoryExplorationCoordinator
@@ -58,8 +59,12 @@ class ObservatoryApp(App[None]):
         # Source provenance in the header subtitle, so you can tell the checkout from the released wheel.
         # Computed once here (may shell out to git for an editable install) — never on the 5s refresh.
         provenance = provenance_line(prefix=False)
+        update_notice = None if is_editable() else update_cache.notice_from_entry(
+            update_cache.read_cache(), version()
+        )
         label = observatory_display_label()
-        self.sub_title = f"{label} · {provenance}" if label else provenance
+        subtitle_parts = [part for part in (label, provenance, update_notice) if part]
+        self.sub_title = " · ".join(subtitle_parts)
 
     def get_default_screen(self) -> Screen:
         return ObservatoryScreen(

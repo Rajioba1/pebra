@@ -67,6 +67,7 @@ def run(args: Any) -> int:
         return 1
     # lazy: FastAPI/uvicorn are only needed to actually serve — never at CLI import time.
     from pebra.dashboard.server import resolve_dashboard_token, serve
+    from pebra.cli import update as update_cmd
 
     auth_mode = "token" if args.token else args.auth
     try:
@@ -90,5 +91,6 @@ def run(args: Any) -> int:
         open_browser=args.open,
         graph_reader=graph_reader,
         dev_mode=args.dev,
+        update_notice=update_cmd.notice_from_cache(require_tty=False),
     )
     return 0

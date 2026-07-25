@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -166,6 +167,47 @@ def test_default_launch_without_repository_context_does_not_construct_explorer(
     cli_tui._launch(context)
 
     assert captured == {"context": context, "explorer_factory": None}
+
+
+def test_tui_subtitle_includes_cached_update_notice(monkeypatch) -> None:
+    from pebra import update_cache
+    from pebra.observatory_context import ObservatoryContext
+    from pebra.tui import app as tui_app
+
+    entry = update_cache.UpdateCache(
+        checked_at=time.time(),
+        current_version="0.2.0",
+        latest_version="0.3.0",
+    )
+    monkeypatch.setattr(tui_app.update_cache, "read_cache", lambda: entry)
+    monkeypatch.setattr(tui_app, "is_editable", lambda: False)
+    monkeypatch.setattr(tui_app, "version", lambda: "0.2.0")
+    monkeypatch.setattr(tui_app, "provenance_line", lambda prefix=False: "installed 0.2.0")
+
+    app = tui_app.ObservatoryApp(ObservatoryContext("db", "repo", None, True))
+
+    assert "PEBRA 0.3.0 is available" in app.sub_title
+
+
+def test_tui_subtitle_respects_update_check_opt_out(monkeypatch) -> None:
+    from pebra import update_cache
+    from pebra.observatory_context import ObservatoryContext
+    from pebra.tui import app as tui_app
+
+    entry = update_cache.UpdateCache(
+        checked_at=time.time(),
+        current_version="0.2.0",
+        latest_version="0.3.0",
+    )
+    monkeypatch.setenv("PEBRA_NO_UPDATE_CHECK", "1")
+    monkeypatch.setattr(tui_app.update_cache, "read_cache", lambda: entry)
+    monkeypatch.setattr(tui_app, "is_editable", lambda: False)
+    monkeypatch.setattr(tui_app, "version", lambda: "0.2.0")
+    monkeypatch.setattr(tui_app, "provenance_line", lambda prefix=False: "installed 0.2.0")
+
+    app = tui_app.ObservatoryApp(ObservatoryContext("db", "repo", None, True))
+
+    assert "PEBRA 0.3.0 is available" not in app.sub_title
 
 
 def test_version_flag_prints_provenance_without_a_subcommand() -> None:

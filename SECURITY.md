@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-PEBRA's latest published release is `0.1.1`; `0.2.x` is the current development line on `main`.
+PEBRA's latest published release is `0.2.1`; `0.2.x` is the current development line on `main`.
 Security fixes are made against the published release and the current development branch.
 
 | Version | Supported |
 | --- | --- |
-| Latest published: `0.1.1` | Yes |
+| Latest published: `0.2.1` | Yes |
 | Development: `0.2.x` / `main` | Yes |
 | Older versions | No |
 

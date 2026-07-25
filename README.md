@@ -92,6 +92,20 @@ pipx install pebra
 pebra --version
 ```
 
+PEBRA checks PyPI opportunistically on human-facing commands such as `pebra --version`, `pebra help`,
+`pebra dashboard`, and `pebra tui`. Results are cached outside the repository for 24 hours; machine
+JSON surfaces, gate hooks, MCP, core assessment, and editable checkouts do not perform background
+network checks. When a newer release is available, run:
+
+```console
+pebra update
+```
+
+`pebra update` prints the exact upgrade command by default. Use `pebra update --run` when you want
+PEBRA to execute the detected `pip`/`pipx` upgrade command after interactive confirmation, or
+`pebra update --yes` for an unattended upgrade command. Set `PEBRA_NO_UPDATE_CHECK=1` to disable
+automatic and explicit update checks.
+
 CodeGraph is PEBRA's standard structural engine. Set up its pinned version for the repository, verify
 the index, and then wire the host you actually use:
 
@@ -320,6 +334,7 @@ Current command surface:
 | Enforcement + application | `gate-check`, `gate-hook`, `apply-candidate`, `accept-risk` |
 | Verification + learning | `verify`, `record-outcome`, `finalize-outcome`, `learn`, `promote`, `scorecard` |
 | Observability + host setup | `dashboard`, `tui`, `agent-init`, `capabilities`, `help`, `--help`, `help --all`, `--version` |
+| Package maintenance | `update`, `update-check` |
 
 The exhaustive, parser-checked syntax is in the [command reference](docs/PEBRA_COMMAND_REFERENCE.md).
 

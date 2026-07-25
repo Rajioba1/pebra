@@ -91,3 +91,17 @@ def test_dashboard_cli_repo_id_override_for_replay(tmp_path, monkeypatch) -> Non
     )
     assert rc == 0
     assert captured["kw"]["repo_id"] == "deadbeef1234"
+
+
+def test_dashboard_cli_passes_cached_update_notice_without_requiring_tty(tmp_path, monkeypatch) -> None:
+    from pebra.cli import update as update_cmd
+    from pebra.dashboard import server
+
+    captured: dict = {}
+    monkeypatch.setattr(update_cmd, "notice_from_cache", lambda *, require_tty=True: "PEBRA 0.3.0 is available")
+    monkeypatch.setattr(server, "serve", lambda db_path, **kw: captured.update(kw=kw))
+
+    rc = main(["dashboard", "--repo-root", str(tmp_path), "--db", str(tmp_path / "x.db"), "--port", "0"])
+
+    assert rc == 0
+    assert captured["kw"]["update_notice"] == "PEBRA 0.3.0 is available"

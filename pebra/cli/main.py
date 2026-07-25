@@ -25,6 +25,7 @@ from pebra.cli import record_outcome as record_outcome_cmd
 from pebra.cli import scorecard as scorecard_cmd
 from pebra.cli import setup_graph as setup_graph_cmd
 from pebra.cli import tui as tui_cmd
+from pebra.cli import update as update_cmd
 from pebra.cli import verify as verify_cmd
 
 
@@ -79,8 +80,24 @@ class _LazyVersionAction(argparse.Action):
     ) -> None:
         from pebra.provenance import provenance_line
 
+        try:
+            if sys.stdout.isatty():
+                update_cmd.refresh_if_allowed("version", namespace)
+                notice = update_cmd.notice_from_cache()
+                if notice:
+                    print(notice, file=sys.stderr)
+        except Exception:
+            pass
         print(provenance_line())
         parser.exit()
+
+
+def _update_notice_allowed(command: str | None, args: argparse.Namespace) -> bool:
+    if command in {"gate-check", "gate-hook"}:
+        return False
+    if getattr(args, "as_json", False):
+        return False
+    return command in {"help", "version", "tui", "dashboard"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -106,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     scorecard_cmd.register(subparsers)
     dashboard_cmd.register(subparsers)
     tui_cmd.register(subparsers)
+    update_cmd.register(subparsers)
     setup_graph_cmd.register(subparsers)
     graph_stats_cmd.register(subparsers)
     capabilities_cmd.register(subparsers)
@@ -161,4 +179,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_output_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if _update_notice_allowed(getattr(args, "command", None), args):
+        try:
+            update_cmd.refresh_if_allowed(args.command, args)
+            notice = update_cmd.notice_from_cache()
+            if notice:
+                print(notice, file=sys.stderr)
+        except Exception:
+            pass
     return args.func(args)

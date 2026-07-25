@@ -20,6 +20,7 @@ forbidden_modules =
     pebra.composition
     pebra.observatory_context
     pebra.provenance
+    pebra.update_cache
 
 [importlinter:contract:core-no-impure-libs]
 name = core forbidden from impure stdlib + heavy libs (Architecture §12)
@@ -104,6 +105,27 @@ forbidden_modules =
     pebra.observatory_context
     pebra.provenance
     pebra.tui
+
+[importlinter:contract:update-checking-stays-out-of-decision-surfaces]
+name = update checking never enters decision, adapter, or MCP surfaces
+type = forbidden
+source_modules =
+    pebra.core
+    pebra.adapters
+    pebra.mcp_server
+forbidden_modules =
+    pebra.cli.update
+    pebra.update_cache
+
+[importlinter:contract:observability-surfaces-read-update-cache-only]
+name = observability surfaces read update cache only
+type = forbidden
+source_modules =
+    pebra.dashboard
+    pebra.tui
+forbidden_modules =
+    pebra.cli.update
+    urllib
 
 # The dashboard surface may import exactly one app module: the shared read-only Observatory query
 # controller. Any other app import, including a controller added later, must break this contract.

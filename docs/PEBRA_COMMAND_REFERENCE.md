@@ -11,7 +11,7 @@ pebra help --all
 pebra --version
 ```
 
-The current tree has 22 root CLI commands, two installed console entrypoints, four MCP tools, 17 nox sessions, repository packaging utilities, and three GitHub Actions workflows.
+The current tree has 24 root CLI commands, two installed console entrypoints, four MCP tools, 17 nox sessions, repository packaging utilities, and three GitHub Actions workflows.
 
 ## Shell Compatibility
 
@@ -97,6 +97,7 @@ After activating the environment, the shorter `python`, `pebra`, `nox`, and `tex
 | Isolated demo | `python -m scripts.demo_observatory` | temporary synthetic DB, `repo_demo_*`, visible `DEMO`; not a root command |
 | Browser Observatory | `pebra dashboard` | read-only web view of the selected ledger |
 | Terminal Observatory | `pebra tui` | read-only Textual view of the same ledger; every ledger column remains available through horizontal scrolling |
+| Update status | `pebra update-check`; `pebra update` | PyPI version check, update guidance, and optional interactive upgrade |
 
 ## Installed Entrypoints
 
@@ -389,6 +390,59 @@ pebra tui --read-only --db path/to/pebra.db --repo-id repo_example
 ```
 
 `--repo-root` requires a value. Use `--repo-root .` for the current directory.
+
+### `update`
+
+Show the latest PyPI release status and the command PEBRA would use to upgrade the installed package.
+
+```text
+pebra update
+  [--check]
+  [--json]
+  [--run]
+  [--yes]
+```
+
+```console
+pebra update
+pebra update --json
+pebra update --run
+```
+
+By default this command checks PyPI and prints the upgrade command without running it. `--run` executes
+that command only from an interactive terminal after the operator types `UPGRADE`; `--yes` skips the
+prompt for unattended use. `--json` cannot be combined with `--run` or `--yes`, so an action flag is
+never silently ignored. Editable checkouts refuse self-update and should be updated with Git instead.
+
+PEBRA detects common `pipx` installs and uses `pipx upgrade pebra`; otherwise it prints or runs:
+
+```console
+python -m pip install --upgrade pebra
+```
+
+`--json` reports `current_version`, `latest_version`, `update_available`, `install_method`, and
+`command`.
+
+### `update-check`
+
+Check whether a newer PyPI release is available without running an installer.
+
+```text
+pebra update-check
+  [--no-cache]
+  [--json]
+```
+
+```console
+pebra update-check
+pebra update-check --json
+pebra update-check --no-cache
+```
+
+`update-check` uses the cached PyPI result when it is fresh. `--no-cache` forces a fresh network check.
+Failures are fail-soft: the command reports an unknown latest version rather than blocking other PEBRA
+workflows. `PEBRA_NO_UPDATE_CHECK=1` disables this command before any network request, and editable
+checkouts refuse update checks because Git is the correct update path.
 
 ### `setup-graph`
 

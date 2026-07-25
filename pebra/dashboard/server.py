@@ -104,6 +104,7 @@ def create_app(
     graph_reader: object | None = None,
     read_only: bool = False,
     dev_mode: bool = False,
+    update_notice: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="PEBRA Risk Observatory")
     app.state.db_path = db_path
@@ -123,6 +124,7 @@ def create_app(
         graph_reader = CodeGraphReader(status_fn=lambda _root: None)
     app.state.graph_reader = graph_reader
     app.state.dev_mode = bool(dev_mode)
+    app.state.update_notice = update_notice
     allowed = _allowed_hosts(allowed_hosts)
 
     @app.middleware("http")
@@ -150,6 +152,7 @@ def create_app(
             nonce=nonce,
             observatory_label=observatory_display_label(),
             dev_mode=app.state.dev_mode,
+            update_notice=app.state.update_notice,
         )
         return HTMLResponse(html, headers={"Content-Security-Policy": auth.build_csp(nonce)})
 
@@ -169,6 +172,7 @@ def serve(
     read_only: bool = False,
     graph_reader: object | None = None,
     dev_mode: bool = False,
+    update_notice: str | None = None,
 ) -> None:
     import uvicorn
 
@@ -185,6 +189,7 @@ def serve(
         read_only=read_only,
         graph_reader=graph_reader,
         dev_mode=dev_mode,
+        update_notice=update_notice,
     )
     url = _startup_url(host, port, token, repo_id)
     print(f"PEBRA Risk Observatory: {url}")
