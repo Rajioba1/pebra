@@ -57,9 +57,9 @@ _RISK_DECISIONS_BY_PAIR = {
     ("allow", "consulted"): frozenset({"proceed"}),
     ("deny", "consulted_revise"): frozenset({"revise_safer"}),
     ("deny", "consulted_prerequisite"): frozenset({"inspect_first", "test_first"}),
-    ("ask", "consulted_review"): frozenset({"ask_human"}),
+    ("ask", "consulted_review"): frozenset({"ask_human", "proceed"}),
     ("deny", "consulted_review"): frozenset({"reject"}),
-    ("deny", "consulted_review_unavailable"): frozenset({"ask_human"}),
+    ("deny", "consulted_review_unavailable"): frozenset({"ask_human", "proceed"}),
     ("ask", "consulted_reject_review"): frozenset({"reject"}),
 }
 
