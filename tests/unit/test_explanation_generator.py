@@ -48,3 +48,104 @@ def test_worked_example_why_lines_are_grounded_in_numbers() -> None:
     assert any("Value After Risk is Positive" in line for line in ex.why)
     # never leak the raw "RAU" acronym into human text
     assert all("RAU" not in line for line in ex.why)
+
+def test_impact_witness_edge_site_why_line() -> None:
+    lines = eg._impact_witness_why_lines({
+        "symbol_fanin": {
+            "resolution_method": "location",
+            "graph_freshness": "fresh",
+            "impact_witnesses": [
+                {
+                    "owner_qualified_name": "pkg.changed",
+                    "dependent_qualified_name": "pkg.caller",
+                    "file_path": "src/caller.py",
+                    "line": 42,
+                    "column": 7,
+                    "edge_kind": "calls",
+                    "depth": 1,
+                    "location_source": "edge_site",
+                }
+            ],
+        }
+    })
+    assert lines == [
+        "Impact witness: pkg.caller in src/caller.py:42:7 calls changed symbol pkg.changed."
+    ]
+
+
+def test_impact_witness_transitive_definition_why_line() -> None:
+    lines = eg._impact_witness_why_lines({
+        "symbol_fanin": {
+            "resolution_method": "location",
+            "graph_freshness": "fresh",
+            "impact_witnesses": [
+                {
+                    "owner_qualified_name": "pkg.changed",
+                    "dependent_qualified_name": "pkg.indirect",
+                    "file_path": "src/indirect.py",
+                    "line": 18,
+                    "column": None,
+                    "edge_kind": "",
+                    "depth": 2,
+                    "location_source": "node_definition",
+                }
+            ],
+        }
+    })
+    assert lines == [
+        "Impact witness: pkg.indirect in src/indirect.py:18 is reachable from changed symbol "
+        "pkg.changed at dependency depth 2 (dependent definition location, not a complete path)."
+    ]
+    assert all("complete path" in line or "reachable" in line for line in lines)
+    assert "calls" not in lines[0]
+
+
+def test_impact_witness_why_omitted_when_graph_untrusted() -> None:
+    lines = eg._impact_witness_why_lines({
+        "symbol_fanin": {
+            "resolution_method": "unresolved",
+            "graph_freshness": "stale",
+            "impact_witnesses": [
+                {
+                    "owner_qualified_name": "pkg.changed",
+                    "dependent_qualified_name": "pkg.caller",
+                    "file_path": "src/caller.py",
+                    "line": 1,
+                    "column": 1,
+                    "edge_kind": "calls",
+                    "depth": 1,
+                    "location_source": "edge_site",
+                }
+            ],
+        }
+    })
+    assert lines == []
+
+
+def test_impact_witness_why_capped_at_five() -> None:
+    witnesses = [
+        {
+            "owner_qualified_name": "pkg.changed",
+            "dependent_qualified_name": f"pkg.d{i}",
+            "file_path": f"src/d{i}.py",
+            "line": i,
+            "column": 1,
+            "edge_kind": "calls",
+            "depth": 1,
+            "location_source": "edge_site",
+        }
+        for i in range(1, 8)
+    ]
+    lines = eg._impact_witness_why_lines({
+        "symbol_fanin": {
+            "resolution_method": "location",
+            "graph_freshness": "fresh",
+            "impact_witnesses": witnesses,
+        }
+    })
+    assert len(lines) == 5
+
+
+def test_worked_example_why_unchanged_without_witnesses() -> None:
+    ex = eg.render(_worked_result())
+    assert all(not line.startswith("Impact witness:") for line in ex.why)

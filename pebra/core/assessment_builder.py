@@ -28,7 +28,11 @@ from pebra.core.constants import (
     COLD_START_VARIANCES,
     ActionStatus,
 )
-from pebra.core.models import AssessmentInput
+from pebra.core.models import AssessmentInput, FanInEvidence, ImpactWitness, OwnerRiskEvidence
+
+# Candidate-level cap for explanation/JSON serialization (owner retention may hold up to 3 each).
+_MAX_SERIALIZED_IMPACT_WITNESSES = 5
+
 
 @dataclass
 class Assessment:
@@ -86,6 +90,90 @@ def _scoped_graph_risk_update(inp: AssessmentInput) -> tuple[list[dict[str, Any]
     return candidate_refinement.apply_scoped_adjustments(
         inp.events, inp.candidate_graph_risk_evidence, patch_hash=patch_hash
     )
+
+
+def project_impact_witnesses(
+    owner_risk: tuple[OwnerRiskEvidence, ...] | list[OwnerRiskEvidence],
+    *,
+    limit: int = _MAX_SERIALIZED_IMPACT_WITNESSES,
+) -> list[dict[str, Any]]:
+    """Project retained owner witnesses into a node-id-free, deterministically ordered list.
+
+    Decision/scoring code never reads this projection. Empty when no witnesses are retained.
+    """
+    rows: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    for owner in owner_risk:
+        owner_name = str(owner.qualified_name or "")
+        for witness in owner.impact_witnesses:
+            if not isinstance(witness, ImpactWitness):
+                continue
+            payload = {
+                "owner_qualified_name": owner_name,
+                "dependent_qualified_name": str(witness.qualified_name or ""),
+                "file_path": str(witness.file_path or "").replace("\\", "/"),
+                "line": witness.line,
+                "column": witness.column,
+                "edge_kind": str(witness.edge_kind or ""),
+                "depth": int(witness.depth),
+                "location_source": str(witness.location_source or "node_definition"),
+            }
+            sort_key = (
+                payload["depth"],
+                owner_name,
+                payload["dependent_qualified_name"],
+                payload["file_path"],
+                payload["line"] is None,
+                payload["line"] if payload["line"] is not None else 0,
+                payload["column"] is None,
+                payload["column"] if payload["column"] is not None else 0,
+                payload["edge_kind"],
+            )
+            rows.append((sort_key, payload))
+    rows.sort(key=lambda item: item[0])
+    return [payload for _, payload in rows[: max(0, int(limit))]]
+
+
+def _symbol_fanin_payload(fanin: FanInEvidence | None) -> dict[str, Any] | None:
+    if fanin is None:
+        return None
+    payload: dict[str, Any] = {
+        "percentile": fanin.symbol_fan_in_percentile,
+        "caller_count": fanin.symbol_caller_count,
+        "resolution_method": fanin.resolution_method,
+        "graph_freshness": fanin.graph_freshness,
+        "fallback_reason": fanin.fallback_reason,
+        "owner_kinds": sorted(fanin.owner_kinds),
+        "max_owner_span_lines": fanin.max_owner_span_lines,
+        "resolved_symbol_count": fanin.resolved_symbol_count,
+        "incoming_edge_counts": dict(fanin.incoming_edge_counts),
+        "outgoing_edge_counts": dict(fanin.outgoing_edge_counts),
+        "modify_impact_count": fanin.modify_impact_count,
+        "modify_impact_percentile": fanin.modify_impact_percentile,
+        "modify_impact_edge_counts": dict(fanin.modify_impact_edge_counts),
+        "modify_transitive_impact_count": fanin.modify_transitive_impact_count,
+        "modify_transitive_impact_percentile": fanin.modify_transitive_impact_percentile,
+        "modify_transitive_depth_buckets": dict(fanin.modify_transitive_depth_buckets),
+        "modify_repo_blast_fraction": fanin.modify_repo_blast_fraction,
+        "modify_repo_graph_node_count": fanin.modify_repo_graph_node_count,
+        "container_hierarchy_kinds": sorted(fanin.container_hierarchy_kinds),
+        "graph_file_size_bytes": fanin.graph_file_size_bytes,
+        "graph_file_node_count": fanin.graph_file_node_count,
+        "graph_file_error_count": fanin.graph_file_error_count,
+        "contract_surface_kind": fanin.contract_surface_kind,
+        "is_exported_contract": fanin.is_exported_contract,
+        "is_abstract_or_interface_contract": fanin.is_abstract_or_interface_contract,
+        "has_signature_metadata": fanin.has_signature_metadata,
+        # Graph identity for dashboard hotspot replay: the resolved owners' qualified names +
+        # files, so a stored assessment can be mapped back onto graph nodes later (the same
+        # qualified-name identity the verify path re-resolves by). Aggregate counts can't do that.
+        "resolved_qualified_names": list(fanin.resolved_qualified_names),
+        "resolved_file_paths": list(fanin.resolved_file_paths),
+        "changed_owner_edge_count": fanin.changed_owner_edge_count,
+    }
+    witnesses = project_impact_witnesses(fanin.owner_risk)
+    if witnesses:
+        payload["impact_witnesses"] = witnesses
+    return payload
 
 
 def build_assessment(inp: AssessmentInput) -> Assessment:
@@ -211,44 +299,7 @@ def build_assessment(inp: AssessmentInput) -> Assessment:
         if rollup is not None
         else None
     )
-    symbol_fanin = (
-        {
-            "percentile": fanin.symbol_fan_in_percentile,
-            "caller_count": fanin.symbol_caller_count,
-            "resolution_method": fanin.resolution_method,
-            "graph_freshness": fanin.graph_freshness,
-            "fallback_reason": fanin.fallback_reason,
-            "owner_kinds": sorted(fanin.owner_kinds),
-            "max_owner_span_lines": fanin.max_owner_span_lines,
-            "resolved_symbol_count": fanin.resolved_symbol_count,
-            "incoming_edge_counts": dict(fanin.incoming_edge_counts),
-            "outgoing_edge_counts": dict(fanin.outgoing_edge_counts),
-            "modify_impact_count": fanin.modify_impact_count,
-            "modify_impact_percentile": fanin.modify_impact_percentile,
-            "modify_impact_edge_counts": dict(fanin.modify_impact_edge_counts),
-            "modify_transitive_impact_count": fanin.modify_transitive_impact_count,
-            "modify_transitive_impact_percentile": fanin.modify_transitive_impact_percentile,
-            "modify_transitive_depth_buckets": dict(fanin.modify_transitive_depth_buckets),
-            "modify_repo_blast_fraction": fanin.modify_repo_blast_fraction,
-            "modify_repo_graph_node_count": fanin.modify_repo_graph_node_count,
-            "container_hierarchy_kinds": sorted(fanin.container_hierarchy_kinds),
-            "graph_file_size_bytes": fanin.graph_file_size_bytes,
-            "graph_file_node_count": fanin.graph_file_node_count,
-            "graph_file_error_count": fanin.graph_file_error_count,
-            "contract_surface_kind": fanin.contract_surface_kind,
-            "is_exported_contract": fanin.is_exported_contract,
-            "is_abstract_or_interface_contract": fanin.is_abstract_or_interface_contract,
-            "has_signature_metadata": fanin.has_signature_metadata,
-            # Graph identity for dashboard hotspot replay: the resolved owners' qualified names +
-            # files, so a stored assessment can be mapped back onto graph nodes later (the same
-            # qualified-name identity the verify path re-resolves by). Aggregate counts can't do that.
-            "resolved_qualified_names": list(fanin.resolved_qualified_names),
-            "resolved_file_paths": list(fanin.resolved_file_paths),
-            "changed_owner_edge_count": fanin.changed_owner_edge_count,
-        }
-        if fanin is not None
-        else None
-    )
+    symbol_fanin = _symbol_fanin_payload(fanin)
     scores: dict[str, Any] = {
         "expected_loss": expected_loss,
         "verified_risk_events_removed": [],

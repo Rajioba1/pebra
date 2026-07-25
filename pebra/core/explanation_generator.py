@@ -74,6 +74,68 @@ def _affected_area(symbol_scope_evidence: dict[str, Any]) -> str:
     return f"small - affects ~{n} symbol(s) / few call sites ({basis})"
 
 
+def _format_location(file_path: str, line: int | None, column: int | None) -> str:
+    path = file_path or "unknown file"
+    if line is None:
+        return path
+    if column is None:
+        return f"{path}:{line}"
+    return f"{path}:{line}:{column}"
+
+
+def _impact_witness_why_lines(symbol_scope_evidence: dict[str, Any]) -> list[str]:
+    """Render up to five grounded witness lines from already-projected structured fields."""
+    fanin = symbol_scope_evidence.get("symbol_fanin")
+    if not isinstance(fanin, dict):
+        return []
+    freshness = str(fanin.get("graph_freshness") or "")
+    method = str(fanin.get("resolution_method") or "")
+    if freshness != "fresh" or method in {"", "unresolved"}:
+        return []
+    raw = fanin.get("impact_witnesses")
+    if not isinstance(raw, list) or not raw:
+        return []
+    lines: list[str] = []
+    for item in raw[:5]:
+        if not isinstance(item, dict):
+            continue
+        owner = str(item.get("owner_qualified_name") or "changed symbol")
+        dependent = str(item.get("dependent_qualified_name") or "dependent symbol")
+        file_path = str(item.get("file_path") or "").replace("\\", "/")
+        line = item.get("line")
+        column = item.get("column")
+        if line is not None and not isinstance(line, int):
+            try:
+                line = int(line)
+            except (TypeError, ValueError):
+                line = None
+        if column is not None and not isinstance(column, int):
+            try:
+                column = int(column)
+            except (TypeError, ValueError):
+                column = None
+        depth = item.get("depth", 1)
+        try:
+            depth = int(depth)
+        except (TypeError, ValueError):
+            depth = 1
+        edge_kind = str(item.get("edge_kind") or "")
+        location_source = str(item.get("location_source") or "node_definition")
+        location = _format_location(file_path, line, column)
+        if depth <= 1 and location_source == "edge_site" and edge_kind:
+            lines.append(
+                f"Impact witness: {dependent} in {location} {edge_kind} changed symbol {owner}."
+            )
+        else:
+            # Definition-site / transitive: never claim a complete path or observed edge site.
+            lines.append(
+                f"Impact witness: {dependent} in {location} is reachable from changed symbol "
+                f"{owner} at dependency depth {depth} "
+                f"(dependent definition location, not a complete path)."
+            )
+    return lines
+
+
 def render(
     result: AssessmentResult, thresholds: dict[str, float] | None = None
 ) -> Explanation:
@@ -101,6 +163,7 @@ def render(
         why.append(
             f"{stage} code is sensitive context, so confirmation is required."
         )
+    why.extend(_impact_witness_why_lines(sse))
 
     return Explanation(
         risk_level_band=risk_level_band(s["risk_budget_used"]),

@@ -562,3 +562,218 @@ def test_unbound_graph_fact_cannot_reduce_revision_risk() -> None:
     assert result.scores["expected_loss"] == pytest.approx(0.36)
     assert result.scores["verified_risk_events_removed"] == []
     assert result.scores["risk_probability_updates"] == []
+
+def _owner(name: str, *witnesses: m.ImpactWitness) -> m.OwnerRiskEvidence:
+    return m.OwnerRiskEvidence(
+        node_id=f"id:{name}",
+        qualified_name=name,
+        impact_witnesses=witnesses,
+    )
+
+
+def test_project_impact_witnesses_serializes_without_node_ids() -> None:
+    owners = (
+        _owner(
+            "pkg.changed",
+            m.ImpactWitness(
+                impacted_node_id="nid:1",
+                qualified_name="pkg.caller",
+                file_path="src\\caller.py",
+                line=42,
+                column=7,
+                edge_kind="calls",
+                depth=1,
+                location_source="edge_site",
+            ),
+        ),
+    )
+    projected = ab.project_impact_witnesses(owners)
+    assert projected == [
+        {
+            "owner_qualified_name": "pkg.changed",
+            "dependent_qualified_name": "pkg.caller",
+            "file_path": "src/caller.py",
+            "line": 42,
+            "column": 7,
+            "edge_kind": "calls",
+            "depth": 1,
+            "location_source": "edge_site",
+        }
+    ]
+    assert "nid:1" not in str(projected)
+    assert "impacted_node_id" not in projected[0]
+
+
+def test_builder_omits_impact_witnesses_when_none_retained() -> None:
+    assessment = ab.build_assessment(
+        replace(
+            _worked_example_input(),
+            fanin_evidence=m.FanInEvidence(
+                resolution_method="location",
+                graph_freshness="fresh",
+                owner_risk=(),
+            ),
+        )
+    )
+    fanin = assessment.scores["symbol_scope_evidence"]["symbol_fanin"]
+    assert "impact_witnesses" not in fanin
+
+
+def test_builder_surfaces_capped_deterministic_impact_witnesses() -> None:
+    witnesses = [
+        m.ImpactWitness(
+            impacted_node_id=f"n{i}",
+            qualified_name=f"pkg.dep{i}",
+            file_path=f"src/d{i}.py",
+            line=10 + i,
+            column=i,
+            edge_kind="calls",
+            depth=1,
+            location_source="edge_site",
+        )
+        for i in range(1, 7)
+    ]
+    owners = (
+        m.OwnerRiskEvidence(
+            node_id="owner:a",
+            qualified_name="pkg.changed",
+            impact_witnesses=tuple(witnesses),
+        ),
+    )
+    assessment = ab.build_assessment(
+        replace(
+            _worked_example_input(),
+            fanin_evidence=m.FanInEvidence(
+                resolution_method="location",
+                graph_freshness="fresh",
+                owner_risk=owners,
+            ),
+        )
+    )
+    projected = assessment.scores["symbol_scope_evidence"]["symbol_fanin"]["impact_witnesses"]
+    assert len(projected) == 5
+    assert [row["dependent_qualified_name"] for row in projected] == [
+        "pkg.dep1", "pkg.dep2", "pkg.dep3", "pkg.dep4", "pkg.dep5",
+    ]
+
+
+def test_builder_impact_witness_order_is_stable_across_owner_order() -> None:
+    w1 = m.ImpactWitness(
+        impacted_node_id="a",
+        qualified_name="pkg.a",
+        file_path="src/a.py",
+        line=1,
+        column=1,
+        edge_kind="calls",
+        depth=1,
+        location_source="edge_site",
+    )
+    w2 = m.ImpactWitness(
+        impacted_node_id="b",
+        qualified_name="pkg.b",
+        file_path="src/b.py",
+        line=2,
+        column=2,
+        edge_kind="calls",
+        depth=1,
+        location_source="edge_site",
+    )
+    forward = (
+        m.OwnerRiskEvidence(node_id="o2", qualified_name="pkg.z", impact_witnesses=(w2,)),
+        m.OwnerRiskEvidence(node_id="o1", qualified_name="pkg.a_owner", impact_witnesses=(w1,)),
+    )
+    reverse = tuple(reversed(forward))
+    a = ab.project_impact_witnesses(forward)
+    b = ab.project_impact_witnesses(reverse)
+    assert a == b
+    assert [row["owner_qualified_name"] for row in a] == ["pkg.a_owner", "pkg.z"]
+
+
+def test_builder_impact_witness_allows_missing_line_column() -> None:
+    owners = (
+        m.OwnerRiskEvidence(
+            node_id="o",
+            qualified_name="pkg.changed",
+            impact_witnesses=(
+                m.ImpactWitness(
+                    impacted_node_id="d",
+                    qualified_name="pkg.dep",
+                    file_path="src/dep.py",
+                    line=None,
+                    column=None,
+                    edge_kind="",
+                    depth=2,
+                    location_source="node_definition",
+                ),
+            ),
+        ),
+    )
+    projected = ab.project_impact_witnesses(owners)
+    assert projected[0]["line"] is None
+    assert projected[0]["column"] is None
+    assert projected[0]["depth"] == 2
+
+
+def test_impact_witnesses_do_not_change_decision_fingerprint() -> None:
+    from pebra.core import decision_engine as de
+
+    base = replace(
+        _worked_example_input(),
+        fanin_evidence=m.FanInEvidence(
+            resolution_method="location",
+            graph_freshness="fresh",
+            symbol_fan_in_percentile=0.9,
+            symbol_caller_count=5,
+            modify_impact_count=5,
+            owner_risk=(
+                m.OwnerRiskEvidence(node_id="o", qualified_name="pkg.changed"),
+            ),
+        ),
+    )
+    with_w = replace(
+        base,
+        fanin_evidence=replace(
+            base.fanin_evidence,
+            owner_risk=(
+                m.OwnerRiskEvidence(
+                    node_id="o",
+                    qualified_name="pkg.changed",
+                    impact_witnesses=(
+                        m.ImpactWitness(
+                            impacted_node_id="c",
+                            qualified_name="pkg.caller",
+                            file_path="src/c.py",
+                            line=9,
+                            column=1,
+                            edge_kind="calls",
+                            depth=1,
+                            location_source="edge_site",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    def fingerprint(result):
+        return {
+            "recommended_decision": result.recommended_decision,
+            "requires_confirmation": result.requires_confirmation,
+            "risk_mode": result.risk_mode,
+            "action_status": result.action_status,
+            "gates_fired": result.gates_fired,
+            "decision_reason": result.decision_reason,
+            "expected_loss": result.scores["expected_loss"],
+            "benefit": result.scores["benefit"],
+            "expected_utility": result.scores["expected_utility"],
+            "utility_sd": result.scores["utility_sd"],
+            "rau": result.scores["rau"],
+        }
+
+    a0 = ab.build_assessment(base)
+    a1 = ab.build_assessment(with_w)
+    r0 = de.decide(a0)
+    r1 = de.decide(a1)
+    assert fingerprint(r0) == fingerprint(r1)
+    assert "impact_witnesses" not in (a0.scores["symbol_scope_evidence"]["symbol_fanin"] or {})
+    assert a1.scores["symbol_scope_evidence"]["symbol_fanin"]["impact_witnesses"]
