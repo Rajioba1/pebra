@@ -175,10 +175,122 @@ def _safe_route_text(result: dict[str, Any]) -> str:
     return " Specific constraints: " + " ".join(safe)
 
 
+_MODIFY_IMPACT_EDGE_KINDS = frozenset({
+    "calls", "references", "instantiates", "implements", "extends",
+})
+_MAX_WITNESS_SENTENCES = 5
+_MAX_WITNESS_FIELD_CHARS = 200
+
+
+def _repo_relative_path(path: str) -> str | None:
+    text = str(path or "").replace("\\", "/").strip()
+    if not text or text.startswith("/") or re.match(r"^[A-Za-z]:/", text):
+        return None
+    if ".." in text.split("/"):
+        return None
+    if len(text) > _MAX_WITNESS_FIELD_CHARS:
+        return None
+    return text
+
+
+def _clean_symbol(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text or len(text) > _MAX_WITNESS_FIELD_CHARS:
+        return None
+    if forbidden.match_terms(text, forbidden.CORPUS_FORBIDDEN_TERMS):
+        return None
+    return text
+
+
+def _impact_witness_text(result: dict[str, Any] | None) -> str:
+    """Blinded, arm-neutral projection of production impact witnesses into advisory text.
+
+    Reads only structured scores.symbol_scope_evidence.symbol_fanin.impact_witnesses. Never
+    forwards node IDs, engine vocabulary, or free-form why lines.
+    """
+    if not isinstance(result, dict):
+        return ""
+    scores = result.get("scores")
+    if not isinstance(scores, dict):
+        return ""
+    sse = scores.get("symbol_scope_evidence")
+    if not isinstance(sse, dict):
+        return ""
+    fanin = sse.get("symbol_fanin")
+    if not isinstance(fanin, dict):
+        return ""
+    raw = fanin.get("impact_witnesses")
+    if not isinstance(raw, list) or not raw:
+        return ""
+    sentences: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if len(sentences) >= _MAX_WITNESS_SENTENCES:
+            break
+        if not isinstance(item, dict):
+            continue
+        owner = _clean_symbol(item.get("owner_qualified_name"))
+        dependent = _clean_symbol(item.get("dependent_qualified_name"))
+        path = _repo_relative_path(str(item.get("file_path") or ""))
+        if not owner or not dependent or not path:
+            continue
+        try:
+            depth = int(item.get("depth", 1))
+        except (TypeError, ValueError):
+            continue
+        if depth < 1 or depth > 3:
+            continue
+        edge_kind = item.get("edge_kind")
+        if edge_kind is None:
+            edge_kind = ""
+        if not isinstance(edge_kind, str):
+            continue
+        edge_kind = edge_kind.strip()
+        if edge_kind and edge_kind not in _MODIFY_IMPACT_EDGE_KINDS:
+            continue
+        location_source = str(item.get("location_source") or "node_definition")
+        line = item.get("line")
+        column = item.get("column")
+        if line is not None:
+            try:
+                line = int(line)
+            except (TypeError, ValueError):
+                line = None
+        if column is not None:
+            try:
+                column = int(column)
+            except (TypeError, ValueError):
+                column = None
+        if line is None:
+            location = path
+        elif column is None:
+            location = f"{path}:{line}"
+        else:
+            location = f"{path}:{line}:{column}"
+        if depth <= 1 and location_source == "edge_site" and edge_kind:
+            sentence = f"{dependent} in {location} {edge_kind} changed symbol {owner}."
+        else:
+            sentence = (
+                f"{dependent} in {location} is reachable from changed symbol {owner} "
+                f"at dependency depth {depth} (dependent definition location, not a complete path)."
+            )
+        if sentence in seen:
+            continue
+        seen.add(sentence)
+        sentences.append(sentence)
+    if not sentences:
+        return ""
+    return " Impact notes: " + " ".join(sentences)
+
+
 def _advisory_text(decision: str | None, result: dict[str, Any] | None = None) -> str:
     base = _ADVISORY_BY_DECISION.get(decision, _ADVISORY_DEFAULT)
     if decision == "revise_safer" and result is not None:
-        return base + _safe_route_text(result)
+        base = base + _safe_route_text(result)
+    if result is not None:
+        base = base + _impact_witness_text(result)
     return base
 
 

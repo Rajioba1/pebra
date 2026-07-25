@@ -300,3 +300,110 @@ def test_real_advise_forwards_remaining_timeout_to_cli(monkeypatch, tmp_path):
     )
 
     assert seen["timeout"] == 9
+
+def _result_with_witnesses(decision="proceed"):
+    return {
+        "recommended_decision": decision,
+        "scores": {
+            "expected_loss": 0.1,
+            "symbol_scope_evidence": {
+                "symbol_fanin": {
+                    "resolution_method": "location",
+                    "graph_freshness": "fresh",
+                    "impact_witnesses": [
+                        {
+                            "owner_qualified_name": "pkg.changed",
+                            "dependent_qualified_name": "pkg.caller",
+                            "file_path": "src/caller.py",
+                            "line": 42,
+                            "column": 7,
+                            "edge_kind": "calls",
+                            "depth": 1,
+                            "location_source": "edge_site",
+                        },
+                        {
+                            "owner_qualified_name": "pkg.changed",
+                            "dependent_qualified_name": "pkg.indirect",
+                            "file_path": "src/indirect.py",
+                            "line": 18,
+                            "column": None,
+                            "edge_kind": "",
+                            "depth": 2,
+                            "location_source": "node_definition",
+                        },
+                    ],
+                }
+            },
+        },
+    }
+
+
+def test_impact_witness_text_is_appended_for_all_decisions_including_proceed():
+    for decision in ("proceed", "inspect_first", "revise_safer", "ask_human", "reject", "test_first"):
+        out = real._shape_output(_result_with_witnesses(decision))
+        assert out["recommended_decision"] == decision
+        assert "pkg.caller" in out["advisory"]
+        assert "src/caller.py:42:7" in out["advisory"]
+        assert "pkg.indirect" in out["advisory"]
+        assert out["detail"] == {}
+        blob = " ".join(real._all_strings(out) if hasattr(real, "_all_strings") else [out["advisory"]]).lower()
+        # use module-level helper from this file
+        from e2e.experiments.agent_ab.tests.test_advisory_shape import _all_strings, _FORBIDDEN_VOCAB
+        blob = " ".join(_all_strings(out)).lower()
+        for term in _FORBIDDEN_VOCAB:
+            assert term not in blob, term
+
+
+def test_impact_witness_text_rejects_absolute_paths_and_bad_edge_kinds():
+    result = _result_with_witnesses()
+    result["scores"]["symbol_scope_evidence"]["symbol_fanin"]["impact_witnesses"] = [
+        {
+            "owner_qualified_name": "pkg.changed",
+            "dependent_qualified_name": "pkg.bad",
+            "file_path": "/abs/path.py",
+            "line": 1,
+            "column": 1,
+            "edge_kind": "calls",
+            "depth": 1,
+            "location_source": "edge_site",
+        },
+        {
+            "owner_qualified_name": "pkg.changed",
+            "dependent_qualified_name": "pkg.imports",
+            "file_path": "src/x.py",
+            "line": 2,
+            "column": 1,
+            "edge_kind": "imports",
+            "depth": 1,
+            "location_source": "edge_site",
+        },
+    ]
+    assert real._impact_witness_text(result) == ""
+
+
+def test_impact_witness_text_dedupes_and_caps():
+    rows = [
+        {
+            "owner_qualified_name": "pkg.changed",
+            "dependent_qualified_name": f"pkg.d{i}",
+            "file_path": f"src/d{i}.py",
+            "line": i,
+            "column": 1,
+            "edge_kind": "calls",
+            "depth": 1,
+            "location_source": "edge_site",
+        }
+        for i in range(1, 8)
+    ]
+    rows.append(rows[0])  # duplicate
+    result = _result_with_witnesses()
+    result["scores"]["symbol_scope_evidence"]["symbol_fanin"]["impact_witnesses"] = rows
+    text = real._impact_witness_text(result)
+    assert text.count("pkg.d1") == 1
+    assert text.count("pkg.d") == 5
+
+
+def test_shape_output_without_witnesses_matches_prior_handwritten_advisory():
+    baseline = real._shape_output(_LEAKY_PEBRA_RESULT)
+    assert "Impact notes:" not in baseline["advisory"]
+    assert baseline["advisory"] == real._ADVISORY_BY_DECISION["reject"]
