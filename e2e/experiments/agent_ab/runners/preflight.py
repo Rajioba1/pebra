@@ -457,6 +457,60 @@ def _graph_backed_failure(spec: TaskSpec, assess_payload: dict[str, Any]) -> str
                 f"{spec.task_id}: requires measured benefit evidence, "
                 f"but assess payload proved {source_type!r}; install/configure RCA before this run"
             )
+    witness_msg = _impact_witness_failure(spec.task_id, fanin, reach=reach)
+    if witness_msg:
+        return witness_msg
+    return None
+
+
+def _impact_witness_failure(task_id: str, fanin: dict[str, Any], *, reach: int) -> str | None:
+    """Require bounded production impact witnesses when graph-backed reach is material.
+
+    Only runs after reach > 0 is already established. Empty witnesses with zero reach are not
+    checked here (zero-reach specimens already fail earlier).
+    """
+    if reach <= 0:
+        return None
+    raw = fanin.get("impact_witnesses")
+    if not isinstance(raw, list) or not raw:
+        return f"{task_id}: graph-backed treatment omitted bounded impact witnesses"
+    if len(raw) > 5:
+        return f"{task_id}: graph-backed treatment returned more than five impact witnesses"
+    for item in raw:
+        if not isinstance(item, dict):
+            return f"{task_id}: impact witness entry is not an object"
+        path = item.get("file_path")
+        dep = item.get("dependent_qualified_name")
+        owner = item.get("owner_qualified_name")
+        has_symbol = isinstance(dep, str) and bool(dep.strip()) or (
+            isinstance(owner, str) and bool(owner.strip())
+        )
+        has_path = isinstance(path, str) and bool(path.replace("\\", "/").strip())
+        if not has_symbol and not has_path:
+            return (
+                f"{task_id}: impact witness lacks a dependent symbol or repository-relative file"
+            )
+        if has_path:
+            normalized = str(path).replace("\\", "/").strip()
+            if normalized.startswith("/") or (
+                len(normalized) > 1 and normalized[1] == ":"
+            ):
+                return f"{task_id}: impact witness path is not repository-relative"
+            if ".." in normalized.split("/"):
+                return f"{task_id}: impact witness path is not repository-relative"
+        try:
+            depth = int(item.get("depth", 1))
+        except (TypeError, ValueError):
+            return f"{task_id}: impact witness depth is invalid"
+        if depth < 1 or depth > 3:
+            return f"{task_id}: impact witness depth is outside 1..3"
+        edge_kind = item.get("edge_kind")
+        if edge_kind is not None and not isinstance(edge_kind, str):
+            return f"{task_id}: impact witness edge_kind is invalid"
+        if isinstance(edge_kind, str) and edge_kind and edge_kind not in {
+            "calls", "references", "instantiates", "implements", "extends",
+        }:
+            return f"{task_id}: impact witness edge_kind is not a modify-impact kind"
     return None
 
 

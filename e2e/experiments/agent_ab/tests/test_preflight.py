@@ -264,11 +264,40 @@ def test_build_did_not_run_is_flagged():
 
 # ---- graph-freshness assertions ----
 
-def _payload(freshness, resolution):
-    return {"graph_provenance": {"graph_scope_digest": "a" * 64},
-            "scores": {"symbol_scope_evidence": {"symbol_fanin": {
-        "graph_freshness": freshness, "resolution_method": resolution,
-        "caller_count": 3, "modify_impact_count": 4}}, "expected_loss": 0.2}}
+def _sample_impact_witnesses():
+    return [
+        {
+            "owner_qualified_name": "pkg.changed",
+            "dependent_qualified_name": "pkg.caller",
+            "file_path": "src/caller.py",
+            "line": 42,
+            "column": 7,
+            "edge_kind": "calls",
+            "depth": 1,
+            "location_source": "edge_site",
+        }
+    ]
+
+
+def _payload(freshness, resolution, *, impact_witnesses=None):
+    if impact_witnesses is None:
+        impact_witnesses = _sample_impact_witnesses()
+    fanin = {
+        "graph_freshness": freshness,
+        "resolution_method": resolution,
+        "caller_count": 3,
+        "modify_impact_count": 4,
+        "modify_transitive_impact_count": 4,
+    }
+    if impact_witnesses is not None:
+        fanin["impact_witnesses"] = impact_witnesses
+    return {
+        "graph_provenance": {"graph_scope_digest": "a" * 64},
+        "scores": {
+            "symbol_scope_evidence": {"symbol_fanin": fanin},
+            "expected_loss": 0.2,
+        },
+    }
 
 
 def _with_language_capability(payload, **capability):
@@ -278,6 +307,51 @@ def _with_language_capability(payload, **capability):
 
 def test_fresh_resolved_graph_is_ok():
     assert preflight._graph_backed_failure(_TRAP, _payload("fresh", "location")) is None
+
+
+def test_positive_reach_requires_impact_witnesses():
+    msg = preflight._graph_backed_failure(
+        _TRAP, _payload("fresh", "location", impact_witnesses=[])
+    )
+    assert msg and "omitted bounded impact witnesses" in msg
+
+
+def test_impact_witness_absolute_path_is_flagged():
+    witnesses = _sample_impact_witnesses()
+    witnesses[0]["file_path"] = "/abs/caller.py"
+    msg = preflight._graph_backed_failure(
+        _TRAP, _payload("fresh", "location", impact_witnesses=witnesses)
+    )
+    assert msg and "repository-relative" in msg
+
+
+def test_impact_witness_depth_out_of_range_is_flagged():
+    witnesses = _sample_impact_witnesses()
+    witnesses[0]["depth"] = 9
+    msg = preflight._graph_backed_failure(
+        _TRAP, _payload("fresh", "location", impact_witnesses=witnesses)
+    )
+    assert msg and "depth" in msg
+
+
+def test_impact_witness_count_over_five_is_flagged():
+    witnesses = [
+        {
+            "owner_qualified_name": "pkg.changed",
+            "dependent_qualified_name": f"pkg.d{i}",
+            "file_path": f"src/d{i}.py",
+            "line": i,
+            "column": 1,
+            "edge_kind": "calls",
+            "depth": 1,
+            "location_source": "edge_site",
+        }
+        for i in range(1, 7)
+    ]
+    msg = preflight._graph_backed_failure(
+        _TRAP, _payload("fresh", "location", impact_witnesses=witnesses)
+    )
+    assert msg and "more than five" in msg
 
 
 @pytest.mark.parametrize("digest", (None, "not-a-digest", "A" * 64))
