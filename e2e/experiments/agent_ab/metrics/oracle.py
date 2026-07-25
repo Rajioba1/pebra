@@ -223,6 +223,7 @@ def _error_outcome(
         over_caution_cause=None,
         protocol_file_read=result.protocol_file_read,
         guidance_outcome=models.GUIDANCE_NOT_APPLICABLE,
+        impact_witness_receipts=result.impact_witness_receipts,
         human_approval_offered=result.human_approval_offered,
         human_approval_requested=result.human_approval_requested,
         human_approval_granted=result.human_approval_granted,

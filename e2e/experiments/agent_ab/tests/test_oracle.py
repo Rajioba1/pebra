@@ -632,6 +632,25 @@ def test_errored_run_preserves_human_approval_forensics():
     assert out.write_before_reassessment is True
 
 
+def test_errored_run_preserves_impact_witness_receipts():
+    receipts = (
+        {
+            "assessment_id": "asm_7",
+            "version": "impact-witness-v1",
+            "count": 2,
+            "delivered": True,
+        },
+    )
+    out = oracle.score_run(
+        _result("T1", error="provider failed", impact_witness_receipts=receipts),
+        RISKY,
+    )
+    assert out.impact_witness_receipts == receipts
+    assert out.error == "provider failed"
+    assert out.harm_materialized is False
+    assert out.task_completed is False
+
+
 def test_task_id_mismatch_raises():
     with pytest.raises(ValueError, match="!="):
         oracle.score_run(_result("Zzz"), RISKY)
