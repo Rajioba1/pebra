@@ -4,10 +4,11 @@
 
 PEBRA sits between a coding agent's proposed patch and your working tree. It computes an auditable
 `expected_loss` / `expected_utility` / risk-adjusted `RAU` decision from structural evidence, using
-CodeGraph when a fresh index is available or required. It returns a candidate-bound decision *before*
+CodeGraph as its standard repository-structure engine. It returns a candidate-bound decision *before*
 the edit is written, can apply the exact approved candidate through `apply-candidate`, verifies the
 **actual** post-edit diff against the approved envelope, records the outcome, and promotes only
-calibrated, measured facts back into future assessments. With an installed host hook, that decision can
+calibrated, measured facts back into future assessments. Missing or stale graph evidence is reported
+and never interpreted as proof that an edit is safe. With an installed host hook, the decision can
 intercept unsupported or risky edits before the host writes them; without a hook, `assess` is an
 advisory controller.
 
@@ -44,10 +45,10 @@ The same ledger is available as a terminal Observatory (`pebra tui`):
   the damage is done.
 - **Deterministic math, not a vibe check.** Every decision is a reproducible function of `expected_loss`,
   `expected_utility`, and a risk-adjusted `RAU` bound — the same inputs always yield the same number.
-- **Structural evidence, not guesswork.** When a fresh CodeGraph index is available, fan-in and blast
-  radius across callers/implementers come from the graph; graph-side contract metadata augments the
-  AST/change classifiers. If graph evidence is required but unavailable or stale, the decision
-  downgrades instead of treating missing fan-in as safe.
+- **Structural evidence, not guesswork.** PEBRA's freshness-checked CodeGraph index supplies fan-in and
+  blast radius across callers/implementers; graph-side contract metadata augments the AST/change
+  classifiers. If the index is unavailable or stale, PEBRA reports that loss of evidence and
+  downgrades affected decisions instead of treating missing fan-in as safe.
 - **Verifies what actually happened.** `verify` checks the real post-edit diff against the approved
   envelope: HEAD freshness, safe scope, change severity, contract-surface drift, and required checks.
 - **Learns conservatively.** Outcomes are recorded, but a learned fact only influences a future
@@ -62,7 +63,7 @@ repository knowledge, historical lessons, and exact candidate bytes into an audi
 
 | System | Repo graph | Memory / learning | Pre-edit risk/benefit math | Candidate-bound enforcement | Best fit |
 |---|---:|---:|---:|---:|---|
-| **PEBRA** | Uses CodeGraph evidence when fresh/required | Audited `learning_context` + promoted facts | Yes: `expected_loss`, benefit, utility, uncertainty, RAU | Yes on exact `apply-candidate` and healthy configured hook paths: repo + HEAD + files + candidate bytes + sanction state | Deciding whether a coding-agent edit should proceed before it mutates the repo. |
+| **PEBRA** | Yes: freshness-checked CodeGraph evidence | Audited `learning_context` + promoted facts | Yes: `expected_loss`, benefit, utility, uncertainty, RAU | Yes on exact `apply-candidate` and healthy configured hook paths: repo + HEAD + files + candidate bytes + sanction state | Deciding whether a coding-agent edit should proceed before it mutates the repo. |
 | **CodeGraph** | Yes: symbols, calls, dependents, fan-in, affected tests | No PEBRA outcome loop | No | No | Supplying current structural repository truth. |
 | **Graphify** | Visual knowledge-graph patterns | Optional overlay patterns | No | No | Exploring and presenting graph structure. |
 | **AgentMemory** | No source graph by default | General agent memory | No | No | Remembering agent observations across sessions. |
@@ -74,34 +75,67 @@ repository knowledge, historical lessons, and exact candidate bytes into an audi
 - AgentMemory is broad recall; PEBRA recall is narrower and auditable. Recalled prose stays advisory;
   only reviewed shipped priors and separately promoted numeric facts can influence future assessment.
 
-## Quickstart
+## Installation
+
+PEBRA supports Python 3.11–3.13 on Windows, Linux, and macOS. Install the released CLI:
+
+```console
+python -m pip install --upgrade pip
+python -m pip install pebra
+pebra --version
+```
+
+For an isolated CLI installation:
+
+```console
+pipx install pebra
+pebra --version
+```
+
+CodeGraph is PEBRA's standard structural engine. Set up its pinned version for the repository, verify
+the index, and then wire the host you actually use:
+
+```console
+pebra setup-graph --fix --repo-root .
+pebra doctor --repo-root .
+pebra agent-init --target claude --repo-root . --with-hook
+pebra agent-init --target claude --repo-root . --check --json
+```
+
+Use `--target codex` for Codex. When supported host markers already exist, `--target auto` installs
+only the detected projections:
+
+```console
+pebra agent-init --target auto --repo-root . --with-hook
+pebra agent-init --target auto --repo-root . --check --json
+```
+
+For editable development on Windows PowerShell:
 
 ```powershell
 python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e .
-
-# assess a real example candidate edit and print the decision + math packet
-.\.venv\Scripts\python.exe -m pebra assess examples/login_patch.json --json
 ```
 
-That last command returns one of `proceed`, `inspect_first`, `test_first`, `revise_safer`,
-`ask_human`, or `reject`, together with the full math packet (`expected_loss`, `expected_utility`,
-`RAU`, `edit_confidence`, and the gates that fired) for a candidate edit, *before* anything is written
-to disk. `test_first` is used pre-edit for an affected import cycle lacking exact patch-bound passing
-checks and post-edit when required checks are missing.
+On Linux or macOS:
 
-To wire PEBRA into a coding agent (Claude Code or Codex) and open the dashboard:
-
-```console
-pebra agent-init --target claude --repo-root . --with-hook
-pebra dashboard --repo-root . --open
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e .
 ```
 
-> The graph tab needs a fresh CodeGraph index. PEBRA never installs the engine from `assess`; set it
-> up once with `pebra setup-graph --fix --repo-root .` and check it with `pebra doctor`. Fresh graph
-> evidence is required by default for structurally risky, destructive, schema, and migration
-> candidates; operators may explicitly opt out with request threshold `require_graph: false`.
-> `codegraph.json` is operator-owned analysis scope: `extensions` and `includeIgnored` affect analysis scope; `exclude` is reported but ignored by pinned CodeGraph 1.1.1.
+PEBRA commands themselves are terminal-agnostic; only virtual-environment paths and activation syntax
+differ by shell. See the [command reference](docs/PEBRA_COMMAND_REFERENCE.md#shell-compatibility) for
+PowerShell, Command Prompt, Bash, and zsh equivalents.
+
+`codegraph.json` is operator-owned analysis scope: `extensions` and `includeIgnored` affect analysis
+scope; `exclude` is reported but ignored by pinned CodeGraph 1.1.1. PEBRA never installs or updates
+the engine implicitly during `assess`; engine changes require the explicit setup command above.
+Installation is ready when `pebra doctor --repo-root .` reports a healthy graph and
+`pebra agent-init --target <host> --repo-root . --check --json` reports the intended enforcement
+mode. Continue with the Product Model and Basic Workflow below.
 
 ## Product Model
 
@@ -160,13 +194,13 @@ utility_sd       = √(Σ variance contribution terms)
 RAU              = expected_utility − 1.28 · utility_sd
 ```
 
-Ordered **decision gates** evaluate those values plus evidence (CodeGraph fan-in / blast radius when
-available or required, AST/change contract-surface signals, confidence, graph freshness, and policy obligations)
-to produce the decision. A separate **enforcement gate** then checks exact bound candidate bytes on
-`apply-candidate` and supported configured hook paths. `reject` means *reject this candidate*, not the
-maintainer's goal — the agent surfaces the recorded reason and risk/benefit evidence. Recall informs
-Understand; only reviewed shipped priors and separately promoted numeric facts can affect a future
-`assess`.
+Ordered **decision gates** evaluate those values plus freshness-checked CodeGraph fan-in / blast
+radius, AST/change contract-surface signals, confidence, graph freshness, and policy obligations.
+Missing graph evidence is explicit and never treated as a zero-risk measurement. A separate
+**enforcement gate** then checks exact bound candidate bytes on `apply-candidate` and supported
+configured hook paths. `reject` means *reject this candidate*, not the maintainer's goal — the agent
+surfaces the recorded reason and risk/benefit evidence. Recall informs Understand; only reviewed
+shipped priors and separately promoted numeric facts can affect a future `assess`.
 
 ## What's inside
 
@@ -175,10 +209,10 @@ Understand; only reviewed shipped priors and separately promoted numeric facts c
 - **Candidate-bound enforcement** — on exact application or a healthy configured hook path, an
   impactful edit must reproduce the same normalized contents as the assessed patch; identical repo /
   HEAD / path is not sufficient.
-- **CodeGraph-backed evidence** — when fresh/required: per-symbol fan-in, DELETE file fan-in roll-up,
+- **CodeGraph-backed evidence** — freshness-checked per-symbol fan-in, DELETE file fan-in roll-up,
   MODIFY blast radius over callers/references/implementers/subclasses, graph-side contract metadata,
-  and container hierarchy roll-up. Python contract-surface classification also uses AST/change evidence.
-  See [Graph evidence & caveats](docs/PEBRA_COMMAND_REFERENCE.md).
+  and container hierarchy roll-up. Python contract-surface classification also uses AST/change
+  evidence. See [Graph evidence & caveats](docs/PEBRA_COMMAND_REFERENCE.md).
 - **Learning loop** — outcome recording, shadow learning, calibration-gated promotion, scorecards, and
   learned-fact reapplication.
 - **Read-only observability** — a browser dashboard (overview, score history, calibration, learned
@@ -268,15 +302,13 @@ separately privileged host or operator account when resistance to an adversarial
 threat boundaries and multi-file candidate rules are in the
 [command reference](docs/PEBRA_COMMAND_REFERENCE.md).
 
-## Install & engines
+## Command map
 
 ```console
 pebra --version           # 'installed' wheel vs editable checkout + source revision
 pebra --help              # root help
 pebra help tui            # command help
 pebra help --all          # complete, parser-checked command inventory
-pebra setup-graph --fix   # explicit CodeGraph engine setup (never done by assess)
-pebra doctor              # graph diagnostics
 ```
 
 Current command surface:

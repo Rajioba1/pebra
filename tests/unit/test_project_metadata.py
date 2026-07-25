@@ -106,6 +106,36 @@ def test_readme_documents_cli_and_tui_discovery_commands() -> None:
         assert command in body
 
 
+def test_readme_installs_codegraph_and_pebra_before_workflow() -> None:
+    body = (ROOT / "README.md").read_text(encoding="utf-8")
+    lowered = body.lower()
+
+    installation = body.index("## Installation")
+    product_model = body.index("## Product Model")
+    workflow = body.index("## Basic workflow")
+    assert installation < product_model < workflow
+    installation_body = body[installation:product_model]
+
+    for command in (
+        "python -m pip install pebra",
+        "pipx install pebra",
+        "pebra setup-graph --fix --repo-root .",
+        "pebra doctor --repo-root .",
+        "pebra agent-init --target claude --repo-root . --with-hook",
+        "pebra agent-init --target auto --repo-root . --check --json",
+    ):
+        assert command in body
+
+    assert "CodeGraph is PEBRA's standard structural engine" in body
+    assert "codegraph is optional" not in lowered
+    assert "fresh/required" not in lowered
+    assert "available or required" not in lowered
+    assert "examples/" not in installation_body
+    assert "## Quickstart" not in body
+    assert "## Best practices" not in body
+    assert "## Install & engines" not in body
+
+
 def test_project_version_is_0_2_0_release_candidate() -> None:
     _, project = _project_metadata()
 
