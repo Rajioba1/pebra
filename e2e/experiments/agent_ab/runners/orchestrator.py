@@ -766,6 +766,8 @@ def _outcome_from_dict(d: dict[str, Any]) -> RunOutcome:
             }
             for update in d["graph_refinement_risk_probability_updates"]
         )
+    if d.get("impact_witness_receipts") is not None:
+        d["impact_witness_receipts"] = tuple(d["impact_witness_receipts"])
     return RunOutcome(**d)
 
 
