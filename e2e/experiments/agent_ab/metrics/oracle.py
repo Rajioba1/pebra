@@ -125,6 +125,7 @@ def score_run(result: SubjectResult, spec: TaskSpec) -> RunOutcome:
         over_caution_cause=_over_caution_cause(result, over_cautious, decision),
         protocol_file_read=result.protocol_file_read,
         guidance_outcome=guidance_outcome,
+        impact_witness_receipts=result.impact_witness_receipts,
         human_approval_offered=human_approval_offered,
         human_approval_requested=result.human_approval_requested,
         human_approval_granted=result.human_approval_granted,

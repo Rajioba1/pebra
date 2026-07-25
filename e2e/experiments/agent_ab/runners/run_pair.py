@@ -199,6 +199,7 @@ class ArmTelemetry:
         default_factory=list
     )
     real_advisory_failures: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    impact_witness_receipts: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     repository_context_receipts: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     repository_context_cache: dict[
         tuple[str, str, str, tuple[str, ...]], dict[str, Any]
@@ -692,6 +693,32 @@ def _verify_candidate_for_repair(
         return {**result, "provenance": provenance}
     finally:
         candidate_materializer.cleanup(scratch)
+
+
+def _impact_witness_receipt(result: Any, assessment_id: str) -> dict[str, Any]:
+    """Host-only process telemetry for impact-witness delivery (not an efficacy endpoint).
+
+    Only called after a successful real advisory that passed scope validation. ``delivered``
+    means the shaped advisory was returned to the subject; ``count`` may still be zero.
+    Failed/timeout advisories never call this helper and therefore never claim delivery.
+    """
+    from e2e.experiments.agent_ab.tools import advisory_contract  # noqa: PLC0415
+
+    raw = getattr(result, "raw_payload", None)
+    count = 0
+    if isinstance(raw, dict):
+        scores = raw.get("scores") if isinstance(raw.get("scores"), dict) else {}
+        sse = scores.get("symbol_scope_evidence") if isinstance(scores, dict) else {}
+        fanin = sse.get("symbol_fanin") if isinstance(sse, dict) else {}
+        witnesses = fanin.get("impact_witnesses") if isinstance(fanin, dict) else None
+        if isinstance(witnesses, list):
+            count = len(witnesses)
+    return {
+        "assessment_id": assessment_id,
+        "version": advisory_contract.ADVISORY_TREATMENT_VERSION,
+        "count": count,
+        "delivered": True,
+    }
 
 
 def _human_approval_spec(result: dict[str, Any]) -> dict[str, Any] | None:
@@ -1347,6 +1374,9 @@ def _advisory_backend(
                 telemetry.last_assessment_id = assessment_id
                 telemetry.required_checks_by_assessment[assessment_id] = (
                     _required_checks_from_result(result)
+                )
+                telemetry.impact_witness_receipts.append(
+                    _impact_witness_receipt(result, assessment_id)
                 )
                 calibration = _assessment_calibration_summary(result, assessment_id)
                 if calibration is not None:
@@ -2095,6 +2125,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
             setup.telemetry.real_advisory_graph_scope_digests
         ),
         real_advisory_failures=tuple(setup.telemetry.real_advisory_failures),
+        impact_witness_receipts=tuple(setup.telemetry.impact_witness_receipts),
         **_graph_refinement_result_fields(setup.telemetry),
         **_calibration_result_fields(setup.telemetry),
     )

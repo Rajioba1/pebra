@@ -151,6 +151,7 @@ class SubjectResult:
     # carry a canonical graph-scope digest. Never copied into ToolCallRecord or model-facing output.
     real_advisory_graph_scope_digests: tuple[str | None, ...] = ()
     real_advisory_failures: tuple[dict[str, Any], ...] = ()
+    impact_witness_receipts: tuple[dict[str, Any], ...] = ()
     repository_context_receipts: tuple[dict[str, Any], ...] = ()
     token_usage: dict[str, Any] = field(default_factory=dict)
     understand_turn_usage: dict[str, Any] = field(default_factory=dict)
@@ -270,6 +271,7 @@ class RunOutcome:
     over_caution_cause: str | None = None
     protocol_file_read: bool = False
     guidance_outcome: str = GUIDANCE_NOT_APPLICABLE
+    impact_witness_receipts: tuple[dict[str, Any], ...] = ()
     human_approval_offered: bool = False
     human_approval_requested: bool = False
     human_approval_granted: bool = False

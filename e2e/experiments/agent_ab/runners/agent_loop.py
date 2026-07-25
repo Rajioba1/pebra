@@ -652,6 +652,9 @@ def run(
         real_advisory_failures=tuple(
             getattr(getattr(setup, "telemetry", None), "real_advisory_failures", ())
         ),
+        impact_witness_receipts=tuple(
+            getattr(getattr(setup, "telemetry", None), "impact_witness_receipts", ())
+        ),
         repository_context_receipts=tuple(
             getattr(
                 getattr(setup, "telemetry", None), "repository_context_receipts", ()
@@ -698,6 +701,7 @@ def _write_subject_trace(
             "modified_files": list(result.modified_files),
             "reason": result.error or result.limit_reason,
             "real_advisory_failures": list(result.real_advisory_failures),
+            "impact_witness_receipts": list(result.impact_witness_receipts),
             "repository_context_receipts": list(result.repository_context_receipts),
         },
         "transcript": list(result.transcript),

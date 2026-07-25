@@ -2980,3 +2980,175 @@ def test_subject_prompt_uses_task_language(tmp_path):
     prompt = run_pair._build_subject_prompt(spec, tmp_path, "sham")
     assert "TypeScript codebase" in prompt
     assert "C# codebase" not in prompt
+
+def test_impact_witness_receipt_from_successful_real_advisory(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry()
+    raw = {
+        "recommended_decision": "proceed",
+        "scores": {
+            "symbol_scope_evidence": {
+                "symbol_fanin": {
+                    "impact_witnesses": [
+                        {
+                            "owner_qualified_name": "pkg.changed",
+                            "dependent_qualified_name": "pkg.caller",
+                            "file_path": "src/caller.py",
+                            "line": 42,
+                            "column": 7,
+                            "edge_kind": "calls",
+                            "depth": 1,
+                            "location_source": "edge_site",
+                        },
+                        {
+                            "owner_qualified_name": "pkg.changed",
+                            "dependent_qualified_name": "pkg.other",
+                            "file_path": "src/other.py",
+                            "line": 10,
+                            "column": 1,
+                            "edge_kind": "calls",
+                            "depth": 1,
+                            "location_source": "edge_site",
+                        },
+                    ]
+                }
+            }
+        },
+        "graph_provenance": {"graph_scope_digest": "a" * 64},
+    }
+
+    def _advise(payload, **kwargs):
+        del payload, kwargs
+        return run_pair.advisory_check_real.AdvisoryOutput(
+            run_pair.advisory_check_real._shape_output(raw),
+            assessment_id="asm_7",
+            raw_payload=raw,
+        )
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA, tmp_path, tmp_path / "pebra.db", telemetry=telemetry
+    )
+    out = backend({"target_file": "a.ts", "proposed_patch": "diff"})
+
+    assert telemetry.impact_witness_receipts == [
+        {
+            "assessment_id": "asm_7",
+            "version": "impact-witness-v1",
+            "count": 2,
+            "delivered": True,
+        }
+    ]
+    # Receipt is host-only: model-facing advisory output must not grow extra keys.
+    assert tuple(out) == advisory_contract.OUTPUT_KEYS
+    assert "impact_witness" not in str(out).lower()
+
+
+def test_impact_witness_receipt_zero_count_when_no_witnesses(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry()
+    raw = {
+        "recommended_decision": "proceed",
+        "scores": {"symbol_scope_evidence": {"symbol_fanin": {}}},
+        "graph_provenance": {"graph_scope_digest": "a" * 64},
+    }
+
+    def _advise(payload, **kwargs):
+        del payload, kwargs
+        return run_pair.advisory_check_real.AdvisoryOutput(
+            run_pair.advisory_check_real._shape_output(raw),
+            assessment_id="asm_0",
+            raw_payload=raw,
+        )
+
+    monkeypatch.setattr(run_pair.advisory_check_real, "advise", _advise)
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA, tmp_path, tmp_path / "pebra.db", telemetry=telemetry
+    )
+    backend({"target_file": "a.ts", "proposed_patch": "diff"})
+
+    assert telemetry.impact_witness_receipts == [
+        {
+            "assessment_id": "asm_0",
+            "version": "impact-witness-v1",
+            "count": 0,
+            "delivered": True,
+        }
+    ]
+
+
+def test_impact_witness_receipt_not_claimed_on_advisory_failure(monkeypatch, tmp_path):
+    telemetry = run_pair.ArmTelemetry()
+    monkeypatch.setattr(
+        run_pair.advisory_check_real,
+        "advise",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(["pebra", "assess"], 42)
+        ),
+    )
+    backend = run_pair._advisory_backend(
+        models.ARM_PEBRA, tmp_path, tmp_path / "pebra.db", telemetry=telemetry
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        backend(
+            {"target_file": "a.ts", "proposed_patch": "diff", "change_summary": "x"},
+            timeout_seconds=42.5,
+        )
+
+    assert telemetry.impact_witness_receipts == []
+    assert telemetry.real_advisory_failures
+
+
+def test_subject_result_carries_impact_witness_receipts(monkeypatch, tmp_path):
+    setup = _dummy_setup(tmp_path)
+    setup.arm = models.ARM_TREATMENT
+    setup.telemetry.impact_witness_receipts.append(
+        {
+            "assessment_id": "asm_7",
+            "version": "impact-witness-v1",
+            "count": 2,
+            "delivered": True,
+        }
+    )
+    monkeypatch.setenv("E2E_AB_RUN", "1")
+    monkeypatch.setenv("E2E_EXTERNAL", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(run_pair, "_load_config", lambda: {
+        "subject": {
+            "model": "test-model",
+            "max_tool_calls_per_run": 5,
+            "max_wall_seconds_per_run": 10,
+            "max_output_tokens_per_turn": 100,
+            "transient_retries": 0,
+            "tools": ["read_file"],
+        }
+    })
+    monkeypatch.setattr(model_client, "AnthropicClient", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        agent_loop,
+        "run",
+        lambda setup, spec, seed, **_kwargs: SubjectResult(
+            task_id=spec.task_id, arm=setup.arm, seed=seed
+        ),
+    )
+    monkeypatch.setattr(
+        evaluator,
+        "run_evaluator",
+        lambda _repo, _spec: (
+            SimpleNamespace(ran=True, passed=True, error_summary=""),
+            SimpleNamespace(ran=True, passed=True, error_summary=""),
+            False,
+        ),
+    )
+    monkeypatch.setattr(evaluator, "run_completion_test", lambda *_args, **_kwargs: None)
+
+    result = run_pair._invoke_subject_agent(setup, _SPEC, 0)
+
+    assert result.impact_witness_receipts == (
+        {
+            "assessment_id": "asm_7",
+            "version": "impact-witness-v1",
+            "count": 2,
+            "delivered": True,
+        },
+    )
+
