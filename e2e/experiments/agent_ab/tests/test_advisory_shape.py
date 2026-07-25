@@ -381,6 +381,23 @@ def test_impact_witness_text_rejects_absolute_paths_and_bad_edge_kinds():
     assert real._impact_witness_text(result) == ""
 
 
+def test_impact_witness_text_rejects_non_string_file_path():
+    result = _result_with_witnesses()
+    result["scores"]["symbol_scope_evidence"]["symbol_fanin"]["impact_witnesses"] = [
+        {
+            "owner_qualified_name": "pkg.changed",
+            "dependent_qualified_name": "pkg.caller",
+            "file_path": 42,
+            "line": 1,
+            "column": 1,
+            "edge_kind": "calls",
+            "depth": 1,
+            "location_source": "edge_site",
+        }
+    ]
+    assert real._impact_witness_text(result) == ""
+
+
 def test_impact_witness_text_dedupes_and_caps():
     rows = [
         {

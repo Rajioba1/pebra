@@ -233,7 +233,10 @@ def _impact_witness_text(result: dict[str, Any] | None) -> str:
             continue
         owner = _clean_symbol(item.get("owner_qualified_name"))
         dependent = _clean_symbol(item.get("dependent_qualified_name"))
-        path = _repo_relative_path(str(item.get("file_path") or ""))
+        raw_path = item.get("file_path")
+        if not isinstance(raw_path, str):
+            continue
+        path = _repo_relative_path(raw_path)
         if not owner or not dependent or not path:
             continue
         try:

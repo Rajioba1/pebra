@@ -481,12 +481,9 @@ def _impact_witness_failure(task_id: str, fanin: dict[str, Any], *, reach: int) 
             return f"{task_id}: impact witness entry is not an object"
         path = item.get("file_path")
         dep = item.get("dependent_qualified_name")
-        owner = item.get("owner_qualified_name")
-        has_symbol = isinstance(dep, str) and bool(dep.strip()) or (
-            isinstance(owner, str) and bool(owner.strip())
-        )
+        has_dependent = isinstance(dep, str) and bool(dep.strip())
         has_path = isinstance(path, str) and bool(path.replace("\\", "/").strip())
-        if not has_symbol and not has_path:
+        if not has_dependent and not has_path:
             return (
                 f"{task_id}: impact witness lacks a dependent symbol or repository-relative file"
             )

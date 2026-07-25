@@ -354,6 +354,21 @@ def test_impact_witness_count_over_five_is_flagged():
     assert msg and "more than five" in msg
 
 
+def test_impact_witness_owner_only_is_flagged():
+    """Owner alone is not a dependent symbol; plan requires dependent or repo-relative file."""
+    witnesses = [
+        {
+            "owner_qualified_name": "pkg.changed",
+            "depth": 1,
+            "edge_kind": "calls",
+        }
+    ]
+    msg = preflight._graph_backed_failure(
+        _TRAP, _payload("fresh", "location", impact_witnesses=witnesses)
+    )
+    assert msg and "dependent symbol or repository-relative file" in msg
+
+
 @pytest.mark.parametrize("digest", (None, "not-a-digest", "A" * 64))
 def test_graph_preflight_requires_a_canonical_scope_digest(digest):
     payload = _payload("fresh", "location")
