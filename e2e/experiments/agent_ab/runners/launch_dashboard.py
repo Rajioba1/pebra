@@ -1,15 +1,17 @@
 """Manual utility: point `pebra dashboard` at one of the PEBRA stores an assay run left behind.
 
 Only the ``pebra`` / ``pebra_graph_repair`` arms write a store (they call `pebra assess`); this lists the
-``pebra.db`` files under ``e2e/out/ab/<run-id>/``, labels each by its isolated clone dir, resolves the
-sibling ``repo/``, and prints the ready-to-run ``pebra dashboard ... --port <p> --open`` command. It is a
-CLI convenience, NOT a gated test, and never imports pebra (the printed command shells it).
+``pebra.db`` files under ``e2e/out/ab/<run-id>/``, labels each by its opaque workspace token, resolves
+either a legacy sibling ``repo/`` or a generation-valid persistent-slot receipt, and prints the
+ready-to-run ``pebra dashboard ... --port <p> --open`` command. It is a CLI convenience, NOT a gated
+test, and never imports pebra (the printed command shells it).
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -25,7 +27,7 @@ def repo_id_for(repo_root: str) -> str:
     a drifted repo_id would make the dashboard filter on the wrong id and silently render an empty repo.
 
     Used to serve the dashboard against a repo_id WITHOUT CLI ``--repo-root`` resolution (which would init
-    a ``.pebra/`` dir inside the assay clone)."""
+    a ``.pebra/`` dir inside the assay workspace)."""
     root = Path(repo_root).resolve()
     return "repo_" + hashlib.sha1(str(root).encode("utf-8")).hexdigest()[:12]
 
@@ -38,13 +40,37 @@ def _run_root(run_id: str, *, ab_out: Path | None = None) -> Path:
 
 
 def list_run_dbs(run_id: str, *, ab_out: Path | None = None) -> list[dict]:
-    """Direct child ``pebra.db`` stores under the run dir, with clone label + sibling repo."""
+    """Direct child stores with either a legacy sibling clone or a persistent-slot receipt."""
     root = _run_root(run_id, ab_out=ab_out)
     dbs: list[dict] = []
     if not root.is_dir():
         return dbs
     for db in sorted(root.glob("*/pebra.db")):
         repo = db.parent / "repo"
+        if not repo.is_dir():
+            receipt = db.parent / "slot-receipt.json"
+            try:
+                payload = json.loads(receipt.read_text(encoding="utf-8"))
+                persistent = Path(payload["repo_path"]).resolve()
+                expected_generation = int(payload["generation"])
+                current_generation = int(
+                    (persistent.parent / "generation.txt")
+                    .read_text(encoding="ascii")
+                    .strip()
+                )
+            except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+                persistent = None
+                expected_generation = -1
+                current_generation = -2
+            repo = (
+                persistent
+                if (
+                    persistent is not None
+                    and persistent.is_dir()
+                    and expected_generation == current_generation
+                )
+                else repo
+            )
         dbs.append({
             "clone": db.parent.name,          # <task>_seed<n>_<arm_token> (arm is intentionally opaque)
             "db": str(db),
@@ -55,7 +81,7 @@ def list_run_dbs(run_id: str, *, ab_out: Path | None = None) -> list[dict]:
 
 def dashboard_command(repo: str, db: str, port: int) -> list[str]:
     # --read-only + --repo-id + --db, and deliberately NO --repo-root: the CLI's --repo-root path calls
-    # RepositoryRegistry.resolve(), which initializes a .pebra/ dir INSIDE the assay clone. This direct
+    # RepositoryRegistry.resolve(), which initializes a .pebra/ dir INSIDE the assay workspace. This direct
     # command is a fallback; the observatory Open button is stricter because it serves a temp db copy.
     return [sys.executable, "-m", "pebra", "dashboard", "--db", db, "--repo-id", repo_id_for(repo),
             "--read-only", "--port", str(port), "--open"]

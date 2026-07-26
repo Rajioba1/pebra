@@ -1,22 +1,23 @@
 """v2 spawn-and-redirect: launch the REAL pebra dashboard for a discovered arm store and capture its
 bound URL. Boundary-safe — it SHELLS a child Python process (the parent never imports pebra).
 
-Read-only / never-writes-the-clone posture:
-  * The clone's ``pebra.db`` is FILE-COPIED into a throwaway temp dir and the dashboard is served against
-    the COPY. The clone is never opened by us — even a read-only SQLite open of a WAL db would create
-    ``-wal``/``-shm`` sidecars in the clone that a read-only connection cannot remove. The copied db is
+Read-only / never-writes-run-state posture:
+  * The run's ``pebra.db`` is FILE-COPIED into a throwaway temp dir and the dashboard is served against
+    the COPY. The run DB is never opened by us — even a read-only SQLite open of a WAL db could create
+    ``-wal``/``-shm`` sidecars that a read-only connection cannot remove. The copied db is
     validated before launch; if a live writer changes the source mid-copy and validation fails, launch
     fails closed instead of serving a broken snapshot.
   * The child serves the copy with ``read_only=True`` (SQLite ``mode=ro``: no schema/data writes) and
-    is passed the CLONE's ``repo_id`` (the data is keyed by it) plus the clone's repo_root for graph reads
-    — NOT via ``--repo-root`` CLI resolution (which would init ``.pebra/`` in the clone). ``repo_id_for``
-    is pinned to production by a parity test.
+    is passed the workspace's ``repo_id`` (the data is keyed by it) plus its repo_root for graph reads
+    — NOT via ``--repo-root`` CLI resolution (which would init ``.pebra/`` in the workspace).
+    ``repo_id_for`` is pinned to production by a parity test. Generation-expired workspace receipts
+    are rejected by discovery before launch.
 
 Lifecycle:
-  * Only ever launches for a clone DISCOVERED via ``launch_dashboard.list_run_dbs`` — repo/db come from
-    that lookup, never from the caller.
+  * Only ever launches for a store DISCOVERED via ``launch_dashboard.list_run_dbs`` — repo/db come
+    from that lookup, never from the caller.
   * OS-assigned free port (``--port 0``) so multiple arms run without collision; idempotent per (run,
-    clone); ``shutdown_all()`` terminates every child AND removes its temp copy.
+    opaque store token); ``shutdown_all()`` terminates every child AND removes its temp copy.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from e2e.experiments.agent_ab.runners.launch_dashboard import repo_id_for
 _URL_RE = re.compile(r"PEBRA Risk Observatory:\s*(\S+)")
 _BIND_TIMEOUT_S = 20.0
 _TERM_TIMEOUT_S = 2.0
-# Serve the TEMP COPY read-only, keyed by the clone's repo_id. repo_root is passed only as graph context;
+# Serve the TEMP COPY read-only, keyed by the workspace repo_id. repo_root is passed only as graph context;
 # it is not resolved by RepositoryRegistry and does not initialize .pebra/.
 _DASHBOARD_SERVER_CODE = (
     "import sys\n"
@@ -58,8 +59,8 @@ def _validate_temp_db(db_path: Path) -> None:
 
 
 def _copy_db_to_temp(db_path: str) -> tuple[str, str]:
-    """File-copy the clone's pebra.db (+ any -wal/-shm sidecars) into a fresh temp dir WITHOUT opening
-    it, so the clone is never touched. The copy is validated before use; validation failures clean up the
+    """File-copy the run's pebra.db (+ any -wal/-shm sidecars) into a fresh temp dir WITHOUT opening
+    it, so run state is never touched. The copy is validated before use; validation failures clean up the
     temp dir and surface as OSError."""
     tmp_dir = tempfile.mkdtemp(prefix="pebra-obs-")
     src = Path(db_path)
@@ -144,7 +145,7 @@ def _drain_async(proc: subprocess.Popen) -> None:
 
 
 class DashboardRegistry:
-    """Tracks spawned pebra dashboards, one per (run, clone). Thread-safe."""
+    """Tracks spawned pebra dashboards, one per (run, opaque store token). Thread-safe."""
 
     def __init__(self) -> None:
         self._by_key: dict[tuple[str, str, str], dict] = {}
@@ -163,9 +164,9 @@ class DashboardRegistry:
 
     def launch(self, run_id: str, clone: str, *, ab_out: Path,
                bind_timeout: float = _BIND_TIMEOUT_S) -> dict:
-        # Serialize launches for the SAME clone (so a slow bind + a re-click can't double-spawn), while
-        # different clones still spawn in parallel. discover -> copy -> spawn -> register happens under
-        # this per-clone lock; _shutdown is re-checked after the spawn so an in-flight launch can't leak
+        # Serialize launches for the SAME store (so a slow bind + a re-click can't double-spawn), while
+        # different stores still spawn in parallel. discover -> copy -> spawn -> register happens under
+        # this per-store lock; _shutdown is re-checked after the spawn so an in-flight launch can't leak
         # a child (or its temp copy) past shutdown_all().
         key = _launch_key(run_id, clone, Path(ab_out))
         with self._clone_lock(key):

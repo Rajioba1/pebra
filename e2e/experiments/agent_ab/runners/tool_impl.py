@@ -1,8 +1,8 @@
 """Tool implementations served to the subject agent — the LOGGED, CONFINED "hands".
 
 Every action the agent can take goes through one of these functions, so (a) the diff/adherence are
-captured, (b) the agent can never touch the filesystem or shell outside the isolated clone, and (c)
-blinding is controllable. File tools are confined to the clone by ``_resolve_guarded`` (path-traversal
+captured, (b) the agent can never touch the filesystem or shell outside the isolated workspace, and (c)
+blinding is controllable. File tools are confined to the workspace by ``_resolve_guarded`` (path-traversal
 fails closed). Build/test go through the arm's fixed build backend. Search is python-native
 (no ``rg`` dependency). Tool errors are RETURNED as ``{"error": ...}`` (not raised) so the agent gets a
 coherent response and can react — except a traversal attempt, which is captured as an error result too.
@@ -35,7 +35,7 @@ _MAX_MATCHES = 200
 _MAX_GREP_FILE_BYTES = 1_000_000
 _HIDDEN_DIRS = {".git", ".codegraph", ".pebra"}
 _SEARCH_SKIP_DIRS = _HIDDEN_DIRS | {"node_modules", ".venv", "venv"}
-_WRITE_PROTECTED_DIRS = _HIDDEN_DIRS | {".agent-instructions"}
+_WRITE_PROTECTED_DIRS = _HIDDEN_DIRS | {".agent-instructions", "node_modules"}
 _REDACTION = "[redacted]"
 _PATCH_PATH_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
 _PATCH_OLD_RE = re.compile(r"^--- (.+)$")
@@ -63,11 +63,11 @@ def model_safe_text(text: str) -> str:
 
 
 class PathTraversalError(ValueError):
-    """A tool path resolved outside the repo clone boundary."""
+    """A tool path resolved outside the repository workspace boundary."""
 
 
 def _resolve_guarded(path: str, repo_root: Path) -> Path:
-    """Resolve ``path`` under ``repo_root``; raise PathTraversalError if it escapes the clone."""
+    """Resolve ``path`` under ``repo_root``; raise PathTraversalError if it escapes the workspace."""
     root = repo_root.resolve()
     target = (root / (path or ".")).resolve()
     try:
@@ -210,7 +210,7 @@ def _validated_patch_paths(patch_text: str) -> list[str] | None:
 
 
 def apply_patch(patch_text: str, repo_root: Path) -> dict[str, Any]:
-    """Apply one git-style patch atomically inside the confined clone."""
+    """Apply one git-style patch atomically inside the confined workspace."""
     paths = _validated_patch_paths(patch_text)
     if not paths:
         return {"error": "patch has invalid or undeclared file headers"}

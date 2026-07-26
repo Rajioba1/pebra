@@ -88,8 +88,8 @@ def remove_task_evaluator(
 def inject_evaluator_tests(
     repo_path: Path, task_id: str, *, evaluator_dir: Path | None = None
 ) -> Path | None:
-    """Copy the task's evaluator test project into the clone (post-agent) and return the injected
-    ``.csproj`` path within the clone, or None.
+    """Copy the task's evaluator test project into the workspace (post-agent) and return the injected
+    ``.csproj`` path within the workspace, or None.
 
     Returns None when there is no ``<task_id>/`` directory OR the directory contains no ``.csproj``
     (a test dir with no project = no test signal, scored honestly as no-test). Returning the concrete

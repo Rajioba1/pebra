@@ -19,6 +19,23 @@ def test_resolve_guarded_allows_in_repo(tmp_path):
     assert tool_impl._resolve_guarded("src/A.cs", tmp_path) == (tmp_path / "src/A.cs").resolve()
 
 
+def test_dependency_tree_is_readable_but_write_protected(tmp_path):
+    dependency = tmp_path / "node_modules" / "pkg" / "index.js"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text("module.exports = 1;\n", encoding="utf-8")
+
+    assert "module.exports" in tool_impl.read_file(
+        "node_modules/pkg/index.js", tmp_path
+    )["content"]
+    assert tool_impl.write_file(
+        "node_modules/pkg/index.js", "poisoned\n", tmp_path
+    ) == {"error": "hidden path requested"}
+    assert tool_impl.edit_file(
+        "node_modules/pkg/index.js", "1", "2", tmp_path
+    ) == {"error": "hidden path requested"}
+    assert dependency.read_text(encoding="utf-8") == "module.exports = 1;\n"
+
+
 def test_write_then_read_roundtrip(tmp_path):
     assert tool_impl.write_file("src/A.cs", "hello", tmp_path) == {"ok": True}
     assert (tmp_path / "src/A.cs").read_text() == "hello"

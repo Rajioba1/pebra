@@ -549,6 +549,11 @@ def test_experiment_design_hash_changes_with_provider_model_prompt_tasks_and_arm
         "ordinary_real": models.ARM_PEBRA,
         "graph_real": models.ARM_PEBRA_GRAPH_CONTEXT,
     }
+    assert (
+        base["execution"]["workspace_lifecycle_version"]
+        == orchestrator.slot_pool.WORKSPACE_LIFECYCLE_VERSION
+        == "persistent-slots-v1"
+    )
 
 
 def test_experiment_design_hash_changes_with_gate_reason_treatment(monkeypatch):

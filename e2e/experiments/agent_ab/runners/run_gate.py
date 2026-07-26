@@ -1,12 +1,12 @@
 """The single, fail-closed execution gate for the agent-A/B experiment.
 
-Running a real coding agent costs tokens and mutates clones, so it must be impossible to trigger by
+Running a real coding agent costs tokens and mutates assay workspaces, so it must be impossible to trigger by
 accident. ``check_gate()`` is called as the first line of both ``run_pair._invoke_subject_agent`` and
 ``orchestrator.main`` — redundant by design, so even a direct import+call is gated.
 
 Three conditions, ALL required:
   - E2E_AB_RUN=1          explicit opt-in unique to this experiment (nothing else sets it)
-  - E2E_EXTERNAL=1        the existing external-repo gate (clones the real C# repo)
+  - E2E_EXTERNAL=1        the existing external-repository gate
   - provider key          ANTHROPIC_API_KEY by default, or DEEPSEEK_API_KEY when
                           E2E_AB_PROVIDER=deepseek
 

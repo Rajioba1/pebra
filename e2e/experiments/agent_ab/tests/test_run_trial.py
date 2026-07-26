@@ -143,7 +143,8 @@ def _stub_runner(monkeypatch):
     monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
     monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
     monkeypatch.setattr(run_pair, "prepare_arm",
-                        lambda external, spec, arm, seed, run_id: SimpleNamespace(arm=arm))
+                        lambda external, spec, arm, seed, run_id, **kwargs:
+                        SimpleNamespace(arm=arm))
     monkeypatch.setattr(run_pair, "_invoke_subject_agent",
                         lambda setup, spec, seed: SimpleNamespace(arm=setup.arm, error=None))
     monkeypatch.setattr(run_pair, "_invoke_oracle_positive",
@@ -203,7 +204,8 @@ def test_direct_run_entry_keeps_gate_infrastructure_failure_fail_open(monkeypatc
     monkeypatch.setattr(
         run_pair,
         "prepare_arm",
-        lambda _external, _spec, arm, _seed, _run_id: SimpleNamespace(arm=arm),
+        lambda _external, _spec, arm, _seed, _run_id, **_kwargs:
+        SimpleNamespace(arm=arm),
     )
     monkeypatch.setattr(
         run_pair,
@@ -250,7 +252,7 @@ def test_oracle_positive_bypasses_subject_and_scores_clean_endpoint(monkeypatch,
     build = SimpleNamespace(ran=True, passed=True, error_summary="")
     test = SimpleNamespace(ran=True, passed=True, error_summary="")
 
-    def _prepare(_external, _spec, arm, _seed, _run_id):
+    def _prepare(_external, _spec, arm, _seed, _run_id, **_kwargs):
         setup = run_pair.ArmSetup(
             arm=arm,
             repo_path=tmp_path / arm,
@@ -297,7 +299,7 @@ def test_oracle_positive_cannot_propagate_subject_write_mutation(monkeypatch, tm
         0, "write_file", {"path": "src/A.cs"}, {"ok": True, "blocked": False},
     )
 
-    def _prepare(_external, _spec, arm, _seed, _run_id):
+    def _prepare(_external, _spec, arm, _seed, _run_id, **_kwargs):
         setup = run_pair.ArmSetup(
             arm=arm,
             repo_path=tmp_path / arm,
@@ -337,7 +339,8 @@ def test_run_trial_parallel_is_opt_in(monkeypatch):
     monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
     monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
     monkeypatch.setattr(run_pair, "prepare_arm",
-                        lambda external, spec, arm, seed, run_id: SimpleNamespace(arm=arm))
+                        lambda external, spec, arm, seed, run_id, **kwargs:
+                        SimpleNamespace(arm=arm))
 
     def invoke(setup, spec, seed):
         calls.append(("start", setup.arm))
@@ -356,7 +359,8 @@ def test_run_trial_parallel_preserves_arm_order(monkeypatch):
     monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
     monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
     monkeypatch.setattr(run_pair, "prepare_arm",
-                        lambda external, spec, arm, seed, run_id: SimpleNamespace(arm=arm))
+                        lambda external, spec, arm, seed, run_id, **kwargs:
+                        SimpleNamespace(arm=arm))
     barrier = threading.Barrier(2, timeout=2)
     finished = []
 

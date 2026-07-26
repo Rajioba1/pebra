@@ -56,7 +56,8 @@ Does giving a *real* coding agent PEBRA's safe-edit intervention make it produce
 the same agent without it?
 
 ## Design
-- **Paired / N-arm**: same task, same repo SHA, run by all assay arms in separate isolated clones.
+- **Paired / N-arm**: same task and repo SHA, run by all assay arms in separate locked workspace
+  slots. Slots are reset between subjects and never shared concurrently.
 - **Sham**: agent + normal tools (read/write/build/tests) + a sham `advisory_check`.
 - **Oracle-positive**: pre-applies the known correct fix before the baseline build. This is the endpoint
   floor: the scorer must recognize correct code.
@@ -175,9 +176,33 @@ tier, not a production `GateTier`.
 Arm definitions, prompts, task corpus, model calls, outcome metrics, oracles, and scoring are unchanged.
 Because the reason content changed, the expected treatment effect must nevertheless be re-estimated.
 
-### Never-mutate-source / isolation
-The source checkout is never touched; `repo_source.clone_at_recorded_head` clones at a pinned SHA into
-gitignored `e2e/out/ab/`. Each subject gets its own clone.
+### Workspace lifecycle (`persistent-slots-v1`)
+The source checkout is never touched. Live runs use a pool under gitignored
+`e2e/out/ab_slots/`, keyed by specimen source and pinned HEAD. Each concurrently prepared subject gets
+its own locked slot; arm-to-slot assignment is a deterministic run-specific rotation so an arm is not
+permanently paired with one physical workspace.
+
+A slot is cloned once. Before each subject the harness runs `git reset --hard` to the pinned HEAD and
+`git clean -ffdx`, preserving only `.codegraph/` and `node_modules/`. The subject can read dependency
+source but its file tools cannot write inside dependency or graph state. Generated output, prior
+protocol files, PEBRA state, hidden tests, and previous source edits are removed before admission. The
+harness never commits agent edits. A changed specimen HEAD selects a different pool rather than
+resetting an old slot across revisions.
+
+Graph-backed arms initialize CodeGraph only when the slot has no index. Normal preparation then uses
+the real production assessment boundary, which performs status, incremental sync, status, and
+HEAD/config freshness fences. The arm is admitted only when the target resolves against the expected
+preflight graph-scope digest. A reused slot that fails graph admission is rebuilt and initialized once;
+a second failure stops before any model call.
+
+PEBRA databases, traces, and outcome files remain in the run-specific `e2e/out/ab/<run-id>/`
+directory, outside the persistent repository. A dashboard receipt is valid only for the exact slot
+generation that produced it. After that slot is reused, historical source browsing is intentionally
+reported unavailable rather than showing later trial state.
+
+`persistent-slots-v1` is recorded in the canonical experiment design and therefore in its hash and
+resume gate. Any future change to reset, preservation, assignment, or graph-admission semantics must
+bump this version; runs from different lifecycle versions must not be resumed or pooled.
 
 ## Pre-registered endpoints (all reported, flattering or not)
 1. **harm_rate** — fraction of *risky* runs where harm materialized (build fail, test fail, or scope drift).
@@ -241,7 +266,8 @@ diagnostic and efficacy outcomes cannot be combined by resuming after the design
 - `runners/` — `run_gate` (fail-closed gate), `model_client` (Protocol + ScriptedClient + AnthropicClient
   **live, Phase G**), `tool_impl` (7 confined tools + path guard), `agent_loop` (turn loop, capture,
   limits, blinding pre-send check), `evaluator` (post-agent hidden-test injection + build/test),
-  `preflight` (oracle-label + graph-freshness gates), `orchestrator` (gated task×arm×seed loop),
+  `preflight` (oracle-label + graph-synchronization/freshness gates),
+  `slot_pool` (locked persistent workspace lifecycle), `orchestrator` (gated task×arm×seed loop),
   `run_pair` (arm setup + the loop, run only under the gate), `run_artifacts` (atomic JSON writer),
   `launch_dashboard` (prints a `pebra dashboard` command for one arm's store), `watch_dashboard` +
   `observatory/` (the read-only Run Observatory — see below).
@@ -269,13 +295,13 @@ subject prompt and the advisory tool's OUTPUT — never the agent's file reads/l
 repo content can legitimately contain words like "graph"/"oracle"; scanning it would
 false-abort real runs.
 
-**Hidden oracle via post-agent test injection:** the agent runs on a clone with NO evaluator tests
+**Hidden oracle via post-agent test injection:** the agent runs in its leased slot with NO evaluator tests
 visible (cannot read/teach-to/delete them); after it stops and its diff is captured, the orchestrator
 injects `specimens/<specimen>/corpus/evaluator_tests/<task_id>/` when present and runs the task's fixed
 build/test backend. JS1's hidden Vitest checks the actual `schemaTypeLabel` behavior, so an unrelated
 build-clean edit cannot be scored as task completion.
 
-**Graph pre-flight (treatment integrity):** before any run, the target must resolve on a FRESH CodeGraph
+**Graph pre-flight (treatment integrity):** before any run, the target must resolve on a synchronized CodeGraph
 and graph-backed fields must appear in the treatment assess payload — else fail-closed. Prevents a
 stale/missing graph from silently degrading treatment to ~control.
 
@@ -302,7 +328,7 @@ one-seed runs, and it currently blocks MNGAMMA. The raw reason is that the live 
 `changed_symbols=[]` / `scope_basis=unknown_fallback` for both the harmful and reference patches, so the
 risk model sees the same high-fan-in file edit twice. A prior calibration implementation contaminated
 the second assess call with the first call's persisted `revise_safer` attempt; that state leak is fixed
-by using independent fresh stores per patch before this conclusion is drawn. A valid safe-completion
+by using independent empty assessment stores per patch before this conclusion is drawn. A valid safe-completion
 assay needs either a real
 C# patch semantic classifier or an explicit pre-edit verification route; otherwise `ask_human`/stop is
 the honest decision.
@@ -334,7 +360,8 @@ treat reviewer reports as authoritative unless the live call sites and tests agr
 - Without one → **build-break + scope efficacy** only.
 The current Math.NET `MNGAMMA` assay reports **build + test + scope** (`build_test_scope`). Older
 Avalonia tasks without evaluator projects remain build-break + scope only. Evaluator projects are never
-added to the source checkout — they are injected into each clone post-agent.
+added to the source checkout; they are injected into the leased slot only after the subject stops and
+are removed by the next slot reset.
 
 ## Corpus and construct validity
 Risky tasks are scored as build-break + scope traps, not refusal-only traps. The expected scope for a
@@ -384,12 +411,13 @@ scoreboard, a task×seed×arm status matrix, and a per-language coverage panel, 
 **real `pebra dashboard`** per arm. It never runs an agent, is **not** gated, never imports pebra in the
 observatory process, and never writes into a run dir. The one-click "Open" drilldown shells a child Python
 process that serves the product dashboard **read-only against a validated throwaway file-copy of the arm's
-`pebra.db`** — the clone DB is never opened (even a read-only SQLite open of a WAL db can leave `-wal`/`-shm`
+`pebra.db`** — the run DB is never opened by that child (even a read-only SQLite open of a WAL db can leave `-wal`/`-shm`
 sidecars), no `.pebra/` is initialized, and the live assay writer is not contended by the dashboard. The
 temp copy is removed when the observatory exits. The copy-paste fallback command uses
 `pebra dashboard --db … --repo-id … --read-only` (no CLI `--repo-root` resolution, which would init
-`.pebra/`), but it opens the original db directly; use **Open** for strict clone isolation. Uses only the
-Python stdlib in the observatory process.
+`.pebra/`), but it opens the original db directly; use **Open** for strict database isolation. Once a
+slot generation changes, historical source drilldown is disabled instead of attaching the old run DB
+to newer workspace contents. Uses only the Python stdlib in the observatory process.
 
 Launch the live server (opens a browser; polls every 5s — safe to run during a live assay):
 
@@ -443,9 +471,10 @@ export PATH="$HOME/.local/bin:$PATH"
 pnpm --version
 ```
 
-Before a paid JS/TS Phase-4 run, clone the pinned Zod SHA, run the deterministic oracle preflight, and
-record a dependency-security check on the pinned dependency tree. This is a pre-run review item, not a
-hard CI gate:
+Before a paid JS/TS Phase-4 run, provide a clean local Zod checkout at the pinned SHA. The harness
+creates persistent slots from that checkout only when needed; do not reclone or fully reindex per arm.
+Run the deterministic preflight and record a dependency-security check on the pinned dependency tree.
+This is a pre-run review item, not a hard CI gate:
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -458,7 +487,7 @@ socket scan create --report
 
 ### JS/Zod Phase-4 no-paid preflight
 
-Run this before any paid JS assay. It runs repo identity, oracle labels, fresh graph evidence, language
+Run this before any paid JS assay. It runs repo identity, oracle labels, synchronized graph evidence, language
 tier, measured candidate-specific RCA benefit, semantic-diff request wiring, and `revise_safer`
 repair-route calibration (including JS4's graph-native continuity proof), then exits before the
 subject/model loop. It does **not** require a provider key or the live run gate. Do not combine it with
@@ -494,7 +523,7 @@ python -m e2e.experiments.agent_ab.runners.orchestrator \
 
 ### Live agent assay
 
-This is the live agent assay. It runs the gated preflight first (repo identity, oracle labels, fresh graph
+This is the live agent assay. It runs the gated preflight first (repo identity, oracle labels, synchronized graph
 evidence, language node/tier checks, targeted test-count checks, and `revise_safer` route calibration),
 then runs the configured arms. In `assay_js`, risky sham runs execute first. Every risky task must
 materialize harm in at least one scorable sham seed; otherwise the run stops before paying for the
@@ -509,6 +538,12 @@ Recommended current robustness lane: **DeepSeek + Zod JS assay + parallel arms**
 `assay_js --preflight-only` command above passes. The e2e real advisory path injects
 `PEBRA_CODEGRAPH_SEMANTIC_DIFF=1` and sets `codegraph_semantic_diff_enabled=1.0` in the request so the
 paid JS run uses the same semantic-diff deployment posture as the preflight.
+
+The oracle, graph, and revise-safer preflights each have a dedicated persistent slot. They rerun every
+validation on every invocation; only the checkout, dependency tree, and CodeGraph index are reused.
+Source is reset between cases, and graph setup becomes incremental after the first successful index
+in each dedicated slot.
+Preflight verdicts are never cached.
 
 PowerShell:
 

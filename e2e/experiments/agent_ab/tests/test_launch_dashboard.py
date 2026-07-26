@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -27,6 +28,44 @@ def test_list_run_dbs_finds_stores_and_repos(tmp_path):
     by_clone = {d["clone"]: d for d in dbs}
     assert by_clone["JS1_seed0_aaaaaaaaaaaa"]["repo"] is not None
     assert by_clone["JS1_seed0_bbbbbbbbbbbb"]["repo"] is None  # no sibling repo/ -> flagged
+
+
+def test_list_run_dbs_resolves_persistent_slot_receipt(tmp_path):
+    run = tmp_path / "r1" / "JS4_seed0_opaque"
+    run.mkdir(parents=True)
+    (run / "pebra.db").write_bytes(b"db")
+    slot_repo = tmp_path / "persistent-slots" / "opaque" / "repo"
+    slot_repo.mkdir(parents=True)
+    (slot_repo.parent / "generation.txt").write_text("3\n", encoding="utf-8")
+    (run / "slot-receipt.json").write_text(
+        json.dumps({"repo_path": str(slot_repo.resolve()), "generation": 3}),
+        encoding="utf-8",
+    )
+
+    stores = ld.list_run_dbs("r1", ab_out=tmp_path)
+
+    assert stores == [{
+        "clone": "JS4_seed0_opaque",
+        "db": str(run / "pebra.db"),
+        "repo": str(slot_repo.resolve()),
+    }]
+
+
+def test_list_run_dbs_rejects_stale_persistent_slot_receipt(tmp_path):
+    run = tmp_path / "r1" / "JS4_seed0_opaque"
+    run.mkdir(parents=True)
+    (run / "pebra.db").write_bytes(b"db")
+    slot_repo = tmp_path / "persistent-slots" / "opaque" / "repo"
+    slot_repo.mkdir(parents=True)
+    (slot_repo.parent / "generation.txt").write_text("4\n", encoding="utf-8")
+    (run / "slot-receipt.json").write_text(
+        json.dumps({"repo_path": str(slot_repo.resolve()), "generation": 3}),
+        encoding="utf-8",
+    )
+
+    stores = ld.list_run_dbs("r1", ab_out=tmp_path)
+
+    assert stores[0]["repo"] is None
 
 
 def test_list_run_dbs_empty_for_unknown_run(tmp_path):

@@ -3,12 +3,12 @@
 Two gates:
 
 1. ``run_oracle_preflight`` — validates the hidden labels are real. For each task it applies the
-   ground-truth oracle patch to a fresh clone and asserts the build outcome matches
+   ground-truth oracle patch to a reset workspace and asserts the build outcome matches
    ``oracle_build_must_fail`` (trap tasks must break; safe tasks must build). This is what catches a
    bogus trap (e.g. a "delete" that still compiles): the run cannot proceed on a wrong label.
 
 2. ``run_graph_preflight`` — validates the TREATMENT intervention is REAL. It proves the target
-   resolves against a FRESH CodeGraph and that graph-backed fields actually appear in the assess
+   resolves against a synchronized CodeGraph and that graph-backed fields actually appear in the assess
    payload. Without this, a stale/missing graph would silently degrade treatment to ~control (untrusted
    evidence) and the null result would be an artifact, not a finding.
 
@@ -34,7 +34,12 @@ from e2e.experiments.agent_ab import backends
 from e2e.experiments.agent_ab.models import TaskSpec
 from e2e.experiments.agent_ab.patch_files import touched_files
 from e2e.experiments.agent_ab.path_scope import is_in_scope
-from e2e.experiments.agent_ab.runners import evaluator, run_artifacts, run_pair
+from e2e.experiments.agent_ab.runners import (
+    evaluator,
+    run_artifacts,
+    run_pair,
+    slot_pool,
+)
 from e2e.experiments.agent_ab.tools import advisory_check_real, candidate_verifier
 from e2e.external.utils import repo_source as rs
 
@@ -53,6 +58,9 @@ _MIN_CSHARP_NODES = 50
 _REPO_ENV_VAR = "E2E_TEMPLATE_BLUEPRINT_REPO"
 _BLOCKING_DECISIONS = {"reject", "ask_human", "revise_safer"}
 _LANGUAGE_TIER_RANK = {"risk_only": 1, "partial": 2, "full": 3}
+_ORACLE_PREFLIGHT_SLOT = 1000
+_GRAPH_PREFLIGHT_SLOT = 1001
+_REVISE_PREFLIGHT_SLOT = 1002
 
 
 class PreflightError(RuntimeError):
@@ -115,8 +123,42 @@ def _clone_fresh(external: rs.ExternalRepo, dest: Path, *, out_dir: Path) -> Pat
     return rs.clone_at_recorded_head(external, dest)
 
 
+class _PreflightWorkspace:
+    """Provide fresh source state from either disposable clones or one persistent slot."""
+
+    def __init__(
+        self,
+        external: rs.ExternalRepo,
+        *,
+        out_dir: Path,
+        persistent_slot_index: int | None = None,
+    ) -> None:
+        self._external = external
+        self._out_dir = out_dir
+        self._persistent_slot_index = persistent_slot_index
+        self._lease: slot_pool.SlotLease | None = None
+        self._used = False
+
+    def checkout(self, dest: Path) -> Path:
+        if self._persistent_slot_index is None:
+            return _clone_fresh(self._external, dest, out_dir=self._out_dir)
+        if self._lease is None:
+            self._lease = slot_pool.acquire_slot(
+                self._external, self._persistent_slot_index
+            )
+        elif self._used:
+            self._lease.reset(self._external)
+        self._used = True
+        return self._lease.repo_path
+
+    def close(self) -> None:
+        if self._lease is not None:
+            self._lease.release()
+            self._lease = None
+
+
 def _run_clean_graph_setup(repo_path: Path, setup_graph_fn: Callable[[Path], None]) -> None:
-    """Run graph setup in a disposable clone without polluting the candidate diff envelope."""
+    """Run graph setup without polluting the candidate diff envelope."""
     from e2e.utils import cli_harness  # noqa: PLC0415
 
     try:
@@ -311,14 +353,21 @@ def run_oracle_preflight(
     test_fn: Callable[..., Any] | None = None,
     patch_dir: Path | None = None,
     correct_patch_dir: Path | None = None,
+    persistent_slots: bool = False,
 ) -> None:
-    """Apply each task's oracle patch to a fresh clone and assert the build outcome matches the label.
+    """Apply each task's oracle patch to clean source and assert the build outcome matches the label.
 
     Risky tasks also need a correct-fix reference patch. That patch must touch only the hidden
     expected scope and must build, proving the widened scope is complete enough to reward a safe fix
-    rather than only rewarding refusal.
+    rather than only rewarding refusal. Live runs reset one persistent preflight slot between cases;
+    unit tests retain disposable-clone behavior unless they opt in.
     """
     failures: list[str] = []
+    workspace = _PreflightWorkspace(
+        external,
+        out_dir=out_dir,
+        persistent_slot_index=(_ORACLE_PREFLIGHT_SLOT if persistent_slots else None),
+    )
     for spec in corpus:
         # Accumulate ALL failures (missing patch / apply failure / label mismatch / infra) — never
         # first-fail — so one drifted patch does not hide the others.
@@ -330,7 +379,7 @@ def run_oracle_preflight(
                 continue
             if spec.behavior_oracle and spec.evaluator_test_project:
                 baseline_dest = out_dir / "preflight" / f"{spec.task_id}_baseline" / "repo"
-                baseline_repo = _clone_fresh(external, baseline_dest, out_dir=out_dir)
+                baseline_repo = workspace.checkout(baseline_dest)
                 baseline_test = _run_spec_test(spec, baseline_repo, test_fn)
                 baseline_msg = _baseline_behavior_failure(
                     spec,
@@ -340,7 +389,7 @@ def run_oracle_preflight(
                 if baseline_msg:
                     failures.append(baseline_msg)
             dest = out_dir / "preflight" / spec.task_id / "repo"
-            repo_path = _clone_fresh(external, dest, out_dir=out_dir)
+            repo_path = workspace.checkout(dest)
             _apply_patch(patch_file, repo_path)
             build = _run_spec_build(spec, repo_path, build_fn)
             msg = _oracle_failure(spec, build)
@@ -366,7 +415,7 @@ def run_oracle_preflight(
                     failures.append(scope_msg)
                     continue
                 correct_dest = out_dir / "preflight" / f"{spec.task_id}_correct" / "repo"
-                correct_repo = _clone_fresh(external, correct_dest, out_dir=out_dir)
+                correct_repo = workspace.checkout(correct_dest)
                 _apply_patch(correct_patch, correct_repo)
                 fix_build = _run_spec_build(spec, correct_repo, build_fn)
                 fix_msg = _correct_fix_failure(spec, fix_build)
@@ -389,11 +438,12 @@ def run_oracle_preflight(
             failures.append(f"{spec.task_id}: {exc.args[0] if exc.args else exc}")
         except Exception as exc:  # noqa: BLE001 - infra (clone/build) error, recorded not raised mid-loop
             failures.append(f"{spec.task_id}: infrastructure error: {type(exc).__name__}: {exc}")
+    workspace.close()
     if failures:
         raise PreflightError("oracle pre-flight failed:\n" + "\n".join(failures))
 
 
-# ---- graph-freshness / treatment-integrity preflight ------------------------------------------
+# ---- graph-synchronization / treatment-integrity preflight ------------------------------------
 
 
 def _graph_scope_digest(assess_payload: dict[str, Any]) -> str | None:
@@ -561,11 +611,12 @@ def run_graph_preflight(
     setup_graph_fn: Callable[[Path], None] | None = None,
     node_count_fn: Callable[[Path], dict[str, Any]] | None = None,
     capability_fn: Callable[[Path], dict[str, Any]] | None = None,
+    persistent_slots: bool = False,
 ) -> str | None:
-    """Prove each task's target resolves on a fresh CodeGraph and yields graph-backed assess evidence.
+    """Prove each task's target resolves on a synchronized CodeGraph and yields graph-backed evidence.
 
     ``assess_fn(repo_path, spec)`` returns the treatment assess payload for the task's target; injectable
-    so this is unit-testable with a fake payload. ``setup_graph_fn`` indexes the clone (defaults to the
+    so this is unit-testable with a fake payload. ``setup_graph_fn`` indexes the workspace (defaults to the
     cli_harness setup-graph in the live path). ``node_count_fn`` returns repo-wide CodeGraph node counts
     (defaults to ``pebra graph-stats`` via cli_harness) for the INDEPENDENT validity check: legacy C#
     tasks require C# callable nodes, while explicit multi-language tier floors use the assessed
@@ -575,6 +626,11 @@ def run_graph_preflight(
     failures: list[str] = []
     scope_digests: set[str] = set()
     coverage_by_language: dict[str, dict[str, Any]] = {}
+    workspace = _PreflightWorkspace(
+        external,
+        out_dir=out_dir,
+        persistent_slot_index=(_GRAPH_PREFLIGHT_SLOT if persistent_slots else None),
+    )
 
     def _record_coverage(payload: dict[str, Any] | None) -> None:
         cap = _language_capability_from_payload(payload)
@@ -604,12 +660,18 @@ def run_graph_preflight(
     for spec in corpus:
         if spec.harm_label != "risky" and not spec.required_language_tier:
             continue  # graph value is asserted on risky targets and explicit language-tier floors
-        # Accumulate ALL failures; a clone/setup-graph/assess infra error on one task is recorded as a
+        # Accumulate ALL failures; a workspace/setup-graph/assess infra error on one task is recorded as a
         # PreflightError line, not raised mid-loop as a raw CLIError that hides the other tasks.
         try:
             dest = out_dir / "graph_preflight" / spec.task_id / "repo"
-            repo_path = _clone_fresh(external, dest, out_dir=out_dir)
-            if setup_graph_fn is not None:
+            repo_path = workspace.checkout(dest)
+            if (
+                setup_graph_fn is not None
+                and (
+                    not persistent_slots
+                    or not (repo_path / ".codegraph" / "codegraph.db").is_file()
+                )
+            ):
                 _run_clean_graph_setup(repo_path, setup_graph_fn)
             payload = assess_fn(repo_path, spec) if spec.required_language_tier else None
             repo_capability = _capability_for_spec(repo_path, spec)
@@ -638,8 +700,9 @@ def run_graph_preflight(
                 failures.append(msg)
         except PreflightError as exc:
             failures.append(f"{spec.task_id}: {exc.args[0] if exc.args else exc}")
-        except Exception as exc:  # noqa: BLE001 - infra error (clone/setup-graph/assess), recorded
+        except Exception as exc:  # noqa: BLE001 - infra error (workspace/setup-graph/assess), recorded
             failures.append(f"{spec.task_id}: infrastructure error: {type(exc).__name__}: {exc}")
+    workspace.close()
     # Additive observability artifact (never the resume file): the run observatory renders this as the
     # per-language coverage panel. Written before the failure raise so a failed preflight still records
     # whatever coverage it measured.
@@ -879,6 +942,7 @@ def run_revise_safer_calibration(
     setup_graph_fn: Callable[[Path], None] | None = None,
     patch_dir: Path | None = None,
     correct_patch_dir: Path | None = None,
+    persistent_slots: bool = False,
 ) -> None:
     """Assert the revise-safer route before spending live agent calls.
 
@@ -905,6 +969,11 @@ def run_revise_safer_calibration(
     route_records: list[dict[str, Any]] = []
     risky_seen = 0
     checked = 0
+    workspace = _PreflightWorkspace(
+        external,
+        out_dir=out_dir,
+        persistent_slot_index=(_REVISE_PREFLIGHT_SLOT if persistent_slots else None),
+    )
     for spec in corpus:
         if spec.harm_label != "risky":
             continue
@@ -920,8 +989,14 @@ def run_revise_safer_calibration(
         checked += 1
         try:
             dest = out_dir / "revise_calibration" / spec.task_id / "repo"
-            repo_path = _clone_fresh(external, dest, out_dir=out_dir)
-            if setup_graph_fn is not None:
+            repo_path = workspace.checkout(dest)
+            if (
+                setup_graph_fn is not None
+                and (
+                    not persistent_slots
+                    or not (repo_path / ".codegraph" / "codegraph.db").is_file()
+                )
+            ):
                 _run_clean_graph_setup(repo_path, setup_graph_fn)
             bad_db = dest.parent / "bad_revise_calibration.db"
             reference_db = dest.parent / "reference_revise_calibration.db"
@@ -1257,6 +1332,7 @@ def run_revise_safer_calibration(
             failures.append(f"{spec.task_id}: {exc.args[0] if exc.args else exc}")
         except Exception as exc:  # noqa: BLE001 - infra error recorded with the task id
             failures.append(f"{spec.task_id}: infrastructure error: {type(exc).__name__}: {exc}")
+    workspace.close()
     if risky_seen and checked == 0:
         failures.append("revise-safer calibration validated zero risky patch pairs")
     try:

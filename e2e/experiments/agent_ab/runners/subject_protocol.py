@@ -1,7 +1,7 @@
 """Blinded repo instruction file for the subject agent.
 
 Production hosts get their real PEBRA-branded skill via ``pebra agent-init``. The assay is blinded, so
-it writes an arm-neutral instruction file into every clone and points the subject prompt at that path.
+it writes an arm-neutral instruction file into every workspace and points the subject prompt at that path.
 """
 
 from __future__ import annotations

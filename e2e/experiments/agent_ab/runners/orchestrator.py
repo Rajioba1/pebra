@@ -40,6 +40,7 @@ from e2e.experiments.agent_ab.runners import (
     run_artifacts,
     run_gate,
     run_pair,
+    slot_pool,
     subject_protocol,
     token_accounting,
 )
@@ -444,6 +445,7 @@ def _experiment_design(
         "model": model,
         "source_head_sha": source_head_sha,
         "execution": {
+            "workspace_lifecycle_version": slot_pool.WORKSPACE_LIFECYCLE_VERSION,
             "parallel_arms": os.environ.get("E2E_AB_PARALLEL_ARMS") == "1",
             "max_workers_env": os.environ.get("E2E_AB_MAX_WORKERS"),
             "real_advisory_arms_serialized": run_pair._REAL_ADVISORY_ARMS_SERIALIZED,
@@ -908,7 +910,7 @@ def main(argv: list[str] | None = None) -> int:
         planned_arms=_planned_arms_for_mode(args.mode),
     )
     if not args.preflight_only:
-        run_gate.check_gate()  # fail-closed before ANY clone / model call
+        run_gate.check_gate()  # fail-closed before ANY workspace / model call
         _preflight_gate_contract(_AB_OUT / args.run_id)
     if (
         args.skip_oracle_preflight or args.skip_graph_preflight
@@ -952,7 +954,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not args.skip_oracle_preflight:
             active_preflight = "oracle"
-            preflight.run_oracle_preflight(planned_specs, external, out_dir=out_dir)
+            preflight.run_oracle_preflight(
+                planned_specs, external, out_dir=out_dir, persistent_slots=True
+            )
             preflight_status["oracle"] = "passed"
         if not args.skip_graph_preflight:
             active_preflight = "graph"
@@ -963,6 +967,7 @@ def main(argv: list[str] | None = None) -> int:
                 assess_fn=_live_assess_fn,
                 setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
                 node_count_fn=lambda p: cli_harness.graph_node_counts(repo_root=p),
+                persistent_slots=True,
             )
             preflight_status["graph"] = "passed"
             if is_assay:
@@ -972,6 +977,7 @@ def main(argv: list[str] | None = None) -> int:
                     external,
                     out_dir=out_dir,
                     setup_graph_fn=lambda p: cli_harness.setup_graph(repo_root=p),
+                    persistent_slots=True,
                 )
                 preflight_status["revise_safer"] = "passed"
         active_preflight = None

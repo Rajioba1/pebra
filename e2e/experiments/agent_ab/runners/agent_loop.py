@@ -1,7 +1,7 @@
 """The subject agent turn loop — real model reasoning, logged/confined tools, deterministic plumbing.
 
 Everything here is deterministic and unit-tested via ``ScriptedClient`` EXCEPT the single
-``client.send`` call. The loop dispatches tool calls through ``tool_impl`` (confined to the clone),
+``client.send`` call. The loop dispatches tool calls through ``tool_impl`` (confined to the workspace),
 enforces tool-call and wall-time limits, and captures the transcript / ordered ToolCallRecords / diff
 into a ``SubjectResult``. It does NOT run the evaluator build/test — that is the orchestrator's
 post-agent step (it injects the hidden evaluator tests first). ``SubjectResult.build_*``/``test_*`` are
@@ -676,7 +676,7 @@ def _write_subject_trace(
     tools_seen: list[dict[str, Any]],
     limit_reason: str | None,
 ) -> None:
-    """Persist raw agent evidence beside the clone. This is debug-only; scoring reads RunOutcome."""
+    """Persist raw agent evidence in run artifacts. This is debug-only; scoring reads RunOutcome."""
     payload = {
         "schema_version": "agent_ab.subject_trace.v1",
         "task_id": result.task_id,

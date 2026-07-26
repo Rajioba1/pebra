@@ -41,6 +41,36 @@ def _build(ran=True, passed=True, err=""):
     return SimpleNamespace(ran=ran, passed=passed, error_summary=err)
 
 
+def test_persistent_preflight_workspace_resets_one_leased_slot(monkeypatch, tmp_path):
+    repo = tmp_path / "slot" / "repo"
+    repo.mkdir(parents=True)
+    events: list[str] = []
+    lease = SimpleNamespace(
+        repo_path=repo,
+        reset=lambda _external: events.append("reset"),
+        release=lambda: events.append("release"),
+    )
+    monkeypatch.setattr(
+        preflight.slot_pool,
+        "acquire_slot",
+        lambda _external, index: (
+            events.append(f"acquire:{index}") or lease
+        ),
+    )
+    workspace = preflight._PreflightWorkspace(
+        object(),
+        out_dir=tmp_path,
+        persistent_slot_index=1001,
+    )
+
+    first = workspace.checkout(tmp_path / "first" / "repo")
+    second = workspace.checkout(tmp_path / "second" / "repo")
+    workspace.close()
+
+    assert first == second == repo
+    assert events == ["acquire:1001", "reset", "release"]
+
+
 def test_live_revise_safer_assess_requests_host_refinement_metadata(
     monkeypatch, tmp_path
 ) -> None:
@@ -888,6 +918,38 @@ def test_graph_preflight_passes_with_enough_nodes_and_fresh(tmp_path, monkeypatc
                                            node_count_fn=lambda p: {"csharp_callable": 700})
 
     assert digest == "a" * 64
+
+
+def test_graph_preflight_reuses_existing_persistent_index(tmp_path, monkeypatch):
+    repo = tmp_path / "slot" / "repo"
+    (repo / ".codegraph").mkdir(parents=True)
+    (repo / ".codegraph" / "codegraph.db").write_bytes(b"index")
+    events: list[str] = []
+    lease = SimpleNamespace(
+        repo_path=repo,
+        reset=lambda _external: events.append("reset"),
+        release=lambda: events.append("release"),
+    )
+    monkeypatch.setattr(
+        preflight.slot_pool,
+        "acquire_slot",
+        lambda _external, index: (
+            events.append(f"acquire:{index}") or lease
+        ),
+    )
+
+    digest = preflight.run_graph_preflight(
+        [_TRAP],
+        object(),
+        out_dir=tmp_path,
+        assess_fn=_fresh_payload,
+        setup_graph_fn=lambda _repo: events.append("full-index"),
+        node_count_fn=lambda _repo: {"csharp_callable": 700},
+        persistent_slots=True,
+    )
+
+    assert digest == "a" * 64
+    assert events == ["acquire:1001", "release"]
 
 
 def test_graph_preflight_rejects_mixed_scope_cohorts(tmp_path, monkeypatch):

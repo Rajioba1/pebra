@@ -346,7 +346,7 @@ function renderTraces(traces) {
   const wrap = el("div", {});
   wrap.appendChild(el("h2", { text: "Subject traces" }));
   if (!traces || !traces.length) {
-    wrap.appendChild(el("p", { class: "dim", text: "No subject_trace.json sidecars yet. New runs write one per arm clone." }));
+    wrap.appendChild(el("p", { class: "dim", text: "No subject_trace.json sidecars yet. New runs write one per arm workspace." }));
     return wrap;
   }
   const rows = traces.slice().sort((a, b) => (

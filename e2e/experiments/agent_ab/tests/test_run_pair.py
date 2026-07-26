@@ -284,6 +284,42 @@ def test_prepare_arm_replaces_stale_clone_and_indexes_actual_arm(monkeypatch, tm
     assert calls == [stale]
 
 
+def test_run_trial_assigns_unique_persistent_slots(monkeypatch, tmp_path):
+    arms = (
+        models.ARM_SHAM,
+        models.ARM_GRAPH_CONTEXT,
+        models.ARM_PEBRA,
+    )
+    seen: dict[str, int] = {}
+    monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: _External())
+    monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
+
+    def _prepare(_external, _spec, arm, _seed, _run_id, **kwargs):
+        seen[arm] = kwargs["slot_index"]
+        return run_pair.ArmSetup(
+            arm=arm,
+            repo_path=tmp_path,
+            advisory_backend=lambda _payload: {},
+            baseline_build=None,
+            subject_prompt="task",
+        )
+
+    monkeypatch.setattr(run_pair, "prepare_arm", _prepare)
+    monkeypatch.setattr(
+        run_pair,
+        "_invoke_trial_setups",
+        lambda setups, _spec, _seed: tuple(
+            SubjectResult(task_id="T1", arm=setup.arm, seed=0)
+            for setup in setups
+        ),
+    )
+
+    run_pair.run_trial(_SPEC, 0, "rid", arms=arms)
+
+    assert set(seen) == set(arms)
+    assert set(seen.values()) == set(range(len(arms)))
+
+
 def test_treatment_gate_check_backend_uses_consult_only(monkeypatch, tmp_path):
     captured = {}
 
@@ -941,6 +977,7 @@ def test_post_edit_verify_persists_measured_benefit_for_applied_candidate(monkey
         advisory_backend=lambda payload: {},
         baseline_build=None,
         subject_prompt="x",
+        workspace_path=tmp_path / "run-artifacts",
         telemetry=run_pair.ArmTelemetry(
             applied_assessment_id="asm_7",
             applied_required_checks=("run targeted tests for the touched scope before commit",),
@@ -980,7 +1017,7 @@ def test_post_edit_verify_persists_measured_benefit_for_applied_candidate(monkey
     assert seen == {
         "assessment_id": "asm_7",
         "repo_root": tmp_path,
-        "db": tmp_path.parent / "pebra.db",
+        "db": tmp_path / "run-artifacts" / "pebra.db",
         "scope": "all",
         "completed_checks": {
             "run targeted tests for the touched scope before commit": "passed"
@@ -2126,6 +2163,60 @@ def test_parallel_trial_serializes_graph_backed_arms_before_invocation(monkeypat
     assert max_active_total > 1
 
 
+def test_invoke_trial_setups_releases_all_slots_after_subject_failure(
+    monkeypatch, tmp_path
+):
+    released: list[str] = []
+    setups = [
+        replace(
+            _dummy_setup(tmp_path),
+            arm=arm,
+            slot_lease=SimpleNamespace(
+                release=lambda arm=arm: released.append(arm)
+            ),
+        )
+        for arm in ("first", "second", "never-started")
+    ]
+
+    def _invoke(setup, *_args, **_kwargs):
+        if setup.arm == "second":
+            raise RuntimeError("subject failed")
+        return SubjectResult(task_id="T1", arm=setup.arm, seed=0)
+
+    monkeypatch.setattr(run_pair, "_invoke_trial_setup", _invoke)
+
+    with pytest.raises(RuntimeError, match="subject failed"):
+        run_pair._invoke_trial_setups(setups, _SPEC, 0)
+
+    assert released == ["first", "second", "never-started"]
+
+
+def test_legacy_run_pair_releases_prepared_slot_when_second_setup_fails(
+    monkeypatch, tmp_path
+):
+    released: list[str] = []
+    first = replace(
+        _dummy_setup(tmp_path),
+        slot_lease=SimpleNamespace(release=lambda: released.append("released")),
+    )
+    calls = iter([first, RuntimeError("second setup failed")])
+
+    def _prepare(*_args, **_kwargs):
+        result = next(calls)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(run_pair, "_preflight_run_gate_contract", lambda _run_id: None)
+    monkeypatch.setattr(run_pair.rs, "prepare_external_repo", lambda: object())
+    monkeypatch.setattr(run_pair, "prepare_arm", _prepare)
+
+    with pytest.raises(RuntimeError, match="second setup failed"):
+        run_pair.run_pair(_SPEC, 0, "run-id")
+
+    assert released == ["released"]
+
+
 def test_repair_arm_verifies_candidate_and_raises_cap(monkeypatch, tmp_path):
     # P4: the graph_repair arm host-produces candidate_verification on the narrowed resubmit (attempt>=1)
     # and raises the cap to 2 so gate 7 is reachable. Verification pieces are monkeypatched (no dotnet).
@@ -2760,6 +2851,20 @@ def test_run_trial_aborts_failed_graph_context_readiness_before_subject(
         return dest
 
     monkeypatch.setattr(run_pair.rs, "clone_at_recorded_head", _clone)
+    persistent_repo = tmp_path / "persistent" / "repo"
+    _clone(None, persistent_repo)
+    monkeypatch.setattr(
+        run_pair.slot_pool,
+        "acquire_slot",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            repo_path=persistent_repo,
+            reused=False,
+            write_receipt=lambda workspace: workspace.mkdir(
+                parents=True, exist_ok=True
+            ),
+            release=lambda: None,
+        ),
+    )
     monkeypatch.setattr(run_pair.cli_harness, "setup_graph", lambda *, repo_root: None)
     monkeypatch.setattr(
         run_pair.cli_harness,

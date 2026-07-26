@@ -1,13 +1,13 @@
 """Scaffold one paired trial (control + treatment) for a task/seed.
 
-It prepares both arms identically and blinded: isolated clones at the same SHA, the SAME
+It prepares arms identically and blinded: isolated locked workspaces at the same SHA, the SAME
 ``advisory_check`` tool name in both (only the backend differs), an identical task prompt with no arm
 identifier, and a recorded baseline build. ``_invoke_subject_agent`` is GATED: it calls
 ``run_gate.check_gate()`` first and only then drives the (now-live, Phase G) ``AnthropicClient``. The
 old ``NotImplementedError`` stop is gone, so the fail-closed run gate is the SOLE guard - nothing
 in-tree sets E2E_AB_RUN, and the gate-pin test asserts it raises when the gate is shut.
 
-Never mutates the source checkout (repo_source clones into gitignored e2e/out/). No ``import pebra``.
+Never mutates the source checkout (persistent slots live under gitignored e2e/out/). No ``import pebra``.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from e2e.experiments.agent_ab.tools import (
     candidate_materializer, candidate_verifier, covering_tests_resolver,
     repository_context_contract,
 )
-from e2e.experiments.agent_ab.runners import subject_protocol, tool_impl
+from e2e.experiments.agent_ab.runners import slot_pool, subject_protocol, tool_impl
 from e2e.external.utils import repo_source as rs
 from e2e.utils import cli_harness
 
@@ -114,7 +114,7 @@ def arms_for(
 
 
 class RunPairError(RuntimeError):
-    """The paired run cannot start because a clone/setup/build invariant failed."""
+    """The paired run cannot start because a workspace/setup/build invariant failed."""
 
 
 # Fail LOUD (at import) if an arm is mis-wired, so a new arm can never run as a silent placebo.
@@ -212,7 +212,7 @@ class ArmTelemetry:
 class ArmSetup:
     arm: str
     repo_path: Path
-    advisory_backend: Callable[..., dict[str, Any]]   # bound to the isolated clone for treatment
+    advisory_backend: Callable[..., dict[str, Any]]   # bound to the isolated workspace for treatment
     baseline_build: Any
     subject_prompt: str
     build_solution: str = "TemplateBlueprint.sln"
@@ -239,6 +239,8 @@ class ArmSetup:
         "warnings": ["Repository context is temporarily unavailable."],
         "truncated": False,
     }
+    workspace_path: Path | None = None
+    slot_lease: slot_pool.SlotLease | None = None
 
 
 def _repo_head(repo_path: Path) -> str:
@@ -1666,7 +1668,7 @@ def _language_name(language: str) -> str:
 
 def _build_subject_prompt(spec: TaskSpec, repo_path: Path, arm: str) -> str:
     del arm
-    # Protocol content lives in the clone at the same path for every arm. The prompt only instructs the
+    # Protocol content lives in the workspace at the same path for every arm. The prompt only instructs the
     # raw API subject to read the repo instruction file, matching real agent behavior without embedding
     # the intervention body in the system prompt.
     skill_protocol = (
@@ -1695,12 +1697,12 @@ def _remove_stale_arm_workspace(dest: Path) -> None:
     try:
         relative = resolved.relative_to(root)
     except ValueError as exc:
-        raise RunPairError(f"refusing to remove arm clone outside {root}: {resolved}") from exc
+        raise RunPairError(f"refusing to remove arm workspace outside {root}: {resolved}") from exc
     if resolved.name != "repo" or len(relative.parts) < 3:
         raise RunPairError(f"refusing to remove malformed arm workspace: {resolved}")
     workspace = resolved.parent
     if workspace.exists():
-        # The assessment DB is a sibling of the clone. Retrying an authenticated run ID must reset
+        # The assessment DB is outside the repository workspace. Retrying a run ID must reset
         # both, otherwise an allegedly empty learning-context cohort can inherit prior lessons.
         shutil.rmtree(workspace)
 
@@ -1718,9 +1720,10 @@ def _assert_graph_context_ready(
     repo_path: Path,
     *,
     expected_graph_scope_digest: str | None = None,
+    require_graph: bool = False,
 ) -> None:
     """Unpaid runtime readiness probe for graph-backed Understand arms."""
-    if arm not in _GRAPH_CONTEXT_ARMS:
+    if not require_graph and arm not in _GRAPH_CONTEXT_ARMS:
         return
     head = _repo_head(repo_path)
     raw_value = _graph_call(
@@ -1769,90 +1772,142 @@ def prepare_arm(
     run_id: str,
     *,
     expected_graph_scope_digest: str | None = None,
+    slot_index: int | None = None,
 ) -> ArmSetup:
-    """Clone an isolated worktree for one arm and prepare everything up to the agent call. No agent run."""
+    """Prepare one isolated arm, using a persistent slot when the runtime assigned one."""
     # Arm-NEUTRAL path: an opaque hash token, not the arm name - so nothing the agent sees reveals its arm.
-    dest = _AB_OUT / run_id / f"{spec.task_id}_seed{seed}_{_arm_token(arm, run_id)}" / "repo"
+    workspace = _AB_OUT / run_id / f"{spec.task_id}_seed{seed}_{_arm_token(arm, run_id)}"
+    dest = workspace / "repo"
     _remove_stale_arm_workspace(dest)
-    repo_path = rs.clone_at_recorded_head(external, dest)
-    subject_protocol.install(repo_path, arm)
-    _graph_call(cli_harness.setup_graph, repo_root=repo_path)
-    if arm in _GRAPH_ARMS:
-        counts = _graph_call(cli_harness.graph_node_counts, repo_root=repo_path)
-        # Legacy graph tasks are C# specimens and keep the independent C# node floor. Explicit
-        # multi-language tasks are validated by the mandatory graph preflight using the assessed
-        # language capability tier; prepare_arm does not have an assess payload to infer that language.
-        if not spec.required_language_tier and int(counts.get("csharp_callable", 0)) < _MIN_CSHARP_NODES:
-            raise RunPairError(
-                f"{arm} arm CodeGraph has {counts.get('csharp_callable', 0)} C# callable nodes "
-                f"(< {_MIN_CSHARP_NODES})"
+    lease: slot_pool.SlotLease | None = None
+    try:
+        if slot_index is None:
+            repo_path = rs.clone_at_recorded_head(external, dest)
+            _graph_call(cli_harness.setup_graph, repo_root=repo_path)
+        else:
+            lease = slot_pool.acquire_slot(external, slot_index)
+            repo_path = lease.repo_path
+            lease.write_receipt(workspace)
+            if arm in _GRAPH_ARMS:
+                if not (repo_path / ".codegraph" / "codegraph.db").is_file():
+                    _graph_call(cli_harness.setup_graph, repo_root=repo_path)
+                try:
+                    _assert_graph_context_ready(
+                        spec,
+                        arm,
+                        repo_path,
+                        expected_graph_scope_digest=expected_graph_scope_digest,
+                        require_graph=True,
+                    )
+                except RunPairError:
+                    if not lease.reused:
+                        raise
+                    lease.rebuild(external)
+                    repo_path = lease.repo_path
+                    _graph_call(cli_harness.setup_graph, repo_root=repo_path)
+                    _assert_graph_context_ready(
+                        spec,
+                        arm,
+                        repo_path,
+                        expected_graph_scope_digest=expected_graph_scope_digest,
+                        require_graph=True,
+                    )
+        subject_protocol.install(repo_path, arm)
+        if arm in _GRAPH_ARMS:
+            counts = _graph_call(cli_harness.graph_node_counts, repo_root=repo_path)
+            # Legacy graph tasks are C# specimens and keep the independent C# node floor. Explicit
+            # multi-language tasks are validated by the mandatory graph preflight using the assessed
+            # language capability tier; prepare_arm does not have an assess payload to infer that language.
+            if (
+                not spec.required_language_tier
+                and int(counts.get("csharp_callable", 0)) < _MIN_CSHARP_NODES
+            ):
+                raise RunPairError(
+                    f"{arm} arm CodeGraph has {counts.get('csharp_callable', 0)} C# callable nodes "
+                    f"(< {_MIN_CSHARP_NODES})"
+                )
+        oracle_modified_files: tuple[str, ...] = ()
+        if arm == models.ARM_ORACLE_POSITIVE:
+            # Endpoint floor: pre-apply the known correct fix BEFORE the baseline build, so the (correct)
+            # baseline passes. Lazy import: arm_prep imports RunPairError from this module (avoid a cycle).
+            from e2e.experiments.agent_ab.runners import arm_prep  # noqa: PLC0415
+            patch = arm_prep.prepare_oracle_patch(
+                repo_path, spec.task_id, patch_dir=_correct_patch_dir(spec)
             )
-    oracle_modified_files: tuple[str, ...] = ()
-    if arm == models.ARM_ORACLE_POSITIVE:
-        # Endpoint floor: pre-apply the known correct fix BEFORE the baseline build, so the (correct)
-        # baseline passes. Lazy import: arm_prep imports RunPairError from this module (avoid a cycle).
-        from e2e.experiments.agent_ab.runners import arm_prep  # noqa: PLC0415
-        patch = arm_prep.prepare_oracle_patch(repo_path, spec.task_id, patch_dir=_correct_patch_dir(spec))
-        oracle_modified_files = _patch_touched_files(patch.read_text(encoding="utf-8"))
-    db_path = dest.parent / "pebra.db"
-    telemetry = ArmTelemetry()
-    candidate_patches: dict[str, str] = {}
-    candidate_assessments: dict[str, str] = {}
-    build_backend = backends.backend_for_spec(spec)
-    baseline = build_backend.run_build_delta(repo_path, spec)
-    _validate_baseline(repo_path, baseline)
-    _assert_graph_context_ready(
-        spec,
-        arm,
-        repo_path,
-        expected_graph_scope_digest=expected_graph_scope_digest,
-    )
-    return ArmSetup(
-        arm=arm,
-        repo_path=repo_path,
-        advisory_backend=_advisory_backend(
-            arm, repo_path, db_path,
-            covering_hint=(
-                _covering_tests_hint(spec)
-                if arm in {models.ARM_PEBRA_GRAPH_REPAIR, models.ARM_PEBRA_HUMAN_REVIEW}
-                else ""
+            oracle_modified_files = _patch_touched_files(
+                patch.read_text(encoding="utf-8")
+            )
+        db_path = workspace / "pebra.db"
+        telemetry = ArmTelemetry()
+        candidate_patches: dict[str, str] = {}
+        candidate_assessments: dict[str, str] = {}
+        build_backend = backends.backend_for_spec(spec)
+        baseline = build_backend.run_build_delta(repo_path, spec)
+        _validate_baseline(repo_path, baseline)
+        if slot_index is None:
+            _assert_graph_context_ready(
+                spec,
+                arm,
+                repo_path,
+                expected_graph_scope_digest=expected_graph_scope_digest,
+            )
+        return ArmSetup(
+            arm=arm,
+            repo_path=repo_path,
+            advisory_backend=_advisory_backend(
+                arm, repo_path, db_path,
+                covering_hint=(
+                    _covering_tests_hint(spec)
+                    if arm in {
+                        models.ARM_PEBRA_GRAPH_REPAIR,
+                        models.ARM_PEBRA_HUMAN_REVIEW,
+                    }
+                    else ""
+                ),
+                spec=spec,
+                telemetry=telemetry,
+                candidate_patches=candidate_patches,
+                candidate_assessments=candidate_assessments,
+                required_context_source=(
+                    "graph" if arm in _GRAPH_CONTEXT_ARMS else "ordinary"
+                ),
             ),
+            baseline_build=baseline,
+            subject_prompt=_build_subject_prompt(spec, repo_path, arm),
+            build_solution=spec.build_solution,
             spec=spec,
+            build_backend=build_backend,
+            oracle_modified_files=oracle_modified_files,
             telemetry=telemetry,
             candidate_patches=candidate_patches,
             candidate_assessments=candidate_assessments,
-            required_context_source=(
-                "graph" if arm in _GRAPH_CONTEXT_ARMS else "ordinary"
+            apply_candidate_backend=(
+                lambda assessment_id, timeout_seconds=None: cli_harness.apply_candidate(
+                    assessment_id,
+                    repo_root=repo_path,
+                    db=db_path,
+                    timeout=(
+                        max(1, int(timeout_seconds))
+                        if timeout_seconds is not None
+                        else cli_harness.DEFAULT_TIMEOUT_SECONDS
+                    ),
+                )
+                if arm in _REAL_ADVISORY_ARMS
+                else None
             ),
-        ),
-        baseline_build=baseline,
-        subject_prompt=_build_subject_prompt(spec, repo_path, arm),
-        build_solution=spec.build_solution,
-        spec=spec,
-        build_backend=build_backend,
-        oracle_modified_files=oracle_modified_files,
-        telemetry=telemetry,
-        candidate_patches=candidate_patches,
-        candidate_assessments=candidate_assessments,
-        apply_candidate_backend=(
-            lambda assessment_id, timeout_seconds=None: cli_harness.apply_candidate(
-                assessment_id,
-                repo_root=repo_path,
-                db=db_path,
-                timeout=(
-                    max(1, int(timeout_seconds))
-                    if timeout_seconds is not None
-                    else cli_harness.DEFAULT_TIMEOUT_SECONDS
-                ),
-            )
-            if arm in _REAL_ADVISORY_ARMS
-            else None
-        ),
-        approval_backend=_approval_backend(arm, repo_path, db_path, telemetry),
-        gate_check_backend=_gate_check_backend(arm, db_path, telemetry=telemetry),
-        write_applied_backend=_write_applied_backend(telemetry),
-        repository_context_backend=_repository_context_backend(arm, repo_path, telemetry),
-    )
+            approval_backend=_approval_backend(arm, repo_path, db_path, telemetry),
+            gate_check_backend=_gate_check_backend(arm, db_path, telemetry=telemetry),
+            write_applied_backend=_write_applied_backend(telemetry),
+            repository_context_backend=_repository_context_backend(
+                arm, repo_path, telemetry
+            ),
+            workspace_path=workspace,
+            slot_lease=lease,
+        )
+    except Exception:
+        if lease is not None:
+            lease.release()
+        raise
 
 
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
@@ -1957,7 +2012,7 @@ def _post_edit_verify(
             completed_checks[check] = "passed"
     verify_kwargs: dict[str, Any] = {
         "repo_root": setup.repo_path,
-        "db": setup.repo_path.parent / "pebra.db",
+        "db": (setup.workspace_path or setup.repo_path.parent) / "pebra.db",
         "scope": "all",
         "completed_checks": completed_checks,
     }
@@ -2025,7 +2080,7 @@ def _preflight_gate_contract(setup: ArmSetup) -> None:
 
 
 def _preflight_run_gate_contract(run_id: str) -> None:
-    """Authorize and validate schema 2 before any direct runner prepares a clone."""
+    """Authorize and validate schema 2 before any direct runner prepares a workspace."""
     from e2e.experiments.agent_ab.runners import run_gate  # noqa: PLC0415
 
     run_gate.check_gate()
@@ -2080,7 +2135,7 @@ def _invoke_subject_agent(setup: ArmSetup, spec: TaskSpec, seed: int) -> Subject
         seed,
         client=client,
         config=run_cfg,
-        trace_path=setup.repo_path.parent / "subject_trace.json",
+        trace_path=(setup.workspace_path or setup.repo_path.parent) / "subject_trace.json",
         deadline_monotonic=shared_deadline,
     )
 
@@ -2159,11 +2214,26 @@ def run_pair(spec: TaskSpec, seed: int, run_id: str) -> tuple[SubjectResult, Sub
     """Legacy 2-arm (control/treatment) trial — unchanged; kept for the pilot/smoke/powered modes."""
     _preflight_run_gate_contract(run_id)
     external = rs.prepare_external_repo()
-    control = prepare_arm(external, spec, models.ARM_CONTROL, seed, run_id)
-    treatment = prepare_arm(external, spec, models.ARM_TREATMENT, seed, run_id)
+    arms = (models.ARM_CONTROL, models.ARM_TREATMENT)
+    slots = slot_pool.assign_slots(arms, run_id=run_id, task_id=spec.task_id, seed=seed)
+    setups: list[ArmSetup] = []
+    try:
+        for arm in arms:
+            setups.append(
+                prepare_arm(
+                    external, spec, arm, seed, run_id, slot_index=slots[arm]
+                )
+            )
+    except Exception:
+        for setup in setups:
+            lease = getattr(setup, "slot_lease", None)
+            if lease is not None:
+                lease.release()
+        raise
+    results = _invoke_trial_setups(setups, spec, seed)
     return (
-        _invoke_subject_agent(control, spec, seed),
-        _invoke_subject_agent(treatment, spec, seed),
+        results[0],
+        results[1],
     )
 
 
@@ -2183,15 +2253,34 @@ def _max_arm_workers(arm_count: int) -> int:
 
 
 def _invoke_trial_setups(setups: list[ArmSetup], spec: TaskSpec, seed: int) -> tuple[SubjectResult, ...]:
+    def _release(setup: ArmSetup) -> None:
+        lease = getattr(setup, "slot_lease", None)
+        if lease is not None:
+            lease.release()
+
+    def _invoke_and_release(setup: ArmSetup) -> SubjectResult:
+        try:
+            return _invoke_trial_setup(setup, spec, seed)
+        finally:
+            _release(setup)
+
     if not _parallel_arms_enabled() or len(setups) <= 1:
-        return tuple(_invoke_trial_setup(setup, spec, seed) for setup in setups)
+        results: list[SubjectResult] = []
+        for index, setup in enumerate(setups):
+            try:
+                results.append(_invoke_and_release(setup))
+            except Exception:
+                for pending in setups[index + 1:]:
+                    _release(pending)
+                raise
+        return tuple(results)
     graph_arm_lock = threading.Lock()
 
     def _invoke(setup: ArmSetup) -> SubjectResult:
         if setup.arm in _GRAPH_ARMS:
             with graph_arm_lock:
-                return _invoke_trial_setup(setup, spec, seed)
-        return _invoke_trial_setup(setup, spec, seed)
+                return _invoke_and_release(setup)
+        return _invoke_and_release(setup)
 
     with ThreadPoolExecutor(max_workers=_max_arm_workers(len(setups))) as executor:
         futures = [executor.submit(_invoke, setup) for setup in setups]
@@ -2214,17 +2303,36 @@ def run_trial(
 ) -> tuple[SubjectResult, ...]:
     """Prepare and run the N assay arms for one (task, seed). Arms default by harm_label
     (risky: sham/oracle_positive/blast_radius/pebra; safe: sham/blast_radius/pebra). Each arm is an
-    isolated clone under its own opaque token; results carry ``result.arm`` for scoring."""
+    isolated locked workspace under its own opaque token; results carry ``result.arm`` for scoring."""
     _preflight_run_gate_contract(run_id)
     external = rs.prepare_external_repo()
     arm_list = arms if arms is not None else arms_for(spec.harm_label)
+    slot_indices = slot_pool.assign_slots(
+        arm_list, run_id=run_id, task_id=spec.task_id, seed=seed
+    )
     prepare_kwargs = (
         {"expected_graph_scope_digest": expected_graph_scope_digest}
         if expected_graph_scope_digest is not None
         else {}
     )
-    setups = [
-        prepare_arm(external, spec, arm, seed, run_id, **prepare_kwargs)
-        for arm in arm_list
-    ]
+    setups: list[ArmSetup] = []
+    try:
+        for arm in arm_list:
+            setups.append(
+                prepare_arm(
+                    external,
+                    spec,
+                    arm,
+                    seed,
+                    run_id,
+                    slot_index=slot_indices[arm],
+                    **prepare_kwargs,
+                )
+            )
+    except Exception:
+        for setup in setups:
+            lease = getattr(setup, "slot_lease", None)
+            if lease is not None:
+                lease.release()
+        raise
     return _invoke_trial_setups(setups, spec, seed)

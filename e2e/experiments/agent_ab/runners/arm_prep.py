@@ -1,7 +1,7 @@
-"""Per-arm preparation that runs AFTER clone+setup but BEFORE the agent — the oracle-positive arm's
+"""Per-arm preparation that runs AFTER workspace admission but BEFORE the agent — the oracle-positive arm's
 pre-applied correct fix.
 
-The oracle_positive arm is the assay's ENDPOINT FLOOR / guaranteed-effect positive control: the clone
+The oracle_positive arm is the assay's ENDPOINT FLOOR / guaranteed-effect positive control: the workspace
 already holds the correct state (``git apply specimens/<language>/corpus/correct_fix_patches/<task>.patch``),
 so the endpoint (harm / completion) can register an improvement over sham WITHOUT depending on the agent heeding advice —
 the smoke measured heeded=0%, so an advisory oracle would null too. If even this pre-patched arm doesn't
