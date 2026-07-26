@@ -203,7 +203,7 @@
         tr.appendChild(cell(lessonIndicator(lessonByAssessment[it.assessment_id], lessons.status), "mono"));
         tr.addEventListener("click", function () {
           historyState.assessment_id = it.assessment_id;
-          showMeasuredBenefit(it.assessment_id, bbody);
+          showMeasuredBenefit(it.assessment_id, bbody, it, lessonIndicator(lessonByAssessment[it.assessment_id], lessons.status));
         });
         tb.appendChild(tr);
       });
@@ -214,7 +214,12 @@
     }
     view.appendChild(hcard);
     view.appendChild(bcard);
-    if (historyState.assessment_id) showMeasuredBenefit(historyState.assessment_id, bbody);
+    if (historyState.assessment_id) {
+      const restore = data.items.find(function (x) { return x.assessment_id === historyState.assessment_id; });
+      if (restore) {
+        showMeasuredBenefit(restore.assessment_id, bbody, restore, lessonIndicator(lessonByAssessment[restore.assessment_id], lessons.status));
+      }
+    }
   }
 
   function decisionBar(byDecision, total) {
@@ -249,16 +254,46 @@
   // lives on a post_assessment_guardrails row (measured_benefit + measured_benefit_deltas), exposed by
   // GET /api/repos/{repo}/assessments/{id}. Distinct from the assess-time projected `benefit` in the
   // table.
-  async function showMeasuredBenefit(id, box) {
+  function rowIdentityTable(row, lessonText) {
+    // The narrow-viewport table hides fingerprint/rau/confidence/lesson; surface them here so a row
+    // click on a small screen still exposes every column's value (assessment id shows in the table below).
+    const s = row.scores || {};
+    const t = el("table");
+    t.appendChild(headRow(["row detail", "value"]));
+    const tb = el("tbody");
+    function textRow(k, v) {
+      const tr = el("tr");
+      tr.appendChild(cell(k, "mono"));
+      tr.appendChild(cell(v, "mono"));
+      tb.appendChild(tr);
+    }
+    textRow("task", formatTask(row.task));
+    textRow("target", formatTarget(row.target_files));
+    textRow("fingerprint", formatFingerprint(row.candidate_fingerprint));
+    const dr = el("tr");
+    dr.appendChild(cell("decision", "mono"));
+    const dc = el("td"); dc.appendChild(pill(row.decision)); dr.appendChild(dc);
+    tb.appendChild(dr);
+    textRow("rau", fmt(s.rau));
+    textRow("edit confidence", fmt(s.edit_confidence, 2));
+    textRow("lesson", lessonText || "—");
+    t.appendChild(tb);
+    return t;
+  }
+
+  async function showMeasuredBenefit(id, box, row, lessonText) {
     clear(box);
-    box.appendChild(el("p", "chart-note", "loading " + id + "…"));
+    if (row) box.appendChild(rowIdentityTable(row, lessonText));
+    const detail = el("div");
+    detail.appendChild(el("p", "chart-note", "loading " + id + "…"));
+    box.appendChild(detail);
     try {
       const d = await getJSON(rp("/assessments/" + encodeURIComponent(id)));
       const rows = (d.guardrails || []);
       const g = rows.filter(function (x) {
         return x && x.measured_benefit_deltas && Object.keys(x.measured_benefit_deltas).length;
       }).pop();
-      clear(box);
+      clear(detail);
       const prior = d.prior_provenance || { source: "cold_start", calibration_tags: [] };
       const priorTable = el("table");
       priorTable.appendChild(headRow(["prior measure", "value"]));
@@ -271,9 +306,9 @@
         priorBody.appendChild(tr);
       });
       priorTable.appendChild(priorBody);
-      box.appendChild(priorTable);
+      detail.appendChild(priorTable);
       if (!g || g.measured_benefit == null) {
-        box.appendChild(emptyMsg("No verify / measured-benefit recorded for " + id + " yet. Run pebra verify to record it."));
+        detail.appendChild(emptyMsg("No verify / measured-benefit recorded for " + id + " yet. Run pebra verify to record it."));
         return;
       }
       const dl = g.measured_benefit_deltas || {};
@@ -289,10 +324,10 @@
         tb.appendChild(tr);
       });
       t.appendChild(tb);
-      box.appendChild(t);
+      detail.appendChild(t);
     } catch (e) {
-      clear(box);
-      box.appendChild(emptyMsg("Error loading " + id + ": " + e.message));
+      clear(detail);
+      detail.appendChild(emptyMsg("Error loading " + id + ": " + e.message));
     }
   }
 

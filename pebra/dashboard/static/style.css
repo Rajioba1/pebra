@@ -178,6 +178,17 @@ main { padding: 16px 24px 28px; max-width: 1400px; margin: 0 auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
 .table-scroll { overflow-x: auto; }
 .table-scroll table { min-width: 1180px; }
+/* Narrow viewports: drop low-priority columns (assessment id, fingerprint, rau, confidence, lesson)
+   and lower the min-width so the table reflows. Every hidden column stays reachable via the row-click
+   detail card (rowIdentityTable). Scoped to .table-scroll so no other table is affected. */
+@media (max-width: 900px) {
+  .table-scroll table { min-width: 760px; }
+  .table-scroll th:nth-child(1), .table-scroll td:nth-child(1),
+  .table-scroll th:nth-child(4), .table-scroll td:nth-child(4),
+  .table-scroll th:nth-child(9), .table-scroll td:nth-child(9),
+  .table-scroll th:nth-child(10), .table-scroll td:nth-child(10),
+  .table-scroll th:nth-child(12), .table-scroll td:nth-child(12) { display: none; }
+}
 thead th {
   text-align: left;
   font-family: var(--mono);
