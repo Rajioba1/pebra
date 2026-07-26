@@ -428,9 +428,13 @@ def test_graph_zoom_controls_report_truthful_levels(tmp_path) -> None:
             page.wait_for_function("() => window.__pebraGraph && window.__pebraGraph.snapshot")
 
             initial = page.evaluate("() => window.__pebraGraph.snapshot().zoom")
+            page.get_by_role("button", name="Zoom out", exact=True).click()
+            zoomed_out = page.evaluate("() => window.__pebraGraph.snapshot().zoom")
+            assert zoomed_out < initial
+
             page.get_by_role("button", name="Zoom in", exact=True).click()
             zoomed = page.evaluate("() => window.__pebraGraph.snapshot().zoom")
-            assert zoomed > initial
+            assert zoomed > zoomed_out
 
             page.get_by_role("button", name="Reset zoom to 100%", exact=True).click()
             reset = page.evaluate("() => window.__pebraGraph.snapshot().zoom")
