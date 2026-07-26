@@ -171,7 +171,7 @@
     bcard.appendChild(bbody);
 
     const hcard = card("Recent assessments");
-    if (!data.items.length) { hcard.appendChild(emptyMsg("No assessments recorded yet.")); }
+    if (!data.items.length) { hcard.appendChild(emptyMsg("No assessments recorded yet. Run pebra assess to add the first one.")); }
     else {
       const table = el("table");
       table.appendChild(headRow([
@@ -272,7 +272,7 @@
       priorTable.appendChild(priorBody);
       box.appendChild(priorTable);
       if (!g || g.measured_benefit == null) {
-        box.appendChild(emptyMsg("No verify / measured-benefit recorded for " + id + " yet."));
+        box.appendChild(emptyMsg("No verify / measured-benefit recorded for " + id + " yet. Run pebra verify to record it."));
         return;
       }
       const dl = g.measured_benefit_deltas || {};
@@ -319,7 +319,7 @@
     const data = await getJSON(
       rp("/calibration?target_type=" + calState.target_type + "&scope=" + calState.scope));
     note.textContent = data.sample_count + " labelled sample(s) · perfect calibration = the diagonal";
-    if (!data.sample_count) { clear(chartBox); chartBox.appendChild(emptyMsg("No labelled predictions in this scope yet.")); return; }
+    if (!data.sample_count) { clear(chartBox); chartBox.appendChild(emptyMsg("No labelled predictions in this scope yet. Calibration fills in as outcomes are recorded.")); return; }
     if (data.scatter && data.scatter.length) drawScatter(chartBox, data.scatter);
     else drawReliability(chartBox, data.bins);
   }
@@ -351,7 +351,7 @@
     view.appendChild(scard);
 
     const fcard = card("Learned rules");
-    if (!facts.items.length) fcard.appendChild(emptyMsg("No learned rules yet."));
+    if (!facts.items.length) fcard.appendChild(emptyMsg("No learned rules yet. Rules appear once the learning loop promotes a snapshot."));
     else {
       const t = el("table");
       t.appendChild(headRow(["target", "type", "scope", "status"]));
@@ -372,7 +372,7 @@
     if (lessons.status === "unavailable") {
       lcard.appendChild(emptyMsg("Verified lesson history is unavailable or failed integrity validation."));
     } else if (!lessons.items.length) {
-      lcard.appendChild(emptyMsg("No verified completed outcomes have produced recallable lessons yet."));
+      lcard.appendChild(emptyMsg("No verified completed outcomes have produced recallable lessons yet. This fills in once a proceed decision reaches a verified completed outcome."));
     } else {
       const t = el("table");
       t.appendChild(headRow(["record", "assessment", "task", "lesson", "verified outcome", "created"]));
@@ -436,6 +436,7 @@
 
     // Hero first: codebase graph owns the viewport. Hotspots are secondary and collapsed.
     const graphCard = card("Codebase graph");
+    graphCard.classList.add("hero");  // the map is the page's hero — step it up one surface tier
     const controls = el("div", "controls");
     graphCard.appendChild(controls);
     const cyEl = el("div", "graph-cy");
@@ -1345,7 +1346,7 @@
     chartInstance = new uPlot(Object.assign({ width: w, height: 300 }, opts), data, box);
   }
   function drawSeries(box, items) {
-    if (!items.length) { box.appendChild(emptyMsg("No score history yet.")); return; }
+    if (!items.length) { box.appendChild(emptyMsg("No score history yet. It appears after your first pebra assess run.")); return; }
     const ordered = items.slice().reverse(); // oldest -> newest
     const xs = ordered.map((_, i) => i + 1);
     const risk = ordered.map((i) => i.scores.expected_loss);

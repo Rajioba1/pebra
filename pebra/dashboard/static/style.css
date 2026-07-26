@@ -46,7 +46,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: var(--gap);
-  padding: 14px 22px;
+  padding: 16px 24px;
   border-bottom: 1px solid var(--border);
   background: linear-gradient(180deg, #12181e, var(--bg));
   position: sticky;
@@ -117,7 +117,7 @@ body {
 .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
 
 /* ---- views + layout ---- */
-main { padding: 18px 22px 28px; max-width: 1400px; margin: 0 auto; }
+main { padding: 16px 24px 28px; max-width: 1400px; margin: 0 auto; }
 .boot { color: var(--muted); font-family: var(--mono); }
 .view[hidden] { display: none; }
 #view-graph:not([hidden]) { max-width: none; }
@@ -132,6 +132,11 @@ main { padding: 18px 22px 28px; max-width: 1400px; margin: 0 auto; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
+}
+/* Hero emphasis: the graph card + KPI row step up one surface tier (border tint, no shadow on data). */
+.card.hero, .stat-row .card {
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--border));
 }
 .card-title { margin: 0 0 12px; font-size: 13px; font-weight: 600; letter-spacing: 0.03em; }
 .eyebrow {
@@ -184,7 +189,7 @@ thead th {
   border-bottom: 1px solid var(--border);
 }
 tbody td {
-  padding: 9px 10px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--surface-2);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
