@@ -4,7 +4,7 @@ browser — can see them.
 Two layers, both CLI/HTTP-only (never `import pebra`):
   - `test_dashboard_serves_*` (ungated): launches the REAL dashboard and GETs every read endpoint over
     HTTP with the bearer token (stdlib urllib). Deterministic; proves the metrics-on-a-port boundary.
-  - `test_dashboard_visual_*` (E2E_UI=1): drives the page with Playwright across all five tabs, asserts
+  - `test_dashboard_visual_*` (E2E_UI=1): drives the page with Playwright across all four tabs, asserts
     NO Content-Security-Policy violations and NO uncaught page errors (turning "did we keep the strict
     CSP" into an automated gate), and saves a screenshot per view for human review.
 """
@@ -22,7 +22,7 @@ import pytest
 from e2e.utils import dashboard_harness as dh
 
 _E2E_UI = os.environ.get("E2E_UI") == "1"
-_TABS = ("overview", "history", "calibration", "learning", "graph")
+_TABS = ("graph", "activity", "calibration", "learning")
 
 
 def _with_live(url: str) -> str:
@@ -192,9 +192,9 @@ def test_dashboard_live_refresh_preserves_interaction_state(seeded_learning_stat
                 assert target.get_attribute("data-refresh-identity") == "preserved"
                 assert target.evaluate("node => document.activeElement === node") is True
 
-                page.click('[data-tab="history"]')
-                page.wait_for_selector('[data-testid="history"][data-loaded="true"]', state="visible")
-                row = page.locator("#view-history tr.clickable").first
+                page.click('[data-tab="activity"]')
+                page.wait_for_selector('[data-testid="activity"][data-loaded="true"]', state="visible")
+                row = page.locator("#view-activity tr.clickable").first
                 assessment_id = row.locator("td").first.inner_text()
                 row.click()
                 detail = page.locator('[data-testid="assessment-detail"]')

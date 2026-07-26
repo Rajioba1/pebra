@@ -225,6 +225,13 @@ td.mono { font-family: var(--mono); color: var(--muted); }
   border-radius: 0;
   background: var(--bg);
 }
+.graph-unavailable .controls,
+.graph-unavailable .graph-cy,
+.graph-unavailable .graph-legend,
+.graph-unavailable .search-results,
+.graph-unavailable .inspector {
+  display: none;
+}
 .graph-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 10px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
 
 /* Collapsed-by-default fan-in ranking; one summary line until expanded. */
@@ -255,6 +262,19 @@ td.mono { font-family: var(--mono); color: var(--muted); }
   outline-offset: -2px;
 }
 .hotspots-body { padding: 0 16px 16px; border-top: 1px solid var(--border); }
+.hotspot-link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-family: var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+.hotspot-link:hover { color: var(--text); text-decoration: underline; }
+.hotspot-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 .graph-search { flex: 1; min-width: 180px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-family: var(--mono); font-size: 12px; }
 .graph-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }

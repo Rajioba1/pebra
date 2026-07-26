@@ -350,8 +350,9 @@ pebra dashboard --dev --repo-root .
 `--token` is an alias for forcing `--auth token`; it does not accept a token value. Non-loopback binds require token authentication.
 
 `--dev` exposes developer diagnostics such as Calibration. Without `--dev`, the Calibration tab is
-hidden and its API endpoint returns `404`; normal users still see Overview, History, Learning, and
-Graph.
+hidden and its API endpoint returns `404`; normal users see Graph, Activity, and Learning. Graph is
+the default view. Activity combines the assessment overview, score history, recent assessments, and
+the collapsible audit-chain summary. Legacy `#overview` and `#history` links open Activity.
 
 Launch with `--repo-root .` when you want the Graph tab to read the current repository's CodeGraph
 index. The graph tab never initializes or syncs CodeGraph from a browser request. If the graph is
@@ -367,6 +368,11 @@ The Graph tab has three honest display modes:
 - Assessment risk overlay: assessment-bound node highlighting only. Risk overlay is
   assessment-bound. It is not a calibrated per-symbol risk model.
 - Verified learning overlay: only verified PEBRA `learning_context` records appear as graph lessons.
+
+The default god-node map loads before the collapsed repository-hotspot ranking. Expanding the ranking
+loads it on demand. Layout changes are explicit: Auto chooses CoSE for at most 300 displayed nodes and
+Grid above that threshold; it never cycles layouts. Zoom, Fit, 100%, and fullscreen controls operate
+only on the local graph viewport and do not change assessment data.
 
 Large repositories may collapse to a file-level graph with count metadata such as "Showing X of Y
 nodes"; collapsed mode disables risk overlay until PEBRA has real file-level risk data.

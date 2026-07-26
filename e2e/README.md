@@ -132,8 +132,8 @@ nox -s e2e-ui
 ```
 
 Without `E2E_UI=1`, the dashboard lane still launches the real server and checks the JSON endpoints over
-HTTP. With `E2E_UI=1`, Playwright drives all five dashboard tabs (`overview`, `history`, `calibration`,
-`learning`, `graph`) and asserts loaded view markers, no uncaught page errors, and no CSP violations.
+HTTP. With `E2E_UI=1`, Playwright drives all four dashboard tabs (`graph`, `activity`, `calibration`,
+`learning`) and asserts loaded view markers, no uncaught page errors, and no CSP violations.
 The seeded-learning fixture writes more than 100 outcomes, so this lane takes minutes on Windows.
 
 Blinded agent assay experiment (real agents, gated/manual only):

@@ -229,8 +229,9 @@ shipped priors and separately promoted numeric facts can affect a future `assess
   evidence. See [Graph evidence & caveats](docs/PEBRA_COMMAND_REFERENCE.md).
 - **Learning loop** — outcome recording, shadow learning, calibration-gated promotion, scorecards, and
   learned-fact reapplication.
-- **Read-only observability** — a browser dashboard (overview, score history, calibration, learned
-  facts, and the god-node codebase graph) and a Textual terminal Observatory over the same ledger.
+- **Read-only observability** — a graph-first browser dashboard with a god-node map, assessment
+  Activity, calibration diagnostics, and learned facts, plus a Textual terminal Observatory over the
+  same ledger.
 - **Provider-neutral `pebra explore`** — recalls bounded PEBRA history first, then retrieves current
   repository context from an existing graph index.
 - **Benefit signal** — optional multi-language complexity + maintainability index via

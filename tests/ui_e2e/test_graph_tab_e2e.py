@@ -96,6 +96,21 @@ class _StubReader:
         return {"available": True, "nodes": [], "edges": [], "graph_freshness": "fresh"}
 
 
+class _UnavailableReader(_StubReader):
+    def god_node_map(
+        self, repo_root, *, max_files=20, max_symbols_per_file=10, max_nodes=250, max_edges=800
+    ):
+        return {
+            "available": False,
+            "mode": "godmap",
+            "nodes": [],
+            "edges": [],
+            "fallback_reason": "codegraph graph data unavailable",
+            "setup_command": "pebra setup-graph --fix --repo-root .",
+            "setup_hint": "Initialize or repair the local CodeGraph index, then refresh this tab.",
+        }
+
+
 def _seed(tmp_path) -> str:
     from pebra.adapters.store.db import SqliteStore
     from pebra.core.constants import ActionStatus, Decision, RiskMode
@@ -250,6 +265,89 @@ def test_graph_tab_renders_cytoscape_nodes_under_csp(tmp_path) -> None:
 
 
 @pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_is_default_and_hotspots_load_lazily(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            overview_requests: list[str] = []
+            page.on(
+                "request",
+                lambda request: overview_requests.append(request.url)
+                if "/graph/overview" in request.url
+                else None,
+            )
+
+            page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok", wait_until="networkidle")
+            page.wait_for_selector("#graph-cy canvas", timeout=10000)
+
+            graph_tab = page.get_by_role("tab", name="Graph", exact=True)
+            assert graph_tab.get_attribute("aria-selected") == "true"
+            assert page.locator('[data-testid="graph"]').is_visible()
+            details = page.locator('[data-testid="repo-hotspots"]')
+            assert details.get_attribute("open") is None
+            assert overview_requests == []
+
+            details.locator("summary").click()
+            page.wait_for_selector('[data-testid="repo-hotspots"] tbody')
+            assert len(overview_requests) == 1
+            assert page.get_by_role("button", name="b.py", exact=True).is_visible()
+            browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_unavailable_shows_setup_without_blank_stage(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db, reader=_UnavailableReader()) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok", wait_until="networkidle")
+
+            assert page.locator("#view-graph .empty.warn").is_visible()
+            assert page.locator("#graph-cy").is_hidden()
+            assert page.locator("#view-graph .controls").is_hidden()
+            assert "pebra setup-graph --fix" in page.locator("#view-graph .empty.warn").inner_text()
+            browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_dashboard_tabs_support_keyboard_navigation_and_legacy_hashes(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok#overview", wait_until="networkidle")
+
+            activity = page.get_by_role("tab", name="Activity", exact=True)
+            assert activity.get_attribute("aria-selected") == "true"
+            assert activity.get_attribute("tabindex") == "0"
+            activity.focus()
+            activity.press("ArrowLeft")
+            page.wait_for_url("**#graph")
+            graph = page.get_by_role("tab", name="Graph", exact=True)
+            page.wait_for_function(
+                "() => document.querySelector('[data-tab=\"graph\"]')"
+                ".getAttribute('aria-selected') === 'true'"
+            )
+            assert graph.get_attribute("aria-selected") == "true"
+            assert graph.evaluate("node => document.activeElement === node") is True
+            tabindexes = page.locator('[role="tab"]').evaluate_all(
+                "tabs => tabs.map(tab => [tab.textContent.trim(), tab.getAttribute('tabindex')])"
+            )
+            assert tabindexes == [["Graph", "0"], ["Activity", "-1"], ["Learning", "-1"]]
+            browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
 def test_graph_instance_is_destroyed_when_navigating_away(tmp_path) -> None:
     # The WebGL Cytoscape instance must not linger off-tab (leaked GL context / RAF loop). Leaving the
     # Graph tab destroys it (its canvases are removed); returning re-renders it.
@@ -314,6 +412,29 @@ def test_graph_search_inspector_and_layout_controls(tmp_path) -> None:
             page.click("text=Grid")
             page.wait_for_timeout(300)
             assert not page_errors, page_errors
+            browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_zoom_controls_report_truthful_levels(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db, dev_mode=True) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok#graph", wait_until="networkidle")
+            page.wait_for_function("() => window.__pebraGraph && window.__pebraGraph.snapshot")
+
+            initial = page.evaluate("() => window.__pebraGraph.snapshot().zoom")
+            page.get_by_role("button", name="Zoom in", exact=True).click()
+            zoomed = page.evaluate("() => window.__pebraGraph.snapshot().zoom")
+            assert zoomed > initial
+
+            page.get_by_role("button", name="Reset zoom to 100%", exact=True).click()
+            reset = page.evaluate("() => window.__pebraGraph.snapshot().zoom")
+            assert reset == pytest.approx(1.0)
             browser.close()
 
 

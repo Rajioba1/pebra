@@ -416,6 +416,7 @@
     overlay: "structure", risk: null, assessmentId: null,
     riskLegend: null, riskCaption: null,
     learning: null, learningLegend: null,
+    resizeObserver: null,
   };
 
   function disableRiskOverlay() {
@@ -526,13 +527,17 @@
       t.appendChild(headRow(["file", "dependents"]));
       const tb = el("tbody");
       ov.files.forEach((f) => {
-        const tr = el("tr", "clickable");
-        tr.appendChild(cell(f.file_path, "mono"));
-        tr.appendChild(cell(String(f.distinct_caller_count), "num"));
-        tr.addEventListener("click", function () {
+        const tr = el("tr");
+        const fileCell = el("td");
+        const focus = el("button", "hotspot-link", f.file_path);
+        focus.setAttribute("type", "button");
+        focus.addEventListener("click", function () {
           // Focus matching graph nodes when the live graph has that file path.
           focusGraphPath(f.file_path);
         });
+        fileCell.appendChild(focus);
+        tr.appendChild(fileCell);
+        tr.appendChild(cell(String(f.distinct_caller_count), "num"));
         tb.appendChild(tr);
       });
       t.appendChild(tb);
@@ -797,7 +802,7 @@
     const layouts = el("div", "layout-group");
     layouts.setAttribute("role", "group");
     layouts.setAttribute("aria-label", "Graph layout");
-    [["Auto", "auto"], ["Grid", "grid"], ["Circle", "circle"], ["Concentric", "concentric"], ["CoSE", "cose"], ["Fit", "fit"]]
+    [["Auto", "auto"], ["Grid", "grid"], ["Circle", "circle"], ["Concentric", "concentric"], ["CoSE", "cose"]]
       .forEach(function (pair) {
         const b = el("button", "graph-btn", pair[0]);
         b.setAttribute("type", "button");
@@ -809,11 +814,20 @@
     const zoom = el("div", "zoom-group");
     zoom.setAttribute("role", "group");
     zoom.setAttribute("aria-label", "Graph zoom");
-    [["−", "out"], ["+", "in"], ["100%", "reset"]].forEach(function (pair) {
+    [
+      ["Fit", "fit", "Fit graph to viewport"],
+      ["−", "out", "Zoom out"],
+      ["+", "in", "Zoom in"],
+      ["100%", "reset", "Reset zoom to 100%"],
+    ].forEach(function (pair) {
       const b = el("button", "graph-btn", pair[0]);
       b.setAttribute("type", "button");
-      b.setAttribute("aria-label", pair[1] === "in" ? "Zoom in" : pair[1] === "out" ? "Zoom out" : "Reset zoom");
-      b.addEventListener("click", function () { runGraphZoom(pair[1]); });
+      b.setAttribute("aria-label", pair[2]);
+      b.setAttribute("title", pair[2]);
+      b.addEventListener("click", function () {
+        if (pair[1] === "fit") runGraphLayout("fit");
+        else runGraphZoom(pair[1]);
+      });
       zoom.appendChild(b);
     });
     controls.appendChild(zoom);
@@ -821,14 +835,24 @@
     if (cyEl && typeof cyEl.requestFullscreen === "function") {
       const fs = el("button", "graph-btn", "Fullscreen");
       fs.setAttribute("type", "button");
+      fs.setAttribute("aria-label", "Enter graph fullscreen");
       fs.addEventListener("click", function () {
         if (document.fullscreenElement === cyEl) {
           document.exitFullscreen().catch(function () { /* ignore */ });
         } else {
-          cyEl.requestFullscreen().then(function () {
-            if (graphState.cy) { graphState.cy.resize(); graphState.cy.fit(undefined, 30); }
-          }).catch(function () { /* ignore denied */ });
+          cyEl.requestFullscreen().catch(function () { /* ignore denied */ });
         }
+      });
+      cyEl.addEventListener("fullscreenchange", function () {
+        const active = document.fullscreenElement === cyEl;
+        fs.textContent = active ? "Exit fullscreen" : "Fullscreen";
+        fs.setAttribute("aria-label", active ? "Exit graph fullscreen" : "Enter graph fullscreen");
+        window.requestAnimationFrame(function () {
+          if (graphState.cy) {
+            graphState.cy.resize();
+            graphState.cy.fit(undefined, 30);
+          }
+        });
       });
       controls.appendChild(fs);
     }
@@ -902,7 +926,11 @@
   function runGraphZoom(action) {
     const cy = graphState.cy;
     if (!cy) return;
-    if (action === "reset") { cy.fit(undefined, 30); return; }
+    if (action === "reset") {
+      cy.zoom(1);
+      cy.center();
+      return;
+    }
     const factor = action === "in" ? 1.25 : 1 / 1.25;
     const next = Math.min(cy.maxZoom(), Math.max(cy.minZoom(), cy.zoom() * factor));
     const sel = cy.$("node:selected");
@@ -963,6 +991,12 @@
       "Risk scope: assessment aggregate. This is not per-symbol calibrated risk."));
   }
 
+  function showGraphUnavailable(graphCard, message) {
+    graphCard.classList.add("graph-unavailable");
+    graphCard.appendChild(message);
+    destroyCy();
+  }
+
   async function loadFullGraph(cyEl, graphCard) {
     const seq = ++graphSeq;
     graphCard.querySelectorAll(".chart-note, .empty.warn").forEach((n) => n.remove());
@@ -972,14 +1006,18 @@
     } catch (e) {
       // Destroy the prior instance too: a failed refresh (e.g. LIVE polling) must not leak the last
       // Cytoscape/WebGL context on a now-detached container until the next successful render.
-      if (seq === graphSeq) { graphCard.appendChild(fallback("codebase graph unavailable")); destroyCy(); }
+      if (seq === graphSeq) {
+        showGraphUnavailable(graphCard, fallback("codebase graph unavailable"));
+      }
       return;
     }
     if (seq !== graphSeq) return;
-    if (!g.available) { graphCard.appendChild(fallback(g)); destroyCy(); return; }
+    if (!g.available) { showGraphUnavailable(graphCard, fallback(g)); return; }
     if (!g.nodes.length) {
-      graphCard.appendChild(el("p", "chart-note", g.fallback_reason || "No structural nodes in the current graph."));
-      destroyCy();
+      showGraphUnavailable(
+        graphCard,
+        emptyMsg(g.fallback_reason || "No structural nodes in the current graph."),
+      );
       return;
     }
     renderCy(cyEl, g);
@@ -1006,14 +1044,18 @@
     try {
       g = await getJSON(rp("/graph/godmap"));
     } catch (e) {
-      if (seq === graphSeq) { graphCard.appendChild(fallback("god-node map unavailable")); destroyCy(); }
+      if (seq === graphSeq) {
+        showGraphUnavailable(graphCard, fallback("god-node map unavailable"));
+      }
       return;
     }
     if (seq !== graphSeq) return;
-    if (!g.available) { graphCard.appendChild(fallback(g)); destroyCy(); return; }
+    if (!g.available) { showGraphUnavailable(graphCard, fallback(g)); return; }
     if (!g.nodes.length) {
-      graphCard.appendChild(el("p", "chart-note", g.fallback_reason || "No hot files in the current graph."));
-      destroyCy();
+      showGraphUnavailable(
+        graphCard,
+        emptyMsg(g.fallback_reason || "No hot files in the current graph."),
+      );
       return;
     }
     renderCy(cyEl, g);
@@ -1036,6 +1078,8 @@
 
   function renderCy(container, g) {
     destroyCy();
+    const graphCard = container.closest(".card");
+    if (graphCard) graphCard.classList.remove("graph-unavailable");
     const maxDeg = g.nodes.reduce((m, n) => Math.max(m, degreeOf(n)), 1);
     const elements = [];
     g.nodes.forEach((n) => {
@@ -1068,6 +1112,12 @@
     });
     const showLabels = g.mode === "godmap" || g.mode === "file" || g.nodes.length <= 250;
     graphState.cy = makeCy(container, elements, layoutFor(g.nodes.length), cyStyle(showLabels));
+    if (typeof ResizeObserver === "function") {
+      graphState.resizeObserver = new ResizeObserver(function () {
+        if (graphState.cy) graphState.cy.resize();
+      });
+      graphState.resizeObserver.observe(container);
+    }
     graphState.mode = g.mode;
     exposeGraphForDev();
     if (graphState.inspector) {
@@ -1193,6 +1243,7 @@
         if (!cy) return { mode: graphState.mode, nodes: [], edges: [] };
         return {
           mode: graphState.mode,
+          zoom: cy.zoom(),
           nodes: cy.nodes().map(function (n) {
             return {
               id: n.id(),
@@ -1217,6 +1268,10 @@
   }
 
   function destroyCy() {
+    if (graphState.resizeObserver) {
+      graphState.resizeObserver.disconnect();
+      graphState.resizeObserver = null;
+    }
     if (graphState.cy) {
       try { graphState.cy.destroy(); } catch (e) { /* already torn down */ }
       graphState.cy = null;
@@ -1331,7 +1386,8 @@
   function rp(suffix) { return "/api/repos/" + encodeURIComponent(repo) + suffix; }
 
   // ---- router ----
-  const TABS = Array.from(document.querySelectorAll(".tab[data-tab]")).map((a) => a.dataset.tab);
+  const TAB_ELEMENTS = Array.from(document.querySelectorAll(".tab[data-tab]"));
+  const TABS = TAB_ELEMENTS.map((a) => a.dataset.tab);
   const RENDER = {
     graph: renderGraph,
     activity: renderActivity,
@@ -1351,10 +1407,11 @@
     if (routing) return;
     routing = true;
     const tab = currentTab();
-    document.querySelectorAll(".tab").forEach((t) => {
+    TAB_ELEMENTS.forEach((t) => {
       const on = t.getAttribute("data-tab") === tab;
       t.classList.toggle("active", on);
       t.setAttribute("aria-selected", on ? "true" : "false");
+      t.setAttribute("tabindex", on ? "0" : "-1");
     });
     TABS.forEach((t) => { document.getElementById("view-" + t).hidden = t !== tab; });
     // Release the WebGL graph instance whenever the Graph tab is not the active one. The graphSeq
@@ -1385,6 +1442,21 @@
     await route();
     window.scrollTo(scrollX, scrollY);
   }
+
+  TAB_ELEMENTS.forEach(function (tab, index) {
+    tab.addEventListener("keydown", function (event) {
+      let next = null;
+      if (event.key === "ArrowRight") next = (index + 1) % TAB_ELEMENTS.length;
+      else if (event.key === "ArrowLeft") next = (index - 1 + TAB_ELEMENTS.length) % TAB_ELEMENTS.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = TAB_ELEMENTS.length - 1;
+      if (next == null) return;
+      event.preventDefault();
+      const target = TAB_ELEMENTS[next];
+      target.focus();
+      location.hash = "#" + target.dataset.tab;
+    });
+  });
 
   window.addEventListener("hashchange", route);
 
