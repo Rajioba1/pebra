@@ -220,18 +220,25 @@
     const wrap = el("div");
     const bar = el("div", "distbar");
     const legend = el("div", "dist-legend");
+    const summary = [];
     Object.keys(byDecision).forEach((d) => {
       const n = byDecision[d];
+      const pct = total ? Math.round(100 * n / total) : 0;
       const seg = el("span");
       seg.style.width = (total ? (100 * n / total) : 0) + "%";
       seg.style.background = RAMP[d] || "#5c6773";
+      // Segments are pure colour decoration; the bar carries the full text summary for a screen reader.
+      seg.setAttribute("aria-hidden", "true");
       bar.appendChild(seg);
       const item = el("span", null, d + " " + n);
       const sw = el("span", "swatch");
       sw.style.background = RAMP[d] || "#5c6773";
       item.prepend(sw);
       legend.appendChild(item);
+      summary.push(d + " " + pct + "%");
     });
+    bar.setAttribute("role", "img");
+    bar.setAttribute("aria-label", "Decision mix: " + (summary.join(", ") || "no data"));
     wrap.appendChild(bar);
     wrap.appendChild(legend);
     return wrap;
@@ -907,10 +914,7 @@
     const cheap = name === "grid" || name === "circle" || name === "concentric";
     const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const opts = name === "cose"
-      ? {
-          name: "cose", animate: false, fit: false, padding: 30,
-          nodeRepulsion: 8000, idealEdgeLength: 60, numIter: 400,
-        }
+      ? coseOptions(cy.nodes().length, false)
       : {
           name: name,
           animate: cheap && !reduceMotion,
@@ -1151,14 +1155,23 @@
     return nodeCount <= 300 ? "cose" : "grid";
   }
 
+  function coseOptions(nodeCount, fit) {
+    // Longer ideal edges + wider component spacing on smaller graphs so the map FILLS the stage instead
+    // of collapsing to a central cluster. Values scale with node count (NOT a flat 60, which no-ops at
+    // >=100 nodes). Occupancy is asserted in the ui-e2e lane; tune against real 213/~300-node graphs.
+    const n = Math.max(1, nodeCount);
+    return {
+      name: "cose", animate: false, fit: fit, padding: 30,
+      nodeRepulsion: 8000, numIter: 400,
+      idealEdgeLength: Math.round(80 + 6000 / n),
+      componentSpacing: Math.round(Math.max(80, 12000 / n)),
+      gravity: n <= 150 ? 0.45 : 0.8,
+    };
+  }
+
   function layoutFor(nodeCount) {
     const name = layoutNameFor(nodeCount);
-    if (name === "cose") {
-      return {
-        name: "cose", animate: false, fit: true, padding: 30,
-        nodeRepulsion: 8000, idealEdgeLength: 60, numIter: 400,
-      };
-    }
+    if (name === "cose") return coseOptions(nodeCount, true);
     return { name: "grid", fit: true, padding: 30 };
   }
 
