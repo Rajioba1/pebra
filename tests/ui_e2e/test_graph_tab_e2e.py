@@ -535,6 +535,38 @@ def test_godmap_live_styles_keep_hubs_rectangular_and_size_symbols_by_fanin(tmp_
 
 
 @pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_godmap_symbol_labels_reveal_only_after_zooming_in(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db, dev_mode=True) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok#graph", wait_until="networkidle")
+            page.wait_for_function("() => window.__pebraGraph && window.__pebraGraph.snapshot")
+
+            zoom_out = page.get_by_role("button", name="Zoom out", exact=True)
+            for _ in range(8):
+                zoom_out.click()
+            low_zoom = page.evaluate("() => window.__pebraGraph.snapshot()")
+            low_by_id = {n["id"]: n for n in low_zoom["nodes"]}
+            assert low_by_id["file:a.py"]["label"] == "a.py"
+            assert low_by_id["n:a"]["label"] == ""
+
+            page.get_by_role("button", name="Reset zoom to 100%", exact=True).click()
+            page.wait_for_function(
+                "() => window.__pebraGraph.snapshot().nodes"
+                ".find(n => n.id === 'n:a').label === 'a'"
+            )
+            high_zoom = page.evaluate("() => window.__pebraGraph.snapshot()")
+            high_by_id = {n["id"]: n for n in high_zoom["nodes"]}
+            assert high_by_id["file:a.py"]["label"] == "a.py"
+            assert high_by_id["n:a"]["label"] == "a"
+            browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
 def test_graph_learning_overlay_badges_verified_lessons(tmp_path) -> None:
     from playwright.sync_api import sync_playwright
 

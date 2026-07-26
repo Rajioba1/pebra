@@ -11,7 +11,7 @@ _STYLE = ROOT / "pebra" / "dashboard" / "static" / "style.css"
 _APP_JS = ROOT / "pebra" / "dashboard" / "static" / "app.js"
 
 # Text selectors that render small copy on the --surface card background; all must meet WCAG AA.
-_DIM_TEXT_SELECTORS = (".eyebrow", "thead th", ".control-label", ".empty", ".chart-note")
+_DIM_TEXT_SELECTORS = (".boot", ".eyebrow", "thead th", ".control-label", ".empty", ".chart-note")
 _SURFACE_TOKEN = "--surface"
 _AA_CONTRAST = 4.5
 

@@ -35,3 +35,16 @@ def test_cose_edge_length_scales_with_node_count() -> None:
     # merely happens to differ from 60 — otherwise the "scales with node count" guarantee is hollow.
     assert re.search(r"idealEdgeLength:[^\n]*/\s*n\b", inner), "idealEdgeLength must scale with node count"
     assert re.search(r"componentSpacing:[^\n]*/\s*n\b", inner), "componentSpacing must scale with node count"
+
+
+def test_cose_spacing_is_bounded_for_tiny_graphs() -> None:
+    js = _js()
+    body = re.search(r"function coseOptions\([^)]*\)\s*\{(.*?)\n  \}", js, re.DOTALL)
+    assert body, "coseOptions body not found"
+    inner = body.group(1)
+    assert re.search(r"idealEdgeLength:[^\n]*Math\.min\(", inner), (
+        "idealEdgeLength needs an upper bound for tiny graphs"
+    )
+    assert re.search(r"componentSpacing:[^\n]*Math\.min\(", inner), (
+        "componentSpacing needs an upper bound for tiny disconnected graphs"
+    )

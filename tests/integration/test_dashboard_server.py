@@ -131,7 +131,9 @@ def test_app_js_wires_collapse_ux_and_disables_collapsed_risk(tmp_path) -> None:
     assert "Symbol graph" in js
     assert "Collapsed file graph" in js
     assert "Showing " in js and " of " in js
-    assert 'g.mode === "godmap" || g.mode === "file" || g.nodes.length <= 250' in js
+    assert 'g.mode !== "godmap" && (g.mode === "file" || g.nodes.length <= 250)' in js
+    assert 'node[graph_role="hub"]' in js
+    assert "updateSymbolLabelVisibility" in js
     assert "Risk overlay unavailable in collapsed mode" in js
     assert "!riskEligibleMode(graphState.mode)" in js
 

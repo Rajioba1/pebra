@@ -393,12 +393,12 @@
   }
 
   // ---- Codebase graph (Cytoscape.js, WebGL) ----
-  // Categorical kind palette: dark-legible and deliberately distinct from the green/gold/orange/red
-  // risk RAMP so "coloured by kind" can never be misread as "coloured by risk" (risk overlay is M6).
-  // Structural two-colour scheme: files (containers) read blue, symbols read red. Both are tuned for
-  // legibility on the dark graph canvas and kept clear of the risk-signal reds/blues used by the overlay.
-  const FILE_COLOR = "#58a6ff";
-  const SYMBOL_COLOR = "#ff6b6b";
+  // Structural palette: dark-legible and deliberately distinct from risk/benefit signal colours.
+  // Structural colours stay neutral/violet so they cannot be mistaken for the green→red risk ramp or
+  // benefit blue. Risk mode still replaces these fills with decision colours and shapes.
+  const FILE_COLOR = "#8b949e";
+  const SYMBOL_COLOR = "#a78bfa";
+  const SYMBOL_LABEL_ZOOM = 1;
   const HUB_COLORS = ["#2dd4bf", "#58a6ff", "#a78bfa", "#f0883e", "#f778ba", "#d6a419"];
   const SPOKE_COLORS = ["#2dd4bf", "#58a6ff", "#a78bfa", "#f0883e", "#f778ba", "#d6a419"];
   // Risk overlay: colour + SHAPE per decision (categorical — paired shape keeps it colourblind-safe and
@@ -419,6 +419,7 @@
     riskLegend: null, riskCaption: null,
     learning: null, learningLegend: null,
     resizeObserver: null,
+    symbolLabelsVisible: null,
   };
 
   function disableRiskOverlay() {
@@ -1111,7 +1112,8 @@
         spoke_color: e.hub_rank != null ? SPOKE_COLORS[e.hub_rank % SPOKE_COLORS.length] : null,
       } });
     });
-    const showLabels = g.mode === "godmap" || g.mode === "file" || g.nodes.length <= 250;
+    // God maps keep file-hub labels visible but progressively disclose their much denser symbol labels.
+    const showLabels = g.mode !== "godmap" && (g.mode === "file" || g.nodes.length <= 250);
     graphState.cy = makeCy(container, elements, layoutFor(g.nodes.length), cyStyle(showLabels));
     if (typeof ResizeObserver === "function") {
       graphState.resizeObserver = new ResizeObserver(function () {
@@ -1120,6 +1122,9 @@
       graphState.resizeObserver.observe(container);
     }
     graphState.mode = g.mode;
+    graphState.symbolLabelsVisible = null;
+    graphState.cy.on("zoom", updateSymbolLabelVisibility);
+    updateSymbolLabelVisibility();
     exposeGraphForDev();
     if (graphState.inspector) {
       clear(graphState.inspector);
@@ -1153,15 +1158,14 @@
   }
 
   function coseOptions(nodeCount, fit) {
-    // Longer ideal edges + wider component spacing on smaller graphs so the map FILLS the stage instead
-    // of collapsing to a central cluster. Values scale with node count (NOT a flat 60, which no-ops at
-    // >=100 nodes). Occupancy is asserted in the ui-e2e lane; tune against real 213/~300-node graphs.
+    // Longer ideal edges + wider component spacing on smaller graphs keep the map from collapsing to a
+    // central cluster. Caps prevent one- and two-node graphs from generating multi-thousand-pixel values.
     const n = Math.max(1, nodeCount);
     return {
       name: "cose", animate: false, fit: fit, padding: 30,
       nodeRepulsion: 8000, numIter: 400,
-      idealEdgeLength: Math.round(80 + 6000 / n),
-      componentSpacing: Math.round(Math.max(80, 12000 / n)),
+      idealEdgeLength: Math.round(Math.min(160, 80 + 6000 / n)),
+      componentSpacing: Math.round(Math.min(180, Math.max(80, 12000 / n))),
       gravity: n <= 150 ? 0.45 : 0.8,
     };
   }
@@ -1179,7 +1183,7 @@
         "width": "data(size)", "height": "data(size)",
         "shape": "data(shape)",
         "label": showLabels ? "data(label)" : "",
-        "font-size": 12, "font-weight": "bold", "color": "#c9d1d9",
+        "font-size": 11, "color": "#c9d1d9",
         "text-valign": "center", "text-halign": "right", "text-margin-x": 4,
         "min-zoomed-font-size": 10,
       } },
@@ -1192,11 +1196,15 @@
         "shape": "round-rectangle",
         "background-color": "data(hub_color)",
         "border-width": 2, "border-color": "#e6edf3", "border-opacity": 0.55,
+        "label": "data(label)",
         "font-size": 12, "font-weight": "bold", "text-valign": "center", "text-halign": "center",
         "text-max-width": 72, "text-wrap": "wrap",
       } },
       { selector: 'node[graph_role="symbol"]', style: {
         "border-width": 1, "border-color": "#0d1117", "border-opacity": 0.9,
+      } },
+      { selector: 'node[graph_role="symbol"].show-symbol-label', style: {
+        "label": "data(label)",
       } },
       { selector: 'edge[edge_type="spoke"]', style: {
         "line-color": "data(spoke_color)",
@@ -1212,16 +1220,17 @@
       } },
       { selector: "node:selected", style: {
         "border-width": 2, "border-color": "#ffd24d", "border-opacity": 1,
+        "label": "data(label)", "font-weight": "bold",
       } },
       { selector: "node.search-dim", style: { "opacity": 0.15 } },
       { selector: "edge.search-dim", style: { "opacity": 0.06 } },
       { selector: "node.search-hit", style: {
         "border-width": 3, "border-color": "#ffd24d", "border-opacity": 1, "opacity": 1,
+        "label": "data(label)", "font-weight": "bold",
       } },
     ];
-    // Files (containers) read blue over the red symbol base. Appended after the base rule but before the
-    // risk rb-* rules below, so the risk overlay still wins when active; hubs are is_file=false so their
-    // god-map rainbow is untouched.
+    // Files read neutral over the violet symbol base. This precedes the risk rules, so the decision
+    // overlay still wins; hubs are is_file=false and retain their established god-map colours.
     s.push({ selector: "node[?is_file]", style: { "background-color": FILE_COLOR } });
     // Risk overlay (appended last so rb-* classes override the kind colours when risk view is on).
     Object.keys(DECISION_STYLE).forEach((k) => {
@@ -1245,6 +1254,17 @@
     return s;
   }
 
+  function updateSymbolLabelVisibility() {
+    const cy = graphState.cy;
+    if (!cy || graphState.mode !== "godmap") return;
+    const visible = cy.zoom() >= SYMBOL_LABEL_ZOOM;
+    if (graphState.symbolLabelsVisible === visible) return;
+    graphState.symbolLabelsVisible = visible;
+    const symbols = cy.nodes('[graph_role="symbol"]');
+    if (visible) symbols.addClass("show-symbol-label");
+    else symbols.removeClass("show-symbol-label");
+  }
+
   function exposeGraphForDev() {
     if (!DEV_MODE) return;
     window.__pebraGraph = {
@@ -1260,6 +1280,7 @@
               graph_role: n.data("graph_role"),
               classes: n.classes(),
               shape: n.renderedStyle("shape"),
+              label: n.renderedStyle("label"),
               width: Math.round(n.width() * 1000) / 1000,
               height: Math.round(n.height() * 1000) / 1000,
             };
@@ -1286,6 +1307,7 @@
       try { graphState.cy.destroy(); } catch (e) { /* already torn down */ }
       graphState.cy = null;
     }
+    graphState.symbolLabelsVisible = null;
   }
 
   function fallback(info) {

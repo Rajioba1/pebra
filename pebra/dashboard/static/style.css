@@ -118,7 +118,7 @@ body {
 
 /* ---- views + layout ---- */
 main { padding: 18px 22px 28px; max-width: 1400px; margin: 0 auto; }
-.boot { color: var(--dim); font-family: var(--mono); }
+.boot { color: var(--muted); font-family: var(--mono); }
 .view[hidden] { display: none; }
 #view-graph:not([hidden]) { max-width: none; }
 
