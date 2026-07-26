@@ -1113,21 +1113,21 @@ def test_revise_safer_calibration_accepts_bad_revise_then_lower_risk_reference(t
     (patch_dir / "MNGAMMA.patch").write_text("bad route", encoding="utf-8")
     (correct_dir / "MNGAMMA.patch").write_text("reference route", encoding="utf-8")
 
-    def _clone(_external, dest):
-        dest.mkdir(parents=True)
-        return dest
+    repo = tmp_path / "slot" / "repo"
+    repo.mkdir(parents=True)
+    lease = SimpleNamespace(repo_path=repo, reset=lambda _external: None, release=lambda: None)
+    monkeypatch.setattr(preflight.slot_pool, "acquire_slot", lambda _external, _index: lease)
 
     calls: list[tuple[str, int, str]] = []
 
     def _assess(_repo_path, _spec, proposed_patch, _db, *, revise_safer_attempt=0):
+        assert _db.parent.is_dir()
         assert not _db.exists()
         _db.write_text("assessment persisted", encoding="utf-8")
         calls.append((proposed_patch, revise_safer_attempt, _db.name))
         if proposed_patch == "bad route":
             return {"recommended_decision": "revise_safer", "scores": {"expected_loss": 0.8}}
         return {"recommended_decision": "proceed", "scores": {"expected_loss": 0.1}}
-
-    monkeypatch.setattr(preflight.rs, "clone_at_recorded_head", _clone)
 
     preflight.run_revise_safer_calibration(
         [_TEST_TRAP],
@@ -1137,6 +1137,7 @@ def test_revise_safer_calibration_accepts_bad_revise_then_lower_risk_reference(t
         setup_graph_fn=lambda _repo: None,
         patch_dir=patch_dir,
         correct_patch_dir=correct_dir,
+        persistent_slots=True,
     )
 
     assert calls == [

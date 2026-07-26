@@ -1000,6 +1000,7 @@ def run_revise_safer_calibration(
                 _run_clean_graph_setup(repo_path, setup_graph_fn)
             bad_db = dest.parent / "bad_revise_calibration.db"
             reference_db = dest.parent / "reference_revise_calibration.db"
+            dest.parent.mkdir(parents=True, exist_ok=True)
             bad_db.unlink(missing_ok=True)
             reference_db.unlink(missing_ok=True)
             bad_patch_text = patch_file.read_text(encoding="utf-8")
