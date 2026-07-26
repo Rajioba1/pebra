@@ -221,8 +221,8 @@ def test_dashboard_history_renders_measured_benefit_detail(tmp_path, require_acc
                 page = browser.new_page()
                 page.goto(info.url)
                 page.wait_for_selector('[data-testid="chain-status"]', timeout=15000)
-                page.click('[data-tab="history"]')
-                page.wait_for_selector('[data-testid="history"][data-loaded="true"]', timeout=15000)
+                page.click('[data-tab="activity"]')
+                page.wait_for_selector('[data-testid="activity"][data-loaded="true"]', timeout=15000)
                 page.locator("tr.clickable").first.click()
                 page.wait_for_selector("text=maintainability_index_delta", timeout=15000)
                 panel = page.locator('[data-testid="assessment-detail"]')
@@ -262,9 +262,9 @@ def test_dashboard_history_renders_revise_safer_risk_benefit_math(tmp_path):
                 page = browser.new_page()
                 page.goto(info.url)
                 page.wait_for_selector('[data-testid="chain-status"]', timeout=15000)
-                page.click('[data-tab="history"]')
+                page.click('[data-tab="activity"]')
                 page.wait_for_selector(
-                    '[data-testid="history"][data-loaded="true"]', timeout=15000
+                    '[data-testid="activity"][data-loaded="true"]', timeout=15000
                 )
                 row = page.locator("tr.clickable").filter(has_text=payload["assessment_id"])
                 assert _history_cell_text_by_header(row, "decision") == "revise_safer"
