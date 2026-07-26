@@ -901,7 +901,10 @@
     const cy = graphState.cy;
     if (!cy) return;
     if (name === "fit") { cy.fit(undefined, 30); return; }
-    if (name === "auto") {
+    // Capture the auto-click intent BEFORE resolving to a concrete layout, so only an explicit Auto
+    // click animates — the initial/live-refresh path goes through layoutFor and never reaches here.
+    const isAutoClick = name === "auto";
+    if (isAutoClick) {
       // Deterministic one-shot pick from current graph size — never auto-cycles layouts.
       name = layoutNameFor(cy.nodes().length);
     }
@@ -911,7 +914,7 @@
     const cheap = name === "grid" || name === "circle" || name === "concentric";
     const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const opts = name === "cose"
-      ? coseOptions(cy.nodes().length, false)
+      ? coseOptions(cy.nodes().length, false, isAutoClick && !reduceMotion)
       : {
           name: name,
           animate: cheap && !reduceMotion,
@@ -920,7 +923,10 @@
           padding: 30,
         };
     const layout = cy.layout(opts);
-    layout.one("layoutstop", function () { cy.fit(undefined, 30); });
+    layout.one("layoutstop", function () {
+      cy.fit(undefined, 30);
+      updateSymbolLabelVisibility();  // re-sync zoom-gated symbol labels after the (possibly animated) fit
+    });
     layout.run();
   }
 
@@ -1158,12 +1164,13 @@
     return nodeCount <= 300 ? "cose" : "grid";
   }
 
-  function coseOptions(nodeCount, fit) {
+  function coseOptions(nodeCount, fit, animate) {
     // Longer ideal edges + wider component spacing on smaller graphs keep the map from collapsing to a
     // central cluster. Caps prevent one- and two-node graphs from generating multi-thousand-pixel values.
+    // `animate` is opt-in (explicit Auto click only); the initial/live-refresh path leaves it falsy.
     const n = Math.max(1, nodeCount);
     return {
-      name: "cose", animate: false, fit: fit, padding: 30,
+      name: "cose", animate: !!animate, animationDuration: animate ? 600 : undefined, fit: fit, padding: 30,
       nodeRepulsion: 8000, numIter: 400,
       idealEdgeLength: Math.round(Math.min(160, 80 + 6000 / n)),
       componentSpacing: Math.round(Math.min(180, Math.max(80, 12000 / n))),
