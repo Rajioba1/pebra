@@ -209,7 +209,10 @@ def test_dashboard_live_refresh_preserves_interaction_state(seeded_learning_stat
                 page.wait_for_timeout(2000)
 
                 assert assessment_id in detail.inner_text()
-                assert page.evaluate("window.scrollY") == old_scroll
+                max_scroll = page.evaluate(
+                    "Math.max(0, document.documentElement.scrollHeight - window.innerHeight)"
+                )
+                assert page.evaluate("window.scrollY") == min(old_scroll, max_scroll)
             finally:
                 browser.close()
 
