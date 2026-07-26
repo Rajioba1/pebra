@@ -32,6 +32,7 @@
   const chainPill = document.getElementById("chain-pill");
   let graphSeq = 0;
   let riskSeq = 0;
+  const tabEverLoaded = new Set();  // tabs whose data has loaded once — skeletons show on first load only
 
   // Human labels for the audit-chain counts (never the raw table names).
   const chainLabels = {};
@@ -1441,6 +1442,17 @@
   }
   function currentTab() { return resolveTab(location.hash); }
   let routing = false;
+  function renderSkeleton(view) {
+    clear(view);
+    const group = el("div", "skeleton-group");
+    for (let i = 0; i < 3; i++) {
+      const block = el("div", "skeleton-block");
+      block.setAttribute("aria-hidden", "true");  // decorative placeholder, not content
+      group.appendChild(block);
+    }
+    view.appendChild(group);
+  }
+
   async function route() {
     if (routing) return;
     routing = true;
@@ -1458,13 +1470,23 @@
     if (tab !== "graph") destroyCy();
     const view = document.getElementById("view-" + tab);
     view.removeAttribute("data-loaded");
+    // Skeleton only on a tab's FIRST load: not the 1.5s live refresh (tabEverLoaded is already set by
+    // then), and a no-op on tabs that paint their shell synchronously (the hasChildNodes guard).
+    const firstLoad = repo && !tabEverLoaded.has(tab);
+    let skeletonTimer = null;
+    if (firstLoad) {
+      skeletonTimer = setTimeout(function () {
+        if (!view.hasChildNodes()) renderSkeleton(view);
+      }, 150);
+    }
     try {
       if (!repo) { view.hidden = false; clear(view); view.appendChild(emptyMsg("No repo selected (append &repo=<id> to the URL).")); }
-      else await RENDER[tab](view);
+      else { await RENDER[tab](view); tabEverLoaded.add(tab); }
       view.setAttribute("data-loaded", "true");
     } catch (e) {
       clear(view); view.appendChild(emptyMsg("Error loading " + tab + ": " + e.message));
     } finally {
+      if (skeletonTimer) clearTimeout(skeletonTimer);
       routing = false;
       // If the hash changed while this render was in flight, the dropped hashchange won't re-fire for
       // the same hash — re-run so the UI can't get stranded on the previous tab (e.g. a fast double-click).
