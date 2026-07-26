@@ -64,6 +64,7 @@ def test_refresh_writes_cache_even_when_pypi_is_unreachable(tmp_path, monkeypatc
 def test_update_default_prints_command_without_spawning(monkeypatch, capsys) -> None:
     spawned: list[object] = []
     monkeypatch.setattr(update_cmd.provenance, "is_editable", lambda: False)
+    monkeypatch.setattr(update_cmd.provenance, "version", lambda: "0.2.0")
     monkeypatch.setattr(update_cmd, "refresh", lambda **_kwargs: uc.UpdateCache(1.0, "0.2.0", "0.3.0"))
     monkeypatch.setattr(update_cmd.subprocess, "run", lambda *a, **k: spawned.append((a, k)))
     monkeypatch.setattr(update_cmd.sys, "executable", "python")

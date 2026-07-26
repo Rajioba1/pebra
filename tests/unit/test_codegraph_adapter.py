@@ -785,6 +785,30 @@ def test_impact_witness_node_definition_when_edge_line_missing(tmp_path) -> None
     )
 
 
+def test_impact_witness_prefers_positive_edge_line_over_zero_sentinel(tmp_path) -> None:
+    cg_dir = tmp_path / ".codegraph"
+    cg_dir.mkdir()
+    _make_db(cg_dir / "codegraph.db")
+    con = sqlite3.connect(str(cg_dir / "codegraph.db"))
+    _node(con, "func:A", "function", "A", "pkg.changed", "src/a.py", 10, 20)
+    _node(con, "caller:1", "function", "c1", "pkg.caller_one", "src/caller.py", 18, 30)
+    _edge(con, "caller:1", "func:A", "calls", line=0, col=0)
+    _edge(con, "caller:1", "func:A", "calls", line=42, col=7)
+    con.commit()
+    con.close()
+    patch = "--- a/src/a.py\n+++ b/src/a.py\n@@ -12 +12 @@\n-x\n+y\n"
+
+    ev = _adapter().fanin(
+        CandidateAction(id="a", label="p", action_type="edit", proposed_patch=patch),
+        str(tmp_path),
+    )
+    owner = next(item for item in ev.owner_risk if item.node_id == "func:A")
+
+    assert owner.impact_witnesses[0].line == 42
+    assert owner.impact_witnesses[0].column == 7
+    assert owner.impact_witnesses[0].location_source == "edge_site"
+
+
 def test_impact_witness_depth_two_uses_definition_location(tmp_path) -> None:
     """Plan M1 case 3: depth-2 dependent uses definition location, no complete path claim."""
     cg_dir = tmp_path / ".codegraph"

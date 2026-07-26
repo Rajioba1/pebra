@@ -204,26 +204,13 @@ def _clean_symbol(value: object) -> str | None:
     return text
 
 
-def _impact_witness_text(result: dict[str, Any] | None) -> str:
-    """Blinded, arm-neutral projection of production impact witnesses into advisory text.
-
-    Reads only structured scores.symbol_scope_evidence.symbol_fanin.impact_witnesses. Never
-    forwards node IDs, engine vocabulary, or free-form why lines.
-    """
-    if not isinstance(result, dict):
-        return ""
-    scores = result.get("scores")
-    if not isinstance(scores, dict):
-        return ""
-    sse = scores.get("symbol_scope_evidence")
-    if not isinstance(sse, dict):
-        return ""
-    fanin = sse.get("symbol_fanin")
+def project_impact_witness_sentences(fanin: object) -> tuple[str, ...]:
+    """Return the exact bounded witness sentences delivered by the blinded advisory."""
     if not isinstance(fanin, dict):
-        return ""
+        return ()
     raw = fanin.get("impact_witnesses")
     if not isinstance(raw, list) or not raw:
-        return ""
+        return ()
     sentences: list[str] = []
     seen: set[str] = set()
     for item in raw:
@@ -283,6 +270,24 @@ def _impact_witness_text(result: dict[str, Any] | None) -> str:
             continue
         seen.add(sentence)
         sentences.append(sentence)
+    return tuple(sentences)
+
+
+def _impact_witness_text(result: dict[str, Any] | None) -> str:
+    """Blinded, arm-neutral projection of production impact witnesses into advisory text.
+
+    Reads only structured scores.symbol_scope_evidence.symbol_fanin.impact_witnesses. Never
+    forwards node IDs, engine vocabulary, or free-form why lines.
+    """
+    if not isinstance(result, dict):
+        return ""
+    scores = result.get("scores")
+    if not isinstance(scores, dict):
+        return ""
+    sse = scores.get("symbol_scope_evidence")
+    if not isinstance(sse, dict):
+        return ""
+    sentences = project_impact_witness_sentences(sse.get("symbol_fanin"))
     if not sentences:
         return ""
     return " Impact notes: " + " ".join(sentences)

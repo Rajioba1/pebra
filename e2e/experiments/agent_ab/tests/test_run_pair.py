@@ -3075,6 +3075,48 @@ def test_impact_witness_receipt_zero_count_when_no_witnesses(monkeypatch, tmp_pa
     ]
 
 
+def test_impact_witness_receipt_counts_sentences_delivered_to_subject():
+    witness = {
+        "owner_qualified_name": "pkg.changed",
+        "dependent_qualified_name": "pkg.caller",
+        "file_path": "src/caller.py",
+        "line": 42,
+        "column": 7,
+        "edge_kind": "calls",
+        "depth": 1,
+        "location_source": "edge_site",
+    }
+    raw = {
+        "scores": {
+            "symbol_scope_evidence": {
+                "symbol_fanin": {
+                    "impact_witnesses": [
+                        witness,
+                        dict(witness),
+                        {
+                            "dependent_qualified_name": "pkg.omitted",
+                            "depth": 1,
+                            "edge_kind": "calls",
+                        },
+                    ]
+                }
+            }
+        }
+    }
+    result = run_pair.advisory_check_real.AdvisoryOutput(
+        run_pair.advisory_check_real._shape_output(raw),
+        assessment_id="asm_1",
+        raw_payload=raw,
+    )
+
+    assert run_pair._impact_witness_receipt(result, "asm_1") == {
+        "assessment_id": "asm_1",
+        "version": "impact-witness-v1",
+        "count": 1,
+        "delivered": True,
+    }
+
+
 def test_impact_witness_receipt_not_claimed_on_advisory_failure(monkeypatch, tmp_path):
     telemetry = run_pair.ArmTelemetry()
     monkeypatch.setattr(
@@ -3151,4 +3193,3 @@ def test_subject_result_carries_impact_witness_receipts(monkeypatch, tmp_path):
             "delivered": True,
         },
     )
-

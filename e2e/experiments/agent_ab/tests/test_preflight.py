@@ -369,6 +369,20 @@ def test_impact_witness_owner_only_is_flagged():
     assert msg and "dependent symbol or repository-relative file" in msg
 
 
+def test_impact_witness_must_produce_a_blinded_sentence():
+    witnesses = [
+        {
+            "dependent_qualified_name": "pkg.caller",
+            "depth": 1,
+            "edge_kind": "calls",
+        }
+    ]
+    msg = preflight._graph_backed_failure(
+        _TRAP, _payload("fresh", "location", impact_witnesses=witnesses)
+    )
+    assert msg and "no deliverable impact witness" in msg
+
+
 @pytest.mark.parametrize("digest", (None, "not-a-digest", "A" * 64))
 def test_graph_preflight_requires_a_canonical_scope_digest(digest):
     payload = _payload("fresh", "location")

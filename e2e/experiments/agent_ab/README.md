@@ -125,8 +125,9 @@ Independent of the subject lifecycle version, real PEBRA advisory arms now deliv
 `impact-witness-v1` treatment: up to five repository-native impact witnesses (dependent path, symbol,
 line/column when known, edge kind, and depth) projected into the arm-neutral `advisory` string.
 
-- In production, witnesses are explanation-only. They do not change scores, gates, recommended
-  decisions, or confirmation state.
+- In production, witnesses are explanation-only. They do not change numeric scores, gates,
+  recommended decisions, or confirmation state; the serialized score packet gains the structured
+  witness evidence.
 - The assay therefore tests the complete shipped PEBRA governance intervention (verdict + grounded
   impact evidence), not a pure verdict-only factor.
 - Existing `blast_radius` remains a historical C# comparator, not a witness-ablation arm.

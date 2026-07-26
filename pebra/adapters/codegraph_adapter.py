@@ -1458,7 +1458,8 @@ class CodeGraphAdapter:
                 f"SELECT source, target, kind, line, col FROM edges "
                 f"WHERE source IN ({src_ph}) AND target IN ({tgt_ph}) "
                 f"AND kind IN ({kind_ph}) "
-                f"ORDER BY source, (line IS NULL), line, col, kind, target",
+                f"ORDER BY source, CASE WHEN line > 0 THEN 0 ELSE 1 END, "
+                f"line, col, kind, target",
                 (*depth1_ids, *targets, *_MODIFY_IMPACT_EDGE_KINDS),
             ).fetchall()
             for edge in edge_rows:

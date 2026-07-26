@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.0 — 2026-07-25
+
+### Added
+
+- Fresh graph-backed assessments now retain deterministic, bounded impact witnesses and cite dependent
+  symbols and repository locations in explanations without changing numeric risk scores or decisions.
+- The agent assay projects the shipped witness evidence into blinded real-advisory arms, authenticates
+  the treatment version in its design hash, and records host-only delivery receipts.
+
+### Reliability and safety
+
+- Witness selection preserves complete impact counts, excludes internal graph node identifiers from
+  public packets, and prefers valid direct edge sites over definition-location fallbacks.
+- Assay preflight and telemetry use the same bounded sentence projection, so delivery receipts count
+  only evidence actually shown to the subject.
+
+### Evidence boundary
+
+- Impact-witness delivery is process telemetry, not an efficacy endpoint. The included unpaid Zod
+  preflight validates treatment wiring but does not establish agent efficacy.
+
+## 0.2.1 — 2026-07-25
+
+### Added
+
+- Human-facing CLI, dashboard, and TUI surfaces can report a newer PyPI release from a bounded local
+  cache, with explicit opt-out and editable-install safeguards.
+- `pebra update` and `pebra update-check` provide explicit upgrade and status workflows without
+  entering machine-readable assessment, gate, or MCP streams.
+
 ## 0.2.0 — 2026-07-19
 
 ### Added

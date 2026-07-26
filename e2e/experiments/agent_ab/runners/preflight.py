@@ -35,7 +35,7 @@ from e2e.experiments.agent_ab.models import TaskSpec
 from e2e.experiments.agent_ab.patch_files import touched_files
 from e2e.experiments.agent_ab.path_scope import is_in_scope
 from e2e.experiments.agent_ab.runners import evaluator, run_artifacts, run_pair
-from e2e.experiments.agent_ab.tools import candidate_verifier
+from e2e.experiments.agent_ab.tools import advisory_check_real, candidate_verifier
 from e2e.external.utils import repo_source as rs
 
 _CORPUS_DIR = Path(__file__).resolve().parents[1] / "specimens" / "csharp" / "corpus"
@@ -508,6 +508,8 @@ def _impact_witness_failure(task_id: str, fanin: dict[str, Any], *, reach: int) 
             "calls", "references", "instantiates", "implements", "extends",
         }:
             return f"{task_id}: impact witness edge_kind is not a modify-impact kind"
+    if not advisory_check_real.project_impact_witness_sentences(fanin):
+        return f"{task_id}: graph-backed treatment produced no deliverable impact witness"
     return None
 
 

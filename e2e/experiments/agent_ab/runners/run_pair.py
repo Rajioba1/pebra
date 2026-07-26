@@ -710,9 +710,7 @@ def _impact_witness_receipt(result: Any, assessment_id: str) -> dict[str, Any]:
         scores = raw.get("scores") if isinstance(raw.get("scores"), dict) else {}
         sse = scores.get("symbol_scope_evidence") if isinstance(scores, dict) else {}
         fanin = sse.get("symbol_fanin") if isinstance(sse, dict) else {}
-        witnesses = fanin.get("impact_witnesses") if isinstance(fanin, dict) else None
-        if isinstance(witnesses, list):
-            count = len(witnesses)
+        count = len(advisory_check_real.project_impact_witness_sentences(fanin))
     return {
         "assessment_id": assessment_id,
         "version": advisory_contract.ADVISORY_TREATMENT_VERSION,
