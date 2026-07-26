@@ -106,22 +106,29 @@
     }
   }
 
-  // ---- Overview ----
-  async function renderOverview(view) {
-    const [overview, series, chain] = await Promise.all([
-      getJSON(rp("/overview")), getJSON(rp("/scores-series?limit=500")), refreshChain(),
+  // ---- Activity (merged Overview + History) ----
+  // One secondary tab for assessment telemetry so Graph can be the default product surface.
+  const historyState = { assessment_id: null };
+
+  async function renderActivity(view) {
+    const [overview, series, chain, data, lessons] = await Promise.all([
+      getJSON(rp("/overview")),
+      getJSON(rp("/scores-series?limit=500")),
+      refreshChain(),
+      getJSON(rp("/assessments?limit=100")),
+      getJSON(rp("/learning/context?limit=200")).catch(() => ({ status: "unavailable", items: [] })),
     ]);
     clear(view);
     const confs = series.items.map((i) => i.scores.edit_confidence).filter((x) => x != null);
     const meanConf = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
     const proceed = overview.by_decision.proceed || 0;
+    const counts = (chain && chain.counts) || {};
 
     const row = el("div", "grid stat-row");
     row.appendChild(stat("Assessments run", String(overview.total)));
     row.appendChild(stat("Proceed rate", overview.total ? pct(proceed / overview.total) : "—",
       proceed + " of " + overview.total));
     row.appendChild(stat("Mean edit-confidence", meanConf == null ? "—" : fmt(meanConf, 2)));
-    const counts = (chain && chain.counts) || {};
     row.appendChild(stat("Learned rules", String(counts["learned_" + "risk_" + "facts"] || 0),
       chain && chain.valid ? "chain valid" : "chain BROKEN"));
     view.appendChild(row);
@@ -130,45 +137,21 @@
     dcard.appendChild(decisionBar(overview.by_decision, overview.total));
     view.appendChild(dcard);
 
-    // Audit chain, in human terms.
-    const acard = card("Audit chain");
+    // Audit chain stays available but collapsed so KPI + history stay primary.
+    const chainDetails = document.createElement("details");
+    chainDetails.className = "card hotspots-details";
+    const chainSummary = document.createElement("summary");
+    chainSummary.textContent = "Audit chain · " + (chain && chain.valid ? "valid" : "check status");
+    chainDetails.appendChild(chainSummary);
+    const chainBody = el("div", "hotspots-body");
     const list = el("div", "dist-legend");
     Object.keys(chainLabels).forEach((k) => {
       list.appendChild(el("span", null, (chainLabels[k]) + ": " + (counts[k] || 0)));
     });
-    acard.appendChild(list);
-    view.appendChild(acard);
-  }
+    chainBody.appendChild(list);
+    chainDetails.appendChild(chainBody);
+    view.appendChild(chainDetails);
 
-  function decisionBar(byDecision, total) {
-    const wrap = el("div");
-    const bar = el("div", "distbar");
-    const legend = el("div", "dist-legend");
-    Object.keys(byDecision).forEach((d) => {
-      const n = byDecision[d];
-      const seg = el("span");
-      seg.style.width = (total ? (100 * n / total) : 0) + "%";
-      seg.style.background = RAMP[d] || "#5c6773";
-      bar.appendChild(seg);
-      const item = el("span", null, d + " " + n);
-      const sw = el("span", "swatch");
-      sw.style.background = RAMP[d] || "#5c6773";
-      item.prepend(sw);
-      legend.appendChild(item);
-    });
-    wrap.appendChild(bar);
-    wrap.appendChild(legend);
-    return wrap;
-  }
-
-  // ---- History ----
-  const historyState = { assessment_id: null };
-  async function renderHistory(view) {
-    const [data, series, lessons] = await Promise.all([
-      getJSON(rp("/assessments?limit=100")), getJSON(rp("/scores-series?limit=200")),
-      getJSON(rp("/learning/context?limit=200")).catch(() => ({ status: "unavailable", items: [] })),
-    ]);
-    clear(view);
     const lessonByAssessment = {};
     if (lessons.status !== "unavailable") {
       (lessons.items || []).forEach((item) => { lessonByAssessment[item.assessment_id] = item; });
@@ -231,6 +214,27 @@
     view.appendChild(hcard);
     view.appendChild(bcard);
     if (historyState.assessment_id) showMeasuredBenefit(historyState.assessment_id, bbody);
+  }
+
+  function decisionBar(byDecision, total) {
+    const wrap = el("div");
+    const bar = el("div", "distbar");
+    const legend = el("div", "dist-legend");
+    Object.keys(byDecision).forEach((d) => {
+      const n = byDecision[d];
+      const seg = el("span");
+      seg.style.width = (total ? (100 * n / total) : 0) + "%";
+      seg.style.background = RAMP[d] || "#5c6773";
+      bar.appendChild(seg);
+      const item = el("span", null, d + " " + n);
+      const sw = el("span", "swatch");
+      sw.style.background = RAMP[d] || "#5c6773";
+      item.prepend(sw);
+      legend.appendChild(item);
+    });
+    wrap.appendChild(bar);
+    wrap.appendChild(legend);
+    return wrap;
   }
 
   // Fetch one assessment's detail and render its measured (verify-time) RCA benefit. The measured signal
@@ -425,31 +429,8 @@
   async function renderGraph(view) {
     destroyCy();  // tear down the old WebGL/Cytoscape instance before removing its container
     clear(view);
-    const overviewCard = card("Repo hotspots (highest inbound fan-in)");
-    view.appendChild(overviewCard);
-    try {
-      const ov = await getJSON(rp("/graph/overview?top_n=15"));
-      if (!ov.available) {
-        overviewCard.appendChild(fallback(ov));
-      } else if (!ov.files.length) {
-        overviewCard.appendChild(emptyMsg("No fan-in in the current graph."));
-      } else {
-        const t = el("table");
-        t.appendChild(headRow(["file", "dependents"]));
-        const tb = el("tbody");
-        ov.files.forEach((f) => {
-          const tr = el("tr");
-          tr.appendChild(cell(f.file_path, "mono"));
-          tr.appendChild(cell(String(f.distinct_caller_count), "num"));
-          tb.appendChild(tr);
-        });
-        t.appendChild(tb); overviewCard.appendChild(t);
-        if (ov.truncated) overviewCard.appendChild(el("p", "chart-note", "top " + ov.files.length + " of " + ov.total_file_count));
-      }
-    } catch (e) {
-      overviewCard.appendChild(fallback("graph overview unavailable"));
-    }
 
+    // Hero first: codebase graph owns the viewport. Hotspots are secondary and collapsed.
     const graphCard = card("Codebase graph");
     const controls = el("div", "controls");
     graphCard.appendChild(controls);
@@ -478,9 +459,28 @@
     inspector.setAttribute("aria-label", "Selected graph node");
     inspector.appendChild(el("p", "chart-note", "Select a node (or a search result) to inspect it."));
     graphState.inspector = inspector;
-    buildGraphControls(controls, searchResults, inspector);
+    buildGraphControls(controls, searchResults, inspector, cyEl);
     graphCard.appendChild(inspector);
     view.appendChild(graphCard);
+
+    // Collapsed fan-in ranking: one summary line until expanded; fetch only on first open.
+    const hotspots = document.createElement("details");
+    hotspots.className = "card hotspots-details";
+    hotspots.setAttribute("data-testid", "repo-hotspots");
+    const summary = document.createElement("summary");
+    summary.textContent = "Repo hotspots (highest inbound fan-in)";
+    hotspots.appendChild(summary);
+    const hotBody = el("div", "hotspots-body");
+    hotBody.appendChild(el("p", "chart-note", "Expand to load fan-in ranking."));
+    hotspots.appendChild(hotBody);
+    view.appendChild(hotspots);
+    let hotspotsLoaded = false;
+    hotspots.addEventListener("toggle", function () {
+      if (!hotspots.open || hotspotsLoaded) return;
+      hotspotsLoaded = true;
+      loadHotspotsTable(hotBody, summary);
+    });
+
     if (DEV_MODE) {
       const god = el("button", "graph-btn", "God map");
       const full = el("button", "graph-btn", "Full graph (debug)");
@@ -498,9 +498,68 @@
       controls.appendChild(god);
       controls.appendChild(full);
     }
+    // Graph load starts immediately — not gated on hotspots network I/O.
     await loadGodNodeMap(cyEl, graphCard);
     await setupRiskOverlay(controls);
     await loadLearningOverlay();
+  }
+
+  async function loadHotspotsTable(box, summary) {
+    clear(box);
+    box.appendChild(el("p", "chart-note", "loading…"));
+    try {
+      const ov = await getJSON(rp("/graph/overview?top_n=15"));
+      clear(box);
+      if (!ov.available) {
+        box.appendChild(fallback(ov));
+        return;
+      }
+      if (!ov.files.length) {
+        box.appendChild(emptyMsg("No fan-in in the current graph."));
+        return;
+      }
+      const top = ov.files[0];
+      summary.textContent = "Repo hotspots · "
+        + (ov.total_file_count != null ? ov.total_file_count + " files" : ov.files.length + " shown")
+        + " · highest fan-in " + (top ? top.distinct_caller_count : "—");
+      const t = el("table");
+      t.appendChild(headRow(["file", "dependents"]));
+      const tb = el("tbody");
+      ov.files.forEach((f) => {
+        const tr = el("tr", "clickable");
+        tr.appendChild(cell(f.file_path, "mono"));
+        tr.appendChild(cell(String(f.distinct_caller_count), "num"));
+        tr.addEventListener("click", function () {
+          // Focus matching graph nodes when the live graph has that file path.
+          focusGraphPath(f.file_path);
+        });
+        tb.appendChild(tr);
+      });
+      t.appendChild(tb);
+      box.appendChild(t);
+      if (ov.truncated) {
+        box.appendChild(el("p", "chart-note", "top " + ov.files.length + " of " + ov.total_file_count));
+      }
+    } catch (e) {
+      clear(box);
+      box.appendChild(fallback("graph overview unavailable"));
+    }
+  }
+
+  function focusGraphPath(filePath) {
+    const cy = graphState.cy;
+    if (!cy || !filePath) return;
+    const want = normPath(filePath);
+    const hits = cy.nodes().filter(function (n) {
+      return normPath(n.data("file_path")) === want;
+    });
+    if (!hits.nonempty()) return;
+    cy.elements().addClass("search-dim");
+    hits.removeClass("search-dim").addClass("search-hit");
+    hits.connectedEdges().removeClass("search-dim");
+    cy.animate({ fit: { eles: hits, padding: 80 }, duration: 280 });
+    hits[0].select();
+    if (graphState.inspector) showInspector(graphState.inspector, hits[0].data(), false);
   }
 
   async function loadLearningOverlay() {
@@ -725,7 +784,7 @@
     l.appendChild(swatchLabel("#3a4753", "not assessed"));
   }
 
-  function buildGraphControls(controls, searchResults, inspector) {
+  function buildGraphControls(controls, searchResults, inspector, cyEl) {
     const search = document.createElement("input");
     search.className = "graph-search";
     search.type = "text";
@@ -733,13 +792,46 @@
     search.placeholder = "Search symbol / file / kind…";
     search.addEventListener("input", function () { graphSearch(search.value, searchResults, inspector); });
     controls.appendChild(search);
-    [["Grid", "grid"], ["Circle", "circle"], ["Concentric", "concentric"], ["CoSE", "cose"], ["Fit", "fit"]]
+
+    // Keep exact labels Grid/Circle/… for e2e pins; Auto is one-shot smart pick (not a tour).
+    const layouts = el("div", "layout-group");
+    layouts.setAttribute("role", "group");
+    layouts.setAttribute("aria-label", "Graph layout");
+    [["Auto", "auto"], ["Grid", "grid"], ["Circle", "circle"], ["Concentric", "concentric"], ["CoSE", "cose"], ["Fit", "fit"]]
       .forEach(function (pair) {
         const b = el("button", "graph-btn", pair[0]);
         b.setAttribute("type", "button");
         b.addEventListener("click", function () { runGraphLayout(pair[1]); });
-        controls.appendChild(b);
+        layouts.appendChild(b);
       });
+    controls.appendChild(layouts);
+
+    const zoom = el("div", "zoom-group");
+    zoom.setAttribute("role", "group");
+    zoom.setAttribute("aria-label", "Graph zoom");
+    [["−", "out"], ["+", "in"], ["100%", "reset"]].forEach(function (pair) {
+      const b = el("button", "graph-btn", pair[0]);
+      b.setAttribute("type", "button");
+      b.setAttribute("aria-label", pair[1] === "in" ? "Zoom in" : pair[1] === "out" ? "Zoom out" : "Reset zoom");
+      b.addEventListener("click", function () { runGraphZoom(pair[1]); });
+      zoom.appendChild(b);
+    });
+    controls.appendChild(zoom);
+
+    if (cyEl && typeof cyEl.requestFullscreen === "function") {
+      const fs = el("button", "graph-btn", "Fullscreen");
+      fs.setAttribute("type", "button");
+      fs.addEventListener("click", function () {
+        if (document.fullscreenElement === cyEl) {
+          document.exitFullscreen().catch(function () { /* ignore */ });
+        } else {
+          cyEl.requestFullscreen().then(function () {
+            if (graphState.cy) { graphState.cy.resize(); graphState.cy.fit(undefined, 30); }
+          }).catch(function () { /* ignore denied */ });
+        }
+      });
+      controls.appendChild(fs);
+    }
   }
 
   function graphSearch(query, searchResults, inspector) {
@@ -780,14 +872,45 @@
   function runGraphLayout(name) {
     const cy = graphState.cy;
     if (!cy) return;
-    if (name === "fit") { cy.fit(undefined, 20); return; }
+    if (name === "fit") { cy.fit(undefined, 30); return; }
+    if (name === "auto") {
+      // Deterministic one-shot pick from current graph size — never auto-cycles layouts.
+      name = layoutNameFor(cy.nodes().length);
+    }
     if (name === "cose" && cy.nodes().length > 300) {
       if (!window.confirm("Force layout on " + cy.nodes().length + " nodes may be slow. Continue?")) return;
     }
+    const cheap = name === "grid" || name === "circle" || name === "concentric";
+    const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const opts = name === "cose"
-      ? { name: "cose", animate: false, fit: true, padding: 20, nodeRepulsion: 8000, idealEdgeLength: 60, numIter: 400 }
-      : { name: name, fit: true, padding: 20 };
-    cy.layout(opts).run();
+      ? {
+          name: "cose", animate: false, fit: false, padding: 30,
+          nodeRepulsion: 8000, idealEdgeLength: 60, numIter: 400,
+        }
+      : {
+          name: name,
+          animate: cheap && !reduceMotion,
+          animationDuration: 280,
+          fit: false,
+          padding: 30,
+        };
+    const layout = cy.layout(opts);
+    layout.one("layoutstop", function () { cy.fit(undefined, 30); });
+    layout.run();
+  }
+
+  function runGraphZoom(action) {
+    const cy = graphState.cy;
+    if (!cy) return;
+    if (action === "reset") { cy.fit(undefined, 30); return; }
+    const factor = action === "in" ? 1.25 : 1 / 1.25;
+    const next = Math.min(cy.maxZoom(), Math.max(cy.minZoom(), cy.zoom() * factor));
+    const sel = cy.$("node:selected");
+    if (sel.nonempty()) {
+      cy.zoom({ level: next, position: sel.position() });
+    } else {
+      cy.zoom(next);
+    }
   }
 
   function showInspector(inspector, d, focus) {
@@ -959,7 +1082,9 @@
   function makeCy(container, elements, layout, style) {
     const base = {
       container: container, elements: elements, layout: layout, style: style,
-      wheelSensitivity: 0.2, textureOnViewport: true, pixelRatio: 1,
+      // Prefer default wheel zoom (custom sensitivity is OS/hardware inconsistent).
+      minZoom: 0.08, maxZoom: 3.5,
+      textureOnViewport: true, pixelRatio: 1,
       // Single-click selection is the intended UX and avoids the drag-time box-select overlay. (The one
       // residual CSP note is Cytoscape's injected container-position <style>, neutralised in style.css.)
       boxSelectionEnabled: false, selectionType: "single",
@@ -971,14 +1096,20 @@
     }
   }
 
+  function layoutNameFor(nodeCount) {
+    // Smart Auto: force layout only while cheap; large graphs stay on deterministic grid.
+    return nodeCount <= 300 ? "cose" : "grid";
+  }
+
   function layoutFor(nodeCount) {
-    if (nodeCount <= 300) {
-      // small graph: one-shot force layout (no ongoing physics)
-      return { name: "cose", animate: false, fit: true, padding: 20,
-               nodeRepulsion: 8000, idealEdgeLength: 60, numIter: 400 };
+    const name = layoutNameFor(nodeCount);
+    if (name === "cose") {
+      return {
+        name: "cose", animate: false, fit: true, padding: 30,
+        nodeRepulsion: 8000, idealEdgeLength: 60, numIter: 400,
+      };
     }
-    // large graph: deterministic O(n) grid; never auto-run force physics at scale (M5 adds on-demand)
-    return { name: "grid", fit: true, padding: 20 };
+    return { name: "grid", fit: true, padding: 30 };
   }
 
   function cyStyle(showLabels) {
@@ -1001,7 +1132,7 @@
         "shape": "round-rectangle",
         "background-color": "data(hub_color)",
         "border-width": 2, "border-color": "#e6edf3", "border-opacity": 0.55,
-        "font-size": 10, "font-weight": "700", "text-valign": "center", "text-halign": "center",
+        "font-size": 10, "font-weight": "bold", "text-valign": "center", "text-halign": "center",
         "text-max-width": 72, "text-wrap": "wrap",
       } },
       { selector: 'node[graph_role="symbol"]', style: {
@@ -1202,20 +1333,28 @@
   // ---- router ----
   const TABS = Array.from(document.querySelectorAll(".tab[data-tab]")).map((a) => a.dataset.tab);
   const RENDER = {
-    overview: renderOverview, history: renderHistory, calibration: renderCalibration,
-    learning: renderLearning, graph: renderGraph,
+    graph: renderGraph,
+    activity: renderActivity,
+    calibration: renderCalibration,
+    learning: renderLearning,
   };
-  function currentTab() {
-    const h = location.hash.replace("#", "");
-    return TABS.indexOf(h) >= 0 ? h : "overview";
+  // Legacy hashes still leave the Graph tab (and destroy WebGL) without 404ing bookmarks.
+  function resolveTab(hash) {
+    const h = (hash || "").replace("#", "");
+    if (h === "overview" || h === "history") return "activity";
+    if (TABS.indexOf(h) >= 0) return h;
+    return "graph";  // product default: codebase graph first
   }
+  function currentTab() { return resolveTab(location.hash); }
   let routing = false;
   async function route() {
     if (routing) return;
     routing = true;
     const tab = currentTab();
     document.querySelectorAll(".tab").forEach((t) => {
-      t.classList.toggle("active", t.getAttribute("data-tab") === tab);
+      const on = t.getAttribute("data-tab") === tab;
+      t.classList.toggle("active", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
     });
     TABS.forEach((t) => { document.getElementById("view-" + t).hidden = t !== tab; });
     // Release the WebGL graph instance whenever the Graph tab is not the active one. The graphSeq
