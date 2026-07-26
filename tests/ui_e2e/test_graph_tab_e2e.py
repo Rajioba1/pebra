@@ -362,7 +362,11 @@ def test_graph_instance_is_destroyed_when_navigating_away(tmp_path) -> None:
             page.wait_for_selector("#graph-cy canvas", timeout=10000)
             assert page.eval_on_selector_all("#graph-cy canvas", "els => els.length") >= 1
 
-            # Navigate away: the graph instance is torn down (container emptied of canvases).
+            page_errors: list[str] = []
+            page.on("pageerror", lambda e: page_errors.append(e.stack or str(e)))
+            page.get_by_role("button", name="Auto", exact=True).click()
+            # Navigate away during the bounded animation: the graph instance is torn down (container
+            # emptied of canvases) and no late layoutstop handler may touch the destroyed instance.
             page.evaluate("() => { location.hash = '#overview'; }")
             page.wait_for_function(
                 "() => { const c = document.querySelector('#graph-cy');"
@@ -374,6 +378,7 @@ def test_graph_instance_is_destroyed_when_navigating_away(tmp_path) -> None:
             page.evaluate("() => { location.hash = '#graph'; }")
             page.wait_for_selector("#graph-cy canvas", timeout=10000)
             assert page.eval_on_selector_all("#graph-cy canvas", "els => els.length") >= 1
+            assert not page_errors, page_errors
             browser.close()
 
 
@@ -440,6 +445,168 @@ def test_graph_zoom_controls_report_truthful_levels(tmp_path) -> None:
             reset = page.evaluate("() => window.__pebraGraph.snapshot().zoom")
             assert reset == pytest.approx(1.0)
             browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_auto_layout_animates_once_and_respects_reduced_motion(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db, dev_mode=True) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.goto(f"http://127.0.0.1:{port}/?repo=r&token=tok#graph", wait_until="networkidle")
+                page.wait_for_function("() => window.__pebraGraph && window.__pebraGraph.snapshot")
+                page.get_by_role("button", name="Auto", exact=True).click()
+                page.wait_for_function(
+                    "() => window.__pebraGraph.snapshot().lastLayout?.name === 'cose'"
+                )
+                animated = page.evaluate("() => window.__pebraGraph.snapshot().lastLayout")
+                assert animated["animate"] is True
+                assert animated["duration"] == 600
+
+                reduced = browser.new_context(reduced_motion="reduce")
+                reduced_page = reduced.new_page()
+                reduced_page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok#graph", wait_until="networkidle"
+                )
+                reduced_page.wait_for_function(
+                    "() => window.__pebraGraph && window.__pebraGraph.snapshot"
+                )
+                reduced_page.get_by_role("button", name="Auto", exact=True).click()
+                reduced_page.wait_for_function(
+                    "() => window.__pebraGraph.snapshot().lastLayout?.name === 'cose'"
+                )
+                still = reduced_page.evaluate("() => window.__pebraGraph.snapshot().lastLayout")
+                assert still["animate"] is False
+                assert still["duration"] == 0
+                reduced.close()
+            finally:
+                browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_activity_skeleton_is_initial_only_and_never_replays_on_live_tick(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                overview_calls = 0
+
+                def delay_overview(route) -> None:
+                    nonlocal overview_calls
+                    overview_calls += 1
+                    time.sleep(0.35)
+                    route.continue_()
+
+                page.route("**/api/repos/r/overview*", delay_overview)
+                page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok&live=1#activity",
+                    wait_until="domcontentloaded",
+                )
+                page.wait_for_selector("#view-activity .skeleton-block", state="visible", timeout=2000)
+                assert page.locator("#view-activity").get_attribute("aria-busy") == "true"
+                page.wait_for_selector(
+                    '#view-activity[data-loaded="true"]', state="visible", timeout=5000
+                )
+                assert page.locator("#view-activity .skeleton-block").count() == 0
+                assert page.locator("#view-activity").get_attribute("aria-busy") == "false"
+
+                page.evaluate(
+                    """() => {
+                      window.__skeletonReplayed = false;
+                      new MutationObserver(() => {
+                        if (document.querySelector("#view-activity .skeleton-block")) {
+                          window.__skeletonReplayed = true;
+                        }
+                      }).observe(document.querySelector("#view-activity"), {
+                        childList: true, subtree: true
+                      });
+                    }"""
+                )
+                page.wait_for_timeout(2200)
+                assert overview_calls >= 2
+                assert page.evaluate("() => window.__skeletonReplayed") is False
+            finally:
+                browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_activity_live_refresh_preserves_scroll_across_multiple_ticks(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": 1100, "height": 600})
+                page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok&live=1#activity",
+                    wait_until="networkidle",
+                )
+                page.wait_for_selector('#view-activity[data-loaded="true"]', state="visible")
+                row = page.locator("#view-activity tr.clickable").first
+                assessment_id = row.locator("td").first.inner_text()
+                row.locator("td").nth(6).click()
+                detail = page.locator('[data-testid="assessment-detail"]')
+                page.wait_for_function(
+                    "([node, id]) => node.textContent.includes(id)",
+                    arg=[detail.element_handle(), assessment_id],
+                )
+                page.evaluate("window.scrollTo(0, 300)")
+                old_scroll = page.evaluate("window.scrollY")
+                assert old_scroll == 300
+
+                page.wait_for_timeout(3400)
+
+                assert page.evaluate("window.scrollY") == old_scroll
+                assert assessment_id in detail.inner_text()
+            finally:
+                browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_activity_table_breakpoint_keeps_hidden_fields_keyboard_reachable(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": 899, "height": 700})
+                page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok#activity",
+                    wait_until="networkidle",
+                )
+                page.wait_for_selector('#view-activity[data-loaded="true"]', state="visible")
+                fingerprint_header = page.locator("#view-activity thead th").nth(3)
+                assert fingerprint_header.evaluate("node => getComputedStyle(node).display") == "none"
+
+                action = page.locator("#view-activity .assessment-link").first
+                action.focus()
+                action.press("Enter")
+                detail = page.locator('[data-testid="assessment-detail"]')
+                page.wait_for_function(
+                    "node => node.textContent.includes('fingerprint') && node.textContent.includes('rau')",
+                    arg=detail.element_handle(),
+                )
+                detail_text = detail.inner_text().lower()
+                assert "assessment" in detail_text
+                assert "edit confidence" in detail_text
+                assert "lesson" in detail_text
+
+                page.set_viewport_size({"width": 901, "height": 700})
+                assert fingerprint_header.evaluate("node => getComputedStyle(node).display") != "none"
+            finally:
+                browser.close()
 
 
 @pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")

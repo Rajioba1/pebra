@@ -54,3 +54,17 @@ def test_initial_layout_path_stays_silent() -> None:
     # layoutFor (initial construction + live refresh) must NOT pass the animate arg — no reveal on the tick.
     assert "coseOptions(nodeCount, true)" in js, "initial layout must call coseOptions without animation"
     assert "coseOptions(nodeCount, true, true)" not in js, "initial/live path must never animate"
+
+
+def test_destroy_stops_an_active_layout_before_destroying_cytoscape() -> None:
+    body = _fn_body(_js(), "destroyCy")
+    assert "graphState.activeLayout" in body, "destroy must account for an in-flight layout"
+    assert body.index("graphState.activeLayout.stop()") < body.index("cy.destroy()"), (
+        "the animation must stop before Cytoscape is destroyed"
+    )
+    assert body.index("cy.elements().stop(") < body.index("cy.destroy()"), (
+        "queued node animations must stop before Cytoscape is destroyed"
+    )
+    assert body.index("window.requestAnimationFrame(") < body.index("cy.destroy()"), (
+        "renderer destruction must wait for Cytoscape's queued animation frame to drain"
+    )

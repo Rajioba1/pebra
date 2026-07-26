@@ -189,8 +189,24 @@
       data.items.forEach((it) => {
         const s = it.scores || {};
         const tr = el("tr", "clickable");
+        const openDetail = function () {
+          historyState.assessment_id = it.assessment_id;
+          showMeasuredBenefit(
+            it.assessment_id, bbody, it,
+            lessonIndicator(lessonByAssessment[it.assessment_id], lessons.status)
+          );
+        };
         tr.appendChild(cell(it.assessment_id, "mono"));
-        tr.appendChild(cell(formatTask(it.task)));
+        const taskCell = el("td");
+        const taskAction = el("button", "assessment-link", formatTask(it.task));
+        taskAction.setAttribute("type", "button");
+        taskAction.setAttribute("aria-label", "Open details for assessment " + it.assessment_id);
+        taskAction.addEventListener("click", function (event) {
+          event.stopPropagation();
+          openDetail();
+        });
+        taskCell.appendChild(taskAction);
+        tr.appendChild(taskCell);
         tr.appendChild(cell(formatTarget(it.target_files), "mono"));
         tr.appendChild(cell(formatFingerprint(it.candidate_fingerprint), "mono"));
         const dcell = el("td"); dcell.appendChild(pill(it.decision)); tr.appendChild(dcell);
@@ -201,10 +217,7 @@
         tr.appendChild(cell(fmt(s.edit_confidence, 2), "num"));
         tr.appendChild(cell(it.terminal_status || "pending", "mono"));
         tr.appendChild(cell(lessonIndicator(lessonByAssessment[it.assessment_id], lessons.status), "mono"));
-        tr.addEventListener("click", function () {
-          historyState.assessment_id = it.assessment_id;
-          showMeasuredBenefit(it.assessment_id, bbody, it, lessonIndicator(lessonByAssessment[it.assessment_id], lessons.status));
-        });
+        tr.addEventListener("click", openDetail);
         tb.appendChild(tr);
       });
       table.appendChild(tb);
@@ -217,7 +230,10 @@
     if (historyState.assessment_id) {
       const restore = data.items.find(function (x) { return x.assessment_id === historyState.assessment_id; });
       if (restore) {
-        showMeasuredBenefit(restore.assessment_id, bbody, restore, lessonIndicator(lessonByAssessment[restore.assessment_id], lessons.status));
+        await showMeasuredBenefit(
+          restore.assessment_id, bbody, restore,
+          lessonIndicator(lessonByAssessment[restore.assessment_id], lessons.status)
+        );
       }
     }
   }
@@ -255,8 +271,8 @@
   // GET /api/repos/{repo}/assessments/{id}. Distinct from the assess-time projected `benefit` in the
   // table.
   function rowIdentityTable(row, lessonText) {
-    // The narrow-viewport table hides fingerprint/rau/confidence/lesson; surface them here so a row
-    // click on a small screen still exposes every column's value (assessment id shows in the table below).
+    // The narrow-viewport table hides these fields; surface them here without depending on the
+    // measured-benefit request so every hidden value remains available if that request fails.
     const s = row.scores || {};
     const t = el("table");
     t.appendChild(headRow(["row detail", "value"]));
@@ -267,6 +283,7 @@
       tr.appendChild(cell(v, "mono"));
       tb.appendChild(tr);
     }
+    textRow("assessment", row.assessment_id);
     textRow("task", formatTask(row.task));
     textRow("target", formatTarget(row.target_files));
     textRow("fingerprint", formatFingerprint(row.candidate_fingerprint));
@@ -456,6 +473,8 @@
     learning: null, learningLegend: null,
     resizeObserver: null,
     symbolLabelsVisible: null,
+    lastLayout: null,
+    activeLayout: null,
   };
 
   function disableRiskOverlay() {
@@ -958,8 +977,19 @@
           fit: false,
           padding: 30,
         };
+    const layoutRun = {
+      name: name,
+      animate: !!opts.animate,
+      duration: opts.animationDuration || 0,
+      running: true,
+    };
+    graphState.lastLayout = layoutRun;
     const layout = cy.layout(opts);
+    graphState.activeLayout = layout;
     layout.one("layoutstop", function () {
+      layoutRun.running = false;
+      if (graphState.activeLayout === layout) graphState.activeLayout = null;
+      if (graphState.cy !== cy) return;
       cy.fit(undefined, 30);
       updateSymbolLabelVisibility();  // re-sync zoom-gated symbol labels after the (possibly animated) fit
     });
@@ -1318,6 +1348,7 @@
         return {
           mode: graphState.mode,
           zoom: cy.zoom(),
+          lastLayout: graphState.lastLayout ? Object.assign({}, graphState.lastLayout) : null,
           nodes: cy.nodes().map(function (n) {
             return {
               id: n.id(),
@@ -1347,11 +1378,25 @@
       graphState.resizeObserver.disconnect();
       graphState.resizeObserver = null;
     }
+    if (graphState.activeLayout) {
+      try { graphState.activeLayout.stop(); } catch (e) { /* already stopped */ }
+      graphState.activeLayout = null;
+    }
     if (graphState.cy) {
-      try { graphState.cy.destroy(); } catch (e) { /* already torn down */ }
+      const cy = graphState.cy;
+      try {
+        cy.elements().stop(true, false);
+        cy.stop(true, false);
+      } catch (e) { /* animation queue already torn down */ }
       graphState.cy = null;
+      // Cytoscape may already have queued the current animation-frame renderer notification. Destroy
+      // after that frame drains; application state is detached now and the off-tab view is hidden.
+      window.requestAnimationFrame(function () {
+        try { cy.destroy(); } catch (e) { /* already torn down */ }
+      });
     }
     graphState.symbolLabelsVisible = null;
+    graphState.lastLayout = null;
   }
 
   function fallback(info) {
@@ -1477,6 +1522,7 @@
   }
   function currentTab() { return resolveTab(location.hash); }
   let routing = false;
+  let liveRefreshing = false;
   function renderSkeleton(view) {
     clear(view);
     const group = el("div", "skeleton-group");
@@ -1505,6 +1551,7 @@
     if (tab !== "graph") destroyCy();
     const view = document.getElementById("view-" + tab);
     view.removeAttribute("data-loaded");
+    view.setAttribute("aria-busy", "true");
     // Skeleton only on a tab's FIRST load: not the 1.5s live refresh (tabEverLoaded is already set by
     // then), and a no-op on tabs that paint their shell synchronously (the hasChildNodes guard).
     const firstLoad = repo && !tabEverLoaded.has(tab);
@@ -1522,6 +1569,7 @@
       clear(view); view.appendChild(emptyMsg("Error loading " + tab + ": " + e.message));
     } finally {
       if (skeletonTimer) clearTimeout(skeletonTimer);
+      view.setAttribute("aria-busy", "false");
       routing = false;
       // If the hash changed while this render was in flight, the dropped hashchange won't re-fire for
       // the same hash — re-run so the UI can't get stranded on the previous tab (e.g. a fast double-click).
@@ -1531,11 +1579,22 @@
 
   async function refreshLiveView() {
     const view = document.getElementById("view-" + currentTab());
-    if (view.contains(document.activeElement)) return;
+    if (liveRefreshing || routing || view.contains(document.activeElement)) return;
+    liveRefreshing = true;
     const scrollX = window.scrollX;
     const scrollY = window.scrollY;
-    await route();
-    window.scrollTo(scrollX, scrollY);
+    document.documentElement.classList.add("live-refreshing");
+    try {
+      await route();
+      // Chromium applies scroll anchoring at paint time, after route() resolves. Let layout settle
+      // before restoring the saved coordinates so a rebuilt detail panel cannot move the viewport.
+      await new Promise(function (resolve) { window.requestAnimationFrame(resolve); });
+      window.scrollTo(scrollX, scrollY);
+      await new Promise(function (resolve) { window.requestAnimationFrame(resolve); });
+    } finally {
+      document.documentElement.classList.remove("live-refreshing");
+      liveRefreshing = false;
+    }
   }
 
   TAB_ELEMENTS.forEach(function (tab, index) {

@@ -20,7 +20,9 @@ def _js() -> str:
 
 
 def _rule(css: str, selector: str) -> str:
-    block = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css, re.DOTALL)
+    block = re.search(
+        r"(?m)^\s*" + re.escape(selector) + r"\s*\{([^}]*)\}", css, re.DOTALL
+    )
     assert block, f"selector {selector!r} not found"
     return block.group(1)
 

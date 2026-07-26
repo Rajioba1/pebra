@@ -210,7 +210,13 @@ def e2e_ui(session: nox.Session) -> None:
     if os.environ.get("E2E_UI_INSTALL_DEPS") == "1":
         browser_args.append("--with-deps")
     session.run(*browser_args, "chromium")
-    session.run("pytest", "e2e/features/dashboard", "-v", env={**os.environ, "E2E_UI": "1"})
+    session.run(
+        "pytest",
+        "e2e/features/dashboard",
+        "tests/ui_e2e/test_graph_tab_e2e.py",
+        "-v",
+        env={**os.environ, "E2E_UI": "1"},
+    )
 
 
 @nox.session(name="mcp-smoke")

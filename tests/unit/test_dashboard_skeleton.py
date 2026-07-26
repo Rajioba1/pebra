@@ -39,6 +39,8 @@ def test_skeleton_is_deferred_and_guards_a_nonempty_view() -> None:
     assert "hasChildNodes()" in timer.group(1), "skeleton must no-op if the view already painted a shell"
     assert "renderSkeleton(" in timer.group(1), "the timer renders the skeleton"
     assert "clearTimeout(" in body, "the timer must be cancelled once the render resolves"
+    assert 'setAttribute("aria-busy", "true")' in body, "the loading region must expose its busy state"
+    assert 'setAttribute("aria-busy", "false")' in body, "the busy state must clear after rendering"
 
 
 def test_skeleton_styles_exist_and_ride_the_global_reduced_motion_switch() -> None:

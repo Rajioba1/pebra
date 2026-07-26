@@ -38,15 +38,18 @@ def test_hidden_columns_stay_reachable_in_the_detail_card() -> None:
     ident = re.search(r"function rowIdentityTable\([^)]*\)\s*\{(.*?)\n  \}", js, re.DOTALL)
     assert ident, "rowIdentityTable body not found"
     body = ident.group(1)
-    # Every hidden-and-not-otherwise-shown column must appear in the identity block.
+    # Every hidden column must appear in the identity block without depending on a second API request.
+    assert 'textRow("assessment", row.assessment_id)' in body, "assessment id must stay reachable"
     assert "formatFingerprint(" in body, "fingerprint must stay reachable"
     assert "s.rau" in body, "rau must stay reachable"
     assert "edit_confidence" in body, "confidence must stay reachable"
     assert "lessonText" in body, "lesson must stay reachable"
-    # (assessment id is already shown in the measured-benefit table, so it needn't repeat here.)
 
 
-def test_detail_card_is_invoked_with_the_row() -> None:
+def test_detail_card_is_invoked_with_the_row_and_has_a_keyboard_action() -> None:
     js = _js()
-    assert "showMeasuredBenefit(it.assessment_id, bbody, it," in js, "row click must pass the row object"
+    assert re.search(
+        r"showMeasuredBenefit\(\s*it\.assessment_id,\s*bbody,\s*it,", js
+    ), "row action must pass the row object"
     assert ".find(" in js, "the restore-on-refresh path must re-look-up the row to pass it"
+    assert '"assessment-link"' in js, "each row needs a native keyboard-reachable detail action"
