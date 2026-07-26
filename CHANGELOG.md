@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.0 — 2026-07-26
+
+### Added
+
+- The browser Observatory now opens on a full-size codebase graph, with deterministic Auto layout,
+  explicit zoom, Fit, 100%, and fullscreen controls, plus a collapsed, lazy-loaded hotspot ranking.
+- The live agent assay can reuse isolated, locked specimen slots across trials while retaining
+  dependency and CodeGraph caches.
+
+### Changed
+
+- Browser Overview and History are combined into Activity; legacy dashboard hashes continue to open
+  the merged view.
+- Assay slots reset to the pinned specimen HEAD between subjects and use the production
+  status/sync/status graph boundary instead of recloning and fully indexing every arm.
+
+### Reliability and safety
+
+- Persistent assay slots use deterministic arm-neutral assignment, exclusive leases, clean-source
+  admission, generation-bound receipts, protected dependency/graph state, and rebuild-once graph
+  recovery.
+- Dashboard tabs now implement keyboard navigation and roving focus, hotspot actions are keyboard
+  accessible, unavailable graphs show setup guidance without an empty stage, and resize/fullscreen
+  transitions keep the Cytoscape viewport synchronized.
+
+### Evidence boundary
+
+- Persistent workspaces change assay execution cost and production realism, not the estimand or
+  efficacy evidence. A paid run is still required before drawing a new treatment-effect conclusion.
+
 ## 0.3.1 — 2026-07-25
 
 ### Fixed

@@ -29,9 +29,9 @@ def test_security_policy_defines_private_reporting_and_response_targets() -> Non
     assert "private vulnerability reporting" in policy
     assert "do not open a public issue" in policy
     assert "business days" in policy
-    assert "Latest published: `0.3.0`" in body
-    assert "Development: `0.3.1` / `main`" in body
-    assert "Update this table only after the corresponding PyPI release is verified" in body
+    assert "Latest verified PyPI release" in body
+    assert "Development branch: `main`" in body
+    assert "only after its PyPI publication is verified" in body
 
 
 def test_contribution_terms_cover_rights_license_and_private_security_reports() -> None:
@@ -137,7 +137,7 @@ def test_readme_installs_codegraph_and_pebra_before_workflow() -> None:
     assert "## Install & engines" not in body
 
 
-def test_project_version_is_0_3_1_release_candidate() -> None:
+def test_project_version_is_0_4_0_release_candidate() -> None:
     _, project = _project_metadata()
 
-    assert project["version"] == "0.3.1"
+    assert project["version"] == "0.4.0"
