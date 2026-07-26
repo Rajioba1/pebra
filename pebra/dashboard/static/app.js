@@ -395,19 +395,14 @@
   // ---- Codebase graph (Cytoscape.js, WebGL) ----
   // Categorical kind palette: dark-legible and deliberately distinct from the green/gold/orange/red
   // risk RAMP so "coloured by kind" can never be misread as "coloured by risk" (risk overlay is M6).
-  const KIND_COLORS = {
-    function: "#58a6ff", method: "#58a6ff",
-    class: "#a78bfa", struct: "#a78bfa", interface: "#a78bfa", trait: "#a78bfa", protocol: "#a78bfa",
-    component: "#2dd4bf", route: "#2dd4bf",
-    namespace: "#8b949e", module: "#8b949e",
-    file: "#6e7681",
-    file_hub: "#6e7681",
-    default: "#566173",
-  };
+  // Structural two-colour scheme: files (containers) read blue, symbols read red. Both are tuned for
+  // legibility on the dark graph canvas and kept clear of the risk-signal reds/blues used by the overlay.
+  const FILE_COLOR = "#58a6ff";
+  const SYMBOL_COLOR = "#ff6b6b";
   const HUB_COLORS = ["#2dd4bf", "#58a6ff", "#a78bfa", "#f0883e", "#f778ba", "#d6a419"];
   const SPOKE_COLORS = ["#2dd4bf", "#58a6ff", "#a78bfa", "#f0883e", "#f778ba", "#d6a419"];
   // Risk overlay: colour + SHAPE per decision (categorical — paired shape keeps it colourblind-safe and
-  // deliberately distinct from the structural KIND_COLORS so "risk view" never reads as "kind view").
+  // deliberately distinct from the structural file/symbol colours so "risk view" never reads as "kind view").
   const RISK_DECISIONS = ["proceed", "test_first", "inspect_first", "revise_safer", "ask_human", "reject"];
   const DECISION_STYLE = {
     proceed: { color: "#3fb950", shape: "ellipse" },
@@ -1091,6 +1086,8 @@
         id: n.id,
         label: n.label != null ? n.label : n.id,
         kind: n.kind || "unknown",
+        // Files vs symbols drives the two-colour fill; hubs keep their god-map rainbow (is_file false).
+        is_file: n.graph_role !== "hub" && (n.kind === "file" || n.kind === "file_hub"),
         qualified_name: n.qualified_name || null,
         file_path: n.file_path || null,
         graph_role: n.graph_role || null,
@@ -1178,13 +1175,13 @@
   function cyStyle(showLabels) {
     const s = [
       { selector: "node", style: {
-        "background-color": KIND_COLORS.default,
+        "background-color": SYMBOL_COLOR,
         "width": "data(size)", "height": "data(size)",
         "shape": "data(shape)",
         "label": showLabels ? "data(label)" : "",
-        "font-size": 9, "color": "#c9d1d9",
+        "font-size": 12, "font-weight": "bold", "color": "#c9d1d9",
         "text-valign": "center", "text-halign": "right", "text-margin-x": 4,
-        "min-zoomed-font-size": 9,
+        "min-zoomed-font-size": 10,
       } },
       { selector: "edge", style: {
         "width": 1, "line-color": "#3a4753", "opacity": 0.5,
@@ -1195,7 +1192,7 @@
         "shape": "round-rectangle",
         "background-color": "data(hub_color)",
         "border-width": 2, "border-color": "#e6edf3", "border-opacity": 0.55,
-        "font-size": 10, "font-weight": "bold", "text-valign": "center", "text-halign": "center",
+        "font-size": 12, "font-weight": "bold", "text-valign": "center", "text-halign": "center",
         "text-max-width": 72, "text-wrap": "wrap",
       } },
       { selector: 'node[graph_role="symbol"]', style: {
@@ -1222,10 +1219,10 @@
         "border-width": 3, "border-color": "#ffd24d", "border-opacity": 1, "opacity": 1,
       } },
     ];
-    Object.keys(KIND_COLORS).forEach((k) => {
-      if (k === "default") return;
-      s.push({ selector: 'node[kind="' + k + '"]', style: { "background-color": KIND_COLORS[k] } });
-    });
+    // Files (containers) read blue over the red symbol base. Appended after the base rule but before the
+    // risk rb-* rules below, so the risk overlay still wins when active; hubs are is_file=false so their
+    // god-map rainbow is untouched.
+    s.push({ selector: "node[?is_file]", style: { "background-color": FILE_COLOR } });
     // Risk overlay (appended last so rb-* classes override the kind colours when risk view is on).
     Object.keys(DECISION_STYLE).forEach((k) => {
       s.push({ selector: "node.rb-" + k, style: {
@@ -1303,10 +1300,8 @@
   }
   function graphLegend() {
     const l = el("div", "graph-legend");
-    l.appendChild(swatchLabel(KIND_COLORS.function, "function / method"));
-    l.appendChild(swatchLabel(KIND_COLORS.class, "class / type"));
-    l.appendChild(swatchLabel(KIND_COLORS.component, "component / route"));
-    l.appendChild(swatchLabel(KIND_COLORS.namespace, "namespace / module"));
+    l.appendChild(swatchLabel(SYMBOL_COLOR, "symbol"));
+    l.appendChild(swatchLabel(FILE_COLOR, "file"));
     l.appendChild(swatchLabel(HUB_COLORS[0], "god-node file hub"));
     l.appendChild(swatchLabel(SPOKE_COLORS[0], "file → symbol spoke"));
     l.appendChild(swatchLabel("#8b949e", "symbol cross-link"));
