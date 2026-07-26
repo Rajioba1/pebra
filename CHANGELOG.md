@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 — 2026-07-25
+
+### Fixed
+
+- The live agent assay now unwraps the public `pebra explore --json` envelope before validating and
+  delivering graph-backed repository context.
+- Graph-arm readiness and subject-facing context now consume the same validated nested payload, so a
+  healthy index is no longer rejected as unavailable before paid graph arms run.
+
 ## 0.3.0 — 2026-07-25
 
 ### Added

@@ -2769,7 +2769,7 @@ def test_run_trial_aborts_failed_graph_context_readiness_before_subject(
     monkeypatch.setattr(run_pair.backends, "backend_for_spec", lambda spec: _FakeBackend())
     monkeypatch.setattr(
         run_pair.cli_harness,
-        "explore",
+        "explore_repository_context",
         lambda *_args, **_kwargs: {
             "status": "unavailable",
             "snapshot": {"status": "stale_after_sync"},
@@ -2807,7 +2807,9 @@ def test_graph_context_readiness_malformed_explore_response_fails_closed(
     )
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
-    monkeypatch.setattr(run_pair.cli_harness, "explore", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        run_pair.cli_harness, "explore_repository_context", lambda *_args, **_kwargs: []
+    )
 
     with pytest.raises(run_pair.RunPairError, match="graph context readiness"):
         run_pair._assert_graph_context_ready(_SPEC, models.ARM_GRAPH_CONTEXT, repo)

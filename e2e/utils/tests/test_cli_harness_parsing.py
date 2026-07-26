@@ -72,6 +72,42 @@ def test_assess_forwards_extra_env(monkeypatch, tmp_path):
     assert captured["timeout"] == ch.DEFAULT_TIMEOUT_SECONDS
 
 
+def test_explore_repository_context_unwraps_public_cli_envelope(monkeypatch, tmp_path):
+    repository_context = {
+        "status": "available",
+        "snapshot": {
+            "status": "available",
+            "repo_head": "a" * 40,
+            "graph_scope_digest": "b" * 64,
+        },
+    }
+    monkeypatch.setattr(
+        ch,
+        "explore",
+        lambda *_args, **_kwargs: {
+            "learning_context": {"status": "unavailable"},
+            "repository_context": repository_context,
+        },
+    )
+
+    result = ch.explore_repository_context(
+        "helper",
+        files=("src/a.ts",),
+        repo_root=tmp_path,
+    )
+
+    assert result == repository_context
+
+
+def test_explore_repository_context_rejects_malformed_public_cli_envelope(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(ch, "explore", lambda *_args, **_kwargs: {"learning_context": {}})
+
+    with pytest.raises(ch.CLIError, match="repository_context"):
+        ch.explore_repository_context("helper", files=(), repo_root=tmp_path)
+
+
 def test_source_neutral_graph_setup_restores_gitignore_and_ignores_runtime_dirs(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)

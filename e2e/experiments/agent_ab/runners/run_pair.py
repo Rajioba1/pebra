@@ -439,7 +439,7 @@ def _repository_context_backend(
         if source == "graph":
             try:
                 raw_value = _graph_call(
-                    cli_harness.explore,
+                    cli_harness.explore_repository_context,
                     query,
                     files=files,
                     repo_root=repo_path,
@@ -1724,7 +1724,7 @@ def _assert_graph_context_ready(
         return
     head = _repo_head(repo_path)
     raw_value = _graph_call(
-        cli_harness.explore,
+        cli_harness.explore_repository_context,
         spec.description,
         files=tuple(spec.target_hints),
         repo_root=repo_path,

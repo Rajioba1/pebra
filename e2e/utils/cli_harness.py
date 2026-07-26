@@ -517,6 +517,30 @@ def explore(
     return _run_json(args, timeout=timeout)
 
 
+def explore_repository_context(
+    query: str,
+    *,
+    files: tuple[str, ...],
+    repo_root: Path | str,
+    max_files: int = 8,
+    max_bytes: int = 12_000,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> dict:
+    """Return the repository-context member of the public explore CLI envelope."""
+    payload = explore(
+        query,
+        files=files,
+        repo_root=repo_root,
+        max_files=max_files,
+        max_bytes=max_bytes,
+        timeout=timeout,
+    )
+    result = payload.get("repository_context") if isinstance(payload, dict) else None
+    if not isinstance(result, dict):
+        raise CLIError("explore response omitted a valid repository_context object")
+    return result
+
+
 def dashboard_proc(
     *,
     repo_root: Path | str,

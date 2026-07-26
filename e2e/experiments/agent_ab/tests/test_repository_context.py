@@ -130,7 +130,7 @@ def test_graph_context_uses_public_explore_and_keeps_receipt_host_only(
             "truncated": False,
         }
 
-    monkeypatch.setattr(run_pair.cli_harness, "explore", explore)
+    monkeypatch.setattr(run_pair.cli_harness, "explore_repository_context", explore)
     telemetry = run_pair.ArmTelemetry()
     backend = run_pair._repository_context_backend(
         models.ARM_GRAPH_CONTEXT, repo, telemetry
@@ -167,7 +167,7 @@ def test_graph_context_receipt_retains_sanitized_failure_reason(tmp_path, monkey
             "fallback_reason": "CodeGraph sync failed in C:/Users/RajLord_new/Desktop/pebra",
         }
 
-    monkeypatch.setattr(run_pair.cli_harness, "explore", explore)
+    monkeypatch.setattr(run_pair.cli_harness, "explore_repository_context", explore)
     telemetry = run_pair.ArmTelemetry()
     backend = run_pair._repository_context_backend(
         models.ARM_GRAPH_CONTEXT, repo, telemetry
@@ -193,7 +193,9 @@ def test_graph_context_malformed_explore_response_fails_closed_with_receipt(
 ) -> None:
     repo = _repo(tmp_path)
 
-    monkeypatch.setattr(run_pair.cli_harness, "explore", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        run_pair.cli_harness, "explore_repository_context", lambda *_args, **_kwargs: None
+    )
     telemetry = run_pair.ArmTelemetry()
     backend = run_pair._repository_context_backend(
         models.ARM_GRAPH_CONTEXT, repo, telemetry
@@ -214,7 +216,7 @@ def test_graph_context_exception_still_records_unavailable_receipt(tmp_path, mon
     def explore(*_args, **_kwargs):
         raise subprocess.TimeoutExpired("pebra explore", 5)
 
-    monkeypatch.setattr(run_pair.cli_harness, "explore", explore)
+    monkeypatch.setattr(run_pair.cli_harness, "explore_repository_context", explore)
     telemetry = run_pair.ArmTelemetry()
     backend = run_pair._repository_context_backend(
         models.ARM_GRAPH_CONTEXT, repo, telemetry
@@ -258,7 +260,7 @@ def test_graph_context_explore_calls_are_not_serialized_inside_tool_call(tmp_pat
             "truncated": False,
         }
 
-    monkeypatch.setattr(run_pair.cli_harness, "explore", explore)
+    monkeypatch.setattr(run_pair.cli_harness, "explore_repository_context", explore)
     first = run_pair._repository_context_backend(
         models.ARM_GRAPH_CONTEXT, repo, run_pair.ArmTelemetry()
     )
