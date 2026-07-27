@@ -1594,6 +1594,9 @@
         const controls = view.querySelector(".controls");
         if (controls) await setupRiskOverlay(controls);
         await loadLearningOverlay();
+      } catch (e) {
+        // Best-effort overlay refresh: a transient failure must not throw out of the interval as an
+        // unhandled rejection. The graph itself is untouched, so there is nothing to surface.
       } finally {
         liveRefreshing = false;
       }
