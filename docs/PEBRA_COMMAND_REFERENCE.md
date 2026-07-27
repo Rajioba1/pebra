@@ -11,7 +11,7 @@ pebra help --all
 pebra --version
 ```
 
-The current tree has 24 root CLI commands, two installed console entrypoints, four MCP tools, 17 nox sessions, repository packaging utilities, and three GitHub Actions workflows.
+The current tree has 25 root CLI commands, two installed console entrypoints, four MCP tools, 17 nox sessions, repository packaging utilities, and three GitHub Actions workflows.
 
 ## Shell Compatibility
 
@@ -450,9 +450,30 @@ Failures are fail-soft: the command reports an unknown latest version rather tha
 workflows. `PEBRA_NO_UPDATE_CHECK=1` disables this command before any network request, and editable
 checkouts refuse update checks because Git is the correct update path.
 
+### `setup-engines`
+
+Unified CodeGraph readiness plus RCA trust reporting (does not execute Cargo or download RCA).
+
+```text
+pebra setup-engines
+  [--repo-root PATH]
+  [--fix]
+  [--via {auto,standalone,npm}]
+  [--json]
+```
+
+```console
+pebra setup-engines --repo-root .
+pebra setup-engines --repo-root . --json
+```
+
+Exit `0` only when CodeGraph is trusted and RCA is accepted. Exit `1` means engines are incomplete;
+`assess_ready` remains true so degraded assessment is still possible. Use `doctor` for graph-only
+health; use exit `0` here when both measured engines are required.
+
 ### `setup-graph`
 
-Install or initialize the graph engine for a repository/worktree.
+Install or initialize the graph engine for a repository/worktree (advanced CodeGraph-only path).
 
 ```text
 pebra setup-graph
