@@ -28,6 +28,20 @@ _ORIGINAL_VALIDATED_RCA = ra._validated_rca
 @pytest.fixture(autouse=True)
 def _accept_fake_rca_runtime(monkeypatch):
     monkeypatch.setattr(ra, "_validated_rca", lambda exe: exe)
+    monkeypatch.setattr(
+        ra,
+        "probe_rca",
+        lambda: ra.RcaCapability(
+            status="accepted",
+            accepted=True,
+            version=ra.RCA_ACCEPTED_VERSION,
+            accepted_version=ra.RCA_ACCEPTED_VERSION,
+            required_source_revision=ra.RCA_SOURCE_REVISION,
+            benefit_mode="measured",
+            reason=None,
+            remediation_command=ra.RCA_INSTALL_COMMAND,
+        ),
+    )
 
 
 # --- _run_rca_cli fail-safe branches (the REAL subprocess runner, monkeypatched) ----------------

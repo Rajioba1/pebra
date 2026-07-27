@@ -31,8 +31,16 @@ from pebra.adapters._paths import safe_relative_files
 from pebra.adapters.patch_materializer import materialize_patch
 from pebra.core.benefit_aggregation import aggregate_file_deltas
 from pebra.core.engine_argv import resolve_engine_argv
+from dataclasses import dataclass
+
 from pebra.core.models import BenefitDeltaEvidence
-from pebra.core.rca_engine_paths import RCA_ACCEPTED_VERSION, RCA_SOURCE_REVISION, find_rca
+from pebra.core.rca_engine_paths import (
+    RCA_ACCEPTED_VERSION,
+    RCA_INSTALL_COMMAND,
+    RCA_SOURCE_REVISION,
+    build_rca_remediation,
+    find_rca,
+)
 
 # Extensions the BUILT rca binary actually parses (empirically verified against the git-HEAD build; the
 # declared grammar list is broader — e.g. Kotlin/.kt and Go/.go are declared/plausible but produce NO
@@ -91,6 +99,129 @@ def _cargo_source_revision(exe: str) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class RcaCapability:
+    """Public RCA trust result. Never includes absolute executable paths."""
+
+    status: str
+    accepted: bool
+    version: str | None
+    accepted_version: str
+    required_source_revision: str
+    benefit_mode: str  # measured | projected
+    reason: str | None
+    remediation_command: str
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "accepted": self.accepted,
+            "version": self.version,
+            "accepted_version": self.accepted_version,
+            "required_source_revision": self.required_source_revision,
+            "benefit_mode": self.benefit_mode,
+            "reason": self.reason,
+            "remediation": build_rca_remediation(),
+        }
+
+
+def probe_rca() -> RcaCapability:
+    """Single trust decision for setup, measurement, doctor, and capabilities."""
+    base = dict(
+        accepted_version=RCA_ACCEPTED_VERSION,
+        required_source_revision=RCA_SOURCE_REVISION,
+        remediation_command=RCA_INSTALL_COMMAND,
+    )
+    exe = find_rca()
+    if exe is None:
+        return RcaCapability(
+            status="missing",
+            accepted=False,
+            version=None,
+            benefit_mode="projected",
+            reason="binary not found",
+            **base,
+        )
+    try:
+        binary = Path(exe)
+        stat = binary.stat()
+    except OSError:
+        return RcaCapability(
+            status="probe_error",
+            accepted=False,
+            version=None,
+            benefit_mode="projected",
+            reason="binary not readable",
+            **base,
+        )
+    version = _rca_version_for_binary(exe, stat.st_mtime_ns, stat.st_size)
+    if version is None:
+        return RcaCapability(
+            status="probe_error",
+            accepted=False,
+            version=None,
+            benefit_mode="projected",
+            reason="version probe failed",
+            **base,
+        )
+    if version != RCA_ACCEPTED_VERSION:
+        return RcaCapability(
+            status="wrong_version",
+            accepted=False,
+            version=version,
+            benefit_mode="projected",
+            reason=f"version {version!r} != {RCA_ACCEPTED_VERSION!r}",
+            **base,
+        )
+    expected_hash = os.environ.get("PEBRA_RCA_SHA256", "").strip().lower()
+    if expected_hash:
+        try:
+            digest = _sha256_file(binary)
+        except OSError:
+            return RcaCapability(
+                status="probe_error",
+                accepted=False,
+                version=version,
+                benefit_mode="projected",
+                reason="hash read failed",
+                **base,
+            )
+        if digest != expected_hash:
+            return RcaCapability(
+                status="hash_mismatch",
+                accepted=False,
+                version=version,
+                benefit_mode="projected",
+                reason="PEBRA_RCA_SHA256 does not match binary",
+                **base,
+            )
+        return RcaCapability(
+            status="accepted",
+            accepted=True,
+            version=version,
+            benefit_mode="measured",
+            reason=None,
+            **base,
+        )
+    if _cargo_source_revision(exe) != RCA_SOURCE_REVISION:
+        return RcaCapability(
+            status="untrusted_provenance",
+            accepted=False,
+            version=version,
+            benefit_mode="projected",
+            reason="Cargo source revision missing or not pinned",
+            **base,
+        )
+    return RcaCapability(
+        status="accepted",
+        accepted=True,
+        version=version,
+        benefit_mode="measured",
+        reason=None,
+        **base,
+    )
+
+
 def _validated_rca(exe: str) -> str | None:
     """Require the validated version plus pinned Cargo provenance or an explicit exact hash."""
     try:
@@ -111,6 +242,9 @@ def _validated_rca(exe: str) -> str | None:
 
 
 def _run_rca_cli(path: Path) -> dict[str, Any] | None:
+    # Use the same acceptance decision as setup/doctor so measurement cannot drift.
+    if not probe_rca().accepted:
+        return None
     exe = find_rca()
     if exe is None or _validated_rca(exe) is None:
         return None
