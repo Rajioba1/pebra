@@ -24,6 +24,18 @@ def test_capabilities_json_includes_enforcement_modes(monkeypatch, capsys, tmp_p
         "probe",
         _probe,
     )
+    monkeypatch.setattr(
+        capabilities,
+        "collect_engine_status",
+        lambda root: {
+            "engines_ok": False,
+            "git": {"mode": "degraded", "reasons": ["HEAD unavailable"], "head_present": False},
+            "codegraph": {"mode": "degraded", "reasons": ["codegraph not found"]},
+            "rca": {"mode": "degraded", "reasons": ["binary not found"], "accepted": False,
+                    "benefit_mode": "projected", "status": "missing"},
+            "bandit": {"mode": "available", "reasons": []},
+        },
+    )
 
     args = build_parser().parse_args(["capabilities", "--repo-root", str(tmp_path), "--json"])
     assert capabilities.run_capabilities(args) == 0
@@ -33,6 +45,8 @@ def test_capabilities_json_includes_enforcement_modes(monkeypatch, capsys, tmp_p
     assert payload["enforcement"]["codex"]["mode"] == "best_effort"
     assert payload["enforcement"]["codex"]["candidate_bound"] is False
     assert seen["graph_available"] is False
+    assert "engines" in payload
+    assert payload["engines"]["rca"]["benefit_mode"] == "projected"
 
 
 def test_capabilities_text_orders_registered_hosts_before_mcp(monkeypatch, capsys, tmp_path) -> None:

@@ -894,6 +894,9 @@ def run_doctor(args: Any) -> int:
             graph_config = _graph_config(repo)
         post_fix_config_digest = graph_config["digest"]
     ok = diag["healthy"] and in_range and graph_config["valid"] and config_restored
+    from pebra.cli.engine_status import collect_engine_status  # noqa: PLC0415
+
+    engines = collect_engine_status(repo)
     lines = [f"doctor — repo: {repo}",
              f"  codegraph version: {runtime_ver or 'unknown'} (accepted {CODEGRAPH_ACCEPTED_RANGE})",
              f"  version_in_range:  {in_range}",
@@ -904,7 +907,8 @@ def run_doctor(args: Any) -> int:
              f"  config digest:     {graph_config['digest']}",
              f"  config valid:      {graph_config['valid']}",
              "  config support:    extensions, includeIgnored (exclude unsupported)",
-             f"  healthy:           {ok}"]
+             f"  healthy:           {ok}",
+             f"  engines_ok:        {engines['engines_ok']}"]
     if graph_config["unsupported_fields"]:
         lines.append("  unsupported config fields: " + ", ".join(graph_config["unsupported_fields"]))
     if graph_config["error"]:
@@ -919,5 +923,8 @@ def run_doctor(args: Any) -> int:
            "post_fix_config_digest": post_fix_config_digest,
            "config_restored": config_restored,
            "config_error": None if config_restored else "codegraph configuration restore failed",
-           "diagnosis": diag}, args.as_json, lines)
+           "diagnosis": diag,
+           "engines": engines,
+           "engines_ok": engines["engines_ok"]}, args.as_json, lines)
+    # Exit remains graph-health only so existing scripts are not broken by optional RCA absence.
     return 0 if ok else 1
