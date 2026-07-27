@@ -1566,6 +1566,7 @@
       else { await RENDER[tab](view); tabEverLoaded.add(tab); }
       view.setAttribute("data-loaded", "true");
     } catch (e) {
+      destroyCy();  // a throw after renderCy created cy must not leave it bound to the container we clear
       clear(view); view.appendChild(emptyMsg("Error loading " + tab + ": " + e.message));
     } finally {
       if (skeletonTimer) clearTimeout(skeletonTimer);
@@ -1578,9 +1579,25 @@
   }
 
   async function refreshLiveView() {
-    const view = document.getElementById("view-" + currentTab());
+    const tab = currentTab();
+    const view = document.getElementById("view-" + tab);
     if (liveRefreshing || routing || view.contains(document.activeElement)) return;
     liveRefreshing = true;
+    if (tab === "graph" && graphState.cy) {
+      // The godmap/full graph read a point-in-time CodeGraph index snapshot that only changes on an
+      // explicit `pebra setup-graph` reindex — never from assess/verify. A live tick has nothing
+      // structurally live to refresh, so a remount would only wipe the camera/selection and race the
+      // graph controls. Refresh just the two sources that can drift (assessment list, verified lessons)
+      // in place; leave cy, its camera, and its selection untouched.
+      try {
+        const controls = view.querySelector(".controls");
+        if (controls) await setupRiskOverlay(controls);
+        await loadLearningOverlay();
+      } finally {
+        liveRefreshing = false;
+      }
+      return;
+    }
     const scrollX = window.scrollX;
     const scrollY = window.scrollY;
     document.documentElement.classList.add("live-refreshing");
