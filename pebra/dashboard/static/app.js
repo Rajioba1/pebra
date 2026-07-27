@@ -535,10 +535,9 @@
     hotspots.appendChild(hotBody);
     view.appendChild(hotspots);
     let hotspotsLoaded = false;
-    hotspots.addEventListener("toggle", function () {
+    hotspots.addEventListener("toggle", async function () {
       if (!hotspots.open || hotspotsLoaded) return;
-      hotspotsLoaded = true;
-      loadHotspotsTable(hotBody, summary);
+      hotspotsLoaded = await loadHotspotsTable(hotBody, summary);  // retry on a later re-open if it failed
     });
 
     if (DEV_MODE) {
@@ -572,11 +571,11 @@
       clear(box);
       if (!ov.available) {
         box.appendChild(fallback(ov));
-        return;
+        return false;  // fail-soft (no index yet) is retryable — a later setup-graph should re-attempt
       }
       if (!ov.files.length) {
         box.appendChild(emptyMsg("No fan-in in the current graph."));
-        return;
+        return true;  // legitimate empty result — load once, don't retry
       }
       const top = ov.files[0];
       summary.textContent = "Repo hotspots · "
@@ -604,9 +603,11 @@
       if (ov.truncated) {
         box.appendChild(el("p", "chart-note", "top " + ov.files.length + " of " + ov.total_file_count));
       }
+      return true;
     } catch (e) {
       clear(box);
       box.appendChild(fallback("graph overview unavailable"));
+      return false;  // transient failure — allow a re-expand to retry
     }
   }
 

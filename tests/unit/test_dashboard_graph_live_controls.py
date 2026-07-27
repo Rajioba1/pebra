@@ -45,3 +45,17 @@ def test_live_refresh_does_not_remount_the_graph() -> None:
     assert body.index("loadLearningOverlay(") < body.index("await route()"), (
         "overlay refresh must be in the early-return branch, not the full-remount path"
     )
+
+
+def test_hotspots_retries_after_a_failed_expand() -> None:
+    # P2: the loaded flag must reflect the load RESULT, not be set eagerly — else a failed expand can
+    # never retry on re-open.
+    js = _js()
+    handler = re.search(r'hotspots\.addEventListener\("toggle",.*?\}\);', js, re.DOTALL)
+    assert handler, "hotspots toggle handler not found"
+    hb = handler.group(0)
+    assert "hotspotsLoaded = true" not in hb, "must not mark loaded before the load resolves"
+    assert "hotspotsLoaded = await loadHotspotsTable(" in hb, "flag must reflect the load result"
+    body = _fn_body(js, "loadHotspotsTable")
+    assert body.count("return false;") >= 2, "unavailable + error must report a retryable failure"
+    assert "return true;" in body, "a successful load must report success (load once)"
