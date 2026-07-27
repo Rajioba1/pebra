@@ -11,6 +11,8 @@ from pebra import composition
 from pebra.adapters import git_adapter
 from pebra.adapters.sanction_store import SanctionStore
 from pebra.app import accept_risk_controller, human_approval_controller
+from pebra.app.candidate_apply_controller import CandidateApplyError
+from pebra.app.human_approval_controller import HumanApprovalError
 
 
 def register(subparsers: Any) -> None:
@@ -38,7 +40,11 @@ def run(args: Any) -> int:
     if getattr(args, "apply", False):
         if args.sanction_file:
             raise ValueError("--apply cannot be combined with a sanction file")
-        return _run_apply(args)
+        try:
+            return _run_apply(args)
+        except (HumanApprovalError, CandidateApplyError) as exc:
+            print(f"accept-risk: {exc}", file=sys.stderr)
+            return 2
     if not args.sanction_file:
         raise ValueError("a sanction file is required unless --apply is used")
     spec = json.loads(Path(args.sanction_file).read_text(encoding="utf-8"))
@@ -76,7 +82,7 @@ def _run_apply(args: Any) -> int:
     try:
         head = git_adapter.head_commit(ctx.repo.repo_root)
         if not head:
-            raise RuntimeError("the current Git HEAD could not be resolved")
+            raise HumanApprovalError("the current Git HEAD could not be resolved")
         application_ports = composition.build_candidate_apply_ports(ctx)
         pending = human_approval_controller.select_pending_approval(
             repo_id=ctx.repo.repo_id,
@@ -87,7 +93,7 @@ def _run_apply(args: Any) -> int:
         )
         print(_render_approval(pending.summary))
         if not sys.stdin.isatty():
-            raise RuntimeError("human approval requires an interactive terminal")
+            raise HumanApprovalError("human approval requires an interactive terminal")
         if input(
             "Type APPROVE to confirm the listed controls and authorize this exact candidate: "
         ) != "APPROVE":
