@@ -137,7 +137,7 @@ def test_readme_installs_codegraph_and_pebra_before_workflow() -> None:
     assert "## Install & engines" not in body
 
 
-def test_project_version_is_0_4_0_release_candidate() -> None:
+def test_project_version_is_0_4_1_release_candidate() -> None:
     _, project = _project_metadata()
 
-    assert project["version"] == "0.4.0"
+    assert project["version"] == "0.4.1"

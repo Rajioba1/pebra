@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.1 — 2026-07-26
+
+### Changed
+
+- The browser Observatory uses accessible file/symbol colours, larger graph labels, stronger visual
+  hierarchy, a 12px label floor, and WCAG-compliant muted text.
+- CoSE spacing now scales with graph size, and explicit Auto actions animate once while live refreshes
+  remain stable and reduced-motion preferences are respected.
+- Assessment history now prioritizes columns responsively while preserving every hidden value in the
+  row detail view.
+
+### Reliability and accessibility
+
+- Initial tab loads use reduced-motion-aware skeletons without replaying them during live refreshes.
+- Distribution bars expose a text summary to assistive technology, and graph relayouts keep
+  zoom-disclosed labels, viewport sizing, and scroll restoration synchronized.
+
 ## 0.4.0 — 2026-07-26
 
 ### Added
