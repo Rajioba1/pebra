@@ -106,15 +106,19 @@ PEBRA to execute the detected `pip`/`pipx` upgrade command after interactive con
 `pebra update --yes` for an unattended upgrade command. Set `PEBRA_NO_UPDATE_CHECK=1` to disable
 automatic and explicit update checks.
 
-CodeGraph is PEBRA's standard structural engine. Set up its pinned version for the repository, verify
-the index, and then wire the host you actually use:
+CodeGraph is PEBRA's standard structural engine; RCA (optional) measures multi-language maintainability
+benefit. Use one command to prepare CodeGraph and report RCA readiness (it does not execute Cargo):
 
 ```console
-pebra setup-graph --fix --repo-root .
+pebra setup-engines --repo-root .
 pebra doctor --repo-root .
 pebra agent-init --target claude --repo-root . --with-hook
 pebra agent-init --target claude --repo-root . --check --json
 ```
+
+`setup-engines` exit `0` means CodeGraph is trusted and RCA is accepted. Exit `1` with
+`assess_ready=true` means engines are incomplete (often projected benefit), not that PEBRA is broken.
+Advanced CodeGraph-only options remain on `pebra setup-graph`.
 
 Use `--target codex` for Codex. When supported host markers already exist, `--target auto` installs
 only the detected projections:
@@ -236,7 +240,8 @@ shipped priors and separately promoted numeric facts can affect a future `assess
   repository context from an existing graph index.
 - **Benefit signal** — optional multi-language complexity + maintainability index via
   [`rust-code-analysis`](https://github.com/mozilla/rust-code-analysis); when absent it fails safe to a
-  *projected* benefit and never affects risk. Setup details in [CONTRIBUTING](CONTRIBUTING.md).
+  *projected* benefit and never affects risk. `pebra setup-engines` prints the exact pinned Cargo
+  install command when RCA is missing (it never runs Cargo itself).
 
 ## Basic workflow
 
@@ -330,7 +335,7 @@ Current command surface:
 
 | Stage | Commands |
 |---|---|
-| Understand + graph evidence | `setup-graph`, `doctor`, `graph-stats`, `dependents`, `explore` |
+| Understand + graph evidence | `setup-engines`, `setup-graph`, `doctor`, `graph-stats`, `dependents`, `explore` |
 | Candidate construction + assessment | `candidate-patch`, `assess` |
 | Enforcement + application | `gate-check`, `gate-hook`, `apply-candidate`, `accept-risk` |
 | Verification + learning | `verify`, `record-outcome`, `finalize-outcome`, `learn`, `promote`, `scorecard` |

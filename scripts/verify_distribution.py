@@ -766,13 +766,31 @@ def verify_codegraph_setup() -> None:
             timeout=30,
         )
         setup = _run_cli(
-            "setup-graph", "--fix", "--via", "standalone", "--repo-root", str(repo), "--json",
+            "setup-engines", "--via", "standalone", "--repo-root", str(repo), "--json",
             cwd=repo,
             timeout=900,
         )
-        if setup.returncode != 0:
+        try:
+            first = json.loads(setup.stdout)
+        except json.JSONDecodeError as exc:
             raise DistributionVerificationError(
-                f"CodeGraph setup failed: {(setup.stderr or setup.stdout).strip()}"
+                f"setup-engines did not emit JSON: {(setup.stderr or setup.stdout).strip()}"
+            ) from exc
+        if not first.get("graph", {}).get("trusted"):
+            raise DistributionVerificationError(f"CodeGraph setup failed: {first}")
+        # Second run must be idempotent (no rebuild when healthy).
+        setup2 = _run_cli(
+            "setup-engines", "--via", "standalone", "--repo-root", str(repo), "--json",
+            cwd=repo,
+            timeout=900,
+        )
+        try:
+            second = json.loads(setup2.stdout)
+        except json.JSONDecodeError as exc:
+            raise DistributionVerificationError("second setup-engines did not emit JSON") from exc
+        if second.get("graph", {}).get("action") not in {"unchanged", "installed"}:
+            raise DistributionVerificationError(
+                f"expected idempotent graph action unchanged, got: {second.get('graph')}"
             )
         doctor = _run_cli("doctor", "--repo-root", str(repo), "--json", cwd=repo)
         try:
@@ -781,6 +799,8 @@ def verify_codegraph_setup() -> None:
             raise DistributionVerificationError("doctor did not emit JSON") from exc
         if doctor.returncode != 0 or payload.get("ok") is not True:
             raise DistributionVerificationError(f"CodeGraph doctor failed: {payload}")
+        if "engines" not in payload:
+            raise DistributionVerificationError("doctor JSON missing engines object")
 
 
 def _distribution_artifacts(dist_dir: Path) -> list[Path]:
