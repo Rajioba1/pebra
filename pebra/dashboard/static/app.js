@@ -469,12 +469,15 @@
   const graphState = {
     cy: null, mode: null, inspector: null,
     overlay: "structure", risk: null, assessmentId: null,
+    riskPicker: null, riskDecisions: Object.create(null),
     riskLegend: null, riskCaption: null,
     learning: null, learningLegend: null,
     resizeObserver: null,
     symbolLabelsVisible: null,
     lastLayout: null,
     activeLayout: null,
+    signature: null,
+    source: null,
   };
 
   function disableRiskOverlay() {
@@ -488,6 +491,8 @@
   async function renderGraph(view) {
     destroyCy();  // tear down the old WebGL/Cytoscape instance before removing its container
     clear(view);
+    graphState.riskPicker = null;
+    graphState.riskDecisions = Object.create(null);
 
     // Hero first: codebase graph owns the viewport. Hotspots are secondary and collapsed.
     const graphCard = card("Codebase graph");
@@ -535,9 +540,16 @@
     hotspots.appendChild(hotBody);
     view.appendChild(hotspots);
     let hotspotsLoaded = false;
+    let hotspotsLoading = false;
     hotspots.addEventListener("toggle", async function () {
-      if (!hotspots.open || hotspotsLoaded) return;
-      hotspotsLoaded = await loadHotspotsTable(hotBody, summary);  // retry on a later re-open if it failed
+      if (!hotspots.open || hotspotsLoaded || hotspotsLoading) return;
+      hotspotsLoading = true;
+      try {
+        // Retry on a later re-open after failure, but never start a second request while one is active.
+        hotspotsLoaded = await loadHotspotsTable(hotBody, summary);
+      } finally {
+        hotspotsLoading = false;
+      }
     });
 
     if (DEV_MODE) {
@@ -686,6 +698,61 @@
     if (graphState.learningLegend) graphState.learningLegend.hidden = !graphState.learning;
   }
 
+  function riskDecisions(items) {
+    const decisions = Object.create(null);
+    items.forEach(function (item) { decisions[item.assessment_id] = item.decision; });
+    return decisions;
+  }
+
+  function syncRiskPicker(items) {
+    const picker = graphState.riskPicker;
+    if (!picker) return;
+    const desired = items.map(function (item) {
+      return [item.assessment_id, item.assessment_id + " · " + (item.decision || "?")];
+    });
+    const current = Array.from(picker.options).map(function (option) {
+      return [option.value, option.textContent];
+    });
+    if (JSON.stringify(current) !== JSON.stringify(desired)) {
+      clear(picker);
+      desired.forEach(function (pair) {
+        const option = document.createElement("option");
+        option.value = pair[0];
+        option.textContent = pair[1];
+        picker.appendChild(option);
+      });
+    }
+    picker.value = graphState.assessmentId;
+  }
+
+  async function refreshRiskOverlay(controls, structureChanged) {
+    if (!graphState.cy) return;
+    if (!riskEligibleMode(graphState.mode)) {
+      if (structureChanged) await setupRiskOverlay(controls);
+      return;
+    }
+    let asm;
+    try {
+      asm = await getJSON(rp("/assessments?limit=50"));
+    } catch (e) {
+      return;  // retain the last valid controls/risk binding on a transient live-read failure
+    }
+    if (!asm.items || !asm.items.length) return;
+    if (!graphState.riskPicker) {
+      await setupRiskOverlay(controls);
+      return;
+    }
+    graphState.riskDecisions = riskDecisions(asm.items);
+    if (!graphState.assessmentId || !(graphState.assessmentId in graphState.riskDecisions)) {
+      graphState.assessmentId = asm.items[0].assessment_id;
+    }
+    syncRiskPicker(asm.items);
+    await loadAssessmentRisk(
+      graphState.assessmentId,
+      graphState.riskDecisions[graphState.assessmentId],
+    );
+  }
+
   function appendLearningDetail(inspector, d) {
     const lesson = nodeLesson(d);
     if (!lesson) return;
@@ -696,8 +763,12 @@
   }
 
   async function setupRiskOverlay(controls) {
-    controls.querySelectorAll(".overlay-toggle, .risk-caption, .chart-note").forEach((n) => n.remove());
+    controls.querySelectorAll(
+      ".overlay-toggle, .risk-picker, .risk-caption, .chart-note"
+    ).forEach((n) => n.remove());
     graphState.riskCaption = null;
+    graphState.riskPicker = null;
+    graphState.riskDecisions = Object.create(null);
     if (!graphState.cy) {
       disableRiskOverlay();
       return;  // no rendered graph (unavailable / stale) → no overlay controls
@@ -729,17 +800,21 @@
     toggle.appendChild(bRisk);
     controls.appendChild(toggle);
 
-    const decisionById = {};
-    asm.items.forEach(function (i) { decisionById[i.assessment_id] = i.decision; });
-    if (!graphState.assessmentId || !(graphState.assessmentId in decisionById)) {
+    graphState.riskDecisions = riskDecisions(asm.items);
+    if (!graphState.assessmentId || !(graphState.assessmentId in graphState.riskDecisions)) {
       graphState.assessmentId = asm.items[0].assessment_id;
     }
     const picker = sel(
       "risk assessment",
       graphState.assessmentId,
       asm.items.map(function (i) { return [i.assessment_id, i.assessment_id + " · " + (i.decision || "?")]; }),
-      function (v) { graphState.assessmentId = v; loadAssessmentRisk(v, decisionById[v]); }
+      function (v) {
+        graphState.assessmentId = v;
+        loadAssessmentRisk(v, graphState.riskDecisions[v]);
+      }
     );
+    picker.classList.add("risk-picker");
+    graphState.riskPicker = picker;
     controls.appendChild(picker);
 
     const cap = el("p", "chart-note risk-caption");
@@ -748,7 +823,10 @@
     graphState.riskCaption = cap;
 
     // Preload the selected assessment's binding so toggling to Risk is instant.
-    await loadAssessmentRisk(graphState.assessmentId, decisionById[graphState.assessmentId]);
+    await loadAssessmentRisk(
+      graphState.assessmentId,
+      graphState.riskDecisions[graphState.assessmentId],
+    );
     if (graphState.riskLegend) graphState.riskLegend.hidden = graphState.overlay !== "risk";
   }
 
@@ -1071,9 +1149,60 @@
     destroyCy();
   }
 
+  function graphSignature(g) {
+    return JSON.stringify([
+      g.mode,
+      g.nodes,
+      g.edges,
+      !!g.truncated,
+      !!g.collapsed,
+      g.total_file_count,
+      g.total_symbol_count,
+      g.total_node_count,
+      g.total_edge_count,
+    ]);
+  }
+
+  function clearGraphStatus(graphCard) {
+    graphCard.querySelectorAll(".graph-status, .empty.warn").forEach((node) => node.remove());
+  }
+
+  function renderFullGraphPayload(cyEl, graphCard, g) {
+    clearGraphStatus(graphCard);
+    renderCy(cyEl, g);
+    graphState.source = "full";
+    const bits = [
+      g.mode === "file" ? "Collapsed file graph" : "Symbol graph",
+      g.nodes.length + " node(s)",
+      g.edges.length + " edge(s)",
+    ];
+    if (g.mode === "file") {
+      const totalFiles = g.total_file_count != null ? g.total_file_count : g.total_node_count;
+      if (g.truncated || g.collapsed || totalFiles !== g.nodes.length) {
+        bits.push("Showing " + g.nodes.length + " of " + totalFiles + " files");
+      }
+    } else if (g.truncated || g.collapsed || g.total_node_count !== g.nodes.length) {
+      bits.push("Showing " + g.nodes.length + " of " + g.total_node_count + " nodes");
+    }
+    graphCard.appendChild(el("p", "chart-note graph-status", bits.join(" · ")));
+  }
+
+  function renderGodNodeMapPayload(cyEl, graphCard, g) {
+    clearGraphStatus(graphCard);
+    renderCy(cyEl, g);
+    graphState.source = "godmap";
+    const hubs = g.nodes.filter((n) => n.graph_role === "hub").length;
+    const symbols = g.nodes.filter((n) => n.graph_role === "symbol").length;
+    const bits = ["God-node map", hubs + " file hub(s)", symbols + " symbol(s)", g.edges.length + " link(s)"];
+    if (g.truncated || g.total_file_count !== hubs) {
+      bits.push("Showing top " + hubs + " of " + g.total_file_count + " fan-in files");
+    }
+    graphCard.appendChild(el("p", "chart-note graph-status", bits.join(" · ")));
+  }
+
   async function loadFullGraph(cyEl, graphCard) {
     const seq = ++graphSeq;
-    graphCard.querySelectorAll(".chart-note, .empty.warn").forEach((n) => n.remove());
+    clearGraphStatus(graphCard);
     let g;
     try {
       g = await getJSON(rp("/graph/full"));
@@ -1094,26 +1223,12 @@
       );
       return;
     }
-    renderCy(cyEl, g);
-    const bits = [
-      g.mode === "file" ? "Collapsed file graph" : "Symbol graph",
-      g.nodes.length + " node(s)",
-      g.edges.length + " edge(s)",
-    ];
-    if (g.mode === "file") {
-      const totalFiles = g.total_file_count != null ? g.total_file_count : g.total_node_count;
-      if (g.truncated || g.collapsed || totalFiles !== g.nodes.length) {
-        bits.push("Showing " + g.nodes.length + " of " + totalFiles + " files");
-      }
-    } else if (g.truncated || g.collapsed || g.total_node_count !== g.nodes.length) {
-      bits.push("Showing " + g.nodes.length + " of " + g.total_node_count + " nodes");
-    }
-    graphCard.appendChild(el("p", "chart-note", bits.join(" · ")));
+    renderFullGraphPayload(cyEl, graphCard, g);
   }
 
   async function loadGodNodeMap(cyEl, graphCard) {
     const seq = ++graphSeq;
-    graphCard.querySelectorAll(".chart-note, .empty.warn").forEach((n) => n.remove());
+    clearGraphStatus(graphCard);
     let g;
     try {
       g = await getJSON(rp("/graph/godmap"));
@@ -1132,14 +1247,34 @@
       );
       return;
     }
-    renderCy(cyEl, g);
-    const hubs = g.nodes.filter((n) => n.graph_role === "hub").length;
-    const symbols = g.nodes.filter((n) => n.graph_role === "symbol").length;
-    const bits = ["God-node map", hubs + " file hub(s)", symbols + " symbol(s)", g.edges.length + " link(s)"];
-    if (g.truncated || g.total_file_count !== hubs) {
-      bits.push("Showing top " + hubs + " of " + g.total_file_count + " fan-in files");
+    renderGodNodeMapPayload(cyEl, graphCard, g);
+  }
+
+  async function refreshGraphStructure(view) {
+    const source = graphState.source;
+    if (!graphState.cy || (source !== "godmap" && source !== "full")) return false;
+    const seq = ++graphSeq;
+    let g;
+    try {
+      g = await getJSON(rp(source === "godmap" ? "/graph/godmap" : "/graph/full"));
+    } catch (e) {
+      return false;  // retain the last valid graph on a transient live-read failure
     }
-    graphCard.appendChild(el("p", "chart-note", bits.join(" · ")));
+    if (
+      seq !== graphSeq
+      || !g.available
+      || !g.nodes
+      || !g.nodes.length
+      || graphSignature(g) === graphState.signature
+    ) {
+      return false;
+    }
+    const cyEl = view.querySelector("#graph-cy");
+    const graphCard = cyEl ? cyEl.closest(".card") : null;
+    if (!cyEl || !graphCard) return false;
+    if (source === "godmap") renderGodNodeMapPayload(cyEl, graphCard, g);
+    else renderFullGraphPayload(cyEl, graphCard, g);
+    return true;
   }
 
   function degreeOf(n) {
@@ -1189,6 +1324,7 @@
     // God maps keep file-hub labels visible but progressively disclose their much denser symbol labels.
     const showLabels = g.mode !== "godmap" && (g.mode === "file" || g.nodes.length <= 250);
     graphState.cy = makeCy(container, elements, layoutFor(g.nodes.length), cyStyle(showLabels));
+    graphState.signature = graphSignature(g);
     if (typeof ResizeObserver === "function") {
       graphState.resizeObserver = new ResizeObserver(function () {
         if (graphState.cy) graphState.cy.resize();
@@ -1349,6 +1485,8 @@
         return {
           mode: graphState.mode,
           zoom: cy.zoom(),
+          pan: { x: cy.pan().x, y: cy.pan().y },
+          selected: cy.$("node:selected").toArray().map(function (node) { return node.id(); }).sort(),
           lastLayout: graphState.lastLayout ? Object.assign({}, graphState.lastLayout) : null,
           nodes: cy.nodes().map(function (n) {
             return {
@@ -1398,6 +1536,8 @@
     }
     graphState.symbolLabelsVisible = null;
     graphState.lastLayout = null;
+    graphState.signature = null;
+    graphState.source = null;
   }
 
   function fallback(info) {
@@ -1585,14 +1725,13 @@
     if (liveRefreshing || routing || view.contains(document.activeElement)) return;
     liveRefreshing = true;
     if (tab === "graph" && graphState.cy) {
-      // The godmap/full graph read a point-in-time CodeGraph index snapshot that only changes on an
-      // explicit `pebra setup-graph` reindex — never from assess/verify. A live tick has nothing
-      // structurally live to refresh, so a remount would only wipe the camera/selection and race the
-      // graph controls. Refresh just the two sources that can drift (assessment list, verified lessons)
-      // in place; leave cy, its camera, and its selection untouched.
+      // Another PEBRA command can incrementally sync CodeGraph. Poll the selected graph tier, but
+      // replace Cytoscape only when its bounded structural payload changed; unchanged ticks preserve
+      // camera and selection. Risk controls and learning badges update in place.
       try {
+        const structureChanged = await refreshGraphStructure(view);
         const controls = view.querySelector(".controls");
-        if (controls) await setupRiskOverlay(controls);
+        if (controls) await refreshRiskOverlay(controls, structureChanged);
         await loadLearningOverlay();
       } catch (e) {
         // Best-effort overlay refresh: a transient failure must not throw out of the interval as an

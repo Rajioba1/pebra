@@ -35,12 +35,14 @@ def test_route_catch_destroys_cytoscape_before_clearing_view() -> None:
 
 def test_live_refresh_does_not_remount_the_graph() -> None:
     # P0: on a live tick the Graph tab must refresh only the drifting overlays (assessment list, lessons),
-    # never re-run route()->renderGraph->destroyCy/renderCy (which refits the camera and clears selection).
+    # and conditionally apply changed graph data, never route()->renderGraph (which replaces controls).
     body = _fn_body(_js(), "refreshLiveView")
     assert 'tab === "graph"' in body and "graphState.cy" in body, "need a graph fast-path guard"
     assert body.index('tab === "graph"') < body.index("await route()"), "graph branch must precede route()"
-    # The fast path refreshes the two live-changing sources in place, then returns before route().
-    assert "setupRiskOverlay(" in body, "risk overlay (assessment list) must refresh in place"
+    # The fast path polls structure and refreshes overlays in place, then returns before route().
+    assert "refreshGraphStructure(" in body, "incrementally synced graph changes must be observed"
+    assert "refreshRiskOverlay(" in body, "risk controls must refresh without DOM replacement"
+    assert "setupRiskOverlay(" not in body, "live ticks must not rebuild risk controls"
     assert "loadLearningOverlay(" in body, "learning badges must refresh in place"
     assert body.index("loadLearningOverlay(") < body.index("await route()"), (
         "overlay refresh must be in the early-return branch, not the full-remount path"
@@ -56,6 +58,7 @@ def test_hotspots_retries_after_a_failed_expand() -> None:
     hb = handler.group(0)
     assert "hotspotsLoaded = true" not in hb, "must not mark loaded before the load resolves"
     assert "hotspotsLoaded = await loadHotspotsTable(" in hb, "flag must reflect the load result"
+    assert "hotspotsLoading" in hb, "an in-flight load must suppress duplicate reopen requests"
     body = _fn_body(js, "loadHotspotsTable")
     assert body.count("return false;") >= 2, "unavailable + error must report a retryable failure"
     assert "return true;" in body, "a successful load must report success (load once)"
