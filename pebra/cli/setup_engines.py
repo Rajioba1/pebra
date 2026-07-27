@@ -6,11 +6,11 @@ Never runs from assess/verify/gate/MCP/dashboard/TUI. Never executes Cargo or do
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any
 
 from pebra.adapters.rca_adapter import probe_rca
 from pebra.cli.setup_graph import ensure_graph_ready
+from pebra.core.graph_version import in_accepted_range
 from pebra.core.rca_engine_paths import build_rca_remediation
 
 
@@ -42,12 +42,14 @@ def run(args: Any) -> int:
         via=args.via,
         version=None,
         allow_unsupported=False,
-        as_json=False,  # never emit from nested installer; one document only
+        as_json=False,
         explicit_version=False,
+        silent=bool(args.as_json),  # one JSON document on stdout; install helpers stay quiet
     )
     rca = probe_rca()
     remediation = build_rca_remediation()
-    graph_trusted = bool(graph.ok and graph.diagnosis.get("healthy"))
+    in_range = bool(graph.version) and in_accepted_range(str(graph.version))
+    graph_trusted = bool(graph.ok and graph.diagnosis.get("healthy") and in_range)
     ok = graph_trusted and rca.accepted
     # Honest degraded assess remains available even when engines are incomplete.
     assess_ready = True

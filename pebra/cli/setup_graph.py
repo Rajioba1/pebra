@@ -329,7 +329,15 @@ def _graph_config(repo_root: str, captured: _ConfigState | None = None) -> dict[
     }
 
 
-def _emit(payload: dict[str, Any], as_json: bool, lines: list[str]) -> None:
+def _emit(
+    payload: dict[str, Any],
+    as_json: bool,
+    lines: list[str],
+    *,
+    silent: bool = False,
+) -> None:
+    if silent:
+        return
     if as_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -429,7 +437,9 @@ def _extract(data: bytes, asset_name: str, dest: Path) -> None:
                         out.chmod(out.stat().st_mode | 0o755)
 
 
-def _install_standalone(as_json: bool, version: str, target: str) -> bool:
+def _install_standalone(
+    as_json: bool, version: str, target: str, *, silent: bool = False
+) -> bool:
     """Download the pinned standalone bundle, VERIFY its SHA256, extract, and link it onto PATH.
     Returns True on success; False (with a message) lets the caller fall back to npm."""
     ext = ".zip" if target.startswith("win32") else ".tar.gz"
@@ -440,17 +450,19 @@ def _install_standalone(as_json: bool, version: str, target: str) -> bool:
         expected = _expected_sha(sums, asset)
         if not expected:
             _emit({"ok": False, "step": "checksum", "asset": asset}, as_json,
-                  [f"no SHA256 entry for {asset} in the release SHA256SUMS; not installing."])
+                  [f"no SHA256 entry for {asset} in the release SHA256SUMS; not installing."],
+                  silent=silent)
             return False
         data = _download(f"{base}/{asset}")
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         _emit({"ok": False, "step": "download", "error": str(exc)}, as_json,
-              [f"standalone download failed ({exc}); falling back to npm."])
+              [f"standalone download failed ({exc}); falling back to npm."], silent=silent)
         return False
     actual = hashlib.sha256(data).hexdigest()
     if actual != expected:
         _emit({"ok": False, "step": "checksum", "expected": expected, "actual": actual}, as_json,
-              [f"checksum mismatch for {asset}; refusing to install (integrity check failed)."])
+              [f"checksum mismatch for {asset}; refusing to install (integrity check failed)."],
+              silent=silent)
         return False  # never extract/run an unverified binary
 
     dest = _install_root(version)
@@ -458,7 +470,7 @@ def _install_standalone(as_json: bool, version: str, target: str) -> bool:
         _extract(data, asset, dest)
     except (tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
         _emit({"ok": False, "step": "extract", "error": str(exc)}, as_json,
-              [f"could not extract {asset} ({exc}); falling back to npm."])
+              [f"could not extract {asset} ({exc}); falling back to npm."], silent=silent)
         return False
 
     if target.startswith("win32"):
@@ -473,13 +485,16 @@ def _install_standalone(as_json: bool, version: str, target: str) -> bool:
     rc, out, _ = _run([str(launcher), "--version"], timeout=30)  # verify the extracted binary runs
     if rc != 0:
         _emit({"ok": False, "step": "verify", "launcher": str(launcher)}, as_json,
-              [f"extracted codegraph did not run from {launcher}; falling back to npm."])
+              [f"extracted codegraph did not run from {launcher}; falling back to npm."],
+              silent=silent)
         return False
-    _link_onto_path(launcher, as_json, version)
+    _link_onto_path(launcher, as_json, version, silent=silent)
     return True
 
 
-def _link_onto_path(launcher: Path, as_json: bool, version: str) -> None:
+def _link_onto_path(
+    launcher: Path, as_json: bool, version: str, *, silent: bool = False
+) -> None:
     """Best-effort: symlink the launcher into a per-user bin dir on POSIX; on Windows, advise the PATH
     addition (we do not edit the registry). The current process PATH is updated in all cases so the
     same `pebra setup-graph` invocation can immediately run `codegraph init/sync`."""
@@ -487,7 +502,7 @@ def _link_onto_path(launcher: Path, as_json: bool, version: str) -> None:
         os.environ["PATH"] = f"{launcher.parent}{os.pathsep}{os.environ.get('PATH', '')}"
         _emit({"ok": True, "step": "path", "bin": str(launcher.parent), "version": version}, as_json,
               [f"codegraph {version} installed at {launcher}.",
-               f"add this to PATH:  {launcher.parent}"])
+               f"add this to PATH:  {launcher.parent}"], silent=silent)
         return
     bindir = Path.home() / ".local" / "bin"
     try:
@@ -500,7 +515,7 @@ def _link_onto_path(launcher: Path, as_json: bool, version: str) -> None:
         os.environ["PATH"] = f"{launcher.parent}{os.pathsep}{os.environ.get('PATH', '')}"
         _emit({"ok": True, "step": "path", "bin": str(launcher.parent), "version": version}, as_json,
               [f"codegraph {version} installed at {launcher}.",
-               f"add this to PATH:  export PATH=\"{launcher.parent}:$PATH\""])
+               f"add this to PATH:  export PATH=\"{launcher.parent}:$PATH\""], silent=silent)
         return
     os.environ["PATH"] = f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"
     on_path = shutil.which(_ENGINE) is not None
@@ -508,24 +523,28 @@ def _link_onto_path(launcher: Path, as_json: bool, version: str) -> None:
     if not on_path:
         lines.append(f'ensure it is on PATH:  export PATH="{bindir}:$PATH"')
     _emit({"ok": True, "step": "path", "bin": str(bindir), "version": version, "on_path": on_path},
-          as_json, lines)
+          as_json, lines, silent=silent)
 
 
-def _install_npm(as_json: bool, version: str) -> int | None:
+def _install_npm(as_json: bool, version: str, *, silent: bool = False) -> int | None:
     if shutil.which("npm") is None:
         _emit({"ok": False, "step": "npm", "error": "npm not found"}, as_json,
-              [f"graph engine '{_ENGINE}' not found and npm is unavailable; {_MANUAL_HINT}"])
+              [f"graph engine '{_ENGINE}' not found and npm is unavailable; {_MANUAL_HINT}"],
+              silent=silent)
         return 1
     spec = f"@colbymchenry/{_ENGINE}@{version}"  # PINNED, never floating-latest
     rc, _, err = _run(["npm", "install", "-g", spec], timeout=600)
     if rc == 0 and _installed():
         return None
     _emit({"ok": False, "step": "npm", "error": err.strip(), "spec": spec}, as_json,
-          [f"npm install of {spec} failed; run manually: npm install -g {spec}", err.strip()])
+          [f"npm install of {spec} failed; run manually: npm install -g {spec}", err.strip()],
+          silent=silent)
     return 1
 
 
-def _resolve_version(requested: str | None, allow_unsupported: bool, as_json: bool) -> tuple[str | None, int | None]:
+def _resolve_version(
+    requested: str | None, allow_unsupported: bool, as_json: bool, *, silent: bool = False
+) -> tuple[str | None, int | None]:
     """Apply the version policy. Returns (version, error_code). A --version outside the accepted range is
     refused unless --allow-unsupported."""
     if not requested:
@@ -536,12 +555,13 @@ def _resolve_version(requested: str | None, allow_unsupported: bool, as_json: bo
            "accepted_range": CODEGRAPH_ACCEPTED_RANGE}, as_json,
           [f"requested codegraph {requested} is outside the accepted range {CODEGRAPH_ACCEPTED_RANGE}.",
            "re-run with --allow-unsupported to install it anyway "
-           "(graph evidence will then be marked untrusted)."])
+           "(graph evidence will then be marked untrusted)."],
+          silent=silent)
     return None, 2
 
 
 def _ensure_installed(
-    as_json: bool, *, version: str, via: str, explicit_version: bool
+    as_json: bool, *, version: str, via: str, explicit_version: bool, silent: bool = False
 ) -> int | None:
     """Install/repair the engine to the pinned version. Returns an error code or None on success."""
     if _installed() and via == "auto":
@@ -549,23 +569,24 @@ def _ensure_installed(
         if cur and ((explicit_version and cur == version) or (not explicit_version and in_accepted_range(cur))):
             return None  # already have a supported version; nothing to do
     if via == "npm":
-        return _install_npm(as_json, version)
+        return _install_npm(as_json, version, silent=silent)
     target = _target()
     if target and not _is_musl():
-        if _install_standalone(as_json, version, target):
+        if _install_standalone(as_json, version, target, silent=silent):
             return None
         if via == "standalone":
             return 1  # standalone-only and it failed
-        return _install_npm(as_json, version)  # auto -> npm fallback
+        return _install_npm(as_json, version, silent=silent)  # auto -> npm fallback
     # no standalone asset for this platform
     reason = ("musl/Alpine has no glibc standalone bundle" if _is_musl()
               else f"no standalone bundle for {platform.system()}/{platform.machine()}")
     if via == "standalone":
         _emit({"ok": False, "step": "platform", "error": reason}, as_json,
-              [f"{reason}; {_MANUAL_HINT}"])
+              [f"{reason}; {_MANUAL_HINT}"], silent=silent)
         return 1
-    _emit({"ok": True, "step": "platform", "note": reason}, as_json, [f"{reason}; trying npm."])
-    return _install_npm(as_json, version)
+    _emit({"ok": True, "step": "platform", "note": reason}, as_json, [f"{reason}; trying npm."],
+          silent=silent)
+    return _install_npm(as_json, version, silent=silent)
 
 
 def _initialize_worktree_local_index(repo_root: str) -> bool:
@@ -630,8 +651,9 @@ def ensure_graph_ready(
     allow_unsupported: bool = False,
     as_json: bool = False,
     explicit_version: bool = False,
+    silent: bool = False,
 ) -> GraphSetupResult:
-    """State-aware graph setup without printing. Safe to call from setup-graph and setup-engines."""
+    """State-aware graph setup. With silent=True, nested install helpers print nothing (for JSON umbrellas)."""
     config_before = _capture_graph_config(repo_root)
     if config_before.state in {"unreadable", "nonregular"}:
         graph_config = _graph_config(repo_root, config_before)
@@ -645,7 +667,7 @@ def ensure_graph_ready(
             error=graph_config["error"],
             remediation="repair or replace codegraph.json then re-run setup",
         )
-    resolved, verr = _resolve_version(version, allow_unsupported, as_json)
+    resolved, verr = _resolve_version(version, allow_unsupported, as_json, silent=silent)
     if verr is not None or not resolved:
         return GraphSetupResult(
             ok=False,
@@ -663,6 +685,7 @@ def ensure_graph_ready(
         version=resolved,
         via=via,
         explicit_version=explicit_version or version is not None,
+        silent=silent,
     )
     if install_err is not None:
         return GraphSetupResult(

@@ -228,7 +228,7 @@ def test_ensure_installed_standalone_then_npm_fallback(monkeypatch) -> None:
     monkeypatch.setattr(sg, "_is_musl", lambda: False)
     monkeypatch.setattr(sg, "_install_standalone", lambda *a, **k: False)
     npm = []
-    monkeypatch.setattr(sg, "_install_npm", lambda aj, v: (npm.append(v), None)[1])
+    monkeypatch.setattr(sg, "_install_npm", lambda aj, v, **k: (npm.append(v), None)[1])
     assert sg._ensure_installed(True, version="1.1.1", via="auto", explicit_version=False) is None
     assert npm == ["1.1.1"]
 
@@ -271,7 +271,7 @@ def test_ensure_installed_explicit_version_does_not_skip_different_current(monke
     monkeypatch.setattr(sg, "_target", lambda: "linux-x64")
     monkeypatch.setattr(sg, "_is_musl", lambda: False)
     called: list[str] = []
-    monkeypatch.setattr(sg, "_install_standalone", lambda aj, v, t: called.append(v) or True)
+    monkeypatch.setattr(sg, "_install_standalone", lambda aj, v, t, **k: called.append(v) or True)
     assert sg._ensure_installed(
         False, version="2.0.0", via="auto", explicit_version=True
     ) is None
