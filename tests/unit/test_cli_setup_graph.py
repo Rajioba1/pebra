@@ -544,6 +544,7 @@ def test_setup_atomically_restores_provider_mutation_of_existing_config(
     config = tmp_path / "codegraph.json"
     config.write_bytes(raw)
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: None)  # missing index -> init path
 
     def mutate(_root):
         config.write_bytes(b'{"provider":"changed"}')
@@ -564,6 +565,7 @@ def test_setup_removes_provider_created_config_when_initially_absent(
 ) -> None:
     config = tmp_path / "codegraph.json"
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: None)
 
     def create(_root):
         config.write_bytes(b"{}")
@@ -580,6 +582,7 @@ def test_setup_restore_failure_is_stable_and_unhealthy(tmp_path, monkeypatch, ca
     config = tmp_path / "codegraph.json"
     config.write_bytes(b"before")
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: None)
     monkeypatch.setattr(
         sg, "_initialize_worktree_local_index", lambda _root: config.write_bytes(b"after") or True
     )
@@ -635,6 +638,7 @@ def test_setup_restores_existing_config_before_prepare_and_snapshot_uses_restore
 
     monkeypatch.setattr(sg, "_capture_graph_config", capture)
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: None)
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
     monkeypatch.setattr(sg, "_restore_graph_config", restore)
     monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
@@ -674,6 +678,7 @@ def test_setup_removes_init_created_config_before_preparing_absent_snapshot(
             return _FRESH
 
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: None)
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
     monkeypatch.setattr(sg, "_restore_graph_config", restore)
     monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
@@ -704,6 +709,7 @@ def test_setup_restore_failure_aborts_before_prepare(tmp_path, monkeypatch) -> N
     config.write_bytes(b"before")
     calls: list[str] = []
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: None)
     monkeypatch.setattr(
         sg,
         "_initialize_worktree_local_index",
@@ -718,6 +724,61 @@ def test_setup_restore_failure_aborts_before_prepare(tmp_path, monkeypatch) -> N
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 1
     assert calls == ["init", "restore"]
+
+
+def test_ensure_graph_ready_healthy_is_unchanged_without_init_or_prepare(monkeypatch) -> None:
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: _FRESH)
+    monkeypatch.setattr(
+        sg, "_initialize_worktree_local_index", lambda *_: (_ for _ in ()).throw(AssertionError("init"))
+    )
+    monkeypatch.setattr(
+        sg, "_prepare_worktree_local_index", lambda *_: (_ for _ in ()).throw(AssertionError("prepare"))
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=False, via="auto")
+    assert result.ok is True
+    assert result.action == "unchanged"
+
+
+def test_ensure_graph_ready_pending_uses_prepare_not_init(monkeypatch) -> None:
+    pending = {
+        **_FRESH,
+        "pendingChanges": {"added": 1, "modified": 0, "removed": 0},
+    }
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: pending)
+    monkeypatch.setattr(
+        sg, "_initialize_worktree_local_index", lambda *_: (_ for _ in ()).throw(AssertionError("init"))
+    )
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_: _FRESH)
+
+    result = sg.ensure_graph_ready("/repo", fix=False, via="auto")
+    assert result.ok is True
+    assert result.action == "synced"
+
+
+def test_ensure_graph_ready_mismatch_refuses_without_fix(monkeypatch) -> None:
+    mismatch = {
+        **_FRESH,
+        "worktreeMismatch": {"worktreeRoot": "/wt", "indexRoot": "/main"},
+    }
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: mismatch)
+    monkeypatch.setattr(
+        sg, "_initialize_worktree_local_index", lambda *_: (_ for _ in ()).throw(AssertionError("init"))
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=False, via="auto")
+    assert result.ok is False
+    assert result.action == "failed"
+    assert "--fix" in (result.remediation or "")
 
 
 def test_doctor_fix_restores_config_and_reports_post_fix_digest(
