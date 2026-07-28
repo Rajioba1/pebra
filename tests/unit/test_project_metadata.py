@@ -144,6 +144,9 @@ def test_readme_installs_codegraph_and_pebra_before_workflow() -> None:
     assert "codegraph is optional" not in lowered
     assert "rca (optional)" not in lowered
     assert "optional multi-language complexity" not in lowered
+    assert "| `claude` | Configure Claude Code explicitly" in body
+    assert "| `codex` | Configure Codex explicitly" in body
+    assert "Grok and Gemini do not currently have PEBRA host adapters" in body
     assert "fresh/required" not in lowered
     assert "available or required" not in lowered
     assert "examples/" not in installation_body

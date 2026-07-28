@@ -128,6 +128,14 @@ details are in [CONTRIBUTING](CONTRIBUTING.md).
 those projections. If no supported marker exists yet, use `--target claude` or `--target codex`
 explicitly in the two `agent-init` commands above.
 
+| Target | Use |
+|---|---|
+| `auto` | Configure every supported host detected in the repository. |
+| `claude` | Configure Claude Code explicitly, including when no Claude marker exists yet. |
+| `codex` | Configure Codex explicitly, including when no Codex marker exists yet. |
+
+Grok and Gemini do not currently have PEBRA host adapters and are not accepted `--target` values.
+
 For editable development on Windows PowerShell:
 
 ```powershell
