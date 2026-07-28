@@ -753,6 +753,17 @@ def verify_installed() -> None:
             os.environ["PEBRA_RCA_BIN"] = old_override
 
 
+def _rca_absent_smoke_env(git_exe: Path, repo: Path) -> dict[str, str]:
+    """Hide Cargo/RCA while retaining POSIX tools required by CodeGraph's launcher."""
+    path_entries = [str(git_exe.parent)]
+    if os.name != "nt":
+        path_entries.extend(entry for entry in os.defpath.split(os.pathsep) if entry)
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join(dict.fromkeys(path_entries))
+    env["PEBRA_RCA_BIN"] = str(repo / "missing-rca")
+    return env
+
+
 def verify_codegraph_setup() -> None:
     """Install/index the pinned CodeGraph release against a tiny repository, then run doctor."""
     with tempfile.TemporaryDirectory(prefix="pebra-codegraph-smoke-") as raw:
@@ -797,9 +808,7 @@ def verify_codegraph_setup() -> None:
         git_exe = shutil.which("git")
         if git_exe is None:
             raise DistributionVerificationError("git disappeared during CodeGraph smoke")
-        absent_rca_env = dict(os.environ)
-        absent_rca_env["PATH"] = str(Path(git_exe).parent)
-        absent_rca_env["PEBRA_RCA_BIN"] = str(repo / "missing-rca")
+        absent_rca_env = _rca_absent_smoke_env(Path(git_exe), repo)
         # Second run must be idempotent (no rebuild when healthy).
         setup2 = _run_cli(
             "setup-engines", "--via", "standalone", "--repo-root", str(repo), "--json",

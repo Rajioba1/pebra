@@ -728,6 +728,31 @@ def test_codegraph_smoke_commits_fixture_before_setup(monkeypatch) -> None:
         distribution_verifier.verify_codegraph_setup()
 
 
+def test_rca_absent_smoke_env_keeps_posix_system_tools_outside_cargo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cargo_bin = tmp_path / "cargo-bin"
+    git_bin = tmp_path / "git-bin"
+    monkeypatch.setenv(
+        "PATH",
+        distribution_verifier.os.pathsep.join((str(cargo_bin), str(git_bin))),
+    )
+
+    env = distribution_verifier._rca_absent_smoke_env(
+        git_bin / "git",
+        tmp_path / "repo",
+    )
+
+    path_entries = env["PATH"].split(distribution_verifier.os.pathsep)
+    assert path_entries[0] == str(git_bin)
+    assert str(cargo_bin) not in path_entries
+    assert env["PEBRA_RCA_BIN"] == str(tmp_path / "repo" / "missing-rca")
+    if distribution_verifier.os.name != "nt":
+        for entry in distribution_verifier.os.defpath.split(distribution_verifier.os.pathsep):
+            if entry:
+                assert entry in path_entries
+
+
 def test_checksums_detect_artifact_tampering(tmp_path: Path) -> None:
     wheel = tmp_path / "pebra-0.1.0-py3-none-any.whl"
     sdist = tmp_path / "pebra-0.1.0.tar.gz"
