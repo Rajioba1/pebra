@@ -242,10 +242,16 @@ def release_version_from_tag(tag: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _run_cli(*args: str, cwd: Path, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    *args: str,
+    cwd: Path,
+    timeout: int = 120,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-I", "-m", "pebra", *args],
         cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -518,6 +524,7 @@ def _verify_installed_cli(cwd: Path, *, installed_version: str) -> None:
         ("help", "dashboard"),
         ("help", "tui"),
         ("help", "explore"),
+        ("setup-engines", "--help"),
     )
     for args in module_commands:
         result = _run_cli(*args, cwd=cwd)
@@ -766,21 +773,97 @@ def verify_codegraph_setup() -> None:
             timeout=30,
         )
         setup = _run_cli(
-            "setup-graph", "--fix", "--via", "standalone", "--repo-root", str(repo), "--json",
+            "setup-engines", "--via", "standalone", "--repo-root", str(repo), "--json",
             cwd=repo,
             timeout=900,
         )
-        if setup.returncode != 0:
+        try:
+            first = json.loads(setup.stdout)
+        except json.JSONDecodeError as exc:
             raise DistributionVerificationError(
-                f"CodeGraph setup failed: {(setup.stderr or setup.stdout).strip()}"
+                f"setup-engines did not emit JSON: {(setup.stderr or setup.stdout).strip()}"
+            ) from exc
+        if not first.get("graph", {}).get("trusted"):
+            raise DistributionVerificationError(f"CodeGraph setup failed: {first}")
+        index_db = repo / ".codegraph" / "codegraph.db"
+        if not index_db.is_file():
+            raise DistributionVerificationError("CodeGraph setup did not create a local index")
+        index_stat = index_db.stat()
+        index_identity = (
+            index_stat.st_size,
+            index_stat.st_mtime_ns,
+            hashlib.sha256(index_db.read_bytes()).hexdigest(),
+        )
+        git_exe = shutil.which("git")
+        if git_exe is None:
+            raise DistributionVerificationError("git disappeared during CodeGraph smoke")
+        absent_rca_env = dict(os.environ)
+        absent_rca_env["PATH"] = str(Path(git_exe).parent)
+        absent_rca_env["PEBRA_RCA_BIN"] = str(repo / "missing-rca")
+        # Second run must be idempotent (no rebuild when healthy).
+        setup2 = _run_cli(
+            "setup-engines", "--via", "standalone", "--repo-root", str(repo), "--json",
+            cwd=repo,
+            timeout=900,
+            env=absent_rca_env,
+        )
+        try:
+            second = json.loads(setup2.stdout)
+        except json.JSONDecodeError as exc:
+            raise DistributionVerificationError("second setup-engines did not emit JSON") from exc
+        if (
+            second.get("graph", {}).get("action") != "unchanged"
+            or second.get("graph", {}).get("trusted") is not True
+        ):
+            raise DistributionVerificationError(
+                f"expected idempotent graph action unchanged, got: {second.get('graph')}"
             )
-        doctor = _run_cli("doctor", "--repo-root", str(repo), "--json", cwd=repo)
+        second_stat = index_db.stat()
+        second_identity = (
+            second_stat.st_size,
+            second_stat.st_mtime_ns,
+            hashlib.sha256(index_db.read_bytes()).hexdigest(),
+        )
+        if second_identity != index_identity:
+            raise DistributionVerificationError(
+                "second setup-engines mutated the healthy CodeGraph index"
+            )
+        from pebra.core.rca_engine_paths import RCA_INSTALL_COMMAND
+
+        if second.get("rca", {}).get("status") != "missing":
+            raise DistributionVerificationError(f"RCA absence smoke did not degrade: {second}")
+        remediation = second.get("rca", {}).get("remediation", {})
+        if remediation.get("command") != RCA_INSTALL_COMMAND:
+            raise DistributionVerificationError("RCA absence smoke lost pinned remediation")
+        if (
+            remediation.get("cargo_available") is not False
+            or remediation.get("prerequisite") != "Install Rust and Cargo with rustup"
+        ):
+            raise DistributionVerificationError(
+                "RCA absence smoke lost no-Cargo rustup remediation"
+            )
+        doctor = _run_cli(
+            "doctor", "--repo-root", str(repo), "--json", cwd=repo, env=absent_rca_env
+        )
         try:
             payload = json.loads(doctor.stdout)
         except json.JSONDecodeError as exc:
             raise DistributionVerificationError("doctor did not emit JSON") from exc
         if doctor.returncode != 0 or payload.get("ok") is not True:
             raise DistributionVerificationError(f"CodeGraph doctor failed: {payload}")
+        if "engines" not in payload:
+            raise DistributionVerificationError("doctor JSON missing engines object")
+        capabilities = _run_cli(
+            "capabilities", "--repo-root", str(repo), "--json", cwd=repo, env=absent_rca_env
+        )
+        try:
+            capability_payload = json.loads(capabilities.stdout)
+        except json.JSONDecodeError as exc:
+            raise DistributionVerificationError("capabilities did not emit JSON") from exc
+        if capabilities.returncode != 0 or "engines" not in capability_payload:
+            raise DistributionVerificationError(
+                f"capabilities JSON missing engines object: {capability_payload}"
+            )
 
 
 def _distribution_artifacts(dist_dir: Path) -> list[Path]:

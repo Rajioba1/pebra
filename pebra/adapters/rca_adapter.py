@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
@@ -32,7 +33,13 @@ from pebra.adapters.patch_materializer import materialize_patch
 from pebra.core.benefit_aggregation import aggregate_file_deltas
 from pebra.core.engine_argv import resolve_engine_argv
 from pebra.core.models import BenefitDeltaEvidence
-from pebra.core.rca_engine_paths import RCA_ACCEPTED_VERSION, RCA_SOURCE_REVISION, find_rca
+from pebra.core.rca_engine_paths import (
+    RCA_ACCEPTED_VERSION,
+    RCA_INSTALL_COMMAND,
+    RCA_SOURCE_REVISION,
+    build_rca_remediation,
+    find_rca,
+)
 
 # Extensions the BUILT rca binary actually parses (empirically verified against the git-HEAD build; the
 # declared grammar list is broader — e.g. Kotlin/.kt and Go/.go are declared/plausible but produce NO
@@ -47,9 +54,9 @@ RcaRunner = Callable[[Path], "dict[str, Any] | None"]
 
 
 @lru_cache(maxsize=8)
-def _rca_version_for_binary(exe: str, mtime_ns: int, size: int) -> str | None:
-    """Version for one concrete binary identity; mtime/size invalidate the cache on replacement."""
-    del mtime_ns, size
+def _rca_version_for_binary(exe: str, sha256: str) -> str | None:
+    """Version for one content-addressed binary identity."""
+    del sha256
     try:
         proc = subprocess.run(
             resolve_engine_argv(exe, ["--version"]),
@@ -72,6 +79,18 @@ def _sha256_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _sha256_stable_binary(exe: str, before: os.stat_result) -> str:
+    """Hash the current binary and reject replacement while it is being read."""
+    binary = Path(exe)
+    digest = _sha256_file(binary)
+    after = binary.stat()
+    before_identity = (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+    after_identity = (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+    if after_identity != before_identity:
+        raise OSError("binary changed while hashing")
+    return digest
+
+
 def _cargo_source_revision(exe: str) -> str | None:
     """Read Cargo's install provenance for a launcher under <cargo-root>/bin."""
     binary = Path(exe).resolve()
@@ -91,28 +110,169 @@ def _cargo_source_revision(exe: str) -> str | None:
     return None
 
 
-def _validated_rca(exe: str) -> str | None:
-    """Require the validated version plus pinned Cargo provenance or an explicit exact hash."""
+@dataclass(frozen=True)
+class RcaCapability:
+    """Public RCA trust result. Never includes absolute executable paths."""
+
+    status: str
+    accepted: bool
+    version: str | None
+    accepted_version: str
+    required_source_revision: str
+    benefit_mode: str  # measured | projected
+    reason: str | None
+    remediation_command: str
+    sha256: str | None = None
+    source_revision: str | None = None
+    validation_mode: str | None = None
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "accepted": self.accepted,
+            "version": self.version,
+            "accepted_version": self.accepted_version,
+            "required_source_revision": self.required_source_revision,
+            "benefit_mode": self.benefit_mode,
+            "reason": self.reason,
+            "sha256": self.sha256,
+            "source_revision": self.source_revision,
+            "validation_mode": self.validation_mode,
+            "remediation": build_rca_remediation(),
+        }
+
+
+def _probe_rca_executable(exe: str | None) -> RcaCapability:
+    """Apply the production trust policy to one already-resolved executable."""
+    base = dict(
+        accepted_version=RCA_ACCEPTED_VERSION,
+        required_source_revision=RCA_SOURCE_REVISION,
+        remediation_command=RCA_INSTALL_COMMAND,
+    )
+    if exe is None:
+        return RcaCapability(
+            status="missing",
+            accepted=False,
+            version=None,
+            benefit_mode="projected",
+            reason="binary not found",
+            **base,
+        )
     try:
         binary = Path(exe)
         stat = binary.stat()
     except OSError:
-        return None
-    version = _rca_version_for_binary(exe, stat.st_mtime_ns, stat.st_size)
-    if version != RCA_ACCEPTED_VERSION:
-        return None
+        return RcaCapability(
+            status="probe_error",
+            accepted=False,
+            version=None,
+            benefit_mode="projected",
+            reason="binary not readable",
+            **base,
+        )
+    try:
+        digest = _sha256_stable_binary(exe, stat)
+    except OSError:
+        return RcaCapability(
+            status="probe_error",
+            accepted=False,
+            version=None,
+            benefit_mode="projected",
+            reason="hash read failed",
+            **base,
+        )
+    version = _rca_version_for_binary(exe, digest)
+    if version is None:
+        return RcaCapability(
+            status="probe_error",
+            accepted=False,
+            version=None,
+            benefit_mode="projected",
+            reason="version probe failed",
+            sha256=digest,
+            **base,
+        )
     expected_hash = os.environ.get("PEBRA_RCA_SHA256", "").strip().lower()
+    source_revision = _cargo_source_revision(exe)
+    hash_matches = bool(expected_hash) and digest == expected_hash
+    source_matches = source_revision == RCA_SOURCE_REVISION
+    validation_mode = (
+        "sha256"
+        if hash_matches
+        else ("cargo_revision" if not expected_hash and source_matches else None)
+    )
+    evidence = {
+        "sha256": digest,
+        "source_revision": source_revision,
+        "validation_mode": validation_mode,
+    }
+    if version != RCA_ACCEPTED_VERSION:
+        return RcaCapability(
+            status="wrong_version",
+            accepted=False,
+            version=version,
+            benefit_mode="projected",
+            reason=f"version {version!r} != {RCA_ACCEPTED_VERSION!r}",
+            **evidence,
+            **base,
+        )
     if expected_hash:
-        try:
-            return exe if _sha256_file(binary) == expected_hash else None
-        except OSError:
-            return None
-    return exe if _cargo_source_revision(exe) == RCA_SOURCE_REVISION else None
+        if not hash_matches:
+            return RcaCapability(
+                status="hash_mismatch",
+                accepted=False,
+                version=version,
+                benefit_mode="projected",
+                reason="PEBRA_RCA_SHA256 does not match binary",
+                **evidence,
+                **base,
+            )
+        return RcaCapability(
+            status="accepted",
+            accepted=True,
+            version=version,
+            benefit_mode="measured",
+            reason=None,
+            **evidence,
+            **base,
+        )
+    if not source_matches:
+        return RcaCapability(
+            status="untrusted_provenance",
+            accepted=False,
+            version=version,
+            benefit_mode="projected",
+            reason="Cargo source revision missing or not pinned",
+            **evidence,
+            **base,
+        )
+    return RcaCapability(
+        status="accepted",
+        accepted=True,
+        version=version,
+        benefit_mode="measured",
+        reason=None,
+        **evidence,
+        **base,
+    )
+
+
+def probe_rca() -> RcaCapability:
+    """Resolve RCA once and apply the shared setup/measurement trust decision."""
+    return _probe_rca_executable(find_rca())
+
+
+def _validated_rca(exe: str) -> str | None:
+    """Compatibility helper backed by the same trust decision as the public probe."""
+    return exe if _probe_rca_executable(exe).accepted else None
 
 
 def _run_rca_cli(path: Path) -> dict[str, Any] | None:
     exe = find_rca()
-    if exe is None or _validated_rca(exe) is None:
+    if exe is None:
+        return None
+    before = _probe_rca_executable(exe)
+    if not before.accepted:
         return None
     try:
         proc = subprocess.run(
@@ -120,6 +280,13 @@ def _run_rca_cli(path: Path) -> dict[str, Any] | None:
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
+        return None
+    after = _probe_rca_executable(exe)
+    if (
+        not after.accepted
+        or after.sha256 != before.sha256
+        or after.validation_mode != before.validation_mode
+    ):
         return None
     # RCA exits 0 with EMPTY stdout for an unsupported language, so gate on parseable, non-empty output.
     if proc.returncode != 0 or not proc.stdout.strip():

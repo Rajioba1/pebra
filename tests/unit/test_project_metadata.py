@@ -120,7 +120,7 @@ def test_readme_installs_codegraph_and_pebra_before_workflow() -> None:
     for command in (
         "python -m pip install pebra",
         "pipx install pebra",
-        "pebra setup-graph --fix --repo-root .",
+        "pebra setup-engines --repo-root .",
         "pebra doctor --repo-root .",
         "pebra agent-init --target claude --repo-root . --with-hook",
         "pebra agent-init --target auto --repo-root . --check --json",

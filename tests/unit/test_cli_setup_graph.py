@@ -23,9 +23,34 @@ _FRESH = {"initialized": True, "version": "1.1.1",
           "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
           "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
           "worktreeMismatch": None}
-_MISMATCH = {"initialized": True, "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+_MISMATCH = {"initialized": True, "version": "1.1.1",
+             "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
              "index": {"reindexRecommended": False, "builtWithExtractionVersion": 24},
              "worktreeMismatch": {"worktreeRoot": "/wt", "indexRoot": "/main"}}
+_UNINITIALIZED = {
+    "initialized": False,
+    "version": "1.1.1",
+    "projectPath": "/repo",
+    "indexPath": "/repo/.codegraph",
+    "lastIndexed": None,
+}
+
+
+def _prepared(status=None):
+    return (
+        GraphSnapshot(
+            status="available",
+            provider="CodeGraph",
+            provider_version="1.1.1",
+            index_version="24",
+            repo_head="commit",
+            config_digest="absent",
+            graph_scope_digest="scope",
+            sync_performed=True,
+            fallback_reason=None,
+        ),
+        status or _FRESH,
+    )
 
 
 def _args(**kw):
@@ -72,11 +97,40 @@ def test_resolve_version_out_of_range_allowed_with_flag() -> None:
     assert sg._resolve_version("1.2.0", True, False) == ("1.2.0", None)
 
 
-def test_run_setup_graph_refuses_out_of_range_version_without_install(monkeypatch) -> None:
+def test_run_setup_graph_refuses_out_of_range_version_with_one_json_document(
+    monkeypatch, capsys
+) -> None:
     attempted = []
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: attempted.append(1))
-    assert sg.run_setup_graph(_args(version="9.9.9")) == 2
+    assert sg.run_setup_graph(_args(version="9.9.9", as_json=True)) == 2
     assert attempted == []  # refused before any install attempt
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "setup-graph"
+    assert payload["action"] == "failed"
+    assert "outside accepted range" in payload["error"]
+
+
+def test_run_setup_graph_json_renders_one_document_during_install(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(sg, "_installed", lambda: False)
+
+    def fail_install(as_json, **kwargs):
+        sg._emit(
+            {"ok": False, "step": "install"},
+            as_json,
+            ["install failed"],
+            silent=kwargs["silent"],
+        )
+        return 1
+
+    monkeypatch.setattr(sg, "_ensure_installed", fail_install)
+
+    assert sg.run_setup_graph(_args(as_json=True)) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "setup-graph"
+    assert payload["ok"] is False
 
 
 # --- platform detection ---
@@ -228,7 +282,7 @@ def test_ensure_installed_standalone_then_npm_fallback(monkeypatch) -> None:
     monkeypatch.setattr(sg, "_is_musl", lambda: False)
     monkeypatch.setattr(sg, "_install_standalone", lambda *a, **k: False)
     npm = []
-    monkeypatch.setattr(sg, "_install_npm", lambda aj, v: (npm.append(v), None)[1])
+    monkeypatch.setattr(sg, "_install_npm", lambda aj, v, **k: (npm.append(v), None)[1])
     assert sg._ensure_installed(True, version="1.1.1", via="auto", explicit_version=False) is None
     assert npm == ["1.1.1"]
 
@@ -265,13 +319,35 @@ def test_ensure_installed_auto_skips_reinstall_when_in_range(monkeypatch) -> Non
     assert called == []
 
 
+@pytest.mark.parametrize("via", ["standalone", "npm"])
+def test_ensure_installed_explicit_route_skips_supported_installed_engine(
+    via, monkeypatch
+) -> None:
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(
+        sg,
+        "_install_standalone",
+        lambda *a, **k: pytest.fail("supported engine was reinstalled"),
+    )
+    monkeypatch.setattr(
+        sg,
+        "_install_npm",
+        lambda *a, **k: pytest.fail("supported engine was reinstalled"),
+    )
+
+    assert sg._ensure_installed(
+        False, version="1.1.1", via=via, explicit_version=False
+    ) is None
+
+
 def test_ensure_installed_explicit_version_does_not_skip_different_current(monkeypatch) -> None:
     monkeypatch.setattr(sg, "_installed", lambda: True)
     monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
     monkeypatch.setattr(sg, "_target", lambda: "linux-x64")
     monkeypatch.setattr(sg, "_is_musl", lambda: False)
     called: list[str] = []
-    monkeypatch.setattr(sg, "_install_standalone", lambda aj, v, t: called.append(v) or True)
+    monkeypatch.setattr(sg, "_install_standalone", lambda aj, v, t, **k: called.append(v) or True)
     assert sg._ensure_installed(
         False, version="2.0.0", via="auto", explicit_version=True
     ) is None
@@ -347,7 +423,7 @@ class _Engine:
 
 def test_setup_graph_happy_builds_index(monkeypatch) -> None:
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
-    eng = _Engine([])
+    eng = _Engine([_UNINITIALIZED])
     monkeypatch.setattr(sg, "_run", eng)
 
     class Adapter:
@@ -375,7 +451,8 @@ def test_setup_graph_fix_nonzero_if_mismatch_persists(monkeypatch) -> None:
 def test_doctor_reports_version_and_range(monkeypatch, capsys) -> None:
     monkeypatch.setattr(sg, "_installed", lambda: True)
     monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")  # version detection mocked
-    monkeypatch.setattr(sg, "_run", _Engine([_FRESH]))
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    monkeypatch.setattr(sg, "_run", _Engine([_FRESH, _FRESH]))
     rc = sg.run_doctor(_args(as_json=True))
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0 and payload["version_in_range"] is True
@@ -389,6 +466,69 @@ def test_doctor_out_of_range_is_unhealthy(monkeypatch, capsys) -> None:
     rc = sg.run_doctor(_args(as_json=True))
     payload = json.loads(capsys.readouterr().out)
     assert rc == 1 and payload["version_in_range"] is False
+
+
+def test_doctor_rejects_out_of_range_provider_status(monkeypatch, capsys) -> None:
+    status = {**_FRESH, "version": "9.9.9"}
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    monkeypatch.setattr(sg, "_status", lambda _root: status)
+
+    assert sg.run_doctor(_args(as_json=True)) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["status_version"] == "9.9.9"
+    assert payload["status_version_in_range"] is False
+
+
+def test_doctor_fix_refuses_out_of_range_provider_status_without_mutation(
+    monkeypatch, capsys
+) -> None:
+    status = {
+        **_FRESH,
+        "version": "9.9.9",
+        "index": {"reindexRecommended": True, "builtWithExtractionVersion": 24},
+    }
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    monkeypatch.setattr(sg, "_status", lambda _root: status)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("unsupported provider status triggered init"),
+    )
+    monkeypatch.setattr(
+        sg,
+        "_prepare_worktree_local_index",
+        lambda *_: pytest.fail("unsupported provider status triggered sync"),
+    )
+
+    assert sg.run_doctor(_args(as_json=True, fix_graph=True)) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["repaired"] is False
+    assert payload["repair_action"] == "failed"
+    assert payload["status_version_in_range"] is False
+
+
+def test_doctor_rejects_status_drift_during_engine_revalidation(
+    monkeypatch, capsys
+) -> None:
+    unsupported = {**_FRESH, "version": "9.9.9"}
+    statuses = iter((_FRESH, unsupported))
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    monkeypatch.setattr(sg, "_status", lambda _root: next(statuses))
+
+    assert sg.run_doctor(_args(as_json=True)) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["engines"]["codegraph"]["mode"] == "degraded"
 
 
 @pytest.mark.parametrize(
@@ -415,6 +555,90 @@ def test_doctor_rejects_malformed_status_without_crash_or_partial_health(
     assert payload["diagnosis"]["detail"] == "codegraph status malformed"
 
 
+@pytest.mark.parametrize("status", [None, []], ids=("unavailable", "malformed"))
+def test_doctor_fix_refuses_ambiguous_status_without_mutation(
+    status, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: status)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("ambiguous status triggered destructive init"),
+    )
+    monkeypatch.setattr(
+        sg,
+        "_prepare_worktree_local_index",
+        lambda *_: pytest.fail("ambiguous status triggered sync"),
+    )
+
+    assert sg.run_doctor(_args(as_json=True, fix_graph=True)) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["repaired"] is False
+    assert payload["repair_action"] == "failed"
+
+
+def test_doctor_fix_refuses_malformed_config_without_mutation(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    (tmp_path / "codegraph.json").write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: _UNINITIALIZED)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("malformed config triggered destructive init"),
+    )
+
+    assert sg.run_doctor(
+        _args(repo_root=str(tmp_path), as_json=True, fix_graph=True)
+    ) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["repair_action"] == "failed"
+    assert payload["graph_config"]["error"] == "malformed JSON"
+
+
+def test_doctor_fix_syncs_ordinary_pending_changes_without_init(monkeypatch, capsys) -> None:
+    pending = {
+        **_FRESH,
+        "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
+    }
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    statuses = iter((pending, _FRESH))
+    monkeypatch.setattr(sg, "_status", lambda _root: next(statuses))
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("ordinary pending changes triggered destructive init"),
+    )
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_: _prepared())
+
+    assert sg.run_doctor(_args(as_json=True, fix_graph=True)) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["repaired"] is True
+    assert payload["repair_action"] == "synced"
+
+
+def test_doctor_healthy_graph_without_head_is_not_ready(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: _FRESH)
+
+    assert sg.run_doctor(_args(as_json=True)) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["head_present"] is False
+
+
 def test_doctor_absent_engine_fails_clear(monkeypatch) -> None:
     monkeypatch.setattr(sg, "_installed", lambda: False)
     assert sg.run_doctor(_args()) == 1
@@ -429,6 +653,8 @@ def test_doctor_reports_config_even_when_engine_is_absent(tmp_path, monkeypatch,
     payload = json.loads(capsys.readouterr().out)
     assert payload["graph_config"]["exists"] is True
     assert payload["graph_config"]["digest"] == hashlib.sha256(b"{}").hexdigest()
+    assert set(payload["engines"]) == {"engines_ok", "git", "codegraph", "rca", "bandit"}
+    assert payload["engines_ok"] is False
 
 
 def test_graph_config_reports_supported_fields_and_exclude_as_unsupported(tmp_path) -> None:
@@ -544,13 +770,14 @@ def test_setup_atomically_restores_provider_mutation_of_existing_config(
     config = tmp_path / "codegraph.json"
     config.write_bytes(raw)
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: _UNINITIALIZED)
 
     def mutate(_root):
         config.write_bytes(b'{"provider":"changed"}')
         return True
 
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", mutate)
-    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_args: _FRESH)
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_args: _prepared())
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -564,13 +791,14 @@ def test_setup_removes_provider_created_config_when_initially_absent(
 ) -> None:
     config = tmp_path / "codegraph.json"
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: _UNINITIALIZED)
 
     def create(_root):
         config.write_bytes(b"{}")
         return True
 
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", create)
-    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_args: _FRESH)
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_args: _prepared())
 
     assert sg.run_setup_graph(_args(repo_root=str(tmp_path), as_json=True)) == 0
     assert not config.exists()
@@ -580,6 +808,7 @@ def test_setup_restore_failure_is_stable_and_unhealthy(tmp_path, monkeypatch, ca
     config = tmp_path / "codegraph.json"
     config.write_bytes(b"before")
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: _UNINITIALIZED)
     monkeypatch.setattr(
         sg, "_initialize_worktree_local_index", lambda _root: config.write_bytes(b"after") or True
     )
@@ -635,6 +864,7 @@ def test_setup_restores_existing_config_before_prepare_and_snapshot_uses_restore
 
     monkeypatch.setattr(sg, "_capture_graph_config", capture)
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: _UNINITIALIZED)
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
     monkeypatch.setattr(sg, "_restore_graph_config", restore)
     monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
@@ -674,6 +904,7 @@ def test_setup_removes_init_created_config_before_preparing_absent_snapshot(
             return _FRESH
 
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: _UNINITIALIZED)
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
     monkeypatch.setattr(sg, "_restore_graph_config", restore)
     monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
@@ -701,13 +932,14 @@ def test_prepare_rejects_snapshot_for_a_different_config_digest(monkeypatch) -> 
 
 def test_setup_restore_failure_aborts_before_prepare(tmp_path, monkeypatch) -> None:
     config = tmp_path / "codegraph.json"
-    config.write_bytes(b"before")
+    config.write_bytes(b'{"extensions":{}}')
     calls: list[str] = []
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: _UNINITIALIZED)
     monkeypatch.setattr(
         sg,
         "_initialize_worktree_local_index",
-        lambda _root: calls.append("init") or config.write_bytes(b"after") or True,
+        lambda _root: calls.append("init") or config.write_bytes(b'{"includeIgnored":[]}') or True,
     )
     monkeypatch.setattr(
         sg, "_restore_graph_config", lambda _state: calls.append("restore") or False
@@ -720,6 +952,334 @@ def test_setup_restore_failure_aborts_before_prepare(tmp_path, monkeypatch) -> N
     assert calls == ["init", "restore"]
 
 
+def test_ensure_graph_ready_healthy_is_unchanged_without_init_or_prepare(monkeypatch) -> None:
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    monkeypatch.setattr(sg, "_status", lambda _root: _FRESH)
+    monkeypatch.setattr(
+        sg, "_initialize_worktree_local_index", lambda *_: (_ for _ in ()).throw(AssertionError("init"))
+    )
+    monkeypatch.setattr(
+        sg, "_prepare_worktree_local_index", lambda *_: (_ for _ in ()).throw(AssertionError("prepare"))
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=False, via="auto")
+    assert result.ok is True
+    assert result.action == "unchanged"
+
+
+def test_ensure_graph_ready_healthy_fix_is_still_unchanged(monkeypatch) -> None:
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    monkeypatch.setattr(sg, "_status", lambda _root: _FRESH)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("--fix rebuilt an already healthy graph"),
+    )
+    monkeypatch.setattr(
+        sg,
+        "_prepare_worktree_local_index",
+        lambda *_: pytest.fail("--fix prepared an already healthy graph"),
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=True, via="auto")
+
+    assert result.ok is True
+    assert result.action == "unchanged"
+    assert result.snapshot is not None
+    assert result.snapshot.status == "available"
+    assert result.snapshot.repo_head == "commit"
+
+
+def test_ensure_graph_ready_healthy_refuses_status_drift(monkeypatch) -> None:
+    pending = {
+        **_FRESH,
+        "pendingChanges": {"added": 0, "modified": 1, "removed": 0},
+    }
+    statuses = iter((_FRESH, pending))
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    monkeypatch.setattr(sg, "_status", lambda _root: next(statuses))
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("status drift triggered a rebuild"),
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=False, via="auto")
+
+    assert result.ok is False
+    assert result.action == "failed"
+    assert result.snapshot is not None
+    assert result.snapshot.status == "stale"
+    assert "status changed" in (result.error or "")
+
+
+def test_ensure_graph_ready_healthy_status_without_head_is_not_trusted(monkeypatch) -> None:
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: _FRESH)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("missing HEAD triggered a rebuild"),
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=True, via="auto")
+
+    assert result.ok is False
+    assert result.action == "failed"
+    assert result.snapshot is not None
+    assert result.snapshot.status == "stale"
+    assert "Git HEAD" in (result.remediation or "")
+
+
+def test_ensure_graph_ready_refuses_malformed_config_before_mutation(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "codegraph.json").write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(
+        sg,
+        "_ensure_installed",
+        lambda *a, **k: pytest.fail("malformed config reached installation"),
+    )
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("malformed config reached init"),
+    )
+
+    result = sg.ensure_graph_ready(str(tmp_path), fix=True, via="auto")
+
+    assert result.ok is False
+    assert result.action == "failed"
+    assert result.error == "malformed JSON"
+    assert result.graph_config["valid"] is False
+
+
+def test_ensure_graph_ready_refuses_config_drift_before_mutation(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "codegraph.json"
+    config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+
+    def drift(_root):
+        config.write_text("{not-json", encoding="utf-8")
+        return _FRESH
+
+    monkeypatch.setattr(sg, "_status", drift)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("configuration drift triggered init"),
+    )
+    monkeypatch.setattr(
+        sg,
+        "_prepare_worktree_local_index",
+        lambda *_: pytest.fail("configuration drift triggered sync"),
+    )
+
+    result = sg.ensure_graph_ready(str(tmp_path), fix=False, via="auto")
+
+    assert result.ok is False
+    assert result.action == "failed"
+    assert result.error == "malformed JSON"
+
+
+def test_ensure_graph_ready_failed_install_never_reports_installed(monkeypatch) -> None:
+    monkeypatch.setattr(sg, "_installed", lambda: False)
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: 1)
+
+    result = sg.ensure_graph_ready("/repo", via="auto")
+
+    assert result.ok is False
+    assert result.installed is False
+
+
+def test_ensure_graph_ready_unavailable_status_refuses_without_mutation(monkeypatch) -> None:
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: None)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("ambiguous status triggered init"),
+    )
+    monkeypatch.setattr(
+        sg,
+        "_prepare_worktree_local_index",
+        lambda *_: pytest.fail("ambiguous status triggered sync"),
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=True, via="auto")
+
+    assert result.ok is False
+    assert result.action == "failed"
+    assert result.error == "codegraph status unavailable"
+
+
+def test_ensure_graph_ready_pending_uses_prepare_not_init(monkeypatch) -> None:
+    pending = {
+        **_FRESH,
+        "pendingChanges": {"added": 1, "modified": 0, "removed": 0},
+    }
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: pending)
+    monkeypatch.setattr(
+        sg, "_initialize_worktree_local_index", lambda *_: (_ for _ in ()).throw(AssertionError("init"))
+    )
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_: _prepared())
+
+    result = sg.ensure_graph_ready("/repo", fix=False, via="auto")
+    assert result.ok is True
+    assert result.action == "synced"
+
+
+def test_ensure_graph_ready_mismatch_refuses_without_fix(monkeypatch) -> None:
+    mismatch = {
+        **_FRESH,
+        "worktreeMismatch": {"worktreeRoot": "/wt", "indexRoot": "/main"},
+    }
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: mismatch)
+    monkeypatch.setattr(
+        sg, "_initialize_worktree_local_index", lambda *_: (_ for _ in ()).throw(AssertionError("init"))
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=False, via="auto")
+    assert result.ok is False
+    assert result.action == "failed"
+    assert "--fix" in (result.remediation or "")
+
+
+def test_ensure_graph_ready_reindex_refuses_without_fix(monkeypatch) -> None:
+    reindex = {
+        **_FRESH,
+        "index": {"reindexRecommended": True, "builtWithExtractionVersion": 24},
+    }
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: reindex)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("reindex recommendation rebuilt without --fix"),
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=False, via="auto")
+
+    assert result.ok is False
+    assert result.action == "failed"
+    assert "--fix" in (result.remediation or "")
+
+
+def test_ensure_graph_ready_refuses_out_of_range_provider_before_repair(
+    monkeypatch,
+) -> None:
+    reindex = {
+        **_FRESH,
+        "version": "9.9.9",
+        "index": {"reindexRecommended": True, "builtWithExtractionVersion": 24},
+    }
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: reindex)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda *_: pytest.fail("unsupported provider status triggered init"),
+    )
+    monkeypatch.setattr(
+        sg,
+        "_prepare_worktree_local_index",
+        lambda *_: pytest.fail("unsupported provider status triggered sync"),
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=True, via="auto")
+
+    assert result.ok is False
+    assert result.action == "failed"
+    assert "outside accepted range" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    "unhealthy",
+    [
+        _MISMATCH,
+        {
+            **_FRESH,
+            "index": {"reindexRecommended": True, "builtWithExtractionVersion": 24},
+        },
+    ],
+    ids=("worktree-mismatch", "reindex-recommended"),
+)
+def test_ensure_graph_ready_explicit_fix_repairs_destructive_states(
+    unhealthy, monkeypatch
+) -> None:
+    calls = []
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: unhealthy)
+    monkeypatch.setattr(
+        sg,
+        "_initialize_worktree_local_index",
+        lambda _root: calls.append("init") or True,
+    )
+    monkeypatch.setattr(
+        sg,
+        "_restore_graph_config",
+        lambda _state: calls.append("restore") or True,
+    )
+    monkeypatch.setattr(
+        sg,
+        "_prepare_worktree_local_index",
+        lambda *_: calls.append("prepare") or _prepared(),
+    )
+
+    result = sg.ensure_graph_ready("/repo", fix=True, via="auto")
+
+    assert result.ok is True
+    assert result.action == "repaired"
+    assert calls == ["init", "restore", "prepare"]
+
+
+def test_ensure_graph_ready_post_init_fence_failure_is_failed(monkeypatch) -> None:
+    monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
+    monkeypatch.setattr(sg, "_installed", lambda: True)
+    monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
+    monkeypatch.setattr(sg, "_status", lambda _root: _UNINITIALIZED)
+    monkeypatch.setattr(sg, "_initialize_worktree_local_index", lambda _root: True)
+    monkeypatch.setattr(sg, "_restore_graph_config", lambda _state: True)
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_: None)
+
+    result = sg.ensure_graph_ready("/repo", fix=False, via="auto")
+
+    assert result.ok is False
+    assert result.action == "failed"
+    assert result.snapshot is None
+    assert result.error == "graph prepare failed after init"
+
+
 def test_doctor_fix_restores_config_and_reports_post_fix_digest(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -728,14 +1288,16 @@ def test_doctor_fix_restores_config_and_reports_post_fix_digest(
     config.write_bytes(raw)
     monkeypatch.setattr(sg, "_installed", lambda: True)
     monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
-    monkeypatch.setattr(sg, "_status", lambda _root: None)
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    statuses = iter((_UNINITIALIZED, _FRESH))
+    monkeypatch.setattr(sg, "_status", lambda _root: next(statuses))
 
     def mutate(_root):
         config.unlink()
         return True
 
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", mutate)
-    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_args: _FRESH)
+    monkeypatch.setattr(sg, "_prepare_worktree_local_index", lambda *_args: _prepared())
 
     assert sg.run_doctor(
         _args(repo_root=str(tmp_path), as_json=True, fix_graph=True)
@@ -779,7 +1341,9 @@ def test_doctor_fix_restores_config_before_prepare(tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr(sg, "_installed", lambda: True)
     monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
-    monkeypatch.setattr(sg, "_status", lambda _root: None)
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    statuses = iter((_UNINITIALIZED, _FRESH))
+    monkeypatch.setattr(sg, "_status", lambda _root: next(statuses))
     monkeypatch.setattr(sg, "_initialize_worktree_local_index", initialize)
     monkeypatch.setattr(sg, "_restore_graph_config", restore)
     monkeypatch.setattr(codegraph_adapter, "CodeGraphAdapter", Adapter)
@@ -794,15 +1358,15 @@ def test_doctor_fix_restores_config_before_prepare(tmp_path, monkeypatch, capsys
 
 def test_doctor_restore_failure_aborts_before_prepare(tmp_path, monkeypatch) -> None:
     config = tmp_path / "codegraph.json"
-    config.write_bytes(b"before")
+    config.write_bytes(b'{"extensions":{}}')
     calls: list[str] = []
     monkeypatch.setattr(sg, "_installed", lambda: True)
     monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
-    monkeypatch.setattr(sg, "_status", lambda _root: None)
+    monkeypatch.setattr(sg, "_status", lambda _root: _UNINITIALIZED)
     monkeypatch.setattr(
         sg,
         "_initialize_worktree_local_index",
-        lambda _root: calls.append("init") or config.write_bytes(b"after") or True,
+        lambda _root: calls.append("init") or config.write_bytes(b'{"includeIgnored":[]}') or True,
     )
     monkeypatch.setattr(
         sg, "_restore_graph_config", lambda _state: calls.append("restore") or False
@@ -823,7 +1387,8 @@ def test_doctor_json_includes_graph_configuration(tmp_path, monkeypatch, capsys)
     )
     monkeypatch.setattr(sg, "_installed", lambda: True)
     monkeypatch.setattr(sg, "_installed_version", lambda: "1.1.1")
-    monkeypatch.setattr(sg, "_run", _Engine([_FRESH]))
+    monkeypatch.setattr(sg.git_adapter, "head_commit", lambda _root: "commit")
+    monkeypatch.setattr(sg, "_run", _Engine([_FRESH, _FRESH]))
 
     assert sg.run_doctor(_args(repo_root=str(tmp_path), as_json=True)) == 0
 
@@ -840,7 +1405,7 @@ def test_setup_preserves_existing_config_bytes_and_prepares_after_init(
     config = tmp_path / "codegraph.json"
     config.write_bytes(raw)
     monkeypatch.setattr(sg, "_ensure_installed", lambda *a, **k: None)
-    engine = _Engine([])
+    engine = _Engine([_UNINITIALIZED])
     monkeypatch.setattr(sg, "_run", engine)
     calls: list[str] = []
 

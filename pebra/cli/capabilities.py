@@ -13,6 +13,7 @@ from typing import Any
 
 from pebra import composition
 from pebra.adapters import enforcement_capability
+from pebra.cli.engine_status import collect_engine_status
 from pebra.core.agent_hosts import AGENT_HOSTS
 from pebra.core.language_capability import DECLARED_LANGUAGES
 
@@ -33,11 +34,12 @@ def run_capabilities(args: Any) -> int:
         args.repo_root,
         graph_available=bool(rows),
     )
+    engines = collect_engine_status(args.repo_root)
     if args.as_json:
         print(json.dumps(
             {"command": "capabilities", "repo_root": args.repo_root,
              "declared_languages": list(DECLARED_LANGUAGES), "measured": rows,
-             "enforcement": enforcement},
+             "enforcement": enforcement, "engines": engines},
             indent=2, sort_keys=True,
         ))
         return 0
@@ -56,4 +58,9 @@ def run_capabilities(args: Any) -> int:
         state = enforcement[host]
         reasons = f" ({', '.join(state['reasons'])})" if state["reasons"] else ""
         print(f"    {host:<7} {state['mode']}{reasons}")
+    print(f"  engines_ok: {engines['engines_ok']}")
+    for name in ("git", "codegraph", "rca", "bandit"):
+        row = engines[name]
+        reasons = f" ({', '.join(row['reasons'])})" if row.get("reasons") else ""
+        print(f"    {name:<9} {row['mode']}{reasons}")
     return 0

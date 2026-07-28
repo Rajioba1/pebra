@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from pebra.cli import agent_init
+from pebra.core.rca_engine_paths import RCA_INSTALL_COMMAND
 from scripts import verify_distribution as distribution_verifier
 
 from scripts.verify_distribution import (
@@ -654,6 +655,7 @@ def test_installed_verifier_constructs_tui_app() -> None:
 
 def test_codegraph_smoke_commits_fixture_before_setup(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
+    remediation_state = {"cargo_available": False}
 
     def run_cli(*args: str, cwd: Path, **_kwargs: object) -> SimpleNamespace:
         distribution_verifier.subprocess.run(
@@ -663,13 +665,67 @@ def test_codegraph_smoke_commits_fixture_before_setup(monkeypatch) -> None:
             timeout=30,
         )
         calls.append(args)
-        return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+        if args[0] == "setup-engines":
+            index_db = cwd / ".codegraph" / "codegraph.db"
+            index_db.parent.mkdir(exist_ok=True)
+            if not index_db.exists():
+                index_db.write_bytes(b"stable index")
+            action = "initialized" if len([c for c in calls if c[0] == "setup-engines"]) == 1 else "unchanged"
+            return SimpleNamespace(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "ok": False,
+                        "graph": {"trusted": True, "action": action},
+                        "rca": {
+                            "accepted": False,
+                            "status": "missing",
+                            "remediation": {
+                                "cargo_available": remediation_state["cargo_available"],
+                                "prerequisite": (
+                                    None
+                                    if remediation_state["cargo_available"]
+                                    else "Install Rust and Cargo with rustup"
+                                ),
+                                "command": RCA_INSTALL_COMMAND,
+                            },
+                        },
+                    }
+                ),
+                stderr="",
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "engines": {"engines_ok": False},
+                    "declared_languages": [],
+                    "measured": [],
+                    "enforcement": {},
+                }
+            ),
+            stderr="",
+        )
 
     monkeypatch.setattr(distribution_verifier, "_run_cli", run_cli)
 
     distribution_verifier.verify_codegraph_setup()
 
-    assert [args[0] for args in calls] == ["setup-graph", "doctor"]
+    assert [args[0] for args in calls] == [
+        "setup-engines",
+        "setup-engines",
+        "doctor",
+        "capabilities",
+    ]
+
+    calls.clear()
+    remediation_state["cargo_available"] = True
+    with pytest.raises(
+        DistributionVerificationError,
+        match="lost no-Cargo rustup remediation",
+    ):
+        distribution_verifier.verify_codegraph_setup()
 
 
 def test_checksums_detect_artifact_tampering(tmp_path: Path) -> None:

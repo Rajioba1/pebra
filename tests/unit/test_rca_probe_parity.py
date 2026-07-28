@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from e2e.utils import rca_probe
+from pebra.adapters import rca_adapter as production_rca
 from pebra.core.rca_engine_paths import RCA_ACCEPTED_VERSION, RCA_SOURCE_REVISION, find_rca
 
 _ENGINE = "rust-code-analysis-cli"
@@ -184,3 +185,89 @@ def test_e2e_rca_fingerprint_distinguishes_absence_from_probe_error(tmp_path, mo
     )
     assert failed["status"] == "probe_error"
     assert failed["sha256"] is not None
+
+
+@pytest.mark.parametrize(
+    "case,production_status,e2e_status,validation_mode",
+    [
+        ("accepted_cargo", "accepted", "accepted", "cargo_revision"),
+        ("accepted_hash", "accepted", "accepted", "sha256"),
+        ("wrong_version", "wrong_version", "rejected", "cargo_revision"),
+        ("untrusted_provenance", "untrusted_provenance", "rejected", None),
+        ("hash_mismatch", "hash_mismatch", "rejected", None),
+        ("probe_error", "probe_error", "probe_error", None),
+    ],
+)
+def test_production_and_e2e_rca_acceptance_evidence_match(
+    case, production_status, e2e_status, validation_mode, tmp_path, monkeypatch
+) -> None:
+    binary = tmp_path / "bin" / "rca"
+    binary.parent.mkdir()
+    binary.write_bytes(b"parity binary")
+    digest = production_rca._sha256_file(binary)
+    source_revision = (
+        RCA_SOURCE_REVISION
+        if case not in {"untrusted_provenance", "accepted_hash"}
+        else "0" * 40
+    )
+    (tmp_path / ".crates2.json").write_text(
+        json.dumps(
+            {
+                "installs": {
+                    "rust-code-analysis-cli 0.0.25 "
+                    "(git+https://github.com/mozilla/rust-code-analysis"
+                    f"#{source_revision})": {"bins": [binary.name]}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    if case == "accepted_hash":
+        monkeypatch.setenv("PEBRA_RCA_SHA256", digest)
+    elif case == "hash_mismatch":
+        monkeypatch.setenv("PEBRA_RCA_SHA256", "f" * 64)
+    reported_version = "9.9.9" if case == "wrong_version" else RCA_ACCEPTED_VERSION
+
+    def version_probe(*args, **kwargs):
+        if case == "probe_error":
+            raise subprocess.TimeoutExpired("rca", 10)
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=f"rust-code-analysis-cli {reported_version}\n",
+        )
+
+    monkeypatch.setattr(production_rca, "find_rca", lambda: str(binary))
+    monkeypatch.setattr(rca_probe, "find_rca", lambda: str(binary))
+    monkeypatch.setattr(production_rca.subprocess, "run", version_probe)
+    production_rca._rca_version_for_binary.cache_clear()
+
+    production = production_rca.probe_rca()
+    assay = rca_probe.fingerprint(
+        accepted_version=RCA_ACCEPTED_VERSION,
+        required_source_revision=RCA_SOURCE_REVISION,
+    )
+
+    assert production.status == production_status
+    assert assay["status"] == e2e_status
+    assert production.accepted is (assay["status"] == "accepted")
+    assert production.version == assay["version"]
+    assert production.sha256 == assay["sha256"]
+    assert production.source_revision == assay["source_revision"]
+    assert production.validation_mode == assay["validation_mode"] == validation_mode
+
+
+def test_production_and_e2e_rca_absence_match(monkeypatch) -> None:
+    monkeypatch.setattr(production_rca, "find_rca", lambda: None)
+    monkeypatch.setattr(rca_probe, "find_rca", lambda: None)
+
+    production = production_rca.probe_rca()
+    assay = rca_probe.fingerprint(
+        accepted_version=RCA_ACCEPTED_VERSION,
+        required_source_revision=RCA_SOURCE_REVISION,
+    )
+
+    assert production.status == "missing"
+    assert assay["status"] == "absent"
+    assert production.accepted is False
+    assert production.sha256 == assay["sha256"] is None

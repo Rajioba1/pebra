@@ -2,10 +2,8 @@
 
 ``find_rca()`` lookup order: PEBRA_RCA_BIN override (a bin DIR or the launcher FILE) -> PATH
 (shutil.which). Deliberately NARROWER than ``engine_paths.find_engine`` — only 2 tiers, no managed
-install: there is no ``pebra setup-rca`` command, so nothing populates a managed dir for RCA. A user
-installs the binary via ``cargo install --git https://github.com/mozilla/rust-code-analysis
-rust-code-analysis-cli`` (crates.io's v0.0.25 does not compile against current tree-sitter) and it lands
-on PATH (``~/.cargo/bin``).
+install in this delivery. Users install the binary with the exact pinned Cargo command from
+``build_rca_remediation()`` (crates.io's v0.0.25 does not compile against current tree-sitter).
 
 Unlike codegraph (an npm ``.cmd`` shim), rust-code-analysis-cli is a NATIVE binary (``.exe`` on Windows,
 bare on POSIX), so ``resolve_engine_argv`` wraps it trivially (its ``.cmd``/``.bat`` branch is a no-op).
@@ -19,10 +17,27 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 _ENGINE = "rust-code-analysis-cli"
 RCA_ACCEPTED_VERSION = "0.0.25"
 RCA_SOURCE_REVISION = "37e5d83c056c8cbf827223d5814a93c5218df1a9"
+RCA_INSTALL_COMMAND = (
+    "cargo install --force --git https://github.com/mozilla/rust-code-analysis "
+    f"--rev {RCA_SOURCE_REVISION} --locked rust-code-analysis-cli"
+)
+
+
+def build_rca_remediation() -> dict[str, Any]:
+    """Read-only Cargo PATH probe for operator guidance. Never installs or executes Cargo install."""
+    cargo_available = shutil.which("cargo") is not None
+    return {
+        "cargo_available": cargo_available,
+        "prerequisite": (
+            None if cargo_available else "Install Rust and Cargo with rustup"
+        ),
+        "command": RCA_INSTALL_COMMAND,
+    }
 
 
 def _is_windows() -> bool:

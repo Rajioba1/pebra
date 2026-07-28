@@ -35,17 +35,20 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
+from pebra.adapters import git_adapter
 from pebra.adapters.bounded_process import run_bounded
 from pebra.core.engine_argv import UnsafeEngineLauncherError, resolve_engine_argv
 from pebra.core.engine_paths import find_engine, managed_install_root
+from pebra.core.graph_snapshot import GraphSnapshot
 from pebra.core.graph_version import (
     CODEGRAPH_ACCEPTED_RANGE,
     CODEGRAPH_DEFAULT_VERSION,
     in_accepted_range,
+    is_release_version,
 )
 
 _ENGINE = "codegraph"
@@ -175,12 +178,35 @@ def _healthy(status: object | None) -> bool:
     return not has_pending and not reindex
 
 
+def _is_uninitialized_status(status: object | None) -> bool:
+    """True only for CodeGraph's explicit, successful missing-index payload."""
+    if not isinstance(status, dict) or status.get("initialized") is not False:
+        return False
+    version = status.get("version")
+    return (
+        is_release_version(version)
+        and in_accepted_range(version)
+        and isinstance(status.get("projectPath"), str)
+        and bool(status["projectPath"].strip())
+        and isinstance(status.get("indexPath"), str)
+        and bool(status["indexPath"].strip())
+        and status.get("lastIndexed") is None
+    )
+
+
 def _diagnosis(status: object | None) -> dict[str, Any]:
     from pebra.adapters.codegraph_adapter import validate_codegraph_status  # noqa: PLC0415
 
     if status is None:
         return {"initialized": False, "worktree_mismatch": False, "healthy": False,
                 "detail": "no status (engine errored or repo not initialized)"}
+    if _is_uninitialized_status(status):
+        return {
+            "initialized": False,
+            "worktree_mismatch": False,
+            "healthy": False,
+            "detail": "codegraph index not initialized",
+        }
     valid, reason = validate_codegraph_status(status)
     if not valid:
         return {
@@ -329,7 +355,15 @@ def _graph_config(repo_root: str, captured: _ConfigState | None = None) -> dict[
     }
 
 
-def _emit(payload: dict[str, Any], as_json: bool, lines: list[str]) -> None:
+def _emit(
+    payload: dict[str, Any],
+    as_json: bool,
+    lines: list[str],
+    *,
+    silent: bool = False,
+) -> None:
+    if silent:
+        return
     if as_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -429,7 +463,9 @@ def _extract(data: bytes, asset_name: str, dest: Path) -> None:
                         out.chmod(out.stat().st_mode | 0o755)
 
 
-def _install_standalone(as_json: bool, version: str, target: str) -> bool:
+def _install_standalone(
+    as_json: bool, version: str, target: str, *, silent: bool = False
+) -> bool:
     """Download the pinned standalone bundle, VERIFY its SHA256, extract, and link it onto PATH.
     Returns True on success; False (with a message) lets the caller fall back to npm."""
     ext = ".zip" if target.startswith("win32") else ".tar.gz"
@@ -440,17 +476,19 @@ def _install_standalone(as_json: bool, version: str, target: str) -> bool:
         expected = _expected_sha(sums, asset)
         if not expected:
             _emit({"ok": False, "step": "checksum", "asset": asset}, as_json,
-                  [f"no SHA256 entry for {asset} in the release SHA256SUMS; not installing."])
+                  [f"no SHA256 entry for {asset} in the release SHA256SUMS; not installing."],
+                  silent=silent)
             return False
         data = _download(f"{base}/{asset}")
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         _emit({"ok": False, "step": "download", "error": str(exc)}, as_json,
-              [f"standalone download failed ({exc}); falling back to npm."])
+              [f"standalone download failed ({exc}); falling back to npm."], silent=silent)
         return False
     actual = hashlib.sha256(data).hexdigest()
     if actual != expected:
         _emit({"ok": False, "step": "checksum", "expected": expected, "actual": actual}, as_json,
-              [f"checksum mismatch for {asset}; refusing to install (integrity check failed)."])
+              [f"checksum mismatch for {asset}; refusing to install (integrity check failed)."],
+              silent=silent)
         return False  # never extract/run an unverified binary
 
     dest = _install_root(version)
@@ -458,7 +496,7 @@ def _install_standalone(as_json: bool, version: str, target: str) -> bool:
         _extract(data, asset, dest)
     except (tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
         _emit({"ok": False, "step": "extract", "error": str(exc)}, as_json,
-              [f"could not extract {asset} ({exc}); falling back to npm."])
+              [f"could not extract {asset} ({exc}); falling back to npm."], silent=silent)
         return False
 
     if target.startswith("win32"):
@@ -473,13 +511,16 @@ def _install_standalone(as_json: bool, version: str, target: str) -> bool:
     rc, out, _ = _run([str(launcher), "--version"], timeout=30)  # verify the extracted binary runs
     if rc != 0:
         _emit({"ok": False, "step": "verify", "launcher": str(launcher)}, as_json,
-              [f"extracted codegraph did not run from {launcher}; falling back to npm."])
+              [f"extracted codegraph did not run from {launcher}; falling back to npm."],
+              silent=silent)
         return False
-    _link_onto_path(launcher, as_json, version)
+    _link_onto_path(launcher, as_json, version, silent=silent)
     return True
 
 
-def _link_onto_path(launcher: Path, as_json: bool, version: str) -> None:
+def _link_onto_path(
+    launcher: Path, as_json: bool, version: str, *, silent: bool = False
+) -> None:
     """Best-effort: symlink the launcher into a per-user bin dir on POSIX; on Windows, advise the PATH
     addition (we do not edit the registry). The current process PATH is updated in all cases so the
     same `pebra setup-graph` invocation can immediately run `codegraph init/sync`."""
@@ -487,7 +528,7 @@ def _link_onto_path(launcher: Path, as_json: bool, version: str) -> None:
         os.environ["PATH"] = f"{launcher.parent}{os.pathsep}{os.environ.get('PATH', '')}"
         _emit({"ok": True, "step": "path", "bin": str(launcher.parent), "version": version}, as_json,
               [f"codegraph {version} installed at {launcher}.",
-               f"add this to PATH:  {launcher.parent}"])
+               f"add this to PATH:  {launcher.parent}"], silent=silent)
         return
     bindir = Path.home() / ".local" / "bin"
     try:
@@ -500,7 +541,7 @@ def _link_onto_path(launcher: Path, as_json: bool, version: str) -> None:
         os.environ["PATH"] = f"{launcher.parent}{os.pathsep}{os.environ.get('PATH', '')}"
         _emit({"ok": True, "step": "path", "bin": str(launcher.parent), "version": version}, as_json,
               [f"codegraph {version} installed at {launcher}.",
-               f"add this to PATH:  export PATH=\"{launcher.parent}:$PATH\""])
+               f"add this to PATH:  export PATH=\"{launcher.parent}:$PATH\""], silent=silent)
         return
     os.environ["PATH"] = f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"
     on_path = shutil.which(_ENGINE) is not None
@@ -508,24 +549,28 @@ def _link_onto_path(launcher: Path, as_json: bool, version: str) -> None:
     if not on_path:
         lines.append(f'ensure it is on PATH:  export PATH="{bindir}:$PATH"')
     _emit({"ok": True, "step": "path", "bin": str(bindir), "version": version, "on_path": on_path},
-          as_json, lines)
+          as_json, lines, silent=silent)
 
 
-def _install_npm(as_json: bool, version: str) -> int | None:
+def _install_npm(as_json: bool, version: str, *, silent: bool = False) -> int | None:
     if shutil.which("npm") is None:
         _emit({"ok": False, "step": "npm", "error": "npm not found"}, as_json,
-              [f"graph engine '{_ENGINE}' not found and npm is unavailable; {_MANUAL_HINT}"])
+              [f"graph engine '{_ENGINE}' not found and npm is unavailable; {_MANUAL_HINT}"],
+              silent=silent)
         return 1
     spec = f"@colbymchenry/{_ENGINE}@{version}"  # PINNED, never floating-latest
     rc, _, err = _run(["npm", "install", "-g", spec], timeout=600)
     if rc == 0 and _installed():
         return None
     _emit({"ok": False, "step": "npm", "error": err.strip(), "spec": spec}, as_json,
-          [f"npm install of {spec} failed; run manually: npm install -g {spec}", err.strip()])
+          [f"npm install of {spec} failed; run manually: npm install -g {spec}", err.strip()],
+          silent=silent)
     return 1
 
 
-def _resolve_version(requested: str | None, allow_unsupported: bool, as_json: bool) -> tuple[str | None, int | None]:
+def _resolve_version(
+    requested: str | None, allow_unsupported: bool, as_json: bool, *, silent: bool = False
+) -> tuple[str | None, int | None]:
     """Apply the version policy. Returns (version, error_code). A --version outside the accepted range is
     refused unless --allow-unsupported."""
     if not requested:
@@ -536,36 +581,38 @@ def _resolve_version(requested: str | None, allow_unsupported: bool, as_json: bo
            "accepted_range": CODEGRAPH_ACCEPTED_RANGE}, as_json,
           [f"requested codegraph {requested} is outside the accepted range {CODEGRAPH_ACCEPTED_RANGE}.",
            "re-run with --allow-unsupported to install it anyway "
-           "(graph evidence will then be marked untrusted)."])
+           "(graph evidence will then be marked untrusted)."],
+          silent=silent)
     return None, 2
 
 
 def _ensure_installed(
-    as_json: bool, *, version: str, via: str, explicit_version: bool
+    as_json: bool, *, version: str, via: str, explicit_version: bool, silent: bool = False
 ) -> int | None:
     """Install/repair the engine to the pinned version. Returns an error code or None on success."""
-    if _installed() and via == "auto":
+    if _installed():
         cur = _installed_version()
         if cur and ((explicit_version and cur == version) or (not explicit_version and in_accepted_range(cur))):
             return None  # already have a supported version; nothing to do
     if via == "npm":
-        return _install_npm(as_json, version)
+        return _install_npm(as_json, version, silent=silent)
     target = _target()
     if target and not _is_musl():
-        if _install_standalone(as_json, version, target):
+        if _install_standalone(as_json, version, target, silent=silent):
             return None
         if via == "standalone":
             return 1  # standalone-only and it failed
-        return _install_npm(as_json, version)  # auto -> npm fallback
+        return _install_npm(as_json, version, silent=silent)  # auto -> npm fallback
     # no standalone asset for this platform
     reason = ("musl/Alpine has no glibc standalone bundle" if _is_musl()
               else f"no standalone bundle for {platform.system()}/{platform.machine()}")
     if via == "standalone":
         _emit({"ok": False, "step": "platform", "error": reason}, as_json,
-              [f"{reason}; {_MANUAL_HINT}"])
+              [f"{reason}; {_MANUAL_HINT}"], silent=silent)
         return 1
-    _emit({"ok": True, "step": "platform", "note": reason}, as_json, [f"{reason}; trying npm."])
-    return _install_npm(as_json, version)
+    _emit({"ok": True, "step": "platform", "note": reason}, as_json, [f"{reason}; trying npm."],
+          silent=silent)
+    return _install_npm(as_json, version, silent=silent)
 
 
 def _initialize_worktree_local_index(repo_root: str) -> bool:
@@ -577,66 +624,360 @@ def _initialize_worktree_local_index(repo_root: str) -> bool:
 
 def _prepare_worktree_local_index(
     repo_root: str, expected_config_digest: str | None
-) -> dict[str, Any] | None:
-    """Prepare only after restore and fence the snapshot to that restored config digest."""
+) -> tuple[GraphSnapshot, dict[str, Any]] | None:
+    """Prepare after restore and fence the snapshot to that restored config digest.
+
+    Returns the accepted snapshot and status payload, or None when the fence fails.
+    """
     from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
 
     adapter = CodeGraphAdapter()
     snapshot = adapter.prepare(repo_root)
     if snapshot.status != "available" or snapshot.config_digest != expected_config_digest:
         return None
-    return adapter.prepared_status(repo_root)
+    status = adapter.prepared_status(repo_root)
+    return (snapshot, status) if status is not None else None
+
+
+def _read_only_snapshot(
+    repo_root: str,
+    status_before: object | None,
+    *,
+    expected_head: str | None,
+    expected_config_digest: str | None,
+) -> GraphSnapshot:
+    """Bind a stable healthy status to stable HEAD/config without syncing."""
+    from pebra.adapters.codegraph_adapter import CodeGraphAdapter  # noqa: PLC0415
+
+    status_after = _status(repo_root)
+    adapter = CodeGraphAdapter(status_fn=lambda _root: status_after)
+    snapshot = adapter.prepare(repo_root)
+    if status_after != status_before:
+        return replace(
+            snapshot,
+            status="stale",
+            fallback_reason="CodeGraph status changed during readiness check",
+        )
+    if (
+        snapshot.status == "available"
+        and expected_head is not None
+        and snapshot.repo_head == expected_head
+        and snapshot.config_digest == expected_config_digest
+    ):
+        return snapshot
+    if snapshot.status != "available":
+        return snapshot
+    return replace(
+        snapshot,
+        status="stale",
+        fallback_reason=(
+            "repository HEAD, codegraph.json, or CodeGraph status changed during readiness check"
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class GraphSetupResult:
+    """Operational outcome of ensure_graph_ready (what the command did).
+
+    Graph evidence vocabulary lives only on ``snapshot`` when prepare() ran.
+    """
+
+    ok: bool
+    action: str  # unchanged | installed | initialized | synced | repaired | failed
+    diagnosis: dict[str, Any]
+    version: str | None
+    graph_config: dict[str, Any]
+    config_restored: bool
+    error: str | None = None
+    remediation: str | None = None
+    snapshot: GraphSnapshot | None = None
+    installed: bool = False
+
+
+def _pending_from_status(status: object | None) -> bool:
+    """True when CodeGraph status reports ordinary pending source changes."""
+    if not isinstance(status, dict):
+        return False
+    pending = status.get("pendingChanges") or {}
+    if not isinstance(pending, dict):
+        return False
+    return any(pending.get(k) for k in ("added", "modified", "removed"))
+
+
+def ensure_graph_ready(
+    repo_root: str,
+    *,
+    fix: bool = False,
+    via: str = "auto",
+    version: str | None = None,
+    allow_unsupported: bool = False,
+    as_json: bool = False,
+    explicit_version: bool = False,
+    silent: bool = False,
+) -> GraphSetupResult:
+    """State-aware graph setup. With silent=True, nested install helpers print nothing (for JSON umbrellas)."""
+    config_before = _capture_graph_config(repo_root)
+    initial_graph_config = _graph_config(repo_root, config_before)
+    if not initial_graph_config["valid"]:
+        return GraphSetupResult(
+            ok=False,
+            action="failed",
+            diagnosis={"healthy": False, "initialized": False, "worktree_mismatch": False},
+            version=None,
+            graph_config=initial_graph_config,
+            config_restored=False,
+            error=initial_graph_config["error"],
+            remediation="repair or replace codegraph.json then re-run setup",
+        )
+    resolved, verr = _resolve_version(version, allow_unsupported, as_json, silent=silent)
+    if verr is not None or not resolved:
+        return GraphSetupResult(
+            ok=False,
+            action="failed",
+            diagnosis={"healthy": False, "initialized": False, "worktree_mismatch": False},
+            version=version,
+            graph_config=_graph_config(repo_root, config_before),
+            config_restored=True,
+            error=f"codegraph version outside accepted range {CODEGRAPH_ACCEPTED_RANGE}",
+            remediation="re-run with --allow-unsupported or pick an accepted version",
+        )
+    had_engine = _installed()
+    install_err = _ensure_installed(
+        as_json,
+        version=resolved,
+        via=via,
+        explicit_version=explicit_version or version is not None,
+        silent=silent,
+    )
+    if install_err is not None:
+        return GraphSetupResult(
+            ok=False,
+            action="failed",
+            diagnosis={"healthy": False, "initialized": False, "worktree_mismatch": False},
+            version=resolved,
+            graph_config=_graph_config(repo_root, config_before),
+            config_restored=True,
+            error="codegraph engine install failed",
+            remediation=_MANUAL_HINT,
+            installed=False,
+        )
+    installed_now = not had_engine and _installed()
+    runtime_ver = _installed_version()
+    head_before_status = git_adapter.head_commit(repo_root)
+    config_before_status = _graph_config(repo_root)
+    status = _status(repo_root)
+    diag = _diagnosis(status)
+    graph_config = _graph_config(repo_root)
+    missing_index = _is_uninitialized_status(status)
+    if (
+        not graph_config["valid"]
+        or graph_config["digest"] != config_before_status["digest"]
+    ):
+        return GraphSetupResult(
+            ok=False,
+            action="failed",
+            diagnosis=diag,
+            version=runtime_ver or resolved,
+            graph_config=graph_config,
+            config_restored=False,
+            error=graph_config["error"] or "codegraph configuration changed during readiness check",
+            remediation="restore a stable valid codegraph.json, then re-run setup",
+            installed=installed_now,
+        )
+
+    needs_repair = bool(diag.get("worktree_mismatch") or diag.get("reindex_recommended"))
+    ordinary_pending = (
+        bool(diag.get("initialized"))
+        and not needs_repair
+        and _pending_from_status(status)
+        and diag.get("detail") is None
+    )
+    # Ambiguous/unavailable/malformed status never authorizes initialization or repair.
+    if status is None or (not missing_index and diag.get("detail") == "codegraph status malformed"):
+        error = "codegraph status unavailable" if status is None else "codegraph status malformed"
+        return GraphSetupResult(
+            ok=False,
+            action="failed",
+            diagnosis=diag,
+            version=runtime_ver or resolved,
+            graph_config=graph_config,
+            config_restored=True,
+            error=error,
+            remediation="inspect codegraph status output; initialize only after confirming index state",
+            installed=installed_now,
+        )
+
+    status_version = status.get("version") if isinstance(status, dict) else None
+    status_in_range = bool(status_version) and in_accepted_range(status_version)
+    if not missing_index and not status_in_range:
+        return GraphSetupResult(
+            ok=False,
+            action="failed",
+            diagnosis=diag,
+            version=runtime_ver or resolved,
+            graph_config=graph_config,
+            config_restored=True,
+            error=f"codegraph status version outside accepted range {CODEGRAPH_ACCEPTED_RANGE}",
+            remediation="ensure CodeGraph status comes from an accepted version, then re-run setup",
+            installed=installed_now,
+        )
+
+    if needs_repair and not fix:
+        reason = (
+            "worktree mismatch"
+            if diag.get("worktree_mismatch")
+            else "reindex recommended"
+        )
+        return GraphSetupResult(
+            ok=False,
+            action="failed",
+            diagnosis=diag,
+            version=runtime_ver or resolved,
+            graph_config=graph_config,
+            config_restored=True,
+            error=f"graph index needs repair ({reason})",
+            remediation="re-run with --fix to rebuild a worktree-local index",
+            installed=installed_now,
+        )
+
+    # Healthy is idempotent. --fix authorizes a required repair; it never forces one.
+    if diag.get("healthy") and graph_config.get("valid"):
+        snapshot = _read_only_snapshot(
+            repo_root,
+            status,
+            expected_head=head_before_status,
+            expected_config_digest=config_before_status["digest"],
+        )
+        snapshot_ok = snapshot.status == "available" and snapshot.repo_head is not None
+        return GraphSetupResult(
+            ok=snapshot_ok,
+            action=("installed" if installed_now else "unchanged") if snapshot_ok else "failed",
+            diagnosis=diag,
+            version=runtime_ver or resolved,
+            graph_config=graph_config,
+            config_restored=True,
+            error=None if snapshot_ok else snapshot.fallback_reason,
+            remediation=(
+                None
+                if snapshot_ok
+                else "restore a stable Git HEAD and valid graph configuration, then re-run setup"
+            ),
+            snapshot=snapshot,
+            installed=installed_now,
+        )
+
+    if ordinary_pending and not needs_repair:
+        prepared = _prepare_worktree_local_index(repo_root, graph_config["digest"])
+        snapshot, status_after = prepared if prepared is not None else (None, None)
+        diag_after = _diagnosis(status_after)
+        ok = bool(diag_after.get("healthy"))
+        return GraphSetupResult(
+            ok=ok,
+            action="synced" if ok else "failed",
+            diagnosis=diag_after,
+            version=runtime_ver or resolved,
+            graph_config=_graph_config(repo_root),
+            config_restored=True,
+            error=None if ok else "incremental graph sync failed the HEAD/config fence",
+            remediation=None if ok else "re-run setup-graph --fix if the index remains unhealthy",
+            snapshot=snapshot,
+            installed=installed_now,
+        )
+
+    # Initialize once (missing/unhealthy index) or explicit repair.
+    # Existing tests and config-restore contracts require init+restore when status is missing/unhealthy.
+    action = "repaired" if needs_repair and fix else "initialized"
+    initialized = _initialize_worktree_local_index(repo_root)
+    config_restored = _restore_graph_config(config_before)
+    graph_config = _graph_config(repo_root)
+    if not initialized or not config_restored:
+        return GraphSetupResult(
+            ok=False,
+            action="failed",
+            diagnosis=_diagnosis(_status(repo_root)),
+            version=runtime_ver or resolved,
+            graph_config=graph_config,
+            config_restored=config_restored,
+            error=(
+                "codegraph configuration restore failed"
+                if not config_restored
+                else "codegraph init failed"
+            ),
+            remediation="re-run setup-graph --fix inside the target worktree",
+            installed=installed_now,
+        )
+    prepared = _prepare_worktree_local_index(repo_root, graph_config["digest"])
+    snapshot, status_after = prepared if prepared is not None else (None, None)
+    diag_after = _diagnosis(status_after)
+    ok = bool(diag_after.get("healthy")) and config_restored
+    return GraphSetupResult(
+        ok=ok,
+        action=action if ok else "failed",
+        diagnosis=diag_after,
+        version=runtime_ver or resolved,
+        graph_config=graph_config,
+        config_restored=config_restored,
+        error=None if ok else "graph prepare failed after init",
+        remediation=None if ok else "ensure you run this inside the target worktree",
+        snapshot=snapshot,
+        installed=installed_now,
+    )
 
 
 def run_setup_graph(args: Any) -> int:
-    repo = args.repo_root
-    config_before = _capture_graph_config(repo)
-    if config_before.state in {"unreadable", "nonregular"}:
-        graph_config = _graph_config(repo, config_before)
-        _emit(
-            {
-                "ok": False,
-                "command": "setup-graph",
-                "step": "config",
-                "graph_config": graph_config,
-                "config_error": graph_config["error"],
-            },
-            args.as_json,
-            [f"setup-graph refused: {graph_config['error']}"],
-        )
-        return 1
-    version, verr = _resolve_version(args.version, args.allow_unsupported, args.as_json)
-    if verr is not None:
-        return verr
-    install_err = _ensure_installed(
-        args.as_json, version=version, via=args.via, explicit_version=args.version is not None
+    result = ensure_graph_ready(
+        args.repo_root,
+        fix=bool(args.fix),
+        via=args.via,
+        version=args.version,
+        allow_unsupported=bool(args.allow_unsupported),
+        as_json=bool(args.as_json),
+        explicit_version=args.version is not None,
+        silent=True,
     )
-    if install_err is not None:
-        return install_err
-    initialized = _initialize_worktree_local_index(repo)
-    config_restored = _restore_graph_config(config_before)
-    graph_config = _graph_config(repo)
-    status = (
-        _prepare_worktree_local_index(repo, graph_config["digest"])
-        if initialized and config_restored
-        else None
-    )
-    diag = _diagnosis(status)
-    ok = diag["healthy"] and config_restored
-    intent = "repair worktree-local index" if args.fix else "initialize graph index"
-    lines = [f"setup-graph ({intent}) — repo: {repo}, codegraph {version}",
-             f"  initialized:       {diag.get('initialized')}",
-             f"  worktree_mismatch: {diag.get('worktree_mismatch')}",
-             f"  healthy:           {ok}"]
-    if not ok and diag.get("worktree_mismatch"):
+    intent = {
+        "unchanged": "graph already healthy",
+        "installed": "engine installed; graph ready",
+        "initialized": "initialize graph index",
+        "synced": "incremental graph sync",
+        "repaired": "repair worktree-local index",
+        "failed": "graph setup failed",
+    }.get(result.action, result.action)
+    lines = [
+        f"setup-graph ({intent}) — repo: {args.repo_root}, codegraph {result.version}",
+        f"  action:             {result.action}",
+        f"  initialized:        {result.diagnosis.get('initialized')}",
+        f"  worktree_mismatch:  {result.diagnosis.get('worktree_mismatch')}",
+        f"  healthy:            {result.ok}",
+    ]
+    if not result.ok and result.diagnosis.get("worktree_mismatch"):
         lines.append("  worktree mismatch persists — ensure you run this inside the target worktree.")
-    if not config_restored:
+    if not result.config_restored:
         lines.append("  codegraph configuration restore failed.")
-    _emit({"ok": ok, "command": "setup-graph", "repo_root": repo, "version": version,
-           "config_preserved": config_restored, "config_restored": config_restored,
-           "config_error": None if config_restored else "codegraph configuration restore failed",
-           "graph_config": graph_config, "diagnosis": diag}, args.as_json, lines)
-    return 0 if ok else 1
+    if result.error:
+        lines.append(f"  error: {result.error}")
+    if result.remediation:
+        lines.append(f"  remediation: {result.remediation}")
+    _emit(
+        {
+            "ok": result.ok,
+            "command": "setup-graph",
+            "repo_root": args.repo_root,
+            "version": result.version,
+            "action": result.action,
+            "config_preserved": result.config_restored,
+            "config_restored": result.config_restored,
+            "config_error": None if result.config_restored else "codegraph configuration restore failed",
+            "graph_config": result.graph_config,
+            "diagnosis": result.diagnosis,
+            "error": result.error,
+            "remediation": result.remediation,
+        },
+        args.as_json,
+        lines,
+    )
+    return 0 if result.ok else (2 if result.error and "outside accepted range" in (result.error or "") else 1)
 
 
 def run_doctor(args: Any) -> int:
@@ -644,12 +985,17 @@ def run_doctor(args: Any) -> int:
     config_before = _capture_graph_config(repo)
     graph_config = _graph_config(repo, config_before)
     if not _installed():
+        from pebra.cli.engine_status import collect_engine_status  # noqa: PLC0415
+
+        engines = collect_engine_status(repo)
         _emit(
             {
                 "ok": False,
                 "step": "engine",
                 "error": "not found",
                 "graph_config": graph_config,
+                "engines": engines,
+                "engines_ok": engines["engines_ok"],
             },
             args.as_json,
             [
@@ -663,30 +1009,76 @@ def run_doctor(args: Any) -> int:
     in_range = bool(runtime_ver) and in_accepted_range(runtime_ver)
     status = _status(repo)
     diag = _diagnosis(status)
+    status_version = status.get("version") if isinstance(status, dict) else None
+    status_in_range = bool(status_version) and in_accepted_range(status_version)
     repaired = False
+    repair_action: str | None = None
     config_restored = True
     post_fix_config_digest: str | None = None
     if args.fix_graph and not diag["healthy"]:
-        if config_before.state in {"unreadable", "nonregular"}:
-            config_restored = False
+        if not graph_config["valid"]:
+            config_restored = config_before.state == "readable"
+            repair_action = "failed"
+        elif status is None or (
+            not _is_uninitialized_status(status)
+            and diag.get("detail") == "codegraph status malformed"
+        ):
+            # A probe failure is not evidence that a destructive rebuild is warranted.
+            repair_action = "failed"
+        elif not status_in_range:
+            # An unsupported provider cannot authorize sync or destructive repair.
+            repair_action = "failed"
+        elif (
+            diag.get("initialized")
+            and not diag.get("worktree_mismatch")
+            and not diag.get("reindex_recommended")
+            and _pending_from_status(status)
+        ):
+            prepared = _prepare_worktree_local_index(repo, graph_config["digest"])
+            status = prepared[1] if prepared is not None else None
+            diag = _diagnosis(status)
+            repaired = bool(diag["healthy"])
+            repair_action = "synced" if repaired else "failed"
         else:
             initialized = _initialize_worktree_local_index(repo)
             config_restored = _restore_graph_config(config_before)
             graph_config = _graph_config(repo)
-            status = (
+            prepared = (
                 _prepare_worktree_local_index(repo, graph_config["digest"])
                 if initialized and config_restored
                 else None
             )
+            status = prepared[1] if prepared is not None else None
             diag = _diagnosis(status)
-            repaired = True
+            repaired = bool(diag["healthy"] and config_restored)
+            repair_action = "repaired" if repaired else "failed"
         if config_before.state in {"unreadable", "nonregular"}:
             graph_config = _graph_config(repo)
         post_fix_config_digest = graph_config["digest"]
-    ok = diag["healthy"] and in_range and graph_config["valid"] and config_restored
+    status_version = status.get("version") if isinstance(status, dict) else None
+    status_in_range = bool(status_version) and in_accepted_range(status_version)
+    graph_healthy = (
+        diag["healthy"]
+        and in_range
+        and status_in_range
+        and graph_config["valid"]
+        and config_restored
+    )
+    head_present = git_adapter.head_commit(repo) is not None
+    from pebra.cli.engine_status import collect_engine_status  # noqa: PLC0415
+
+    engines = collect_engine_status(repo)
+    ok = (
+        graph_healthy
+        and head_present
+        and engines["codegraph"]["mode"] == "available"
+        and engines["git"]["mode"] == "available"
+    )
     lines = [f"doctor — repo: {repo}",
              f"  codegraph version: {runtime_ver or 'unknown'} (accepted {CODEGRAPH_ACCEPTED_RANGE})",
              f"  version_in_range:  {in_range}",
+             f"  status version:    {status_version or 'unknown'}",
+             f"  status in range:   {status_in_range}",
              f"  initialized:       {diag.get('initialized')}",
              f"  worktree_mismatch: {diag.get('worktree_mismatch')}",
              f"  reindex_needed:    {diag.get('reindex_recommended')}",
@@ -694,20 +1086,32 @@ def run_doctor(args: Any) -> int:
              f"  config digest:     {graph_config['digest']}",
              f"  config valid:      {graph_config['valid']}",
              "  config support:    extensions, includeIgnored (exclude unsupported)",
-             f"  healthy:           {ok}"]
+             f"  git HEAD present:  {head_present}",
+             f"  healthy:           {ok}",
+             f"  engines_ok:        {engines['engines_ok']}"]
     if graph_config["unsupported_fields"]:
         lines.append("  unsupported config fields: " + ", ".join(graph_config["unsupported_fields"]))
     if graph_config["error"]:
         lines.append(f"  config error: {graph_config['error']}")
     if not in_range:
         lines.append("  version outside accepted range — run: pebra setup-graph --fix")
+    elif not status_in_range:
+        lines.append("  status version outside accepted range — run: pebra setup-graph --fix")
+    elif not head_present:
+        lines.append("  repository HEAD unavailable — commit the repository before trusting graph evidence.")
     elif not ok and not args.fix_graph:
         lines.append("  run `pebra doctor --fix-graph` (or `pebra setup-graph --fix`) to repair.")
     _emit({"ok": ok, "command": "doctor", "repo_root": repo, "repaired": repaired,
+           "repair_action": repair_action,
            "codegraph_version": runtime_ver, "version_in_range": in_range,
+           "status_version": status_version, "status_version_in_range": status_in_range,
+           "head_present": head_present,
            "accepted_range": CODEGRAPH_ACCEPTED_RANGE, "graph_config": graph_config,
            "post_fix_config_digest": post_fix_config_digest,
            "config_restored": config_restored,
            "config_error": None if config_restored else "codegraph configuration restore failed",
-           "diagnosis": diag}, args.as_json, lines)
+           "diagnosis": diag,
+           "engines": engines,
+           "engines_ok": engines["engines_ok"]}, args.as_json, lines)
+    # Exit remains graph-health only so existing scripts are not broken by optional RCA absence.
     return 0 if ok else 1
