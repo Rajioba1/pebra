@@ -35,6 +35,36 @@ Run `nox -s tests lint e2e-fast` for the normal source checkout. Before release,
 `nox -s dev-package` to build and verify the tracked source as a clean wheel and source distribution;
 use `nox -s dev-package -- --open` to open the installed wheel's dashboard.
 
+### External Engines
+
+Prepare CodeGraph and inspect RCA readiness with:
+
+```console
+pebra setup-engines --repo-root . --json
+```
+
+PEBRA installs its pinned CodeGraph build only from this explicit setup surface. It does not bundle
+RCA and never installs Rust, Cargo, or RCA automatically. If Cargo is missing, install Rust and Cargo
+with [rustup](https://rustup.rs/), then install the exact accepted RCA revision:
+
+```console
+cargo install --force --git https://github.com/mozilla/rust-code-analysis --rev 37e5d83c056c8cbf827223d5814a93c5218df1a9 --locked rust-code-analysis-cli
+```
+
+`PEBRA_RCA_BIN` may name the RCA launcher or its bin directory. For a binary managed outside Cargo,
+set `PEBRA_RCA_SHA256` to its lowercase SHA-256 so PEBRA can bind trust to those exact bytes. Without
+accepted RCA, risk analysis still runs and maintainability benefit remains projected.
+
+The real CodeGraph freshness lane is gated because it requires the external engine:
+
+```powershell
+$env:E2E_CODEGRAPH = "1"
+.\.venv\Scripts\python.exe -m pytest tests\integration\test_codegraph_freshness_real.py -q
+Remove-Item Env:E2E_CODEGRAPH
+```
+
+Record this lane as not run when the engine is unavailable; default green tests do not imply it ran.
+
 For an isolated synthetic Observatory, use `python -m scripts.demo_observatory` (TUI default),
 `--dashboard`, or `--keep`. This is a source-only developer module, not a root `pebra` command, and it
 must never use the checkout's `.pebra/pebra.db`.

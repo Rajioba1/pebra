@@ -49,7 +49,17 @@ def run(args: Any) -> int:
     rca = probe_rca()
     remediation = build_rca_remediation()
     in_range = bool(graph.version) and in_accepted_range(str(graph.version))
-    graph_trusted = bool(graph.ok and graph.diagnosis.get("healthy") and in_range)
+    graph_trusted = bool(
+        graph.ok
+        and graph.diagnosis.get("healthy")
+        and in_range
+        and graph.snapshot is not None
+        and graph.snapshot.status == "available"
+        and graph.snapshot.repo_head is not None
+    )
+    graph_error = graph.error or (
+        graph.snapshot.fallback_reason if graph.snapshot is not None and not graph_trusted else None
+    )
     ok = graph_trusted and rca.accepted
     # Honest degraded assess remains available even when engines are incomplete.
     assess_ready = True
@@ -62,7 +72,7 @@ def run(args: Any) -> int:
             "action": graph.action,
             "trusted": graph_trusted,
             "version": graph.version,
-            "error": graph.error,
+            "error": graph_error,
             "remediation": graph.remediation,
         },
         "rca": {
@@ -73,6 +83,9 @@ def run(args: Any) -> int:
             "required_source_revision": rca.required_source_revision,
             "benefit_mode": rca.benefit_mode,
             "reason": rca.reason,
+            "sha256": rca.sha256,
+            "source_revision": rca.source_revision,
+            "validation_mode": rca.validation_mode,
             "remediation": remediation,
         },
     }
@@ -83,8 +96,8 @@ def run(args: Any) -> int:
             f"setup-engines — repo: {args.repo_root}",
             f"  CodeGraph: action={graph.action} trusted={graph_trusted} version={graph.version}",
         ]
-        if graph.error:
-            lines.append(f"    error: {graph.error}")
+        if graph_error:
+            lines.append(f"    error: {graph_error}")
         if graph.remediation:
             lines.append(f"    remediation: {graph.remediation}")
         lines.append(

@@ -118,7 +118,11 @@ pebra agent-init --target claude --repo-root . --check --json
 
 `setup-engines` exit `0` means CodeGraph is trusted and RCA is accepted. Exit `1` with
 `assess_ready=true` means engines are incomplete (often projected benefit), not that PEBRA is broken.
-Advanced CodeGraph-only options remain on `pebra setup-graph`.
+The command only checks whether Cargo is available so it can print useful guidance; it never installs
+Cargo or runs the RCA install command. Install Rust/Cargo with
+[rustup](https://rustup.rs/) when prompted, then run the exact revision-pinned command shown by PEBRA.
+Advanced CodeGraph-only options remain on `pebra setup-graph`; contributor setup and engine-test
+details are in [CONTRIBUTING](CONTRIBUTING.md).
 
 Use `--target codex` for Codex. When supported host markers already exist, `--target auto` installs
 only the detected projections:
@@ -241,7 +245,8 @@ shipped priors and separately promoted numeric facts can affect a future `assess
 - **Benefit signal** — optional multi-language complexity + maintainability index via
   [`rust-code-analysis`](https://github.com/mozilla/rust-code-analysis); when absent it fails safe to a
   *projected* benefit and never affects risk. `pebra setup-engines` prints the exact pinned Cargo
-  install command when RCA is missing (it never runs Cargo itself).
+  install command when RCA is missing (it never runs Cargo itself). `PEBRA_RCA_BIN` can point to a
+  trusted launcher or bin directory; `PEBRA_RCA_SHA256` can pin an operator-supplied binary exactly.
 
 ## Basic workflow
 

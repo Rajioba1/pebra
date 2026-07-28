@@ -6,6 +6,7 @@ not mutated, fail-safe on a missing binary / bad JSON."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -23,15 +24,15 @@ class _FakeProc:
 
 _VALID_JSON = '{"metrics": {"cyclomatic": {"sum": 3.0}, "mi": {"mi_visual_studio": 80.0}}}'
 _ORIGINAL_VALIDATED_RCA = ra._validated_rca
+_ORIGINAL_PROBE_RCA_EXECUTABLE = ra._probe_rca_executable
 
 
 @pytest.fixture(autouse=True)
 def _accept_fake_rca_runtime(monkeypatch):
-    monkeypatch.setattr(ra, "_validated_rca", lambda exe: exe)
     monkeypatch.setattr(
         ra,
-        "probe_rca",
-        lambda: ra.RcaCapability(
+        "_probe_rca_executable",
+        lambda exe: ra.RcaCapability(
             status="accepted",
             accepted=True,
             version=ra.RCA_ACCEPTED_VERSION,
@@ -49,6 +50,77 @@ def _accept_fake_rca_runtime(monkeypatch):
 def test_run_rca_cli_binary_missing_is_none(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(ra, "find_rca", lambda: None)
     assert ra._run_rca_cli(tmp_path / "x.py") is None  # never spawns
+
+
+def test_run_rca_cli_resolves_once_and_revalidates_same_binary(monkeypatch, tmp_path) -> None:
+    resolutions = []
+    validations = []
+
+    def resolve():
+        resolutions.append("resolve")
+        return "rca"
+
+    monkeypatch.setattr(ra, "find_rca", resolve)
+    monkeypatch.setattr(
+        ra,
+        "_probe_rca_executable",
+        lambda exe: validations.append(exe) or ra.RcaCapability(
+            status="accepted",
+            accepted=True,
+            version=ra.RCA_ACCEPTED_VERSION,
+            accepted_version=ra.RCA_ACCEPTED_VERSION,
+            required_source_revision=ra.RCA_SOURCE_REVISION,
+            benefit_mode="measured",
+            reason=None,
+            remediation_command=ra.RCA_INSTALL_COMMAND,
+        ),
+    )
+    monkeypatch.setattr(
+        ra.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="{}"),
+    )
+
+    assert ra._run_rca_cli(tmp_path / "x.py") == {}
+    assert resolutions == ["resolve"]
+    assert validations == ["rca", "rca"]
+
+
+def test_run_rca_cli_rejects_binary_replaced_during_execution(monkeypatch, tmp_path) -> None:
+    before = ra.RcaCapability(
+        status="accepted",
+        accepted=True,
+        version=ra.RCA_ACCEPTED_VERSION,
+        accepted_version=ra.RCA_ACCEPTED_VERSION,
+        required_source_revision=ra.RCA_SOURCE_REVISION,
+        benefit_mode="measured",
+        reason=None,
+        remediation_command=ra.RCA_INSTALL_COMMAND,
+        sha256="a" * 64,
+        validation_mode="sha256",
+    )
+    after = ra.RcaCapability(
+        status="accepted",
+        accepted=True,
+        version=ra.RCA_ACCEPTED_VERSION,
+        accepted_version=ra.RCA_ACCEPTED_VERSION,
+        required_source_revision=ra.RCA_SOURCE_REVISION,
+        benefit_mode="measured",
+        reason=None,
+        remediation_command=ra.RCA_INSTALL_COMMAND,
+        sha256="b" * 64,
+        validation_mode="sha256",
+    )
+    capabilities = iter((before, after))
+    monkeypatch.setattr(ra, "find_rca", lambda: "rca")
+    monkeypatch.setattr(ra, "_probe_rca_executable", lambda _exe: next(capabilities))
+    monkeypatch.setattr(
+        ra.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=_VALID_JSON),
+    )
+
+    assert ra._run_rca_cli(tmp_path / "x.py") is None
 
 
 def test_run_rca_cli_valid_json_parses(monkeypatch, tmp_path) -> None:
@@ -98,7 +170,52 @@ def test_run_rca_cli_timeout_is_none(monkeypatch, tmp_path) -> None:
     assert ra._run_rca_cli(tmp_path / "x.py") is None
 
 
+def test_binary_hash_rejects_replacement_during_read(monkeypatch, tmp_path) -> None:
+    exe = tmp_path / "rust-code-analysis-cli"
+    exe.write_bytes(b"before")
+    before = exe.stat()
+
+    def replace_while_hashing(path: Path) -> str:
+        path.write_bytes(b"after replacement")
+        return "0" * 64
+
+    monkeypatch.setattr(ra, "_sha256_file", replace_while_hashing)
+
+    with pytest.raises(OSError, match="changed while hashing"):
+        ra._sha256_stable_binary(str(exe), before)
+
+
+def test_version_cache_is_bound_to_binary_digest(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(ra, "_probe_rca_executable", _ORIGINAL_PROBE_RCA_EXECUTABLE)
+    exe = tmp_path / "bin" / "rust-code-analysis-cli"
+    exe.parent.mkdir()
+    exe.write_bytes(b"binary-a")
+    (tmp_path / ".crates2.json").write_text(json.dumps({"installs": {
+        "rust-code-analysis-cli 0.0.25 (git+https://github.com/mozilla/rust-code-analysis"
+        f"#{ra.RCA_SOURCE_REVISION})": {"bins": [exe.name]},
+    }}), encoding="utf-8")
+    original_stat = exe.stat()
+
+    def version_probe(*_args, **_kwargs):
+        version = "0.0.25" if exe.read_bytes() == b"binary-a" else "0.0.26"
+        return _FakeProc(0, f"rust-code-analysis-cli {version}\n")
+
+    ra._rca_version_for_binary.cache_clear()
+    monkeypatch.setattr(ra.subprocess, "run", version_probe)
+    assert _ORIGINAL_PROBE_RCA_EXECUTABLE(str(exe)).accepted is True
+
+    exe.write_bytes(b"binary-b")
+    os.utime(exe, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert exe.stat().st_size == original_stat.st_size
+    assert exe.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+    capability = _ORIGINAL_PROBE_RCA_EXECUTABLE(str(exe))
+    assert capability.accepted is False
+    assert capability.status == "wrong_version"
+
+
 def test_validated_rca_requires_pinned_runtime_version(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(ra, "_probe_rca_executable", _ORIGINAL_PROBE_RCA_EXECUTABLE)
     exe = tmp_path / "bin" / "rust-code-analysis-cli"
     exe.parent.mkdir()
     exe.write_bytes(b"binary")
@@ -127,6 +244,7 @@ def test_validated_rca_requires_pinned_runtime_version(monkeypatch, tmp_path) ->
 
 
 def test_validated_rca_rejects_wrong_source_revision(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(ra, "_probe_rca_executable", _ORIGINAL_PROBE_RCA_EXECUTABLE)
     exe = tmp_path / "bin" / "rust-code-analysis-cli"
     exe.parent.mkdir()
     exe.write_bytes(b"binary")
@@ -145,6 +263,7 @@ def test_validated_rca_rejects_wrong_source_revision(monkeypatch, tmp_path) -> N
 
 
 def test_validated_rca_accepts_explicit_matching_binary_hash(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(ra, "_probe_rca_executable", _ORIGINAL_PROBE_RCA_EXECUTABLE)
     exe = tmp_path / "custom-rca"
     exe.write_bytes(b"custom pinned binary")
     monkeypatch.setenv("PEBRA_RCA_SHA256", ra._sha256_file(exe))

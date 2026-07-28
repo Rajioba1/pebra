@@ -471,6 +471,23 @@ Exit `0` only when CodeGraph is trusted and RCA is accepted. Exit `1` means engi
 `assess_ready` remains true so degraded assessment is still possible. Use `doctor` for graph-only
 health; use exit `0` here when both measured engines are required.
 
+CodeGraph `action` is one of `unchanged`, `installed`, `initialized`, `synced`, `repaired`, or
+`failed`. The `graph` object reports trust/version/error/remediation. The `rca` object reports its
+acceptance status, version, SHA-256, source revision, validation mode, benefit mode, and exact pinned
+remediation. Cargo availability only tailors that remediation; this command never runs Cargo.
+
+| CodeGraph trusted | RCA accepted | Exit | Automation meaning |
+| --- | --- | --- | --- |
+| yes | yes | `0` | Full measured-engine gate passed |
+| yes | no | `1` | Graph is usable; maintainability benefit is projected |
+| no | yes | `1` | RCA is measured; graph evidence is unavailable/untrusted |
+| no | no | `1` | Degraded assessment remains available via `assess_ready=true` |
+
+RCA status is `accepted`, `missing`, `probe_error`, `wrong_version`, `untrusted_provenance`, or
+`hash_mismatch`. `PEBRA_RCA_BIN` overrides discovery with a launcher or bin directory.
+`PEBRA_RCA_SHA256` binds an externally managed binary to exact bytes. When Cargo is unavailable,
+install Rust/Cargo with rustup and then run the revision-pinned command printed in `remediation`.
+
 ### `setup-graph`
 
 Install or initialize the graph engine for a repository/worktree (advanced CodeGraph-only path).
@@ -495,6 +512,10 @@ pebra setup-graph --version 1.1.1 --repo-root .
 
 Initialization preserves an existing `codegraph.json` byte-for-byte, then runs the same fenced graph
 preparation used by assessment and exploration. It does not scaffold graph configuration.
+An accepted healthy index is unchanged even when `--fix` is present: `--fix` authorizes a required
+repair, it does not force one. Ordinary pending changes are the counts reported by CodeGraph status;
+PEBRA does not independently classify filesystem noise, so a provider-reported pending change may
+trigger an incremental sync even when an operator considers it irrelevant.
 
 ### `doctor`
 
@@ -514,6 +535,13 @@ structurally valid `extensions` and `includeIgnored` values supported by managed
 any `exclude` key as unsupported. `extensions` and `includeIgnored` affect analysis scope; `exclude`
 is reported but ignored by pinned CodeGraph 1.1.1. Malformed configuration is reported and never repaired. Without
 `--fix-graph`, doctor is read-only.
+
+JSON retains the graph diagnosis and adds `engines` plus `engines_ok`. Doctor's exit status remains
+graph-only for compatibility: exit `0` proves a healthy accepted graph bound to an available Git
+HEAD, while `engines_ok` reports combined Git, CodeGraph, RCA, and Bandit readiness. A missing
+optional RCA therefore does not change doctor's exit code. With `--fix-graph`, ordinary pending
+changes are synchronized incrementally; unavailable or malformed status refuses mutation, and only
+an explicit missing-index, worktree-mismatch, or reindex state can authorize initialization/rebuild.
 
 ### `graph-stats`
 
@@ -539,7 +567,10 @@ pebra capabilities [--repo-root PATH] [--json]
 pebra capabilities --repo-root . --json
 ```
 
-Unlike `agent-init --check`, this command may repair a stale graph index.
+The `engines` object is probed read-only. Language capability measurement still prepares the existing
+graph through the production status/sync/status path, so unlike `agent-init --check`, this command may
+incrementally synchronize a stale same-worktree index. It never installs an engine or performs a
+destructive graph rebuild.
 
 ### `candidate-patch`
 
