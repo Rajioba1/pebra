@@ -77,12 +77,17 @@ repository knowledge, historical lessons, and exact candidate bytes into an audi
 
 ## Installation
 
-PEBRA supports Python 3.11–3.13 on Windows, Linux, and macOS. Install the released CLI:
+PEBRA supports Python 3.11–3.13 on Windows, Linux, and macOS. Install the released CLI,
+prepare its CodeGraph and RCA runtime engines, verify repository health, and configure the host:
 
 ```console
 python -m pip install --upgrade pip
 python -m pip install pebra
 pebra --version
+pebra setup-engines --repo-root .
+pebra doctor --repo-root .
+pebra agent-init --target claude --repo-root . --with-hook
+pebra agent-init --target claude --repo-root . --check --json
 ```
 
 For an isolated CLI installation:
@@ -106,15 +111,10 @@ PEBRA to execute the detected `pip`/`pipx` upgrade command after interactive con
 `pebra update --yes` for an unattended upgrade command. Set `PEBRA_NO_UPDATE_CHECK=1` to disable
 automatic and explicit update checks.
 
-CodeGraph is PEBRA's standard structural engine; RCA (optional) measures multi-language maintainability
-benefit. Use one command to prepare CodeGraph and report RCA readiness (it does not execute Cargo):
-
-```console
-pebra setup-engines --repo-root .
-pebra doctor --repo-root .
-pebra agent-init --target claude --repo-root . --with-hook
-pebra agent-init --target claude --repo-root . --check --json
-```
+CodeGraph and RCA are PEBRA's full-fidelity runtime engines: CodeGraph supplies current structural
+repository evidence, and RCA measures multi-language maintainability benefit. They are not bundled as
+Python wheel dependencies. `setup-engines` prepares CodeGraph and reports RCA readiness; it does not
+execute Cargo.
 
 `setup-engines` exit `0` means CodeGraph is trusted and RCA is accepted. Exit `1` with
 `assess_ready=true` means engines are incomplete (often projected benefit), not that PEBRA is broken.
@@ -242,7 +242,7 @@ shipped priors and separately promoted numeric facts can affect a future `assess
   same ledger.
 - **Provider-neutral `pebra explore`** — recalls bounded PEBRA history first, then retrieves current
   repository context from an existing graph index.
-- **Benefit signal** — optional multi-language complexity + maintainability index via
+- **Benefit signal** — measured multi-language complexity + maintainability index via
   [`rust-code-analysis`](https://github.com/mozilla/rust-code-analysis); when absent it fails safe to a
   *projected* benefit and never affects risk. `pebra setup-engines` prints the exact pinned Cargo
   install command when RCA is missing (it never runs Cargo itself). `PEBRA_RCA_BIN` can point to a

@@ -117,6 +117,19 @@ def test_readme_installs_codegraph_and_pebra_before_workflow() -> None:
     assert installation < product_model < workflow
     installation_body = body[installation:product_model]
 
+    canonical_setup = "\n".join(
+        (
+            "python -m pip install --upgrade pip",
+            "python -m pip install pebra",
+            "pebra --version",
+            "pebra setup-engines --repo-root .",
+            "pebra doctor --repo-root .",
+            "pebra agent-init --target claude --repo-root . --with-hook",
+            "pebra agent-init --target claude --repo-root . --check --json",
+        )
+    )
+    assert canonical_setup in installation_body
+
     for command in (
         "python -m pip install pebra",
         "pipx install pebra",
@@ -127,8 +140,10 @@ def test_readme_installs_codegraph_and_pebra_before_workflow() -> None:
     ):
         assert command in body
 
-    assert "CodeGraph is PEBRA's standard structural engine" in body
+    assert "CodeGraph and RCA are PEBRA's full-fidelity runtime engines" in body
     assert "codegraph is optional" not in lowered
+    assert "rca (optional)" not in lowered
+    assert "optional multi-language complexity" not in lowered
     assert "fresh/required" not in lowered
     assert "available or required" not in lowered
     assert "examples/" not in installation_body
