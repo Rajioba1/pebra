@@ -124,8 +124,8 @@ def test_readme_installs_codegraph_and_pebra_before_workflow() -> None:
             "pebra --version",
             "pebra setup-engines --repo-root .",
             "pebra doctor --repo-root .",
-            "pebra agent-init --target claude --repo-root . --with-hook",
-            "pebra agent-init --target claude --repo-root . --check --json",
+            "pebra agent-init --target auto --repo-root . --with-hook",
+            "pebra agent-init --target auto --repo-root . --check --json",
         )
     )
     assert canonical_setup in installation_body
@@ -135,7 +135,7 @@ def test_readme_installs_codegraph_and_pebra_before_workflow() -> None:
         "pipx install pebra",
         "pebra setup-engines --repo-root .",
         "pebra doctor --repo-root .",
-        "pebra agent-init --target claude --repo-root . --with-hook",
+        "pebra agent-init --target auto --repo-root . --with-hook",
         "pebra agent-init --target auto --repo-root . --check --json",
     ):
         assert command in body

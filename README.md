@@ -86,8 +86,8 @@ python -m pip install pebra
 pebra --version
 pebra setup-engines --repo-root .
 pebra doctor --repo-root .
-pebra agent-init --target claude --repo-root . --with-hook
-pebra agent-init --target claude --repo-root . --check --json
+pebra agent-init --target auto --repo-root . --with-hook
+pebra agent-init --target auto --repo-root . --check --json
 ```
 
 For an isolated CLI installation:
@@ -124,13 +124,9 @@ Cargo or runs the RCA install command. Install Rust/Cargo with
 Advanced CodeGraph-only options remain on `pebra setup-graph`; contributor setup and engine-test
 details are in [CONTRIBUTING](CONTRIBUTING.md).
 
-Use `--target codex` for Codex. When supported host markers already exist, `--target auto` installs
-only the detected projections:
-
-```console
-pebra agent-init --target auto --repo-root . --with-hook
-pebra agent-init --target auto --repo-root . --check --json
-```
+`--target auto` detects the currently supported Claude Code and Codex host markers and installs only
+those projections. If no supported marker exists yet, use `--target claude` or `--target codex`
+explicitly in the two `agent-init` commands above.
 
 For editable development on Windows PowerShell:
 
