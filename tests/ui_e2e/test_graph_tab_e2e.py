@@ -111,6 +111,90 @@ class _UnavailableReader(_StubReader):
         }
 
 
+class _RetryOverviewReader(_StubReader):
+    """First hotspot read is unavailable; the next succeeds."""
+
+    def __init__(self) -> None:
+        self.overview_calls = 0
+
+    def file_overview(self, repo_root, *, top_n=200):
+        self.overview_calls += 1
+        if self.overview_calls == 1:
+            return {
+                "available": False,
+                "files": [],
+                "truncated": False,
+                "total_file_count": 0,
+                "fallback_reason": "temporary graph read failure",
+            }
+        return super().file_overview(repo_root, top_n=top_n)
+
+
+class _BlockingOverviewReader(_StubReader):
+    """Hold the first hotspot read open so close/reopen can exercise the single-flight guard."""
+
+    def __init__(self) -> None:
+        self.overview_calls = 0
+        self.overview_started = threading.Event()
+        self.release_overview = threading.Event()
+
+    def file_overview(self, repo_root, *, top_n=200):
+        self.overview_calls += 1
+        self.overview_started.set()
+        self.release_overview.wait(timeout=5)
+        return super().file_overview(repo_root, top_n=top_n)
+
+
+class _ChangingGraphReader(_StubReader):
+    """Add one node after the initial graph read, as an external assess/sync can do."""
+
+    def __init__(self) -> None:
+        self.godmap_calls = 0
+
+    def god_node_map(
+        self, repo_root, *, max_files=20, max_symbols_per_file=10, max_nodes=250, max_edges=800
+    ):
+        self.godmap_calls += 1
+        graph = super().god_node_map(
+            repo_root,
+            max_files=max_files,
+            max_symbols_per_file=max_symbols_per_file,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
+        if self.godmap_calls >= 2:
+            graph["nodes"].append(
+                {
+                    "id": "n:new",
+                    "kind": "function",
+                    "graph_role": "symbol",
+                    "shape": "ellipse",
+                    "qualified_name": "new",
+                    "file_path": "b.py",
+                    "label": "new",
+                    "degree": 1,
+                    "inbound_count": 1,
+                    "outbound_count": 0,
+                    "hub_rank": 1,
+                    "hub_id": "file:b.py",
+                }
+            )
+            graph["edges"].append(
+                {
+                    "source": "file:b.py",
+                    "target": "n:new",
+                    "kind": "contains",
+                    "edge_type": "spoke",
+                    "line_style": "dashed",
+                    "hub_rank": 1,
+                }
+            )
+            graph["total_symbol_count"] = 4
+            graph["total_node_count"] = 6
+            graph["total_edge_count"] = 6
+        return graph
+
+
 def _seed(tmp_path) -> str:
     from pebra.adapters.store.db import SqliteStore
     from pebra.core.constants import ActionStatus, Decision, RiskMode
@@ -299,6 +383,70 @@ def test_graph_is_default_and_hotspots_load_lazily(tmp_path) -> None:
 
 
 @pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_hotspots_retries_after_unavailable_read(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    reader = _RetryOverviewReader()
+    with _serve(db, reader=reader) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok#graph",
+                    wait_until="networkidle",
+                )
+                details = page.locator('[data-testid="repo-hotspots"]')
+                summary = details.locator("summary")
+
+                summary.click()
+                page.wait_for_selector('[data-testid="repo-hotspots"] .empty.warn')
+                summary.click()
+                summary.click()
+                page.wait_for_selector('[data-testid="repo-hotspots"] tbody')
+
+                assert reader.overview_calls == 2
+                assert page.get_by_role("button", name="b.py", exact=True).is_visible()
+            finally:
+                browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_hotspots_close_reopen_keeps_one_request_in_flight(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    reader = _BlockingOverviewReader()
+    with _serve(db, reader=reader) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok#graph",
+                    wait_until="networkidle",
+                )
+                details = page.locator('[data-testid="repo-hotspots"]')
+                summary = details.locator("summary")
+
+                summary.click()
+                assert reader.overview_started.wait(timeout=2)
+                summary.click()
+                summary.click()
+                time.sleep(0.15)
+                calls_while_blocked = reader.overview_calls
+                reader.release_overview.set()
+                page.wait_for_selector('[data-testid="repo-hotspots"] tbody')
+
+                assert calls_while_blocked == 1
+                assert reader.overview_calls == 1
+            finally:
+                reader.release_overview.set()
+                browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
 def test_graph_unavailable_shows_setup_without_blank_stage(tmp_path) -> None:
     from playwright.sync_api import sync_playwright
 
@@ -314,6 +462,37 @@ def test_graph_unavailable_shows_setup_without_blank_stage(tmp_path) -> None:
             assert page.locator("#view-graph .controls").is_hidden()
             assert "pebra setup-graph --fix" in page.locator("#view-graph .empty.warn").inner_text()
             browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_route_error_destroys_the_detached_cytoscape_instance(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db, dev_mode=True) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.route(
+                    "**/api/repos/r/learning/context*",
+                    lambda route: route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body='{"status":"available","items":"malformed"}',
+                    ),
+                )
+                page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok#graph",
+                    wait_until="networkidle",
+                )
+                page.wait_for_selector("#view-graph .empty")
+
+                assert "Error loading graph" in page.locator("#view-graph .empty").inner_text()
+                assert page.locator("#graph-cy canvas").count() == 0
+                assert page.evaluate("() => window.__pebraGraph.snapshot().nodes.length") == 0
+            finally:
+                browser.close()
 
 
 @pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
@@ -418,6 +597,35 @@ def test_graph_search_inspector_and_layout_controls(tmp_path) -> None:
             page.wait_for_timeout(300)
             assert not page_errors, page_errors
             browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_tier_switches_keep_exactly_one_risk_picker(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db, dev_mode=True) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok#graph",
+                    wait_until="networkidle",
+                )
+                picker = page.locator('select[aria-label="risk assessment"]')
+                assert picker.count() == 1
+
+                page.get_by_role("button", name="Full graph (debug)", exact=True).click()
+                page.wait_for_function("() => window.__pebraGraph.snapshot().mode === 'symbol'")
+                assert picker.count() == 1
+
+                page.get_by_role("button", name="God map", exact=True).click()
+                page.wait_for_function("() => window.__pebraGraph.snapshot().mode === 'godmap'")
+                picker.wait_for(state="visible")
+                assert picker.count() == 1
+            finally:
+                browser.close()
 
 
 @pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
@@ -568,6 +776,110 @@ def test_activity_live_refresh_preserves_scroll_across_multiple_ticks(tmp_path) 
 
                 assert page.evaluate("window.scrollY") == old_scroll
                 assert assessment_id in detail.inner_text()
+            finally:
+                browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_live_refresh_preserves_camera_selection_and_controls(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    with _serve(db, dev_mode=True) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page_errors: list[str] = []
+                learning_calls = 0
+
+                def fail_later_learning_refresh(route) -> None:
+                    nonlocal learning_calls
+                    learning_calls += 1
+                    if learning_calls == 1:
+                        route.continue_()
+                    else:
+                        route.fulfill(
+                            status=200,
+                            content_type="application/json",
+                            body='{"status":"available","items":"malformed"}',
+                        )
+
+                page.on("pageerror", lambda error: page_errors.append(str(error)))
+                page.route("**/api/repos/r/learning/context*", fail_later_learning_refresh)
+                page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok&live=1#graph",
+                    wait_until="networkidle",
+                )
+                page.wait_for_function("() => window.__pebraGraph && window.__pebraGraph.snapshot")
+
+                page.fill(".graph-search", "class")
+                page.wait_for_selector(".search-row")
+                page.click(".search-row")
+                page.wait_for_timeout(400)
+                page.get_by_role("button", name="Zoom in", exact=True).click()
+                page.evaluate(
+                    """() => {
+                      document.activeElement.blur();
+                      window.__liveControlRefs = {
+                        auto: document.querySelector(".layout-group button"),
+                        risk: document.querySelector(".overlay-toggle button"),
+                      };
+                    }"""
+                )
+                before = page.evaluate("() => window.__pebraGraph.snapshot()")
+
+                page.wait_for_timeout(2200)
+                after = page.evaluate("() => window.__pebraGraph.snapshot()")
+                controls_survived = page.evaluate(
+                    """() => window.__liveControlRefs.auto
+                      === document.querySelector(".layout-group button")
+                      && window.__liveControlRefs.risk
+                      === document.querySelector(".overlay-toggle button")"""
+                )
+
+                assert learning_calls >= 2
+                assert before["selected"] == ["n:b"]
+                assert after["selected"] == before["selected"]
+                assert after["zoom"] == pytest.approx(before["zoom"])
+                assert after["pan"]["x"] == pytest.approx(before["pan"]["x"])
+                assert after["pan"]["y"] == pytest.approx(before["pan"]["y"])
+                assert controls_survived is True
+                assert not page_errors, page_errors
+            finally:
+                browser.close()
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="playwright Chromium browser not installed")
+def test_graph_live_refresh_renders_a_changed_codegraph_snapshot(tmp_path) -> None:
+    from playwright.sync_api import sync_playwright
+
+    db = _seed(tmp_path)
+    reader = _ChangingGraphReader()
+    with _serve(db, reader=reader, dev_mode=True) as port:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.goto(
+                    f"http://127.0.0.1:{port}/?repo=r&token=tok&live=1#graph",
+                    wait_until="networkidle",
+                )
+                page.wait_for_function("() => window.__pebraGraph && window.__pebraGraph.snapshot")
+                assert len(page.evaluate("() => window.__pebraGraph.snapshot().nodes")) == 5
+                page.evaluate(
+                    "() => { window.__autoControl = document.querySelector('.layout-group button'); }"
+                )
+
+                page.wait_for_function(
+                    "() => window.__pebraGraph.snapshot().nodes.some(n => n.id === 'n:new')",
+                    timeout=5000,
+                )
+
+                assert reader.godmap_calls >= 2
+                assert page.evaluate(
+                    "() => window.__autoControl === document.querySelector('.layout-group button')"
+                )
             finally:
                 browser.close()
 
